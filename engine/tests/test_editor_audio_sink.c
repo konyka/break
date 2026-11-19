@@ -132,7 +132,35 @@ TEST(preview_stops_by_itself_at_any_rate_and_resampler)
     }
 }
 
+TEST(preview_plays_from_a_start_frame_on_the_real_stream)
+{
+    static i16 pcm[2u * 100u];
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    BreakEditorAudioStreamSink sink;
+    BreakEditorAudioPreview *preview = break_editor_audio_preview_create();
+    BreakEditorDoc *doc = break_editor_doc_create();
+    f32 out[2u * 8u];
+    u32 i;
+    ASSERT_NOT_NULL(as);
+    for (i = 0u; i < 200u; i++) pcm[i] = (i16)(i * 100);
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 48000u, 2u, pcm, 100u));
+    break_editor_audio_stream_sink_init(&sink, as);
+    break_editor_audio_preview_set_sink(preview, break_editor_audio_stream_sink(), &sink);
+    ASSERT_TRUE(break_editor_audio_preview_play_from(preview, doc, 40u));
+    break_editor_audio_preview_pump(preview);
+    ASSERT_EQ(audio_system_render(as, out, 8u), AUDIO_OK);
+    for (i = 0u; i < 8u; i++) {
+        ASSERT_FLOAT_EQ(out[2u * i], (f32)pcm[2u * (40u + i)] / 32768.0f, 1e-6f);
+        ASSERT_FLOAT_EQ(out[2u * i + 1u], (f32)pcm[2u * (40u + i) + 1u] / 32768.0f, 1e-6f);
+    }
+    ASSERT_EQ(break_editor_audio_preview_position_frames(preview), 48u);
+    break_editor_audio_preview_destroy(preview);
+    break_editor_doc_destroy(doc);
+    audio_system_destroy(as);
+}
+
 TEST_MAIN_BEGIN()
+    RUN_TEST(preview_plays_from_a_start_frame_on_the_real_stream);
     RUN_TEST(preview_stops_by_itself_at_any_rate_and_resampler);
     RUN_TEST(stream_sink_plays_written_frames_on_the_master_mix);
     RUN_TEST(stream_sink_reopens_and_rejects_bad_formats);

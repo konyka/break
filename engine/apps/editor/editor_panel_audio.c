@@ -17,7 +17,10 @@
  * Preview: the Play/Stop button plays a copy of the attachment through the
  * shell's sink (editor_audio_preview.h); the tick pumps it, stops it when the
  * attachment revision changes and appends " | <position> / <length> s" to the
- * info line while it plays.
+ * info line while it plays. A primary press on the waveform seeks: while
+ * playing it restarts there, otherwise Play starts there next; a line marks
+ * the playing position (or a non-zero cursor). An attachment change resets
+ * the cursor.
  *
  * Bounds: 2 x 4096 i16 columns + a 128-byte info line; the preview allocates
  * its copy buffer once at create. Threading: shell thread only. */
@@ -39,6 +42,7 @@
 #define EDITOR_AUDIO_INFO_BYTES 128u
 #define EDITOR_BOTTOM_TAB_AUDIO 4u /* index in editor_panels.c k_tab_pages[0] */
 #define EDITOR_AUDIO_LIGHT_MID_LINE 0xD3D5DBFFu
+#define EDITOR_AUDIO_LIGHT_CURSOR 0x1F1F1FFFu
 
 struct EditorPanelAudio {
     BreakEditorShell *shell;  /* borrowed */
@@ -144,10 +148,48 @@ static void audio_waveform_on_paint(my_widget_t *widget, my_vgcanvas_t *vg) {
         const float bar_h = bottom - top > 1.0f ? bottom - top : 1.0f;
         (void)my_vgcanvas_fill_rect(vg, &(my_rectf_t){x0, top, bar_w, bar_h});
     }
+    {
+        const u32 frames = break_editor_doc_audio_frames(break_editor_shell_doc(panel->shell));
+        const bool playing = break_editor_audio_preview_playing(panel->preview);
+        const u32 at = playing ? break_editor_audio_preview_position_frames(panel->preview)
+                               : break_editor_audio_preview_cursor_frames(panel->preview);
+        if (frames != 0u && (playing || at != 0u)) {
+            const float x = (float)((double)at * (double)w / (double)frames);
+            my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(break_editor_theme_is_light()
+                                                                     ? EDITOR_AUDIO_LIGHT_CURSOR
+                                                                     : BREAK_EDITOR_THEME_TEXT));
+            (void)my_vgcanvas_fill_rect(vg, &(my_rectf_t){x < w - 1.0f ? x : w - 1.0f, 0.0f,
+                                                          1.0f, h});
+        }
+    }
 }
 
-static const my_widget_vtable_t k_audio_waveform_vtable = {audio_waveform_on_paint, NULL,
-                                                           NULL, NULL};
+/* A primary-button press seeks to the frame under the pointer. */
+static my_ret_t audio_waveform_on_event(my_widget_t *widget, const my_event_t *event) {
+    EditorPanelAudio *panel;
+    int32_t gx, gy;
+    u32 frames;
+    if (widget == NULL || event == NULL || event->type != MY_EVENT_POINTER_DOWN ||
+        event->u.pointer.button != 1u || widget->rect.w <= 0) {
+        return MY_RET_FAIL;
+    }
+    panel = (EditorPanelAudio *)my_widget_get_user_data(widget);
+    frames = panel != NULL ? break_editor_doc_audio_frames(break_editor_shell_doc(panel->shell))
+                           : 0u;
+    if (frames == 0u) {
+        return MY_RET_FAIL;
+    }
+    gx = event->u.pointer.x;
+    gy = event->u.pointer.y;
+    my_widget_global_to_local(widget, &gx, &gy);
+    if (gx < 0) gx = 0;
+    if (gx >= widget->rect.w) gx = widget->rect.w - 1;
+    (void)editor_panel_audio_seek(panel, (u32)((u64)(u32)gx * frames / (u32)widget->rect.w));
+    return MY_RET_OK;
+}
+
+static const my_widget_vtable_t k_audio_waveform_vtable = {audio_waveform_on_paint,
+                                                           audio_waveform_on_event, NULL, NULL};
 
 EditorPanelAudio *editor_panel_audio_create(BreakEditorShell *shell) {
     EditorPanelAudio *panel;
@@ -187,8 +229,9 @@ bool editor_panel_audio_toggle(EditorPanelAudio *panel) {
         break_editor_audio_preview_stop(panel->preview);
     } else if (!break_editor_audio_preview_has_sink(panel->preview)) {
         editor_shell_log(panel->shell, "%s", break_editor_tr(BREAK_EDITOR_TR_LOG_AUDIO_NO_OUTPUT));
-    } else if (!break_editor_audio_preview_play(panel->preview,
-                                                break_editor_shell_doc(panel->shell))) {
+    } else if (!break_editor_audio_preview_play_from(
+                   panel->preview, break_editor_shell_doc(panel->shell),
+                   break_editor_audio_preview_cursor_frames(panel->preview))) {
         editor_shell_log(panel->shell, "%s",
                          break_editor_tr(BREAK_EDITOR_TR_LOG_AUDIO_PLAY_FAILED));
     } else {
@@ -202,6 +245,23 @@ bool editor_panel_audio_toggle(EditorPanelAudio *panel) {
     }
     audio_panel_format_info(panel);
     return break_editor_audio_preview_playing(panel->preview);
+}
+
+bool editor_panel_audio_seek(EditorPanelAudio *panel, u32 frame) {
+    bool playing;
+    if (panel == NULL) {
+        return false;
+    }
+    playing = break_editor_audio_preview_seek(panel->preview, break_editor_shell_doc(panel->shell),
+                                              frame);
+    if (playing) {
+        break_editor_audio_preview_pump(panel->preview);
+    }
+    audio_panel_format_info(panel);
+    if (panel->waveform != NULL) {
+        my_widget_invalidate(panel->waveform, NULL);
+    }
+    return playing;
 }
 
 static void on_audio_play_click(void *ctx, const char *event, void *data) {
@@ -295,8 +355,10 @@ void editor_panel_audio_tick(EditorPanelAudio *panel) {
     }
     doc = break_editor_shell_doc(panel->shell);
     if (panel->seen_revision != break_editor_doc_audio_revision(doc)) {
-        /* the preview plays a copy taken at Play: an edit makes it stale */
+        /* the preview plays a copy taken at Play: an edit makes it stale,
+         * and the cursor may point past the new end */
         break_editor_audio_preview_stop(panel->preview);
+        break_editor_audio_preview_reset_cursor(panel->preview);
     }
     break_editor_audio_preview_pump(panel->preview);
     if (!panel->fresh || panel->seen_revision != break_editor_doc_audio_revision(doc) ||

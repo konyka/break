@@ -444,6 +444,11 @@ void break_editor_shell_set_audio_sink(BreakEditorShell *shell,
                                        const struct BreakEditorAudioSink *sink, void *user);
 bool break_editor_shell_audio_play(BreakEditorShell *shell);
 bool break_editor_shell_audio_playing(const BreakEditorShell *shell);
+/* Seek on the Audio page (design 2026-11-19-editor-audio-seek), the same as
+ * a click on the waveform: restarts playback at `frame`, or sets where the
+ * next Play starts. cursor_frames is that start point. */
+bool break_editor_shell_audio_seek(BreakEditorShell *shell, u32 frame);
+u32 break_editor_shell_audio_cursor_frames(const BreakEditorShell *shell);
 
 /* Profiler panel snapshot rows (top-N by duration, N <= 16, refreshed from
  * profiler_last_frame at <= 4 Hz from break_editor_shell_tick; the panel is

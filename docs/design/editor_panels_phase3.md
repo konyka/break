@@ -45,6 +45,8 @@ root（vertical）
 
 > **2026-11-19 更新（音频预览）**：音频页顶部一行为 `editor-audio-play` 按钮（播放/停止）加信息标签。播放经 `editor_audio_preview.c` 写入 shell 的输出端（编辑器应用里是 `editor_audio_sink.c` 的 PCM 流），设计见 `docs/superpowers/specs/2026-11-19-editor-audio-preview-design.md`。
 
+> **2026-11-19 更新（音频跳转）**：`editor-audio-waveform` 处理主键按下：按 x 位置跳转（播放中重播，停止时设为下次起点），并画出播放光标。设计见 `docs/superpowers/specs/2026-11-19-editor-audio-seek-design.md`。
+
 
 坐标注意：myui `widget->rect` 在**父坐标系**（my_widget.h）。inspector
 嵌套进 `editor-right-panel` 后，`inspector->rect.x` 不再与 viewport 同一

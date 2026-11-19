@@ -4232,6 +4232,16 @@ bool break_editor_shell_audio_play(BreakEditorShell *shell) {
     return shell != NULL && editor_panel_audio_toggle(shell->audio_panel);
 }
 
+bool break_editor_shell_audio_seek(BreakEditorShell *shell, u32 frame) {
+    return shell != NULL && editor_panel_audio_seek(shell->audio_panel, frame);
+}
+
+u32 break_editor_shell_audio_cursor_frames(const BreakEditorShell *shell) {
+    return shell != NULL ? break_editor_audio_preview_cursor_frames(
+                               editor_panel_audio_preview(shell->audio_panel))
+                         : 0u;
+}
+
 bool break_editor_shell_audio_playing(const BreakEditorShell *shell) {
     return shell != NULL && break_editor_audio_preview_playing(editor_panel_audio_preview(
                                 shell->audio_panel));

@@ -118,6 +118,7 @@ struct BreakEditorAudioPreview *editor_panel_audio_preview(EditorPanelAudio *pan
 /* Play/Stop button: starts the preview (logs when there is no sink or it
  * fails) or stops it. Returns whether it is playing afterwards. */
 bool editor_panel_audio_toggle(EditorPanelAudio *panel);
+bool editor_panel_audio_seek(EditorPanelAudio *panel, u32 frame);
 /* Asset browser: opens a .wav file into the document's attachment (only when
  * none is attached), logs the outcome, selects the Audio tab on success. */
 bool editor_shell_open_audio(BreakEditorShell *shell, const char *path,

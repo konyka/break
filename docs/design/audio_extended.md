@@ -420,3 +420,4 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
   - `break_editor_doc_audio_revision(doc)` 在附件、编辑、撤销/重做、分离时变化；`break_editor_doc_audio_waveform(doc, columns, min, max)` 按 `[c·frames/columns, (c+1)·frames/columns)` 取每列所有声道的最小/最大样本，参数无效、无附件或零帧时返回 false 且不写输出。
   - 编辑器底部工具窗“音频”页显示格式和波形；资源浏览器点击 `.wav` 打开附件（已有附件时拒绝）。上文“未做”中的“编辑器 UI”由此部分交付（只读波形）。仍缺：播放、选区编辑、时间线、缩放和真实听测。
 - 2026-11-19 补充：编辑器音频预览播放。设计见 `docs/superpowers/specs/2026-11-19-editor-audio-preview-design.md`。音频页的“播放”把附件的副本经引擎 PCM 流写到默认播放设备（`apps/editor/editor_audio_sink.c`），写完并排空后自动停止，编辑附件时停止。上一条中的“播放”由此交付。仍缺：选区编辑、时间线、跳转/循环、缩放和真实听测。
+- 2026-11-19 补充：音频页跳转。点击波形跳到对应帧（播放中立即从该处重播，停止时作为下次起点），波形上有播放光标。设计见 `docs/superpowers/specs/2026-11-19-editor-audio-seek-design.md`。上一条中的“跳转”由此交付。仍缺：选区编辑、时间线、循环、缩放和真实听测。

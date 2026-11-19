@@ -38,6 +38,18 @@ bool break_editor_audio_preview_has_sink(const BreakEditorAudioPreview *preview)
  * when the sink does not open. */
 bool break_editor_audio_preview_play(BreakEditorAudioPreview *preview,
                                      const BreakEditorDoc *doc);
+/* play from `start_frame` (clamped to the last frame); play is
+ * play_from(..., 0). */
+bool break_editor_audio_preview_play_from(BreakEditorAudioPreview *preview,
+                                          const BreakEditorDoc *doc, u32 start_frame);
+/* Playing: restarts from `frame` (queued audio is dropped). Stopped: only
+ * sets the cursor. Returns whether it plays afterwards. */
+bool break_editor_audio_preview_seek(BreakEditorAudioPreview *preview,
+                                     const BreakEditorDoc *doc, u32 frame);
+/* Where the next Play starts: set by a stopped seek, 0 after playback ends
+ * by itself or after break_editor_audio_preview_reset_cursor. */
+u32 break_editor_audio_preview_cursor_frames(const BreakEditorAudioPreview *preview);
+void break_editor_audio_preview_reset_cursor(BreakEditorAudioPreview *preview);
 /* Writes what the sink accepts; stops (closing the sink) once everything is
  * written and drained, or when the sink reports an error. */
 void break_editor_audio_preview_pump(BreakEditorAudioPreview *preview);

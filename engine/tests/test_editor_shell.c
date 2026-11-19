@@ -3272,6 +3272,79 @@ TEST(audio_page_plays_the_attachment_through_the_sink)
     ASSERT_FALSE(fake.is_open);
 }
 
+static void pointer_click(BreakEditorShell *shell, my_widget_t *w);
+
+/* Seek (design 2026-11-19-editor-audio-seek): a click on the waveform picks
+ * where playback is or starts. */
+TEST(audio_page_seeks_from_the_waveform)
+{
+    static i16 pcm[2000u];
+    static FakeAudioSink fake;
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    my_widget_t *wave;
+    u32 i, cursor;
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    memset(&fake, 0, sizeof(fake));
+    fake.chunk = 4096u;
+    for (i = 0u; i < 2000u; i++) pcm[i] = (i16)i;
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 2000u));
+    break_editor_shell_set_audio_sink(shell, &k_fake_sink, &fake);
+    ASSERT_TRUE(break_editor_shell_select_tab(shell, 0u, 4u));
+    shell_paint(shell);
+    break_editor_shell_tick(shell);
+    wave = find(shell, "editor-audio-waveform");
+    ASSERT_NOT_NULL(wave);
+    ASSERT_TRUE(wave->rect.w > 4);
+    ASSERT_EQ(break_editor_shell_audio_cursor_frames(shell), 0u);
+
+    /* stopped: a click at the middle only moves the cursor */
+    pointer_click(shell, wave);
+    ASSERT_FALSE(break_editor_shell_audio_playing(shell));
+    cursor = break_editor_shell_audio_cursor_frames(shell);
+    ASSERT_TRUE(cursor >= 900u && cursor <= 1100u);
+    ASSERT_EQ(fake.opens, 0u);
+    /* Play starts there */
+    ASSERT_TRUE(break_editor_shell_audio_play(shell));
+    ASSERT_EQ(fake.written, 2000u - cursor);
+    ASSERT_EQ(fake.data[0], (i16)cursor);
+    fake.played = 100u;
+    break_editor_shell_tick(shell);
+    {
+        char expect[96];
+        snprintf(expect, sizeof(expect), "8000 Hz, 1 ch, 0.250 s | %.3f / 0.250 s",
+                 (double)(cursor + 100u) / 8000.0);
+        ASSERT_STR_EQ(break_editor_shell_audio_info_text(shell), expect);
+    }
+    /* playing: a seek reopens the sink at the new frame */
+    ASSERT_TRUE(break_editor_shell_audio_seek(shell, 1500u));
+    ASSERT_TRUE(break_editor_shell_audio_playing(shell));
+    ASSERT_EQ(fake.opens, 2u);
+    ASSERT_EQ(fake.closes, 1u);
+    ASSERT_EQ(fake.written, 500u);
+    ASSERT_EQ(fake.data[0], (i16)1500);
+    /* the end by itself resets the cursor */
+    fake.played = 500u;
+    break_editor_shell_tick(shell);
+    ASSERT_FALSE(break_editor_shell_audio_playing(shell));
+    ASSERT_EQ(break_editor_shell_audio_cursor_frames(shell), 0u);
+    /* past the end clamps to the last frame */
+    ASSERT_FALSE(break_editor_shell_audio_seek(shell, 99999u));
+    ASSERT_EQ(break_editor_shell_audio_cursor_frames(shell), 1999u);
+    ASSERT_TRUE(break_editor_shell_audio_play(shell));
+    ASSERT_EQ(fake.written, 1u);
+    ASSERT_EQ(fake.data[0], (i16)1999);
+    break_editor_shell_audio_play(shell); /* stop */
+    /* Stop keeps the cursor; an edit resets it */
+    ASSERT_EQ(break_editor_shell_audio_cursor_frames(shell), 1999u);
+    ASSERT_TRUE(break_editor_doc_audio_fade(doc, 1.0, 0.0));
+    break_editor_shell_tick(shell);
+    ASSERT_EQ(break_editor_shell_audio_cursor_frames(shell), 0u);
+    shell_paint(shell);
+    break_editor_shell_destroy(shell);
+}
+
 /* The editor applies its JetBrains New UI dark sheet at shell create
  * (editor_theme.c): widgets resolve the palette through the real cascade. */
 TEST(shell_applies_the_new_ui_dark_theme)
@@ -12450,6 +12523,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(audio_page_opens_wav_assets_and_follows_edits);
     RUN_TEST(audio_page_uses_one_column_per_pixel_and_follows_the_width);
     RUN_TEST(audio_page_plays_the_attachment_through_the_sink);
+    RUN_TEST(audio_page_seeks_from_the_waveform);
     RUN_TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo);
     RUN_TEST(assets_panel_load_guards_unsaved_changes);
     RUN_TEST(palette_save_as_writes_the_typed_path);
