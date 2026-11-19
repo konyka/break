@@ -3555,28 +3555,43 @@ TEST(audio_page_selects_and_trims_or_cuts)
         ASSERT_TRUE(break_editor_undo(doc));
         break_editor_shell_set_audio_sink(shell, NULL, NULL);
     }
-    /* with a selection, Play plays only the selection and stops at its end */
+    /* with a selection, Play plays only the selection and stops at its end;
+     * the output's silent tail follows the range end, the cursor stays */
     {
         static FakeAudioSink fake;
         memset(&fake, 0, sizeof(fake));
         fake.chunk = 4096u;
-        break_editor_shell_set_audio_sink(shell, &k_fake_sink, &fake);
+        fake.tail = 8u;
+        break_editor_shell_set_audio_sink(shell, &k_fake_tail_sink, &fake);
+        ASSERT_FALSE(break_editor_shell_audio_seek(shell, 600u));
         ASSERT_TRUE(break_editor_shell_audio_select(shell, 100u, 300u));
         ASSERT_TRUE(break_editor_shell_audio_play(shell));
-        ASSERT_EQ(fake.written, 200u);
+        ASSERT_EQ(fake.written, 208u);
         ASSERT_EQ(fake.data[0], 100);
         ASSERT_EQ(fake.data[199], 299);
+        for (i = 200u; i < 208u; i++) ASSERT_EQ(fake.data[i], 0);
         fake.played = 50u;
         break_editor_shell_tick(shell);
         ASSERT_STR_EQ(break_editor_shell_audio_info_text(shell),
                       "8000 Hz, 1 ch, 0.125 s | 0.019 / 0.037 s");
-        fake.played = 200u;
+        /* a seek inside the range keeps playing to the range end */
+        ASSERT_TRUE(break_editor_shell_audio_seek(shell, 150u));
+        ASSERT_EQ(fake.written, 158u);
+        ASSERT_EQ(fake.data[0], 150);
+        fake.played = 158u;
         break_editor_shell_tick(shell);
         ASSERT_FALSE(break_editor_shell_audio_playing(shell));
+        ASSERT_EQ(break_editor_shell_audio_cursor_frames(shell), 150u);
         /* the selection stays; playing again plays it again */
         ASSERT_TRUE(break_editor_shell_audio_selection(shell, &b, &e));
         ASSERT_TRUE(break_editor_shell_audio_play(shell));
+        ASSERT_EQ(fake.opens, 3u);
+        ASSERT_EQ(fake.written, 208u);
         ASSERT_EQ(fake.data[0], 100);
+        /* a seek outside the range plays from there to the clip end */
+        ASSERT_TRUE(break_editor_shell_audio_seek(shell, 900u));
+        ASSERT_EQ(fake.written, 108u);
+        ASSERT_EQ(fake.data[0], 900);
         ASSERT_FALSE(break_editor_shell_audio_play(shell)); /* stop */
         break_editor_shell_set_audio_sink(shell, NULL, NULL);
     }

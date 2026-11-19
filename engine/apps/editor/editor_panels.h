@@ -437,6 +437,7 @@ bool break_editor_shell_audio_column(const BreakEditorShell *shell, u32 i,
 /* Preview playback (design 2026-11-19-editor-audio-preview): `sink`
  * (borrowed, NULL = none) receives the PCM; setting it stops a running
  * preview. audio_play is the page's Play/Stop button: it starts the preview
+ * (the selection only when there is one, else from the cursor)
  * (false and a console line without a sink, an attachment or when the sink
  * fails) or stops it; it returns whether it plays afterwards. */
 struct BreakEditorAudioSink;

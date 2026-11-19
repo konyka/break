@@ -19,6 +19,7 @@ struct BreakEditorAudioPreview {
     u32 tail;    /* silent frames after the clip (sink's tail_frames) */
     u32 start;   /* clip frame the copy starts at */
     u32 cursor;  /* where the next play starts */
+    bool to_clip_end; /* the playing range ends at the clip end */
     i16 *pcm;    /* BREAK_EDITOR_AUDIO_MAX_FRAMES x 2 */
 };
 
@@ -100,6 +101,7 @@ bool break_editor_audio_preview_play_range(BreakEditorAudioPreview *preview,
     preview->tail = tail;
     preview->start = start;
     preview->written = start;
+    preview->to_clip_end = frames == clip_frames;
     if (!preview->sink->open(preview->user, preview->sample_rate, channels)) {
         return false;
     }
@@ -127,7 +129,9 @@ void break_editor_audio_preview_pump(BreakEditorAudioPreview *preview) {
         u32 queued = 0u;
         if (!preview->sink->queued(preview->user, &queued) || queued <= preview->tail) {
             break_editor_audio_preview_stop(preview);
-            preview->cursor = 0u; /* played to the end: the next play starts over */
+            if (preview->to_clip_end) {
+                preview->cursor = 0u; /* played to the end: the next play starts over */
+            }
         }
     }
 }
@@ -173,6 +177,11 @@ bool break_editor_audio_preview_seek(BreakEditorAudioPreview *preview,
     }
     preview->cursor = frames == 0u ? 0u : (frame < frames ? frame : frames - 1u);
     if (preview->playing) {
+        /* inside the playing range: keep its end; outside: to the clip end */
+        const u32 end = preview->frames;
+        if (preview->cursor >= preview->start && preview->cursor < end) {
+            return break_editor_audio_preview_play_range(preview, doc, preview->cursor, end);
+        }
         return break_editor_audio_preview_play_from(preview, doc, preview->cursor);
     }
     return false;

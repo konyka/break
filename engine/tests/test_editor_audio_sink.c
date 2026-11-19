@@ -174,12 +174,25 @@ TEST(preview_plays_only_a_range_and_stops_at_its_end)
     break_editor_audio_preview_set_sink(preview, break_editor_audio_stream_sink(), &sink);
     ASSERT_FALSE(break_editor_audio_preview_play_range(preview, doc, 3000u, 4000u));
     ASSERT_FALSE(break_editor_audio_preview_play_range(preview, doc, 20u, 20u));
+    ASSERT_FALSE(break_editor_audio_preview_play_range(preview, doc, 500u, 100u));
+    /* play_from past the end clamps to the last frame */
+    ASSERT_TRUE(break_editor_audio_preview_play_from(preview, doc, 5000u));
+    ASSERT_EQ(break_editor_audio_preview_position_frames(preview), 2999u);
     ASSERT_TRUE(break_editor_audio_preview_play_range(preview, doc, 1000u, 1200u));
     ASSERT_EQ(break_editor_audio_preview_length_frames(preview), 1200u);
-    for (i = 0u; i < 100u && break_editor_audio_preview_playing(preview); i++) {
-        break_editor_audio_preview_pump(preview);
-        ASSERT_TRUE(break_editor_audio_preview_position_frames(preview) <= 1200u);
-        ASSERT_EQ(audio_system_render(as, out, 512u), AUDIO_OK);
+    {
+        /* the range at 44.1 kHz rendered at 48 kHz: everything heard lies
+         * between samples 1001 and 1200 (or silence), never past the end */
+        f32 peak = 0.0f;
+        for (i = 0u; i < 100u && break_editor_audio_preview_playing(preview); i++) {
+            break_editor_audio_preview_pump(preview);
+            ASSERT_EQ(audio_system_render(as, out, 512u), AUDIO_OK);
+            for (u32 k = 0u; k < 1024u; k++) {
+                if (out[k] > peak) peak = out[k];
+                ASSERT_TRUE(out[k] == 0.0f || (out[k] > 0.0f && out[k] <= 1200.5f / 32768.0f));
+            }
+        }
+        ASSERT_TRUE(peak > 1190.0f / 32768.0f);
     }
     ASSERT_FALSE(break_editor_audio_preview_playing(preview));
     ASSERT_TRUE(i < 100u);

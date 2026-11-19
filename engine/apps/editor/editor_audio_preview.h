@@ -48,12 +48,14 @@ bool break_editor_audio_preview_play_from(BreakEditorAudioPreview *preview,
 bool break_editor_audio_preview_play_range(BreakEditorAudioPreview *preview,
                                            const BreakEditorDoc *doc, u32 start_frame,
                                            u32 end_frame);
-/* Playing: restarts from `frame` (queued audio is dropped). Stopped: only
- * sets the cursor. Returns whether it plays afterwards. */
+/* Playing: restarts from `frame` (queued audio is dropped), to the end of
+ * the playing range when `frame` is inside it, otherwise to the clip end.
+ * Stopped: only sets the cursor. Returns whether it plays afterwards. */
 bool break_editor_audio_preview_seek(BreakEditorAudioPreview *preview,
                                      const BreakEditorDoc *doc, u32 frame);
-/* Where the next Play starts: set by a stopped seek, 0 after playback ends
- * by itself or after break_editor_audio_preview_reset_cursor. */
+/* Where the next Play starts: set by a seek, 0 after playback reaches the
+ * clip end by itself (not the end of a shorter range) or after
+ * break_editor_audio_preview_reset_cursor. */
 u32 break_editor_audio_preview_cursor_frames(const BreakEditorAudioPreview *preview);
 void break_editor_audio_preview_reset_cursor(BreakEditorAudioPreview *preview);
 /* Writes what the sink accepts; stops (closing the sink) once everything is
@@ -65,6 +67,7 @@ bool break_editor_audio_preview_playing(const BreakEditorAudioPreview *preview);
  * (written minus queued), at most the clip length; device latency is not
  * included. 0 when stopped. */
 u32 break_editor_audio_preview_position_frames(const BreakEditorAudioPreview *preview);
-/* Length and rate of the clip being played; 0 when stopped. */
+/* End frame of the range being played (the clip length for play/play_from)
+ * and the clip rate; 0 when stopped. */
 u32 break_editor_audio_preview_length_frames(const BreakEditorAudioPreview *preview);
 u32 break_editor_audio_preview_sample_rate(const BreakEditorAudioPreview *preview);
