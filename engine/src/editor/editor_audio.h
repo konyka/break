@@ -50,6 +50,12 @@ bool break_editor_doc_audio_waveform_channel(const BreakEditorDoc *doc, u32 chan
                                              u32 begin, u32 end, u32 columns,
                                              i16 *out_min, i16 *out_max);
 
+/* Largest absolute sample and RMS over frames [begin, end), across every
+ * channel, as doubles in [0, 32768]. False and nothing written for the same
+ * invalid ranges as the waveform functions. Read-only. */
+bool break_editor_doc_audio_peak_range(const BreakEditorDoc *doc, u32 begin, u32 end,
+                                       double *out_peak, double *out_rms);
+
 /* One snapshot command per successful edit; false leaves PCM/history unchanged. */
 bool break_editor_doc_audio_trim(BreakEditorDoc *doc, u32 begin, u32 end);
 bool break_editor_doc_audio_cut(BreakEditorDoc *doc, u32 begin, u32 end);

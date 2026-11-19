@@ -3839,6 +3839,78 @@ static u32 waveform_painted_rows(BreakEditorShell *shell, my_widget_t *w) {
     return rows;
 }
 
+/* dB readout (design 2026-11-19-editor-audio-db). */
+TEST(audio_page_reports_peak_and_rms_in_db)
+{
+    static i16 pcm[4000u];
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    u32 i;
+    double peak, rms;
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    ASSERT_TRUE(break_editor_shell_select_tab(shell, 0u, 4u));
+    shell_paint(shell);
+    /* no attachment: the floor */
+    ASSERT_TRUE(break_editor_shell_audio_peak_db(shell) <= -119.0);
+    ASSERT_TRUE(break_editor_shell_audio_rms_db(shell) <= -119.0);
+    /* a -6 dBFS square wave: peak and RMS both about -6 */
+    for (i = 0u; i < 4000u; i++) pcm[i] = (i16)(i % 2u == 0u ? 16384 : -16384);
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 4000u));
+    break_editor_shell_tick(shell);
+    peak = break_editor_shell_audio_peak_db(shell);
+    rms = break_editor_shell_audio_rms_db(shell);
+    ASSERT_TRUE(peak > -6.2 && peak < -5.9);
+    ASSERT_TRUE(rms > -6.2 && rms < -5.9);
+    /* the readout label carries both, and the info line is untouched. The
+     * clip is changed to one loud frame among quiet ones so peak and RMS
+     * differ and their order in the label is pinned. */
+    {
+        const my_widget_t *label = find(shell, "editor-audio-levels");
+        ASSERT_NOT_NULL(label);
+        ASSERT_STR_EQ(((const my_label_t *)label)->text, "peak -6.0 dB  rms -6.0 dB");
+        ASSERT_STR_EQ(break_editor_shell_audio_info_text(shell), "8000 Hz, 1 ch, 0.500 s");
+        ASSERT_TRUE(break_editor_doc_reset(doc));
+        for (i = 0u; i < 4000u; i++) pcm[i] = (i16)(i == 3999u ? 16384 : 328);
+        ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 4000u));
+        break_editor_shell_tick(shell);
+        /* peak -6.0 dB, RMS about -37 dB: the label must not swap them */
+        ASSERT_TRUE(break_editor_shell_audio_peak_db(shell) > -6.2);
+        ASSERT_TRUE(break_editor_shell_audio_rms_db(shell) < -30.0);
+        ASSERT_TRUE(strncmp(((const my_label_t *)label)->text, "peak -6.0 dB", 12u) == 0);
+    }
+    /* zooming into a quiet half reports that half */
+    ASSERT_TRUE(break_editor_doc_reset(doc));
+    for (i = 0u; i < 4000u; i++) {
+        const i16 amp = (i16)(i < 2000u ? 16384 : 164);
+        pcm[i] = (i16)(i % 2u == 0u ? amp : -amp);
+    }
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 4000u));
+    break_editor_shell_tick(shell);
+    ASSERT_TRUE(break_editor_shell_audio_peak_db(shell) > -6.2);
+    for (i = 0u; i < 2u; i++) (void)break_editor_shell_audio_zoom(shell, true);
+    for (i = 0u; i < 8u; i++) (void)break_editor_shell_audio_scroll(shell, true);
+    break_editor_shell_tick(shell);
+    peak = break_editor_shell_audio_peak_db(shell);
+    ASSERT_TRUE(peak < -40.0 && peak > -50.0); /* 164/32768 is about -46 dB */
+    /* a silent clip reports the floor */
+    ASSERT_TRUE(break_editor_doc_reset(doc));
+    memset(pcm, 0, sizeof(pcm));
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 4000u));
+    break_editor_shell_tick(shell);
+    ASSERT_TRUE(break_editor_shell_audio_peak_db(shell) <= -119.0);
+    ASSERT_TRUE(break_editor_shell_audio_rms_db(shell) <= -119.0);
+    /* a normalize to -1 dBFS reads back as about -1 */
+    ASSERT_TRUE(break_editor_doc_reset(doc));
+    for (i = 0u; i < 4000u; i++) pcm[i] = (i16)(i % 2u == 0u ? 1000 : -1000);
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 4000u));
+    ASSERT_TRUE(break_editor_doc_audio_normalize(doc, -1.0));
+    break_editor_shell_tick(shell);
+    peak = break_editor_shell_audio_peak_db(shell);
+    ASSERT_TRUE(peak > -1.2 && peak < -0.8);
+    break_editor_shell_destroy(shell);
+}
+
 /* Mute one channel in the preview (design 2026-11-19-editor-audio-mute). */
 TEST(audio_page_mutes_one_channel_in_the_preview)
 {
@@ -14223,6 +14295,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(audio_page_fits_the_gain_to_the_visible_peak);
     RUN_TEST(audio_page_solos_one_channel_in_the_preview);
     RUN_TEST(audio_page_mutes_one_channel_in_the_preview);
+    RUN_TEST(audio_page_reports_peak_and_rms_in_db);
     RUN_TEST(audio_page_zooms_and_scrolls_the_view);
     RUN_TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo);
     RUN_TEST(assets_panel_load_guards_unsaved_changes);

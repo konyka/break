@@ -693,7 +693,64 @@ TEST(waveform_channel_reports_one_channel_at_a_time)
     break_editor_doc_destroy(doc);
 }
 
+/* Peak and RMS (design 2026-11-19-editor-audio-db). */
+TEST(peak_range_reports_peak_and_rms)
+{
+    static i16 pcm[400u];
+    double peak = -1.0, rms = -1.0;
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    /* a full-scale square wave: peak and RMS are both the amplitude */
+    for (u32 i = 0u; i < 400u; ++i) pcm[i] = (i16)(i % 2u == 0u ? 32767 : -32767);
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 400u));
+    ASSERT_TRUE(break_editor_doc_audio_peak_range(doc, 0u, 400u, &peak, &rms));
+    ASSERT_TRUE(peak > 32766.0 && peak < 32768.0);
+    ASSERT_TRUE(rms > 32766.0 && rms < 32768.0);
+    /* half the amplitude: both halve */
+    break_editor_doc_reset(doc);
+    for (u32 i = 0u; i < 400u; ++i) pcm[i] = (i16)(i % 2u == 0u ? 16384 : -16384);
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 400u));
+    ASSERT_TRUE(break_editor_doc_audio_peak_range(doc, 0u, 400u, &peak, &rms));
+    ASSERT_TRUE(peak > 16383.0 && peak < 16385.0);
+    ASSERT_TRUE(rms > 16383.0 && rms < 16385.0);
+    /* RMS is below the peak for anything but a square wave, and the peak
+     * is not the first sample: 399 quiet frames then one loud one */
+    break_editor_doc_reset(doc);
+    for (u32 i = 0u; i < 400u; ++i) pcm[i] = (i16)(i == 399u ? 30000 : 300);
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 400u));
+    ASSERT_TRUE(break_editor_doc_audio_peak_range(doc, 0u, 400u, &peak, &rms));
+    ASSERT_TRUE(peak > 29999.0 && peak < 30001.0);
+    /* sqrt((399*300^2 + 30000^2)/400) is about 1543 */
+    ASSERT_TRUE(rms > 1500.0 && rms < 1590.0);
+    ASSERT_TRUE(rms < peak / 10.0);
+    /* a sub-range sees only its own samples */
+    break_editor_doc_reset(doc);
+    for (u32 i = 0u; i < 400u; ++i) pcm[i] = (i16)(i < 200u ? 20000 : 100);
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 400u));
+    ASSERT_TRUE(break_editor_doc_audio_peak_range(doc, 200u, 400u, &peak, &rms));
+    ASSERT_TRUE(peak > 99.0 && peak < 101.0);
+    ASSERT_TRUE(rms > 99.0 && rms < 101.0);
+    ASSERT_TRUE(break_editor_doc_audio_peak_range(doc, 0u, 200u, &peak, &rms));
+    ASSERT_TRUE(peak > 19999.0 && peak < 20001.0);
+    /* a silent clip is 0, not an error */
+    break_editor_doc_reset(doc);
+    memset(pcm, 0, sizeof(pcm));
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 400u));
+    ASSERT_TRUE(break_editor_doc_audio_peak_range(doc, 0u, 400u, &peak, &rms));
+    ASSERT_EQ((int)peak, 0);
+    ASSERT_EQ((int)rms, 0);
+    /* invalid ranges write nothing */
+    peak = rms = -1.0;
+    ASSERT_TRUE(!break_editor_doc_audio_peak_range(doc, 10u, 10u, &peak, &rms));
+    ASSERT_TRUE(!break_editor_doc_audio_peak_range(doc, 0u, 401u, &peak, &rms));
+    ASSERT_TRUE(!break_editor_doc_audio_peak_range(NULL, 0u, 10u, &peak, &rms));
+    ASSERT_EQ((int)peak, -1);
+    ASSERT_EQ((int)rms, -1);
+    break_editor_doc_destroy(doc);
+}
+
 TEST_MAIN_BEGIN()
+    RUN_TEST(peak_range_reports_peak_and_rms);
     RUN_TEST(waveform_channel_reports_one_channel_at_a_time);
     RUN_TEST(waveform_range_matches_a_manual_min_max);
     RUN_TEST(fade_and_normalize_ranges_change_only_the_range);

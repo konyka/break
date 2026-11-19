@@ -1,3 +1,11 @@
+## 编辑器音频电平读数（dBFS）（2026-11-19）
+
+- **交付**：核心新增 `break_editor_doc_audio_peak_range(doc, begin, end, out_peak, out_rms)`，一次遍历给出 `[begin, end)` 内所有声道的最大绝对值与 RMS（均为 [0, 32768] 的 double，全程 double 累加）；非法范围返回 false 且不写出参。音频页视图行新增 `editor-audio-levels` 标签，显示当前视图的 "peak x.x dB  rms y.y dB"，随信息行一起刷新，因此缩放到安静段落后读数随之变化；数字静音与无附件都按 -120 dB 地板处理。shell 新增 `break_editor_shell_audio_peak_db`、`break_editor_shell_audio_rms_db`。设计与计划见 `docs/superpowers/specs/2026-11-19-editor-audio-db-design.md`、`docs/superpowers/plans/2026-11-19-editor-audio-db.md`。
+- **TDD**：核心与 shell 各一个新用例，先失败再通过，`test_editor_audio` 15/15、`test_editor_shell` 226/226。5 个变异全部判红：RMS 用峰值代替、峰值扫描只保留第一个采样、dB 系数 20 改成 10、电平按整段而不是视图统计、标签里两个数字互换。
+- **设计调整**：读数没有追加到信息行——那样会破坏四个逐字比较信息行的既有用例（如 "8000 Hz, 2 ch, 0.050 s"）；改为单独的标签后信息行仍然就是其格式串本身。
+- **测试数据两点**：方波的 RMS 等于峰值且峰值落在第一个采样，两个变异因此最初存活；核心与面板用例都补了“大量安静帧中一帧响亮”的素材，把两个数字分开并把峰值移离首样本。`audio_db_of` 的 `value <= 0.0` 守卫无法用变异钉住（`log10(0)` 是 -inf，地板比较本就会映射到 -120），它的作用是避免触发 `FE_DIVBYZERO`，注释已说明。
+- **边界**：没有真峰值（过采样）测量、没有 LUFS 等加权响度、没有分声道读数，波形上也没有 dB 网格。
+
 ## 编辑器音频分声道静音（2026-11-19）
 
 - **交付**：预览新增 `break_editor_audio_preview_set_mute`/`_mute`（`BREAK_EDITOR_AUDIO_MUTE_NONE` 为默认的不静音）。设置静音声道后，下一次 Play 取的副本把该声道清零、其余声道原样保留，声道数与位置映射不变；声道号超出素材声道数时忽略。独奏已经把所有声道替换成同一个，因此独奏生效时不再应用静音（两个字段独立保存，只是应用有先后）。音频页视图行新增 `editor-audio-mute` 按钮，循环方式与独奏一致，标签 Mute/Mute L/Mute R/Mute 1（中文 静音/静音左/静音右/静音 1）；附件变化时重置。shell 新增 `break_editor_shell_audio_set_mute`、`break_editor_shell_audio_mute`。设计与计划见 `docs/superpowers/specs/2026-11-19-editor-audio-mute-design.md`、`docs/superpowers/plans/2026-11-19-editor-audio-mute.md`。

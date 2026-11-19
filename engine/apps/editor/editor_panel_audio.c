@@ -38,6 +38,7 @@
 #include <editor/editor_audio.h>
 #include <editor/editor_i18n.h>
 
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -78,6 +79,7 @@ struct EditorPanelAudio {
     my_widget_t *gain_down;   /* weak */
     my_widget_t *solo;        /* weak */
     my_widget_t *mute;        /* weak */
+    my_widget_t *levels;      /* weak: the peak/RMS readout */
     u32 gain;                 /* display-only amplitude multiplier */
     bool following;           /* the view chases the playing position */
     u32 view_begin, view_end; /* visible [begin, end) frames; empty = whole clip */
@@ -99,6 +101,8 @@ struct EditorPanelAudio {
 };
 
 static void audio_panel_label_solo(EditorPanelAudio *panel);
+static bool audio_panel_levels(const EditorPanelAudio *panel, double *out_peak,
+                               double *out_rms);
 
 static void audio_panel_format_info(EditorPanelAudio *panel) {
     const BreakEditorDoc *doc = break_editor_shell_doc(panel->shell);
@@ -173,6 +177,19 @@ static void audio_panel_format_info(EditorPanelAudio *panel) {
         (void)my_checkbox_set_text(panel->follow, break_editor_tr(BREAK_EDITOR_TR_AUDIO_FOLLOW));
     }
     audio_panel_label_solo(panel);
+    if (panel->levels != NULL) {
+        /* the level readout lives on its own label, so the info line stays
+         * exactly what the format string says */
+        double peak_db, rms_db;
+        char text[64];
+        if (audio_panel_levels(panel, &peak_db, &rms_db)) {
+            (void)snprintf(text, sizeof(text), "peak %.1f dB  rms %.1f dB", peak_db,
+                           rms_db);
+        } else {
+            text[0] = '\0';
+        }
+        (void)my_label_set_text(panel->levels, text);
+    }
 }
 
 /* The visible range. A zero-length stored view (a fresh panel, or one whose
@@ -856,6 +873,47 @@ static void audio_panel_label_solo(EditorPanelAudio *panel) {
                               BREAK_EDITOR_TR_AUDIO_MUTE_FMT);
 }
 
+/* 20*log10(value/32768), floored so digital silence is a number. The zero
+ * check is for the FE_DIVBYZERO flag log10(0) would raise; the floor
+ * comparison below would catch the resulting -inf by itself. */
+static double audio_db_of(double value) {
+    if (value <= 0.0) {
+        return BREAK_EDITOR_AUDIO_DB_FLOOR;
+    }
+    const double db = 20.0 * log10(value / 32768.0);
+    return db > BREAK_EDITOR_AUDIO_DB_FLOOR ? db : BREAK_EDITOR_AUDIO_DB_FLOOR;
+}
+
+/* Peak and RMS of the visible range; false leaves both at the floor. */
+static bool audio_panel_levels(const EditorPanelAudio *panel, double *out_peak,
+                               double *out_rms) {
+    *out_peak = *out_rms = BREAK_EDITOR_AUDIO_DB_FLOOR;
+    if (panel == NULL) {
+        return false;
+    }
+    double peak = 0.0, rms = 0.0;
+    if (!break_editor_doc_audio_peak_range(break_editor_shell_doc(panel->shell),
+                                           audio_view_begin(panel), audio_view_end(panel),
+                                           &peak, &rms)) {
+        return false;
+    }
+    *out_peak = audio_db_of(peak);
+    *out_rms = audio_db_of(rms);
+    return true;
+}
+
+double editor_panel_audio_peak_db(const EditorPanelAudio *panel) {
+    double peak, rms;
+    (void)audio_panel_levels(panel, &peak, &rms);
+    return peak;
+}
+
+double editor_panel_audio_rms_db(const EditorPanelAudio *panel) {
+    double peak, rms;
+    (void)audio_panel_levels(panel, &peak, &rms);
+    return rms;
+}
+
 u32 editor_panel_audio_set_mute(EditorPanelAudio *panel, u32 channel) {
     if (panel == NULL) {
         return BREAK_EDITOR_AUDIO_MUTE_NONE;
@@ -1262,7 +1320,7 @@ static bool audio_panel_add(my_widget_t *parent, my_widget_t *child, const char 
 bool editor_panel_audio_build(EditorPanelAudio *panel, my_widget_t *parent) {
     my_widget_t *section, *bar, *info, *play, *trim, *cut, *fade, *normalize, *loop, *ruler,
         *waveform, *view_bar, *zoom_in, *zoom_out, *scroll_left, *scroll_right,
-        *follow_box, *scrollbar, *gain_up, *gain_down, *gain_fit, *solo_btn, *mute_btn;
+        *follow_box, *scrollbar, *gain_up, *gain_down, *gain_fit, *solo_btn, *mute_btn, *levels_label;
     if (panel == NULL || parent == NULL) {
         return false;
     }
@@ -1440,11 +1498,24 @@ bool editor_panel_audio_build(EditorPanelAudio *panel, my_widget_t *parent) {
     }
     (void)my_widget_set_name(mute_btn, "editor-audio-mute");
     (void)my_widget_on(mute_btn, "click", on_audio_mute_click, panel);
+    levels_label = my_label_create(NULL, "");
+    if (levels_label == NULL) {
+        my_widget_unref(gain_down);
+        my_widget_unref(gain_up);
+        my_widget_unref(gain_fit);
+        my_widget_unref(solo_btn);
+        my_widget_unref(mute_btn);
+        my_widget_unref(section);
+        return false;
+    }
+    (void)my_widget_set_name(levels_label, "editor-audio-levels");
+    (void)my_label_set_align(levels_label, MY_TEXT_ALIGN_LEFT);
     if (!audio_panel_add(view_bar, gain_down, "w:26 h:100%") ||
         !audio_panel_add(view_bar, gain_up, "w:26 h:100%") ||
         !audio_panel_add(view_bar, gain_fit, "w:26 h:100%") ||
         !audio_panel_add(view_bar, solo_btn, "w:70 h:100%") ||
-        !audio_panel_add(view_bar, mute_btn, "w:75 h:100%")) {
+        !audio_panel_add(view_bar, mute_btn, "w:75 h:100%") ||
+        !audio_panel_add(view_bar, levels_label, "w:1f h:100%")) {
         my_widget_unref(section);
         return false;
     }
@@ -1522,6 +1593,7 @@ bool editor_panel_audio_build(EditorPanelAudio *panel, my_widget_t *parent) {
     panel->gain_down = gain_down;
     panel->solo = solo_btn;
     panel->mute = mute_btn;
+    panel->levels = levels_label;
     panel->waveform = waveform;
     panel->ruler = ruler;
     panel->fresh = false;

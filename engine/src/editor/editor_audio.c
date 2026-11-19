@@ -132,6 +132,31 @@ bool break_editor_doc_audio_waveform_channel(const BreakEditorDoc *doc, u32 chan
            audio_waveform_impl(doc, channel, begin, end, columns, out_min, out_max);
 }
 
+bool break_editor_doc_audio_peak_range(const BreakEditorDoc *doc, u32 begin, u32 end,
+                                       double *out_peak, double *out_rms) {
+    if (!doc || !doc->audio || !out_peak || !out_rms || begin >= end ||
+        end > doc->audio->frames) {
+        return false;
+    }
+    const BreakEditorAudioState *audio = doc->audio;
+    const i16 *sample = audio->samples + (usize)begin * audio->channels;
+    const i16 *stop = audio->samples + (usize)end * audio->channels;
+    const usize count = (usize)(end - begin) * audio->channels;
+    double peak = 0.0, sum = 0.0;
+    for (; sample < stop; ++sample) {
+        /* in double throughout: a long range would overflow an i64 of
+         * squared samples only past ~8e9 frames, but the mean needs the
+         * division anyway */
+        const double value = (double)*sample;
+        const double magnitude = value < 0.0 ? -value : value;
+        if (magnitude > peak) peak = magnitude;
+        sum += value * value;
+    }
+    *out_peak = peak;
+    *out_rms = count != 0u ? sqrt(sum / (double)count) : 0.0;
+    return true;
+}
+
 void break_editor_audio_detach(BreakEditorDoc *doc) {
     if (!doc || !doc->audio) return;
     free(doc->audio->samples);

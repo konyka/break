@@ -4265,6 +4265,16 @@ bool break_editor_shell_audio_view(const BreakEditorShell *shell, u32 *out_begin
     return shell != NULL && editor_panel_audio_view(shell->audio_panel, out_begin, out_end);
 }
 
+double break_editor_shell_audio_peak_db(const BreakEditorShell *shell) {
+    return shell != NULL ? editor_panel_audio_peak_db(shell->audio_panel)
+                         : BREAK_EDITOR_AUDIO_DB_FLOOR;
+}
+
+double break_editor_shell_audio_rms_db(const BreakEditorShell *shell) {
+    return shell != NULL ? editor_panel_audio_rms_db(shell->audio_panel)
+                         : BREAK_EDITOR_AUDIO_DB_FLOOR;
+}
+
 u32 break_editor_shell_audio_set_mute(BreakEditorShell *shell, u32 channel) {
     return shell != NULL ? editor_panel_audio_set_mute(shell->audio_panel, channel)
                          : BREAK_EDITOR_AUDIO_MUTE_NONE;

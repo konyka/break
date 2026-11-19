@@ -500,6 +500,12 @@ u32 break_editor_shell_audio_set_solo(BreakEditorShell *shell, u32 channel);
 u32 break_editor_shell_audio_solo(const BreakEditorShell *shell);
 /* Mute of the Audio page's preview (design 2026-11-19-editor-audio-mute):
  * that channel is silent and the others stay put. A solo in effect wins. */
+/* Peak and RMS of the current view in dBFS (design
+ * 2026-11-19-editor-audio-db); digital silence and no attachment both
+ * report this floor. */
+#define BREAK_EDITOR_AUDIO_DB_FLOOR (-120.0)
+double break_editor_shell_audio_peak_db(const BreakEditorShell *shell);
+double break_editor_shell_audio_rms_db(const BreakEditorShell *shell);
 u32 break_editor_shell_audio_set_mute(BreakEditorShell *shell, u32 channel);
 u32 break_editor_shell_audio_mute(const BreakEditorShell *shell);
 u32 break_editor_shell_audio_lane_count(const BreakEditorShell *shell);
