@@ -1,3 +1,10 @@
+## 编辑器音频键盘缩放与滚动（2026-11-19）
+
+- **交付**：波形控件改为可获得焦点（`focusable = true`），主键按下即取得键盘焦点；持有焦点时处理 `MY_EVENT_KEY_DOWN`：`+`/`=` 放大、`-` 缩小（以视图中心）、左右方向键按四分之一平移、`Home` 回到整段。命中的键会被消费，因此不会同时触发 shell 的全局快捷键（`Home` 不再重置 3D 相机）；没有附件时一个键都不消费，仍交给 shell。设计与计划见 `docs/superpowers/specs/2026-11-19-editor-audio-keys-design.md`、`docs/superpowers/plans/2026-11-19-editor-audio-keys.md`。
+- **TDD**：新用例先在不可获焦的实现上失败再通过，`test_editor_shell` 219/219。5 个变异全部判红：控件不可获焦、`+`/`-` 互换、左右方向键互换、键分支返回不消费、去掉无附件守卫。
+- **已核对**：`my_event_dispatch` 只有 vtable 的 `on_event` 消费才返回 true，shell 的快捷键挂在根控件的 emitter 监听上，不算消费，因此断言检查的是效果（工具标签、相机距离）而非返回值；shell 的大纲行走用的是上下键而非左右键，所以用例改为把焦点移开波形后验证上键走大纲且视图不动、`+` 不再缩放。
+- **边界**：没有滚动条控件、逐帧平滑滚动和可重绑定按键。
+
 ## 编辑器音频滚轮缩放与跟随播放头（2026-11-19）
 
 - **交付**：波形控件处理 `MY_EVENT_POINTER_WHEEL`：向上滚放大、向下滚缩小，每行一步，指针下的帧在视图中的比例位置保持不变（新增 `editor_panel_audio_zoom_at(panel, in, anchor)`，按钮用的 `editor_panel_audio_zoom` 以视图中心转发给它）；按住 Shift 滚动则平移视图（向下为前进），仍是视图长度的四分之一。视图行新增“跟随/Follow”复选框 `editor-audio-follow`（默认关闭）：开启且正在播放时，每次 tick 把视图按自身长度整段前跳或后跳，直到播放位置落在视图内，覆盖整段的视图自然不动。shell 新增 `break_editor_shell_audio_set_follow`、`break_editor_shell_audio_follow`。设计与计划见 `docs/superpowers/specs/2026-11-19-editor-audio-wheel-design.md`、`docs/superpowers/plans/2026-11-19-editor-audio-wheel.md`。

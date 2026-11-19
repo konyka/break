@@ -291,6 +291,44 @@ static bool audio_has_grab(const EditorPanelAudio *panel, const my_widget_t *wid
     return window != NULL && window->dispatcher.grabbed == widget;
 }
 
+static bool audio_view_set(EditorPanelAudio *panel, u32 begin, u32 end);
+
+/* View keys, only while the waveform holds the focus (the dispatcher routes
+ * key events there): +/= zoom in, - zooms out, the arrows scroll, Home shows
+ * the whole clip. A handled key is consumed so it does not also reach the
+ * shell's global shortcuts. */
+static bool audio_waveform_on_key(EditorPanelAudio *panel, const my_event_t *event) {
+    if (panel == NULL) {
+        return false;
+    }
+    audio_panel_catch_up(panel);
+    if (break_editor_doc_audio_frames(break_editor_shell_doc(panel->shell)) == 0u) {
+        return false; /* nothing to look at: leave the keys to the shell */
+    }
+    switch (event->u.key.key) {
+    case '+':
+    case '=':
+        (void)editor_panel_audio_zoom(panel, true);
+        return true;
+    case '-':
+        (void)editor_panel_audio_zoom(panel, false);
+        return true;
+    case MY_KEY_LEFT:
+        (void)editor_panel_audio_scroll(panel, false);
+        return true;
+    case MY_KEY_RIGHT:
+        (void)editor_panel_audio_scroll(panel, true);
+        return true;
+    case MY_KEY_HOME:
+        (void)audio_view_set(panel, 0u,
+                             break_editor_doc_audio_frames(
+                                 break_editor_shell_doc(panel->shell)));
+        return true;
+    default:
+        return false;
+    }
+}
+
 /* The frame under the pointer, through the view. */
 static u32 audio_frame_at_pointer(const EditorPanelAudio *panel, const my_widget_t *widget,
                                   const my_event_t *event) {
@@ -344,10 +382,15 @@ static my_ret_t audio_waveform_on_event(my_widget_t *widget, const my_event_t *e
      * them, so a non-primary one would otherwise leave the drag live */
     const bool release = event != NULL && event->type == MY_EVENT_POINTER_UP;
     const bool wheel = event != NULL && event->type == MY_EVENT_POINTER_WHEEL;
-    if (widget == NULL || (!press && !move && !release && !wheel) || widget->rect.w <= 0) {
+    const bool key = event != NULL && event->type == MY_EVENT_KEY_DOWN;
+    if (widget == NULL || (!press && !move && !release && !wheel && !key) ||
+        widget->rect.w <= 0) {
         return MY_RET_FAIL;
     }
     panel = (EditorPanelAudio *)my_widget_get_user_data(widget);
+    if (key) {
+        return audio_waveform_on_key(panel, event) ? MY_RET_OK : MY_RET_FAIL;
+    }
     if (wheel) {
         return audio_waveform_on_wheel(panel, widget, event) ? MY_RET_OK : MY_RET_FAIL;
     }
@@ -1120,6 +1163,8 @@ bool editor_panel_audio_build(EditorPanelAudio *panel, my_widget_t *parent) {
     }
     (void)my_widget_set_name(waveform, "editor-audio-waveform");
     (void)my_widget_set_user_data(waveform, panel);
+    /* a press focuses it, which scopes the view keys to this page */
+    waveform->focusable = true;
     if (!audio_panel_add(section, waveform, "w:100% h:1f")) {
         my_widget_unref(section);
         return false;

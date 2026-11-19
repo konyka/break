@@ -3800,6 +3800,109 @@ TEST(audio_page_zooms_with_the_wheel_around_the_pointer)
     break_editor_shell_destroy(shell);
 }
 
+static bool key_to_window(BreakEditorShell *shell, u32 key, u8 mods) {
+    my_window_t *win = break_editor_shell_window(shell);
+    my_event_t ev = my_event_init(MY_EVENT_KEY_DOWN);
+    ev.u.key.key = key;
+    ev.u.key.modifiers = mods;
+    return my_event_dispatch(&win->dispatcher, &ev);
+}
+
+/* Keyboard zoom and scroll (design 2026-11-19-editor-audio-keys). */
+TEST(audio_page_zooms_and_scrolls_from_the_keyboard)
+{
+    static i16 pcm[4000u];
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    my_window_t *win;
+    my_widget_t *wave;
+    BreakEditorCamera *cam;
+    u32 b = 0u, e = 0u, i;
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    win = break_editor_shell_window(shell);
+    cam = break_editor_shell_camera(shell);
+    for (i = 0u; i < 4000u; i++) pcm[i] = (i16)(i % 100u);
+    ASSERT_TRUE(break_editor_shell_select_tab(shell, 0u, 4u));
+    shell_paint(shell);
+    wave = find(shell, "editor-audio-waveform");
+    ASSERT_NOT_NULL(wave);
+    /* without an attachment the keys are not consumed: Home reaches the
+     * shell (an emitter listener, so the dispatch itself reports nothing)
+     * and resets the camera */
+    pointer_press_at(shell, wave, 10, 0u);
+    cam->distance = 42.0f;
+    ASSERT_FALSE(key_to_window(shell, MY_KEY_HOME, 0u));
+    ASSERT_TRUE(cam->distance != 42.0f);
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 4000u));
+    break_editor_shell_tick(shell);
+    /* a press on the waveform focuses it */
+    pointer_press_at(shell, wave, 10, 0u);
+    ASSERT_EQ(win->dispatcher.focused, wave);
+    /* '+' halves the view around its centre, '-' restores it */
+    ASSERT_TRUE(key_to_window(shell, '+', 0u));
+    ASSERT_TRUE(break_editor_shell_audio_view(shell, &b, &e));
+    ASSERT_EQ(b, 1000u);
+    ASSERT_EQ(e, 3000u);
+    ASSERT_TRUE(key_to_window(shell, '=', 0u)); /* the unshifted plus key */
+
+    ASSERT_TRUE(break_editor_shell_audio_view(shell, &b, &e));
+    ASSERT_EQ(e - b, 1000u);
+    ASSERT_TRUE(key_to_window(shell, '-', 0u));
+    ASSERT_TRUE(break_editor_shell_audio_view(shell, &b, &e));
+    ASSERT_EQ(e - b, 2000u);
+    /* the arrows scroll by a quarter and clamp at the ends */
+    {
+        const u32 was = b;
+        ASSERT_TRUE(key_to_window(shell, MY_KEY_RIGHT, 0u));
+        ASSERT_TRUE(break_editor_shell_audio_view(shell, &b, &e));
+        ASSERT_EQ(b, was + 500u);
+        ASSERT_TRUE(key_to_window(shell, MY_KEY_LEFT, 0u));
+        ASSERT_TRUE(break_editor_shell_audio_view(shell, &b, &e));
+        ASSERT_EQ(b, was);
+    }
+    for (i = 0u; i < 8u; i++) (void)key_to_window(shell, MY_KEY_RIGHT, 0u);
+    ASSERT_TRUE(break_editor_shell_audio_view(shell, &b, &e));
+    ASSERT_EQ(e, 4000u);
+    ASSERT_EQ(e - b, 2000u);
+    /* the keys are scoped to the focus: with the outliner focused, the
+     * arrows move its selection and leave the view alone */
+    {
+        BreakEditorEntityId was_sel;
+        u32 b2 = 0u, e2 = 0u;
+        (void)break_editor_doc_add_entity(doc, "a");
+        (void)break_editor_doc_add_entity(doc, "z");
+        break_editor_shell_tick(shell);
+        ASSERT_TRUE(break_editor_shell_select_index(shell, 1u));
+        was_sel = break_editor_shell_selected(shell);
+        /* move the focus off the waveform; the root is focusable and is
+         * where the shell's own key listener lives */
+        win->dispatcher.focused = break_editor_shell_root(shell);
+        (void)key_to_window(shell, MY_KEY_UP, 0u);
+        ASSERT_FALSE(break_editor_entity_id_eq(break_editor_shell_selected(shell), was_sel));
+        ASSERT_TRUE(break_editor_shell_audio_view(shell, &b2, &e2));
+        ASSERT_EQ(b2, b);
+        ASSERT_EQ(e2, e);
+        (void)key_to_window(shell, '+', 0u); /* unfocused: no zoom */
+        ASSERT_TRUE(break_editor_shell_audio_view(shell, &b2, &e2));
+        ASSERT_EQ(e2 - b2, 2000u);
+        pointer_press_at(shell, wave, 10, 0u); /* focus it again */
+    }
+    /* Home returns the whole clip and does not reset the camera */
+    cam->distance = 42.0f;
+    ASSERT_TRUE(key_to_window(shell, MY_KEY_HOME, 0u));
+    ASSERT_TRUE(break_editor_shell_audio_view(shell, &b, &e));
+    ASSERT_EQ(b, 0u);
+    ASSERT_EQ(e, 4000u);
+    ASSERT_EQ(cam->distance, 42.0f);
+    /* an unhandled key still bubbles to the shell's shortcuts */
+    ASSERT_FALSE(key_to_window(shell, 'w', 0u)); /* not consumed here */
+    ASSERT_STR_EQ(break_editor_shell_tool_text(shell), "Tool: Translate");
+    (void)key_to_window(shell, 'q', 0u);
+    ASSERT_STR_EQ(break_editor_shell_tool_text(shell), "Tool: Select");
+    break_editor_shell_destroy(shell);
+}
+
 /* Follow the playing position (design 2026-11-19-editor-audio-wheel). */
 TEST(audio_page_follows_the_playing_position)
 {
@@ -13575,6 +13678,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(audio_page_loops_the_playing_range);
     RUN_TEST(audio_page_zooms_with_the_wheel_around_the_pointer);
     RUN_TEST(audio_page_follows_the_playing_position);
+    RUN_TEST(audio_page_zooms_and_scrolls_from_the_keyboard);
     RUN_TEST(audio_page_zooms_and_scrolls_the_view);
     RUN_TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo);
     RUN_TEST(assets_panel_load_guards_unsaved_changes);
