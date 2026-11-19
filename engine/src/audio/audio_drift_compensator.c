@@ -74,15 +74,17 @@ bool audio_drift_compensator_update(AudioDriftCompensator *comp) {
             : audio_drift_estimator_estimate(comp->estimator, &drift_ppm, &correlation);
     if (!estimated) return false;
     double ratio = comp->resampler.ratio * (1.0 - comp->gain * drift_ppm * 1e-6);
-    if (!isfinite(ratio)) return false;
+    bool limited = false;
     if (ratio > 1.0 + comp->max_correction) {
         ratio = 1.0 + comp->max_correction;
-        comp->clamped++;
+        limited = true;
     } else if (ratio < 1.0 - comp->max_correction) {
         ratio = 1.0 - comp->max_correction;
-        comp->clamped++;
+        limited = true;
     }
-    if (audio_drift_resampler_set_ratio(&comp->resampler, ratio) != AUDIO_OK) return false;
+    /* the estimate is bounded and the limit is at most 1%: always in range */
+    (void)audio_drift_resampler_set_ratio(&comp->resampler, ratio);
+    if (limited) comp->clamped++;
     /* the residual slope changes with the ratio: older measurements are stale */
     audio_drift_estimator_reset(comp->estimator);
     comp->corrections++;

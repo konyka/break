@@ -22,7 +22,7 @@ current ratio and a measured residual slope, the ratio that removes it is
 
 `engine/src/audio/audio_drift_compensator.{h,c}`, compiled into the audio
 library next to the estimator and resampler. Mono, owner thread, only create
-allocates (through the estimator).
+allocates (the compensator struct and the estimator).
 
 ```c
 typedef struct {
@@ -56,9 +56,9 @@ Errors: INVALID for NULL or out-of-range config, OVERLOAD when memory runs out;
 
 1. Config validation, NULL handling, initial state (ratio 1, no corrections).
 2. Closed loop on the delay model: a true drift of +100 ppm, measurements
-   computed from the residual slope of the current ratio; after a few updates
+   computed from the residual slope of the current ratio; after 24 half-gain updates
    the ratio is `1 - 100e-6` within 1e-7 and the correction is 100 ppm.
-3. Clamp: +500 ppm with a 200 ppm limit stops at `1 - 200e-6` and counts
+3. Clamp: ±500 ppm with a 300 ppm limit stops at `1 ∓ 300e-6` and counts
    `clamped`.
 4. Too few or low-confidence measurements: `update` is false and the ratio
    does not move.
@@ -75,3 +75,4 @@ the compensator, real device validation.
 
 - RED (stub: 0/6) then GREEN (6/6) in `test_audio_drift_compensator`.
 - Mutations: ratio sign flipped; upper clamp removed (survived at first, killed after a negative-drift clamp case was added); lower clamp removed; window not cleared after a correction; reset keeping the ratio; `min_samples` ignored. Each fails a test.
+- Review (Ready, no Critical). Important: the model tests share the residual-slope formula with the implementation, so a sign error in both would pass. Fixed with an end-to-end test: a noise reference through the compensator, a capture on a drifting clock, `audio_delay_estimator_estimate_subframe` as the measurement, ±100/−150 ppm at gain 1 and 0.5 converge within 1e-6; the sign mutation fails it on its own. Minor fixes: `clamped` counted only after the ratio is applied (the unreachable `set_ratio` failure path removed), the measurement sign and frame timeline documented in the header together with skipping the first measurement after an update, an estimate-failure test (8 tests total), spec test wording corrected. Seven mutations (adds `clamped` not counted) each fail a test.

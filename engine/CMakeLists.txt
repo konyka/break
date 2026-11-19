@@ -7310,7 +7310,8 @@ endif()
 
     add_executable(test_audio_drift_compensator tests/test_audio_drift_compensator.c
         src/audio/audio_drift_compensator.c src/audio/audio_drift_resampler.c
-        src/audio/audio_drift_estimator.c)
+        src/audio/audio_drift_estimator.c src/audio/audio_delay_estimator.c
+        src/audio/audio_echo_canceller.c)
     target_include_directories(test_audio_drift_compensator PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_audio_drift_compensator PRIVATE m)
     add_test(NAME test_audio_drift_compensator COMMAND test_audio_drift_compensator)

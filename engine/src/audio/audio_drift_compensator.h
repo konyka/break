@@ -26,8 +26,12 @@ void audio_drift_compensator_destroy(AudioDriftCompensator *comp); /* NULL is a 
 /* Ratio back to 1, estimator window and resampler position cleared; the
  * corrections and clamped counters are kept. */
 void audio_drift_compensator_reset(AudioDriftCompensator *comp);
-/* One delay measurement of the resampled reference against the capture.
- * False when the estimator refuses it (see audio_drift_estimator_push). */
+/* One delay measurement of the resampled reference against the capture:
+ * positive when the capture trails the reference (audio_delay_estimator's
+ * sign), frame_index counting capture frames. False when the estimator
+ * refuses it (see audio_drift_estimator_push). The first measurement after
+ * an update still covers samples resampled with the old ratio; skipping it
+ * removes that bias. */
 bool audio_drift_compensator_observe(AudioDriftCompensator *comp, u64 frame_index,
                                      double delay_frames, double correlation);
 /* With at least min_samples measurements and a successful estimate, sets
