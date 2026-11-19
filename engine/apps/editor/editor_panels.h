@@ -527,6 +527,10 @@ double break_editor_shell_audio_peak_db(const BreakEditorShell *shell);
  * the signal reconstructed at 4x, so an intersample peak above full scale
  * reads as a positive number and is deliberately not clamped. */
 double break_editor_shell_audio_true_peak_db(const BreakEditorShell *shell);
+/* The view's integrated loudness in LUFS (design
+ * 2026-11-20-editor-audio-lufs); the -70 floor when the view is shorter
+ * than one 400 ms block or silent. */
+double break_editor_shell_audio_lufs(const BreakEditorShell *shell);
 double break_editor_shell_audio_rms_db(const BreakEditorShell *shell);
 u32 break_editor_shell_audio_set_mute(BreakEditorShell *shell, u32 channel);
 u32 break_editor_shell_audio_mute(const BreakEditorShell *shell);

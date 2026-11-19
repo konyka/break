@@ -4178,12 +4178,26 @@ TEST(audio_page_reports_peak_and_rms_in_db)
         ASSERT_NOT_NULL(label);
         ASSERT_TRUE(tp >= peak - 0.1);
         ASSERT_TRUE(strstr(((const my_label_t *)label)->text, "tp ") != NULL);
+        /* the loudness needs a 400 ms view: 4000 frames at 8 kHz is 500 ms,
+         * so this clip has a figure and the label names it
+         * (design 2026-11-20-editor-audio-lufs) */
+        ASSERT_TRUE(break_editor_shell_audio_lufs(shell) > BREAK_EDITOR_AUDIO_LUFS_FLOOR);
+        ASSERT_TRUE(strstr(((const my_label_t *)label)->text, "lufs ") != NULL);
+        /* a 100 ms clip is too short: the floor, and no "lufs" in the label */
+        ASSERT_TRUE(break_editor_doc_reset(doc));
+        ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 800u));
+        break_editor_shell_tick(shell);
+        ASSERT_TRUE(break_editor_shell_audio_lufs(shell) <=
+                    BREAK_EDITOR_AUDIO_LUFS_FLOOR + 0.001);
+        ASSERT_TRUE(strstr(((const my_label_t *)label)->text, "lufs ") == NULL);
         /* a quiet clip's figures move together */
         ASSERT_TRUE(break_editor_doc_reset(doc));
         memset(pcm, 0, sizeof(pcm));
         ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 4000u));
         break_editor_shell_tick(shell);
         ASSERT_TRUE(break_editor_shell_audio_true_peak_db(shell) <= -119.0);
+        ASSERT_TRUE(break_editor_shell_audio_lufs(shell) <=
+                    BREAK_EDITOR_AUDIO_LUFS_FLOOR + 0.001);
     }
     break_editor_shell_destroy(shell);
 }

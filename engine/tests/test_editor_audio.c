@@ -849,7 +849,71 @@ TEST(true_peak_range_sees_intersample_peaks)
     break_editor_doc_destroy(doc);
 }
 
+/* Integrated loudness (design 2026-11-20-editor-audio-lufs). */
+TEST(loudness_range_weights_by_frequency_and_gates)
+{
+    static i16 pcm[2u * 48000u];
+    double lufs = -1.0, loud_1k = 0.0, loud_30 = 0.0, loud_mono = 0.0;
+    BreakEditorDoc *doc = break_editor_doc_create();
+    const double two_pi = 2.0 * 3.14159265358979323846;
+    ASSERT_NOT_NULL(doc);
+    /* 2 s of a 1 kHz sine at -20 dBFS (amplitude 3277): the K-weighting is
+     * near unity at 1 kHz, so its loudness is close to its RMS, -23 dBFS */
+    for (u32 i = 0u; i < 48000u; ++i) {
+        pcm[i] = (i16)(sin(two_pi * 1000.0 * (double)i / 24000.0) * 3276.8);
+    }
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 24000u, 1u, pcm, 48000u));
+    ASSERT_TRUE(break_editor_doc_audio_loudness_range(doc, 0u, 48000u, &lufs));
+    loud_1k = lufs;
+    ASSERT_TRUE(lufs > -25.0 && lufs < -21.0);
+    loud_mono = lufs;
+    /* twice the amplitude is about 6 LU louder */
+    break_editor_doc_reset(doc);
+    for (u32 i = 0u; i < 48000u; ++i) {
+        pcm[i] = (i16)(sin(two_pi * 1000.0 * (double)i / 24000.0) * 6553.6);
+    }
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 24000u, 1u, pcm, 48000u));
+    ASSERT_TRUE(break_editor_doc_audio_loudness_range(doc, 0u, 48000u, &lufs));
+    ASSERT_TRUE(lufs > loud_1k + 5.0 && lufs < loud_1k + 7.0);
+    /* a 30 Hz tone of the same amplitude is far quieter in LUFS: this is
+     * what the weighting is for */
+    break_editor_doc_reset(doc);
+    for (u32 i = 0u; i < 48000u; ++i) {
+        pcm[i] = (i16)(sin(two_pi * 30.0 * (double)i / 24000.0) * 3276.8);
+    }
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 24000u, 1u, pcm, 48000u));
+    ASSERT_TRUE(break_editor_doc_audio_loudness_range(doc, 0u, 48000u, &lufs));
+    loud_30 = lufs;
+    ASSERT_TRUE(loud_30 < loud_1k - 8.0);
+    /* stereo of the same signal is about 3 LU louder than mono */
+    break_editor_doc_reset(doc);
+    for (u32 i = 0u; i < 24000u; ++i) {
+        const i16 v = (i16)(sin(two_pi * 1000.0 * (double)i / 24000.0) * 3276.8);
+        pcm[i * 2u] = v;
+        pcm[i * 2u + 1u] = v;
+    }
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 24000u, 2u, pcm, 24000u));
+    ASSERT_TRUE(break_editor_doc_audio_loudness_range(doc, 0u, 24000u, &lufs));
+    ASSERT_TRUE(lufs > loud_mono + 2.0 && lufs < loud_mono + 4.0);
+    /* silence reports the floor, not -inf */
+    break_editor_doc_reset(doc);
+    memset(pcm, 0, sizeof(pcm));
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 24000u, 1u, pcm, 24000u));
+    ASSERT_TRUE(break_editor_doc_audio_loudness_range(doc, 0u, 24000u, &lufs));
+    ASSERT_TRUE(lufs <= BREAK_EDITOR_AUDIO_LUFS_FLOOR + 0.001);
+    /* a range shorter than one 400 ms block has no integrated figure */
+    lufs = -1.0;
+    ASSERT_TRUE(!break_editor_doc_audio_loudness_range(doc, 0u, 4000u, &lufs));
+    ASSERT_TRUE(!break_editor_doc_audio_loudness_range(doc, 10u, 10u, &lufs));
+    ASSERT_TRUE(!break_editor_doc_audio_loudness_range(doc, 0u, 24001u, &lufs));
+    ASSERT_TRUE(!break_editor_doc_audio_loudness_range(NULL, 0u, 24000u, &lufs));
+    ASSERT_TRUE(!break_editor_doc_audio_loudness_range(doc, 0u, 24000u, NULL));
+    ASSERT_EQ((int)lufs, -1);
+    break_editor_doc_destroy(doc);
+}
+
 TEST_MAIN_BEGIN()
+    RUN_TEST(loudness_range_weights_by_frequency_and_gates);
     RUN_TEST(true_peak_range_sees_intersample_peaks);
     RUN_TEST(peak_range_reports_peak_and_rms);
     RUN_TEST(waveform_channel_reports_one_channel_at_a_time);

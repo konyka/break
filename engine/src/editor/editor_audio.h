@@ -63,6 +63,16 @@ bool break_editor_doc_audio_peak_range(const BreakEditorDoc *doc, u32 begin, u32
 bool break_editor_doc_audio_true_peak_range(const BreakEditorDoc *doc, u32 begin, u32 end,
                                             double *out_peak);
 
+/* Gated integrated loudness of frames [begin, end) in LUFS, following
+ * ITU-R BS.1770-4's structure (K-weighting, 400 ms blocks with 75% overlap,
+ * -70 LUFS absolute gate then a -10 LU relative gate). Coefficients are
+ * derived for the clip's own sample rate. False and nothing written for the
+ * invalid ranges above and for a range shorter than one block; a silent
+ * range reports the -70 floor. Read-only. */
+#define BREAK_EDITOR_AUDIO_LUFS_FLOOR (-70.0)
+bool break_editor_doc_audio_loudness_range(const BreakEditorDoc *doc, u32 begin, u32 end,
+                                           double *out_lufs);
+
 /* One snapshot command per successful edit; false leaves PCM/history unchanged. */
 bool break_editor_doc_audio_trim(BreakEditorDoc *doc, u32 begin, u32 end);
 bool break_editor_doc_audio_cut(BreakEditorDoc *doc, u32 begin, u32 end);

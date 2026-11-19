@@ -163,6 +163,8 @@ u32 editor_panel_audio_grid_lane(const EditorPanelAudio *panel, u32 i);
 double editor_panel_audio_peak_db(const EditorPanelAudio *panel);
 /* True peak of the view in dBTP, floored at -120; may be positive. */
 double editor_panel_audio_true_peak_db(const EditorPanelAudio *panel);
+/* The view's integrated loudness in LUFS, or the -70 floor. */
+double editor_panel_audio_lufs(const EditorPanelAudio *panel);
 double editor_panel_audio_rms_db(const EditorPanelAudio *panel);
 u32 editor_panel_audio_set_mute(EditorPanelAudio *panel, u32 channel);
 u32 editor_panel_audio_mute(const EditorPanelAudio *panel);

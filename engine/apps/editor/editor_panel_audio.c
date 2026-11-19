@@ -118,6 +118,8 @@ static bool audio_panel_levels(const EditorPanelAudio *panel, double *out_peak,
                                double *out_rms);
 static bool audio_panel_levels_ex(const EditorPanelAudio *panel, double *out_peak,
                                   double *out_rms, double *out_tp);
+static u32 audio_view_begin(const EditorPanelAudio *panel);
+static u32 audio_view_end(const EditorPanelAudio *panel);
 
 static void audio_panel_format_info(EditorPanelAudio *panel) {
     const BreakEditorDoc *doc = break_editor_shell_doc(panel->shell);
@@ -208,10 +210,20 @@ static void audio_panel_format_info(EditorPanelAudio *panel) {
         /* the level readout lives on its own label, so the info line stays
          * exactly what the format string says */
         double peak_db, rms_db, tp_db;
-        char text[96];
+        char text[128];
         if (audio_panel_levels_ex(panel, &peak_db, &rms_db, &tp_db)) {
-            (void)snprintf(text, sizeof(text), "peak %.1f dB  rms %.1f dB  tp %.1f dB",
-                           peak_db, rms_db, tp_db);
+            double lufs = BREAK_EDITOR_AUDIO_LUFS_FLOOR;
+            const int n = snprintf(text, sizeof(text),
+                                   "peak %.1f dB  rms %.1f dB  tp %.1f dB", peak_db,
+                                   rms_db, tp_db);
+            /* the loudness needs at least a 400 ms view, so it is only
+             * named when there is a figure */
+            if (n > 0 && (usize)n < sizeof(text) &&
+                break_editor_doc_audio_loudness_range(break_editor_shell_doc(panel->shell),
+                                                      audio_view_begin(panel),
+                                                      audio_view_end(panel), &lufs)) {
+                (void)snprintf(text + n, sizeof(text) - (usize)n, "  lufs %.1f", lufs);
+            }
         } else {
             text[0] = '\0';
         }
@@ -1031,6 +1043,21 @@ static bool audio_panel_levels_ex(const EditorPanelAudio *panel, double *out_pea
 static bool audio_panel_levels(const EditorPanelAudio *panel, double *out_peak,
                                double *out_rms) {
     return audio_panel_levels_ex(panel, out_peak, out_rms, NULL);
+}
+
+/* The view's integrated loudness, or the floor when it is too short to
+ * measure or silent. */
+double editor_panel_audio_lufs(const EditorPanelAudio *panel) {
+    double lufs = BREAK_EDITOR_AUDIO_LUFS_FLOOR;
+    if (panel == NULL) {
+        return lufs;
+    }
+    if (!break_editor_doc_audio_loudness_range(break_editor_shell_doc(panel->shell),
+                                               audio_view_begin(panel),
+                                               audio_view_end(panel), &lufs)) {
+        return BREAK_EDITOR_AUDIO_LUFS_FLOOR;
+    }
+    return lufs;
 }
 
 double editor_panel_audio_true_peak_db(const EditorPanelAudio *panel) {

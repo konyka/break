@@ -234,6 +234,144 @@ bool break_editor_doc_audio_true_peak_range(const BreakEditorDoc *doc, u32 begin
     return true;
 }
 
+/* Integrated loudness (ITU-R BS.1770-4 structure). The K-weighting is two
+ * biquads: a high-shelf (+4 dB above ~1.5 kHz) and a high-pass at ~38 Hz.
+ * The standard tabulates coefficients for 48 kHz; these are derived for the
+ * clip's own rate from the same analogue prototypes, so a low-rate clip is
+ * filtered correctly instead of only 48 kHz being right. */
+typedef struct {
+    double b0, b1, b2, a1, a2;
+} AudioBiquad;
+
+/* The 48 kHz reference coefficients come from poles/zeros at
+ * f0 = 1681.97 Hz, Q = 0.7071, gain +3.9998 dB (shelf) and
+ * f0 = 38.135 Hz, Q = 0.5003 (high-pass). */
+static void audio_k_shelf(double rate, AudioBiquad *out) {
+    const double f0 = 1681.974450955533, g_db = 3.999843853973347, q = 0.7071752369554196;
+    const double k = tan(3.14159265358979323846 * f0 / rate);
+    const double vh = pow(10.0, g_db / 20.0);
+    const double vb = pow(vh, 0.4996667741545416);
+    const double denom = 1.0 + k / q + k * k;
+    out->b0 = (vh + vb * k / q + k * k) / denom;
+    out->b1 = 2.0 * (k * k - vh) / denom;
+    out->b2 = (vh - vb * k / q + k * k) / denom;
+    out->a1 = 2.0 * (k * k - 1.0) / denom;
+    out->a2 = (1.0 - k / q + k * k) / denom;
+}
+
+static void audio_k_highpass(double rate, AudioBiquad *out) {
+    const double f0 = 38.13547087602444, q = 0.5003270373238773;
+    const double k = tan(3.14159265358979323846 * f0 / rate);
+    const double denom = 1.0 + k / q + k * k;
+    out->b0 = 1.0;
+    out->b1 = -2.0;
+    out->b2 = 1.0;
+    out->a1 = 2.0 * (k * k - 1.0) / denom;
+    out->a2 = (1.0 - k / q + k * k) / denom;
+}
+
+/* y[n] = b0 x[n] + b1 x[n-1] + b2 x[n-2] - a1 y[n-1] - a2 y[n-2] */
+typedef struct {
+    double x1, x2, y1, y2;
+} AudioBiquadState;
+
+static double audio_biquad_step(const AudioBiquad *f, AudioBiquadState *s, double x) {
+    const double y = f->b0 * x + f->b1 * s->x1 + f->b2 * s->x2 - f->a1 * s->y1 -
+                     f->a2 * s->y2;
+    s->x2 = s->x1;
+    s->x1 = x;
+    s->y2 = s->y1;
+    s->y1 = y;
+    return y;
+}
+
+#define AUDIO_LUFS_BLOCK_MS 400u
+#define AUDIO_LUFS_STEP_DIV 4u /* 75% overlap */
+#define AUDIO_LUFS_MAX_BLOCKS 4096u
+
+bool break_editor_doc_audio_loudness_range(const BreakEditorDoc *doc, u32 begin, u32 end,
+                                           double *out_lufs) {
+    if (!doc || !doc->audio || !out_lufs || begin >= end || end > doc->audio->frames) {
+        return false;
+    }
+    const BreakEditorAudioState *audio = doc->audio;
+    const u32 rate = audio->sample_rate;
+    const u32 block = (u32)((u64)rate * AUDIO_LUFS_BLOCK_MS / 1000u);
+    const u32 step = block / AUDIO_LUFS_STEP_DIV;
+    if (rate == 0u || block == 0u || step == 0u || end - begin < block) {
+        return false; /* an integrated figure needs at least one block */
+    }
+    AudioBiquad shelf, highpass;
+    audio_k_shelf((double)rate, &shelf);
+    audio_k_highpass((double)rate, &highpass);
+    /* one pass of K-weighted squares per channel, accumulated per block */
+    static double block_sum[AUDIO_LUFS_MAX_BLOCKS];
+    u32 blocks = (end - begin - block) / step + 1u;
+    if (blocks > AUDIO_LUFS_MAX_BLOCKS) blocks = AUDIO_LUFS_MAX_BLOCKS;
+    for (u32 b = 0u; b < blocks; ++b) {
+        block_sum[b] = 0.0;
+    }
+    for (u32 channel = 0u; channel < audio->channels; ++channel) {
+        AudioBiquadState s1 = {0.0, 0.0, 0.0, 0.0}, s2 = {0.0, 0.0, 0.0, 0.0};
+        for (u32 f = begin; f < end; ++f) {
+            const double x =
+                (double)audio->samples[(usize)f * audio->channels + channel] / 32768.0;
+            const double y = audio_biquad_step(&highpass, &s2,
+                                               audio_biquad_step(&shelf, &s1, x));
+            const double sq = y * y;
+            /* the frame belongs to every block whose window covers it */
+            const u32 rel = f - begin;
+            const u32 first = rel >= block ? (rel - block) / step + 1u : 0u;
+            for (u32 b = first; b < blocks; ++b) {
+                const u32 start = b * step;
+                if (rel < start) {
+                    break;
+                }
+                if (rel < start + block) {
+                    block_sum[b] += sq;
+                }
+            }
+        }
+    }
+    /* block loudness, then the two gates */
+    double gated_sum = 0.0, above_absolute = 0.0;
+    u32 above_count = 0u;
+    static double block_lufs[AUDIO_LUFS_MAX_BLOCKS];
+    for (u32 b = 0u; b < blocks; ++b) {
+        const double mean = block_sum[b] / (double)block; /* channel weights are 1 */
+        block_lufs[b] = mean > 0.0 ? -0.691 + 10.0 * log10(mean)
+                                   : BREAK_EDITOR_AUDIO_LUFS_FLOOR;
+        if (block_lufs[b] > BREAK_EDITOR_AUDIO_LUFS_FLOOR) {
+            above_absolute += mean;
+            above_count++;
+        }
+    }
+    if (above_count == 0u) {
+        *out_lufs = BREAK_EDITOR_AUDIO_LUFS_FLOOR;
+        return true;
+    }
+    {
+        const double mean_above = above_absolute / (double)above_count;
+        const double relative = -0.691 + 10.0 * log10(mean_above) - 10.0;
+        u32 count = 0u;
+        for (u32 b = 0u; b < blocks; ++b) {
+            if (block_lufs[b] > BREAK_EDITOR_AUDIO_LUFS_FLOOR && block_lufs[b] > relative) {
+                gated_sum += block_sum[b] / (double)block;
+                count++;
+            }
+        }
+        if (count == 0u) {
+            *out_lufs = BREAK_EDITOR_AUDIO_LUFS_FLOOR;
+            return true;
+        }
+        *out_lufs = -0.691 + 10.0 * log10(gated_sum / (double)count);
+    }
+    if (*out_lufs < BREAK_EDITOR_AUDIO_LUFS_FLOOR) {
+        *out_lufs = BREAK_EDITOR_AUDIO_LUFS_FLOOR;
+    }
+    return true;
+}
+
 void break_editor_audio_detach(BreakEditorDoc *doc) {
     if (!doc || !doc->audio) return;
     free(doc->audio->samples);

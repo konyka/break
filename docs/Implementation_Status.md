@@ -1,3 +1,10 @@
+## 编辑器音频整体响度（LUFS）（2026-11-20）
+
+- **交付**：核心新增 `break_editor_doc_audio_loudness_range(doc, begin, end, out_lufs)`，按 ITU-R BS.1770-4 的结构给出门控整体响度：K 加权（高架 + 高通两级双二阶）、400 毫秒块 75% 重叠的均方、-70 LUFS 绝对门，再按存活块均值下移 10 LU 的相对门。系数不是标准表里的 48 kHz 常数，而是按素材自身采样率从同一组模拟原型推导，低采样率素材也被正确滤波。单/双声道的声道权重都是 1.0；范围短于一个 400 毫秒块时返回 false（不足一块没有整体响度定义），数字静音返回 -70 地板。shell 新增 `break_editor_shell_audio_lufs`，电平标签在有读数时追加 "lufs x.x"。设计与计划见 `docs/superpowers/specs/2026-11-20-editor-audio-lufs-design.md`、`docs/superpowers/plans/2026-11-20-editor-audio-lufs.md`。
+- **TDD**：核心与 shell 各一处新用例/断言，先链接失败再通过，`test_editor_audio` 17/17、`test_editor_shell` 228/228。5 个变异全部判红：跳过高通级（只剩高架，30 Hz 不再远低于 1 kHz）、块响度用 `20*log10` 而非 `10*log10`、相对门换成绝对地板、去掉过短范围守卫、声道循环只算声道 0、测量失败时标签仍写出响度。
+- **数值说明**：-20 dBFS 的 1 kHz 正弦读到 -25~-21 LUFS 区间，正好包住算术预期的 -23（正弦 RMS 比峰值低 3 dB，K 加权在 1 kHz 接近 0 dB）；断言取区间而非定值，因为高架在 1 kHz 的增益并不正好是 0 dB，且稳态音不会被门控丢块。
+- **边界**：没有短期/瞬时响度窗、没有响度范围（LRA）、没有“归一化到 LUFS”的编辑动作、不含环绕声道权重。
+
 ## 编辑器音频真峰值（dBTP）（2026-11-20）
 
 - **交付**：核心新增 `break_editor_doc_audio_true_peak_range(doc, begin, end, out_peak)`，按 4 倍采样率重建信号后取各声道绝对值最大者（可超过 32768——重建本就会过冲）。插值用多相窗函数 sinc FIR：4 个相位、33 抽头（两侧各 16），Blackman 窗、首次使用时建表，相位 0 为恒等（sinc 在整数点为 0/1），因此结果不会低于采样峰值；范围外的抽头按 0 处理，片边范围不会越界读取。shell 新增 `break_editor_shell_audio_true_peak_db`（同样 -120 dB 地板，超过满刻度时为正值且不钳制），电平标签追加 " tp x.x dB"。设计与计划见 `docs/superpowers/specs/2026-11-20-editor-audio-true-peak-design.md`、`docs/superpowers/plans/2026-11-20-editor-audio-true-peak.md`。

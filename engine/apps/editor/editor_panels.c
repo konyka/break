@@ -13,6 +13,8 @@
 #include "editor_scene_textures.h"
 #include "editor_theme.h"
 
+#include <editor/editor_audio.h>
+
 #ifdef BREAK_EDITOR_SHELL_TESTING
 static bool g_editor_fail_diag_attach;
 void break_editor_shell_fail_diag_attach_for_test(void) {
@@ -4285,6 +4287,11 @@ u32 break_editor_shell_audio_grid_lane(const BreakEditorShell *shell, u32 i) {
 double break_editor_shell_audio_peak_db(const BreakEditorShell *shell) {
     return shell != NULL ? editor_panel_audio_peak_db(shell->audio_panel)
                          : BREAK_EDITOR_AUDIO_DB_FLOOR;
+}
+
+double break_editor_shell_audio_lufs(const BreakEditorShell *shell) {
+    return shell != NULL ? editor_panel_audio_lufs(shell->audio_panel)
+                         : BREAK_EDITOR_AUDIO_LUFS_FLOOR;
 }
 
 double break_editor_shell_audio_true_peak_db(const BreakEditorShell *shell) {
