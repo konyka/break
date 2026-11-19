@@ -1106,7 +1106,62 @@ TEST(normalize_loudness_reaches_the_target_without_clipping)
     break_editor_doc_destroy(doc);
 }
 
+/* Loudness over time (design 2026-11-20-editor-audio-loudness-curve). */
+TEST(loudness_curve_follows_the_level_over_time)
+{
+    static i16 pcm[64000u];
+    static double curve[16];
+    BreakEditorDoc *doc = break_editor_doc_create();
+    const double two_pi = 2.0 * 3.14159265358979323846;
+    ASSERT_NOT_NULL(doc);
+    /* loud for the first half, quiet for the second */
+    for (u32 i = 0u; i < 64000u; ++i) {
+        const double amp = i < 32000u ? 3276.8 : 327.68;
+        pcm[i] = (i16)(sin(two_pi * 1000.0 * (double)i / 8000.0) * amp);
+    }
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 64000u));
+    ASSERT_TRUE(break_editor_doc_audio_loudness_curve(doc, 0u, 64000u, 16u, curve));
+    /* the curve falls: the first points are well above the last */
+    ASSERT_TRUE(curve[0] > curve[15] + 10.0);
+    for (u32 i = 0u; i < 16u; ++i) {
+        ASSERT_TRUE(curve[i] >= BREAK_EDITOR_AUDIO_LUFS_FLOOR);
+        ASSERT_TRUE(curve[i] <= 0.0);
+    }
+    /* a steady clip is flat within a LU */
+    for (u32 i = 0u; i < 64000u; ++i) {
+        pcm[i] = (i16)(sin(two_pi * 1000.0 * (double)i / 8000.0) * 3276.8);
+    }
+    break_editor_doc_reset(doc);
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 64000u));
+    ASSERT_TRUE(break_editor_doc_audio_loudness_curve(doc, 0u, 64000u, 16u, curve));
+    for (u32 i = 1u; i < 16u; ++i) {
+        ASSERT_TRUE(curve[i] > curve[0] - 1.0 && curve[i] < curve[0] + 1.0);
+    }
+    /* one point is allowed, and it is the range's own short-term figure */
+    {
+        double single = 0.0, short_term = 0.0;
+        ASSERT_TRUE(break_editor_doc_audio_loudness_curve(doc, 0u, 64000u, 1u, &single));
+        ASSERT_TRUE(break_editor_doc_audio_short_term_range(doc, 0u, 64000u, &short_term));
+        ASSERT_TRUE(single > short_term - 0.5 && single < short_term + 0.5);
+    }
+    /* the rejected arguments write nothing */
+    curve[0] = -1.0;
+    ASSERT_TRUE(!break_editor_doc_audio_loudness_curve(doc, 0u, 64000u, 0u, curve));
+    ASSERT_TRUE(!break_editor_doc_audio_loudness_curve(doc, 0u, 64000u,
+                                                       BREAK_EDITOR_AUDIO_CURVE_MAX + 1u,
+                                                       curve));
+    ASSERT_TRUE(!break_editor_doc_audio_loudness_curve(doc, 10u, 10u, 4u, curve));
+    ASSERT_TRUE(!break_editor_doc_audio_loudness_curve(doc, 0u, 64001u, 4u, curve));
+    ASSERT_TRUE(!break_editor_doc_audio_loudness_curve(NULL, 0u, 64000u, 4u, curve));
+    ASSERT_TRUE(!break_editor_doc_audio_loudness_curve(doc, 0u, 64000u, 4u, NULL));
+    ASSERT_EQ((int)curve[0], -1);
+    /* a range too short to measure */
+    ASSERT_TRUE(!break_editor_doc_audio_loudness_curve(doc, 0u, 1000u, 4u, curve));
+    break_editor_doc_destroy(doc);
+}
+
 TEST_MAIN_BEGIN()
+    RUN_TEST(loudness_curve_follows_the_level_over_time);
     RUN_TEST(normalize_loudness_reaches_the_target_without_clipping);
     RUN_TEST(short_term_and_lra_describe_level_variation);
     RUN_TEST(loudness_range_weights_by_frequency_and_gates);

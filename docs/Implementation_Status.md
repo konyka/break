@@ -1,3 +1,9 @@
+## 编辑器音频响度曲线（2026-11-20）
+
+- **交付**：核心新增 `break_editor_doc_audio_loudness_curve(doc, begin, end, points, out_lufs)`，在 `[begin, end)` 上均匀取 `points`（1~256）个短期响度值，每个用以该点为终点的 3 秒窗；窗起点早于范围起点时改从范围起点测起，因此靠前的点是窗更短的估计而不是空洞；复用 `audio_window_loudness`。音频页在泳道 0 上画出该曲线（每 8 像素一个点，-60~0 LUFS 映射到泳道高度，自下而上），地板值跳过绘制，静音段落因此留空而不是贴底；曲线随列一起重算，故跟随视图。shell 新增 `break_editor_shell_audio_curve_count`、`break_editor_shell_audio_curve`。设计与计划见 `docs/superpowers/specs/2026-11-20-editor-audio-loudness-curve-design.md`、`docs/superpowers/plans/2026-11-20-editor-audio-loudness-curve.md`。
+- **TDD**：核心与 shell 各一个新用例，先链接失败再通过，`test_editor_audio` 20/20、`test_editor_shell` 230/230。4 个变异判红：取点位置固定为范围末尾、窗不钳到范围起点、y 映射上下颠倒、地板值照画不跳过。最后一个需要单独的素材——先响后静（数字静音）的片子才会产生地板值，用例据此断言曲线点数严格少于“先响后轻”那条，且报告的每个点都在地板之上。
+- **边界**：没有分泳道各自的曲线、不是填充面积而是折线、整体响度与 LRA 没有画成参考线、刻度条上没有曲线。
+
 ## 编辑器音频归一化到响度目标（2026-11-20）
 
 - **交付**：核心新增 `break_editor_doc_audio_normalize_loudness(doc, target_lufs)`：测出整段的整体响度，施加把它移到目标（[-70, 0] LUFS）的恒定增益，与其他编辑一样记一条可撤销快照。增益按峰值余量封顶，因此结果永不削波——够不到目标时峰值落在满刻度、调用仍然成功，达到的响度低于目标（调用方可以再测一次）。没有附件、目标越界、片长不足一个 400 毫秒块、数字静音时返回 false 且不改动。音频页视图行新增 `editor-audio-lufs-norm` 按钮（标签 "-23 LUFS"，EBU R128 目标），失败时记已有的编辑失败日志；shell 新增 `break_editor_shell_audio_normalize_lufs`。设计与计划见 `docs/superpowers/specs/2026-11-20-editor-audio-lufs-normalize-design.md`、`docs/superpowers/plans/2026-11-20-editor-audio-lufs-normalize.md`。

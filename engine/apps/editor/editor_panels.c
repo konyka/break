@@ -4280,6 +4280,16 @@ const char *break_editor_shell_audio_grid_label(const BreakEditorShell *shell, u
     return shell != NULL ? editor_panel_audio_grid_label(shell->audio_panel, i) : NULL;
 }
 
+u32 break_editor_shell_audio_curve_count(const BreakEditorShell *shell) {
+    return shell != NULL ? editor_panel_audio_curve_count(shell->audio_panel) : 0u;
+}
+
+bool break_editor_shell_audio_curve(const BreakEditorShell *shell, u32 i, double *out_lufs,
+                                    i32 *out_x, i32 *out_y) {
+    return shell != NULL &&
+           editor_panel_audio_curve(shell->audio_panel, i, out_lufs, out_x, out_y);
+}
+
 u32 break_editor_shell_audio_grid_lane(const BreakEditorShell *shell, u32 i) {
     return shell != NULL ? editor_panel_audio_grid_lane(shell->audio_panel, i) : UINT32_MAX;
 }

@@ -160,6 +160,10 @@ bool editor_panel_audio_grid(const EditorPanelAudio *panel, u32 i, double *out_d
 const char *editor_panel_audio_grid_label(const EditorPanelAudio *panel, u32 i);
 /* The lane grid entry i belongs to (UINT32_MAX when i is out of range). */
 u32 editor_panel_audio_grid_lane(const EditorPanelAudio *panel, u32 i);
+/* The loudness curve of the last paint (lane 0 coordinates). */
+u32 editor_panel_audio_curve_count(const EditorPanelAudio *panel);
+bool editor_panel_audio_curve(const EditorPanelAudio *panel, u32 i, double *out_lufs,
+                              i32 *out_x, i32 *out_y);
 double editor_panel_audio_peak_db(const EditorPanelAudio *panel);
 /* True peak of the view in dBTP, floored at -120; may be positive. */
 double editor_panel_audio_true_peak_db(const EditorPanelAudio *panel);

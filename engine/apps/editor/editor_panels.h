@@ -522,6 +522,12 @@ bool break_editor_shell_audio_grid(const BreakEditorShell *shell, u32 i, double 
 const char *break_editor_shell_audio_grid_label(const BreakEditorShell *shell, u32 i);
 /* The lane grid entry i belongs to (UINT32_MAX when out of range). */
 u32 break_editor_shell_audio_grid_lane(const BreakEditorShell *shell, u32 i);
+/* The loudness curve the last paint drew over lane 0 (design
+ * 2026-11-20-editor-audio-loudness-curve): one point per 8 px, in the
+ * waveform's coordinates. 0 points when the view is too short to measure. */
+u32 break_editor_shell_audio_curve_count(const BreakEditorShell *shell);
+bool break_editor_shell_audio_curve(const BreakEditorShell *shell, u32 i, double *out_lufs,
+                                    i32 *out_x, i32 *out_y);
 double break_editor_shell_audio_peak_db(const BreakEditorShell *shell);
 /* True peak of the view in dBTP (design 2026-11-20-editor-audio-true-peak):
  * the signal reconstructed at 4x, so an intersample peak above full scale

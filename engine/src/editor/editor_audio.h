@@ -82,6 +82,15 @@ bool break_editor_doc_audio_short_term_range(const BreakEditorDoc *doc, u32 begi
  * windows. */
 bool break_editor_doc_audio_loudness_range_lra(const BreakEditorDoc *doc, u32 begin,
                                                u32 end, double *out_lra);
+/* `points` short-term values (1..BREAK_EDITOR_AUDIO_CURVE_MAX) spread evenly
+ * across [begin, end), each over the 3-second window ending at its own
+ * position; a window that would start before `begin` is measured from
+ * `begin` instead. Floored at -70 LUFS. False and nothing written for the
+ * invalid ranges, a point count out of range, or a range too short to
+ * measure. */
+#define BREAK_EDITOR_AUDIO_CURVE_MAX 256u
+bool break_editor_doc_audio_loudness_curve(const BreakEditorDoc *doc, u32 begin, u32 end,
+                                           u32 points, double *out_lufs);
 
 /* One snapshot command per successful edit; false leaves PCM/history unchanged. */
 bool break_editor_doc_audio_trim(BreakEditorDoc *doc, u32 begin, u32 end);

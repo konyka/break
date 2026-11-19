@@ -652,6 +652,38 @@ bool break_editor_doc_audio_normalize_range(BreakEditorDoc *doc, u32 begin, u32 
     return audio_snapshot_commit(snapshot, doc, snapshot->before_frames);
 }
 
+bool break_editor_doc_audio_loudness_curve(const BreakEditorDoc *doc, u32 begin, u32 end,
+                                           u32 points, double *out_lufs) {
+    static double win_lufs[1];
+    static double win_mean[1];
+    if (!doc || !doc->audio || !out_lufs || points == 0u ||
+        points > BREAK_EDITOR_AUDIO_CURVE_MAX || begin >= end || end > doc->audio->frames) {
+        return false;
+    }
+    const u32 rate = doc->audio->sample_rate;
+    const u32 block = (u32)((u64)rate * AUDIO_LUFS_BLOCK_MS / 1000u);
+    const u32 window = (u32)((u64)rate * AUDIO_SHORT_TERM_MS / 1000u);
+    if (block == 0u || end - begin < block) {
+        return false; /* too short for any loudness figure */
+    }
+    for (u32 p = 0u; p < points; ++p) {
+        /* the window ends at this point's position; near the range's start
+         * it is measured from `begin` instead of reaching behind it */
+        const u32 at = begin + (u32)((u64)(p + 1u) * (end - begin) / points);
+        const u32 from = at - begin >= window ? at - window : begin;
+        out_lufs[p] = BREAK_EDITOR_AUDIO_LUFS_FLOOR;
+        if (at - from == 0u) {
+            continue;
+        }
+        if (audio_window_loudness(doc, from, at, at - from, at - from, win_lufs, win_mean,
+                                  1u) != 0u &&
+            win_lufs[0] > BREAK_EDITOR_AUDIO_LUFS_FLOOR) {
+            out_lufs[p] = win_lufs[0];
+        }
+    }
+    return true;
+}
+
 bool break_editor_doc_audio_normalize_loudness(BreakEditorDoc *doc, double target_lufs) {
     double current = 0.0, peak = 0.0, rms = 0.0;
     if (!doc || !doc->audio || !isfinite(target_lufs) ||

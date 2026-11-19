@@ -62,6 +62,12 @@
 /* a label needs this much room above its line to stay inside the lane */
 #define EDITOR_AUDIO_GRID_TEXT_PX 11.0f
 static const double k_audio_grid_db[] = {-6.0, -12.0, -18.0, -24.0};
+/* the loudness curve: one point per 8 px of width, mapped from this range
+ * onto lane 0's height */
+#define EDITOR_AUDIO_CURVE_PX 8
+#define EDITOR_AUDIO_CURVE_POINTS 128u
+#define EDITOR_AUDIO_CURVE_TOP 0.0
+#define EDITOR_AUDIO_CURVE_BOTTOM (-60.0)
 #define EDITOR_BOTTOM_TAB_AUDIO 4u /* index in editor_panels.c k_tab_pages[0] */
 #define EDITOR_AUDIO_LIGHT_MID_LINE 0xD3D5DBFFu
 #define EDITOR_AUDIO_LIGHT_CURSOR 0x1F1F1FFFu
@@ -108,6 +114,10 @@ struct EditorPanelAudio {
     double grid_db[EDITOR_AUDIO_GRID_MAX];
     i32 grid_y[EDITOR_AUDIO_GRID_MAX];
     u32 grid_lane[EDITOR_AUDIO_GRID_MAX];      /* which lane each line belongs to */
+    u32 curve_count;                           /* loudness points the last paint drew */
+    double curve_lufs[EDITOR_AUDIO_CURVE_POINTS];
+    i32 curve_x[EDITOR_AUDIO_CURVE_POINTS];
+    i32 curve_y[EDITOR_AUDIO_CURVE_POINTS];
     char grid_label[EDITOR_AUDIO_GRID_MAX][8]; /* "" when unlabelled */
     i16 min[EDITOR_AUDIO_LANES_MAX][BREAK_EDITOR_AUDIO_WAVEFORM_MAX_COLUMNS];
     i16 max[EDITOR_AUDIO_LANES_MAX][BREAK_EDITOR_AUDIO_WAVEFORM_MAX_COLUMNS];
@@ -450,6 +460,43 @@ static void audio_waveform_on_paint(my_widget_t *widget, my_vgcanvas_t *vg) {
             (void)my_vgcanvas_fill_rect(vg, &(my_rectf_t){x0, top, bar_w, bar_h});
         }
     }
+    /* the loudness curve over lane 0: a polyline from the view's own
+     * short-term figures, so it moves with the view */
+    grid->curve_count = 0u;
+    if (panel->lanes != 0u && w >= (float)EDITOR_AUDIO_CURVE_PX) {
+        u32 points = (u32)(w / (float)EDITOR_AUDIO_CURVE_PX);
+        if (points > EDITOR_AUDIO_CURVE_POINTS) points = EDITOR_AUDIO_CURVE_POINTS;
+        if (points != 0u &&
+            break_editor_doc_audio_loudness_curve(break_editor_shell_doc(panel->shell),
+                                                  audio_view_begin(panel),
+                                                  audio_view_end(panel), points,
+                                                  grid->curve_lufs)) {
+            const double span = EDITOR_AUDIO_CURVE_TOP - EDITOR_AUDIO_CURVE_BOTTOM;
+            my_vgcanvas_set_fill_color(
+                vg, my_color_from_rgba32(break_editor_theme_is_light()
+                                             ? EDITOR_AUDIO_LIGHT_CURSOR
+                                             : BREAK_EDITOR_THEME_TEXT_SECONDARY));
+            for (u32 p = 0u; p < points; ++p) {
+                const double lufs = grid->curve_lufs[p];
+                double t;
+                float x, y;
+                if (lufs <= BREAK_EDITOR_AUDIO_LUFS_FLOOR) {
+                    continue; /* a silent passage leaves a gap */
+                }
+                t = (lufs - EDITOR_AUDIO_CURVE_BOTTOM) / span;
+                if (t < 0.0) t = 0.0;
+                if (t > 1.0) t = 1.0;
+                x = (float)(p + 1u) * w / (float)points - 1.0f;
+                y = lane_h - (float)t * lane_h;
+                if (y > lane_h - 1.0f) y = lane_h - 1.0f;
+                (void)my_vgcanvas_fill_rect(vg, &(my_rectf_t){x, y, 2.0f, 2.0f});
+                grid->curve_lufs[grid->curve_count] = lufs;
+                grid->curve_x[grid->curve_count] = (i32)x;
+                grid->curve_y[grid->curve_count] = (i32)y;
+                grid->curve_count++;
+            }
+        }
+    }
     {
         const u32 view_begin = audio_view_begin(panel);
         const u32 view_end = audio_view_end(panel);
@@ -690,6 +737,21 @@ bool editor_panel_audio_grid(const EditorPanelAudio *panel, u32 i, double *out_d
     }
     if (out_db != NULL) *out_db = panel->grid_db[i];
     if (out_y != NULL) *out_y = panel->grid_y[i];
+    return true;
+}
+
+u32 editor_panel_audio_curve_count(const EditorPanelAudio *panel) {
+    return panel != NULL ? panel->curve_count : 0u;
+}
+
+bool editor_panel_audio_curve(const EditorPanelAudio *panel, u32 i, double *out_lufs,
+                              i32 *out_x, i32 *out_y) {
+    if (panel == NULL || i >= panel->curve_count) {
+        return false;
+    }
+    if (out_lufs != NULL) *out_lufs = panel->curve_lufs[i];
+    if (out_x != NULL) *out_x = panel->curve_x[i];
+    if (out_y != NULL) *out_y = panel->curve_y[i];
     return true;
 }
 

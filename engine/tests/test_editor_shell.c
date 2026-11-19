@@ -3936,6 +3936,83 @@ TEST(audio_page_scales_each_lane_independently)
     break_editor_shell_destroy(shell);
 }
 
+/* The loudness curve (design 2026-11-20-editor-audio-loudness-curve). */
+TEST(audio_page_draws_the_loudness_curve)
+{
+    static i16 pcm[60000u];
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    my_widget_t *wave;
+    u32 i, n;
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    /* loud for the first half, quiet for the second */
+    for (i = 0u; i < 60000u; i++) {
+        const i16 amp = (i16)(i < 30000u ? 8000 : 250);
+        pcm[i] = (i16)(i % 2u == 0u ? amp : -amp);
+    }
+    ASSERT_TRUE(break_editor_shell_select_tab(shell, 0u, 4u));
+    shell_paint(shell);
+    wave = find(shell, "editor-audio-waveform");
+    ASSERT_NOT_NULL(wave);
+    ASSERT_EQ(break_editor_shell_audio_curve_count(shell), 0u); /* no attachment */
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 60000u));
+    break_editor_shell_tick(shell);
+    shell_paint(shell);
+    n = break_editor_shell_audio_curve_count(shell);
+    ASSERT_TRUE(n > 4u);
+    /* every point sits inside the waveform, and the curve falls with the
+     * loudness (a lower level is a larger y) */
+    {
+        double first = 0.0, last = 0.0;
+        i32 first_y = 0, last_y = 0;
+        for (i = 0u; i < n; i++) {
+            double lufs = 0.0;
+            i32 x = -1, y = -1;
+            ASSERT_TRUE(break_editor_shell_audio_curve(shell, i, &lufs, &x, &y));
+            ASSERT_TRUE(lufs > BREAK_EDITOR_AUDIO_LUFS_FLOOR && lufs <= 0.0);
+            ASSERT_TRUE(x >= 0 && x < wave->rect.w);
+            ASSERT_TRUE(y >= 0 && y < wave->rect.h);
+            if (i == 0u) {
+                first = lufs;
+                first_y = y;
+            }
+            last = lufs;
+            last_y = y;
+        }
+        ASSERT_TRUE(first > last + 10.0);
+        ASSERT_TRUE(last_y > first_y);
+    }
+    ASSERT_FALSE(break_editor_shell_audio_curve(shell, n, NULL, NULL, NULL));
+    /* a silent passage leaves a gap rather than a line pinned to the
+     * bottom: the clip below is loud then digitally silent, so the curve
+     * has points only over the loud part */
+    {
+        u32 loud_only;
+        for (i = 0u; i < 60000u; i++) {
+            pcm[i] = (i16)(i >= 30000u ? 0 : (i % 2u == 0u ? 8000 : -8000));
+        }
+        ASSERT_TRUE(break_editor_doc_reset(doc));
+        ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 60000u));
+        break_editor_shell_tick(shell);
+        shell_paint(shell);
+        loud_only = break_editor_shell_audio_curve_count(shell);
+        ASSERT_TRUE(loud_only > 0u);
+        ASSERT_TRUE(loud_only < n); /* the silent half contributed nothing */
+        for (i = 0u; i < loud_only; i++) {
+            double lufs = 0.0;
+            ASSERT_TRUE(break_editor_shell_audio_curve(shell, i, &lufs, NULL, NULL));
+            ASSERT_TRUE(lufs > BREAK_EDITOR_AUDIO_LUFS_FLOOR);
+        }
+    }
+    /* a 100 ms view is too short to measure: no curve */
+    ASSERT_TRUE(break_editor_doc_audio_trim(doc, 0u, 800u));
+    break_editor_shell_tick(shell);
+    shell_paint(shell);
+    ASSERT_EQ(break_editor_shell_audio_curve_count(shell), 0u);
+    break_editor_shell_destroy(shell);
+}
+
 /* Normalize to a loudness target (design
  * 2026-11-20-editor-audio-lufs-normalize). */
 TEST(audio_page_normalizes_to_the_loudness_target)
@@ -14654,6 +14731,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(audio_page_reports_peak_and_rms_in_db);
     RUN_TEST(audio_page_draws_a_db_grid_on_each_lane);
     RUN_TEST(audio_page_normalizes_to_the_loudness_target);
+    RUN_TEST(audio_page_draws_the_loudness_curve);
     RUN_TEST(audio_page_scales_each_lane_independently);
     RUN_TEST(audio_page_zooms_and_scrolls_the_view);
     RUN_TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo);
