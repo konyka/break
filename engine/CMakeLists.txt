@@ -552,11 +552,12 @@ if(BREAK_ENABLE_QUIC)
             "BREAK_ENABLE_QUIC is POSIX-only in v1 (sockets + poll); Windows "
             "support is a documented follow-up.")
     endif()
-    if(NOT TARGET snow_quic_ngtcp2_adapter)
+    if(NOT TARGET snow_quic_ngtcp2_adapter OR NOT TARGET snow_quic_udp)
         message(FATAL_ERROR
             "BREAK_ENABLE_QUIC=ON but the pinned Snowflake tree did not "
-            "produce snow_quic_ngtcp2_adapter (needs OpenSSL >= 3.5 with the "
-            "QUIC TLS seam). See docs/design/quic_transport.md section 10.")
+            "produce snow_quic_ngtcp2_adapter / snow_quic_udp (needs "
+            "OpenSSL >= 3.5 with the QUIC TLS seam). See "
+            "docs/design/quic_transport.md section 10.")
     endif()
     message(STATUS "Break QUIC transport: enabled (snow ngtcp2 adapter)")
     add_library(break_net_quic STATIC src/network/break_net_quic.c)
@@ -568,7 +569,7 @@ if(BREAK_ENABLE_QUIC)
     # HMAC/CSPRNG for CHALLENGE/AUTH-v2; both are guaranteed present by the
     # gate above (QUIC requires SNOWFLAKE + CRYPTO).
     target_link_libraries(break_net_quic PUBLIC snow_quic_ngtcp2_adapter
-        break_net break_crypto)
+        snow_quic_udp break_net break_crypto)
 endif()
 
 # Windows non-MSVC toolchains (Clang, MinGW GCC): FindOpenSSL only searches the

@@ -131,6 +131,11 @@ void break_net_quic_conn_close(BreakNetQuicServer *server, BreakNetQuicConn *con
 /* Observability: unrouted/dropped datagrams and dropped events. */
 u64 break_net_quic_server_dropped_datagrams(const BreakNetQuicServer *server);
 u64 break_net_quic_server_events_overflow(const BreakNetQuicServer *server);
+/* Listener observability: Retry packets issued (the per-boot retry policy
+ * answers tokenless Initials), accepted connections, reclaimed slots. */
+u64 break_net_quic_server_retry_requests(const BreakNetQuicServer *server);
+u64 break_net_quic_server_accepts(const BreakNetQuicServer *server);
+u64 break_net_quic_server_reclaims(const BreakNetQuicServer *server);
 void break_net_quic_server_destroy(BreakNetQuicServer **server);
 
 /* ---- client ------------------------------------------------------------- */

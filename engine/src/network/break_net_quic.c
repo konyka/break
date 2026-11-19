@@ -8,6 +8,8 @@
 #include "crypto/break_crypto.h"
 
 #include <snow/quic_ngtcp2.h>
+#include <snow/quic_udp.h>
+#include <snow/udp_engine.h>
 
 #include <errno.h>
 #include <stdio.h>
@@ -62,8 +64,9 @@ static bool bnq_event_take(BnqEventQueue *q, BreakNetQuicEvent *out) {
 /* -------------------------------------------------------------- connection */
 
 struct BreakNetQuicConn {
-    SnowQuicNgtcp2 *adapter;
-    int fd; /* borrowed from the endpoint */
+    SnowQuicNgtcp2 *adapter; /* client: owned; server: borrowed from slot */
+    SnowQuicUdpServerConn *slot; /* server side only: listener slot */
+    int fd; /* borrowed from the endpoint (client side) */
     SnowTransportDatagramAddress local;
     SnowTransportDatagramAddress remote;
     int64_t stream_id; /* -1 until the client-opened stream is known */
@@ -383,6 +386,14 @@ static void bnq_conn_free(BreakNetQuicConn *conn) {
 
 /* ------------------------------------------------------------------ server */
 
+static SnowStatus bnq_server_hs_done(void *userdata);
+static SnowStatus bnq_server_recv_stream(int64_t stream_id, u32 flags,
+                                         u64 offset, const u8 *data,
+                                         size_t len, void *userdata);
+static void bnq_server_accepted(SnowQuicUdpServerConn *slot, void *userdata);
+static void bnq_server_disconnected(SnowQuicUdpServerConn *slot,
+                                    SnowQuicUdpServerDisconnectReason reason);
+
 struct BreakNetQuicServer {
     int fd;
     u16 port;
@@ -397,15 +408,27 @@ struct BreakNetQuicServer {
     u8 *key_pem;
     size_t key_pem_len;
 
-    BreakNetQuicConn **slots; /* max_connections entries, calloc'd */
+    /* The server runs on Snowflake's own network machinery (design doc §6):
+     * the UDP engine (platform-default IO backend) plus the pinned QUIC
+     * listener (source demux, Retry, stateless reset, slot reclaim). */
+    SnowUdpEngine *engine;
+    SnowQuicUdpServer listener;
+    SnowQuicUdpServerConn *slots; /* listener slot storage (contiguous) */
+    BreakNetQuicConn **conns;     /* module state per slot index */
     u32 next_conn_id;
-    u64 dropped;
+    u64 dropped; /* module-level failures (allocation) */
     BnqEventQueue events;
 
     BreakNetQuicAuthKeyFn auth_fn; /* NULL = open connections (v1 default) */
     void *auth_user;
     u64 auth_timeout_ns;
     u32 accepted_count; /* set_auth is only legal before the first accept */
+
+    /* Per-boot random secrets (CSPRNG) enabling the listener's Retry policy
+     * and stateless resets. Deliberately not persisted: tokens and resets
+     * do not survive a restart. */
+    u8 retry_secret[32];
+    u8 reset_secret[32];
 };
 
 /* ------------------------------------------------------------------ client */
@@ -442,12 +465,6 @@ static SnowTransportDatagramAddress bnq_addr_from(const struct sockaddr_in *sa) 
     a.port = ntohs(sa->sin_port);
     memcpy(a.address, &sa->sin_addr, 4u);
     return a;
-}
-
-static bool bnq_addr_equal(const SnowTransportDatagramAddress *a,
-                           const SnowTransportDatagramAddress *b) {
-    return a->family == b->family && a->port == b->port &&
-           memcmp(a->address, b->address, 4u) == 0;
 }
 
 /* Reads a PEM file once, bounded. Returns NULL on any failure. */
@@ -530,11 +547,14 @@ BreakNetQuicServer *break_net_quic_server_create(
     }
     s->next_conn_id = 1u;
 
-    s->slots = (BreakNetQuicConn **)calloc(s->max_connections,
+    s->slots = (SnowQuicUdpServerConn *)calloc(s->max_connections,
+                                              sizeof(SnowQuicUdpServerConn));
+    s->conns = (BreakNetQuicConn **)calloc(s->max_connections,
                                            sizeof(BreakNetQuicConn *));
     s->cert_pem = bnq_read_pem(cfg->cert_file, &s->cert_pem_len);
     s->key_pem = bnq_read_pem(cfg->key_file, &s->key_pem_len);
-    if (s->slots == NULL || s->cert_pem == NULL || s->key_pem == NULL) {
+    if (s->slots == NULL || s->conns == NULL || s->cert_pem == NULL ||
+        s->key_pem == NULL) {
         break_net_quic_server_destroy(&s);
         return NULL;
     }
@@ -561,6 +581,61 @@ BreakNetQuicServer *break_net_quic_server_create(
         return NULL;
     }
     s->port = ntohs(sa.sin_port);
+
+    /* UDP engine with the platform-default IO backend (poller + recv/send
+     * supplied by snow) and the pinned QUIC listener attached to the bound
+     * socket. The listener's service hook drives every accepted adapter. */
+    SnowUdpEngineConfig ec;
+    memset(&ec, 0, sizeof(ec));
+    ec.abi_version = SNOW_UDP_ENGINE_ABI_VERSION;
+    ec.max_sockets = 1u;
+    ec.max_datagrams_per_step = 64u;
+    ec.max_datagram_bytes = SNOW_QUIC_NGTCP2_MAX_PACKET;
+    ec.poll_event_capacity = 16u;
+    ec.service = SnowQuicUdpServerService;
+    ec.service_userdata = &s->listener;
+    if (SnowUdpEngineCreate(&ec, &s->engine) != SNOW_OK) {
+        break_net_quic_server_destroy(&s);
+        return NULL;
+    }
+
+    memset(&s->listener, 0, sizeof(s->listener));
+    s->listener.abi_version = SNOW_QUIC_UDP_SERVER_ABI_VERSION;
+    SnowQuicNgtcp2ServerConfig *sc = &s->listener.adapter;
+    memset(sc, 0, sizeof(*sc));
+    sc->clock = bnq_now_ns;
+    sc->clock_userdata = NULL;
+    sc->certificate_pem = s->cert_pem;
+    sc->certificate_pem_size = s->cert_pem_len;
+    sc->private_key_pem = s->key_pem;
+    sc->private_key_pem_size = s->key_pem_len;
+    sc->alpn = s->alpn_wire;
+    sc->alpn_size = s->alpn_wire_len;
+    sc->max_idle_timeout_ns = s->max_idle_timeout_ns;
+    sc->handshake_timeout_ns = s->handshake_timeout_ns;
+    sc->handshake_completed = bnq_server_hs_done;
+    sc->recv_stream_data = bnq_server_recv_stream;
+    /* output / output_userdata / event_userdata / both path addresses are
+     * replaced per accepted connection by the listener (it owns routing). */
+    if (!break_crypto_random(s->retry_secret, sizeof(s->retry_secret)) ||
+        !break_crypto_random(s->reset_secret, sizeof(s->reset_secret))) {
+        break_net_quic_server_destroy(&s);
+        return NULL;
+    }
+    sc->retry_secret = s->retry_secret;
+    sc->retry_secret_size = sizeof(s->retry_secret);
+    sc->stateless_reset_secret = s->reset_secret;
+    sc->stateless_reset_secret_size = sizeof(s->reset_secret);
+    s->listener.connections = s->slots;
+    s->listener.connection_count = s->max_connections;
+    s->listener.accepted = bnq_server_accepted;
+    s->listener.accepted_userdata = s;
+    s->listener.disconnected = bnq_server_disconnected;
+    if (SnowQuicUdpServerAttach(s->engine, (SnowSocketFd)s->fd,
+                                &s->listener) != SNOW_OK) {
+        break_net_quic_server_destroy(&s);
+        return NULL;
+    }
     return s;
 }
 
@@ -568,54 +643,45 @@ u16 break_net_quic_server_port(const BreakNetQuicServer *server) {
     return server != NULL ? server->port : 0u;
 }
 
-static void bnq_server_reclaim(BreakNetQuicServer *s, u32 index) {
-    BreakNetQuicConn *conn = s->slots[index];
-    if (conn == NULL) {
-        return;
+/* Server-side adapter callbacks: the listener hands the SLOT as userdata
+ * (the template's event_userdata is replaced per connection). */
+static SnowStatus bnq_server_hs_done(void *userdata) {
+    SnowQuicUdpServerConn *slot = (SnowQuicUdpServerConn *)userdata;
+    BreakNetQuicConn *conn = (BreakNetQuicConn *)slot->userdata;
+    if (conn != NULL) {
+        conn->handshake_done = true;
     }
-    u8 reason = conn->close_reason;
-    if (reason == BREAK_NET_QUIC_DISCONNECT_NONE) {
-        if (!conn->handshake_done) {
-            reason = BREAK_NET_QUIC_DISCONNECT_HANDSHAKE;
-        } else if (SnowQuicNgtcp2IsLocallyClosed(conn->adapter)) {
-            reason = BREAK_NET_QUIC_DISCONNECT_LOCAL;
-        } else {
-            reason = BREAK_NET_QUIC_DISCONNECT_PEER;
-        }
-    }
-    bnq_event_post(&s->events, BREAK_NET_QUIC_EVENT_DISCONNECT, reason,
-                   conn->conn_id);
-    bnq_conn_free(conn);
-    s->slots[index] = NULL;
+    return SNOW_OK;
 }
 
-static void bnq_server_accept(BreakNetQuicServer *s,
-                              const SnowTransportDatagramAddress *local,
-                              const SnowTransportDatagramAddress *remote,
-                              const uint8_t *packet, size_t len, u64 now_ns) {
-    u32 index;
-    for (index = 0u; index < s->max_connections; index++) {
-        if (s->slots[index] == NULL) {
-            break;
-        }
+static SnowStatus bnq_server_recv_stream(int64_t stream_id, u32 flags,
+                                         u64 offset, const u8 *data,
+                                         size_t len, void *userdata) {
+    SnowQuicUdpServerConn *slot = (SnowQuicUdpServerConn *)userdata;
+    BreakNetQuicConn *conn = (BreakNetQuicConn *)slot->userdata;
+    if (conn == NULL) {
+        return SNOW_ERR_PROTO;
     }
-    if (index == s->max_connections) {
-        s->dropped++; /* slot table full: new Initials are refused */
-        return;
-    }
+    return bnq_recv_stream(stream_id, flags, offset, data, len, conn);
+}
+
+/* The listener accepted a connection (pre-handshake). Allocate the module
+ * state and attach it to the slot; the CONNECT event waits for the
+ * handshake to complete. */
+static void bnq_server_accepted(SnowQuicUdpServerConn *slot, void *userdata) {
+    BreakNetQuicServer *s = (BreakNetQuicServer *)userdata;
     BreakNetQuicConn *conn =
         (BreakNetQuicConn *)calloc(1u, sizeof(BreakNetQuicConn));
     if (conn == NULL) {
         s->dropped++;
         return;
     }
-    conn->fd = s->fd;
-    conn->local = *local;
-    conn->remote = *remote;
+    conn->slot = slot;
+    conn->adapter = slot->adapter;
     /* The module contract pins exactly one stream: the client's first
      * bidirectional stream, which QUIC numbers 0 (client-initiated bidi
      * stream ids are 0, 4, 8, ...). The client opens it as its handshake
-     * completes; the server may send on it from the same moment. */
+     * completes and marks it with READY. */
     conn->stream_id = 0;
     conn->conn_id = s->next_conn_id++;
     conn->tx_seq = 1u; /* outbound envelope sequence starts at 1 (TCP parity) */
@@ -623,39 +689,56 @@ static void bnq_server_accept(BreakNetQuicServer *s,
     conn->rx = (u8 *)malloc(BNQ_FRAME_CAP);
     conn->tx = (u8 *)malloc(BNQ_FRAME_CAP);
     if (conn->rx == NULL || conn->tx == NULL) {
-        bnq_conn_free(conn);
+        free(conn->rx);
+        free(conn->tx);
+        free(conn);
         s->dropped++;
         return;
     }
-    SnowQuicNgtcp2ServerConfig sc;
-    memset(&sc, 0, sizeof(sc));
-    sc.output = bnq_output;
-    sc.output_userdata = conn;
-    sc.clock = bnq_now_ns;
-    sc.clock_userdata = NULL;
-    sc.certificate_pem = s->cert_pem;
-    sc.certificate_pem_size = s->cert_pem_len;
-    sc.private_key_pem = s->key_pem;
-    sc.private_key_pem_size = s->key_pem_len;
-    sc.alpn = s->alpn_wire;
-    sc.alpn_size = s->alpn_wire_len;
-    sc.local_address = *local;
-    sc.remote_address = *remote;
-    sc.max_idle_timeout_ns = s->max_idle_timeout_ns;
-    sc.handshake_timeout_ns = s->handshake_timeout_ns;
-    sc.handshake_completed = bnq_handshake_done;
-    sc.recv_stream_data = bnq_recv_stream;
-    sc.event_userdata = conn;
-    /* accept emits the first flight through bnq_output before returning, so
-     * the slot's fd/remote must already be wired (they are, above). */
-    if (SnowQuicNgtcp2Accept(&conn->adapter, sc, packet, len, now_ns) !=
-        SNOW_OK) {
-        bnq_conn_free(conn);
-        s->dropped++;
-        return;
-    }
-    s->slots[index] = conn;
+    slot->userdata = conn;
+    s->conns[slot - s->slots] = conn;
     s->accepted_count++;
+}
+
+/* Terminal lifecycle: the listener reclaims the slot and has already
+ * finalized the adapter (conn->adapter is NULL here by the R-1229
+ * contract); only the module state is ours to free. Module-initiated close
+ * reasons (auth/protocol/local) take precedence over the listener's. */
+static void bnq_server_disconnected(SnowQuicUdpServerConn *slot,
+                                    SnowQuicUdpServerDisconnectReason reason) {
+    BreakNetQuicConn *conn = (BreakNetQuicConn *)slot->userdata;
+    if (conn == NULL) {
+        return;
+    }
+    BreakNetQuicServer *s = conn->server;
+    u8 r = conn->close_reason;
+    if (r == BREAK_NET_QUIC_DISCONNECT_NONE) {
+        switch (reason) {
+            case kSnowQuicUdpServerDisconnectLocalClose:
+                r = BREAK_NET_QUIC_DISCONNECT_LOCAL;
+                break;
+            case kSnowQuicUdpServerDisconnectIdleTimeout:
+                r = BREAK_NET_QUIC_DISCONNECT_IDLE;
+                break;
+            case kSnowQuicUdpServerDisconnectHandshakeTimeout:
+                r = BREAK_NET_QUIC_DISCONNECT_HANDSHAKE;
+                break;
+            case kSnowQuicUdpServerDisconnectDetach:
+                r = BREAK_NET_QUIC_DISCONNECT_LOCAL;
+                break;
+            case kSnowQuicUdpServerDisconnectPeerClose:
+            default:
+                r = BREAK_NET_QUIC_DISCONNECT_PEER;
+                break;
+        }
+    }
+    bnq_event_post(&s->events, BREAK_NET_QUIC_EVENT_DISCONNECT, r,
+                   conn->conn_id);
+    s->conns[slot - s->slots] = NULL;
+    slot->userdata = NULL;
+    free(conn->rx);
+    free(conn->tx);
+    free(conn);
 }
 
 /* Auth gate for unauthenticated connections: the inbox must hold exactly a
@@ -806,76 +889,18 @@ bool break_net_quic_server_step(BreakNetQuicServer *s, u32 timeout_ms) {
     if (s == NULL) {
         return false;
     }
-    bool progress = false;
+    /* The engine drives the socket, the listener demuxes/accepts/reclaims,
+     * and the service hook services every accepted adapter (all snow). */
+    size_t datagrams = 0u;
+    SnowUdpEngineStep(s->engine, (int)timeout_ms, &datagrams);
+
+    /* Module pass: lifecycle events, auth, framing, application sends. */
     u64 now = bnq_now_ns(NULL);
-
-    /* Service first: collect the nearest deadline across connections. */
-    u64 wait_ns = (u64)timeout_ms * UINT64_C(1000000);
     for (u32 i = 0u; i < s->max_connections; i++) {
-        BreakNetQuicConn *conn = s->slots[i];
-        if (conn == NULL || conn->adapter == NULL) {
-            continue;
-        }
-        u64 deadline = 0u;
-        SnowQuicNgtcp2Service(conn->adapter, now, &deadline);
-        if (deadline != 0u && deadline > now && deadline - now < wait_ns) {
-            wait_ns = deadline - now;
-        }
-    }
-
-    struct pollfd pfd;
-    pfd.fd = s->fd;
-    pfd.events = POLLIN;
-    pfd.revents = 0;
-    int pr = poll(&pfd, 1u, (int)(wait_ns / UINT64_C(1000000)));
-    if (pr > 0 && (pfd.revents & POLLIN) != 0) {
-        for (u32 budget = 0u; budget < BNQ_RECV_BUDGET_PER_STEP; budget++) {
-            u8 packet[SNOW_QUIC_NGTCP2_MAX_PACKET];
-            struct sockaddr_in src;
-            socklen_t srclen = sizeof(src);
-            ssize_t n = recvfrom(s->fd, packet, sizeof(packet), 0,
-                                 (struct sockaddr *)&src, &srclen);
-            if (n <= 0) {
-                break; /* EAGAIN: drained */
-            }
-            progress = true;
-            now = bnq_now_ns(NULL);
-            SnowTransportDatagramAddress remote = bnq_addr_from(&src);
-            struct sockaddr_in me;
-            socklen_t melen = sizeof(me);
-            if (getsockname(s->fd, (struct sockaddr *)&me, &melen) != 0) {
-                s->dropped++;
-                continue;
-            }
-            SnowTransportDatagramAddress local = bnq_addr_from(&me);
-            BreakNetQuicConn *conn = NULL;
-            for (u32 i = 0u; i < s->max_connections; i++) {
-                if (s->slots[i] != NULL &&
-                    bnq_addr_equal(&s->slots[i]->remote, &remote)) {
-                    conn = s->slots[i];
-                    break;
-                }
-            }
-            if (conn != NULL) {
-                if (SnowQuicNgtcp2InputPath(conn->adapter, packet, (size_t)n,
-                                            local, remote, now) != SNOW_OK) {
-                    s->dropped++;
-                }
-            } else {
-                bnq_server_accept(s, &local, &remote, packet, (size_t)n, now);
-            }
-        }
-    }
-
-    /* Service again: handshakes, streams, timers; then lifecycle. */
-    now = bnq_now_ns(NULL);
-    for (u32 i = 0u; i < s->max_connections; i++) {
-        BreakNetQuicConn *conn = s->slots[i];
+        BreakNetQuicConn *conn = s->conns[i];
         if (conn == NULL) {
             continue;
         }
-        u64 deadline = 0u;
-        SnowQuicNgtcp2Service(conn->adapter, now, &deadline);
         if (conn->handshake_done && !conn->connect_posted) {
             conn->connect_posted = true;
             bnq_event_post(&s->events, BREAK_NET_QUIC_EVENT_CONNECT, 0u,
@@ -916,17 +941,10 @@ bool break_net_quic_server_step(BreakNetQuicServer *s, u32 timeout_ms) {
                 SnowQuicNgtcp2Close(conn->adapter);
             }
         }
-        if (SnowQuicNgtcp2IsClosingOrDraining(conn->adapter)) {
-            conn->close_reported = true;
-        }
     }
-    /* Reclaim terminal slots (posts DISCONNECT). */
-    for (u32 i = 0u; i < s->max_connections; i++) {
-        if (s->slots[i] != NULL && s->slots[i]->close_reported) {
-            bnq_server_reclaim(s, i);
-        }
-    }
-    return progress;
+    /* Terminal detection and reclaim are the listener's job: it reports
+     * through bnq_server_disconnected during the engine's service pass. */
+    return datagrams > 0u;
 }
 
 bool break_net_quic_server_poll_event(BreakNetQuicServer *s,
@@ -943,8 +961,8 @@ BreakNetQuicConn *break_net_quic_server_conn(BreakNetQuicServer *s,
         return NULL;
     }
     for (u32 i = 0u; i < s->max_connections; i++) {
-        if (s->slots[i] != NULL && s->slots[i]->conn_id == conn_id) {
-            return s->slots[i];
+        if (s->conns[i] != NULL && s->conns[i]->conn_id == conn_id) {
+            return s->conns[i];
         }
     }
     return NULL;
@@ -981,7 +999,23 @@ void break_net_quic_conn_close(BreakNetQuicServer *s, BreakNetQuicConn *conn) {
 }
 
 u64 break_net_quic_server_dropped_datagrams(const BreakNetQuicServer *s) {
-    return s != NULL ? s->dropped : 0u;
+    if (s == NULL) {
+        return 0u;
+    }
+    return s->dropped + s->listener.datagrams_dropped +
+           s->listener.accept_rejects;
+}
+
+u64 break_net_quic_server_retry_requests(const BreakNetQuicServer *s) {
+    return s != NULL ? s->listener.retry_requests : 0u;
+}
+
+u64 break_net_quic_server_accepts(const BreakNetQuicServer *s) {
+    return s != NULL ? s->listener.accepts : 0u;
+}
+
+u64 break_net_quic_server_reclaims(const BreakNetQuicServer *s) {
+    return s != NULL ? s->listener.reclaims : 0u;
 }
 
 u64 break_net_quic_server_events_overflow(const BreakNetQuicServer *s) {
@@ -993,12 +1027,20 @@ void break_net_quic_server_destroy(BreakNetQuicServer **server) {
         return;
     }
     BreakNetQuicServer *s = *server;
-    if (s->slots != NULL) {
-        for (u32 i = 0u; i < s->max_connections; i++) {
-            bnq_conn_free(s->slots[i]);
-        }
-        free(s->slots);
+    if (s->engine != NULL) {
+        /* Detach finalizes every accepted adapter and reports each live
+         * connection through bnq_server_disconnected (which frees the module
+         * state and clears its conns entry). */
+        SnowQuicUdpServerDetach(s->engine, (SnowSocketFd)s->fd, &s->listener);
+        SnowUdpEngineDestroy(s->engine);
     }
+    if (s->conns != NULL) {
+        for (u32 i = 0u; i < s->max_connections; i++) {
+            bnq_conn_free(s->conns[i]); /* NULL-safe */
+        }
+        free(s->conns);
+    }
+    free(s->slots);
     if (s->fd >= 0) {
         close(s->fd);
     }

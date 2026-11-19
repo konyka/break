@@ -159,19 +159,25 @@ Server side:
 | Idle | `max_idle_timeout_ms` (default 30 s) | adapter transport parameter |
 | Test synchronization | port-0 + condition polling, no fixed sleeps | all tests |
 
-## 6. Relationship to Snowflake's udp_engine listener
+## 6. Snowflake udp_engine listener (delivered)
 
-Snowflake ships a fuller server path — `snow_quic_udp_server_t` over
-`snow_udp_engine` — with CID-based routing, Retry budgets, stateless reset,
-and slot reclamation. It requires the caller to inject a complete poller/IO
-vtable (poller_create/add/wait, recv/send hooks; udp_engine ABI v15). v1 does
-not consume it because break_net_quic's step model needs exactly one socket
-per endpoint and no second event system next to the engine's own loops; the
-v1 demux mirrors the listener's documented first-cut semantics (source-address
-key, IPv4) including its known limitation (a client reboot reusing a port
-collides with its old slot until idle/close reclaims it). Migrating the server
-side onto `snow_quic_udp_server_t` is the planned hardening slice and is a
-module-internal change — the public API (§7) is unaffected.
+The server side runs on Snowflake's own network machinery: a `SnowUdpEngine`
+with the platform-default IO backend (poller + recv/send supplied by snow,
+no hand-written shims) and the pinned `SnowQuicUdpServer` listener attached
+to the bound socket. The listener owns datagram demux (source address with
+the CID fallback for stragglers), accept, slot reclaim, and its service hook
+drives every accepted adapter inside the engine step. The module keeps only
+the session/framing/event logic; the public API (§7) is unchanged by the
+migration.
+
+Enabled by default on every server: the Retry policy and stateless resets,
+both keyed by per-boot CSPRNG secrets (tokens/resets intentionally do not
+survive a restart). Evidence: `retry_requests` counter asserted on the echo
+path (the tokenless Initial draws a Retry before accept); accepts/reclaims
+are exposed for observability. Known limit inherited from the pinned
+listener: the demux key is the source address (full CID routing is a planned
+upstream slice); a client reboot reusing a port collides with its old slot
+until idle/close reclaims it.
 
 ## 7. Public interface (v1)
 
@@ -220,10 +226,11 @@ same loopback echo (dual-language policy, Build_Guide §1.1).
   break_http's v1 posture).
 - **IPv4 only**, matching the pinned adapter's accept contract.
 - **No mTLS at the QUIC/TLS layer** (§4): use CHALLENGE/AUTH-v2 on top.
-- **No Retry/address validation in v1** (§4): Internet-facing deployments must
-  enable the adapter's retry policy first.
-- **Source-address demux** (§6): client reboot with a reused port collides
-  until the old slot is reclaimed; CID routing comes with the listener slice.
+- Retry/address validation is on by default (§6, per-boot secret); 0-RTT
+  resumption and early data stay unwired (the adapter supports them).
+- **Source-address demux** (§6): inherited from the pinned listener; client
+  reboot with a reused port collides until the old slot is reclaimed. Full
+  CID routing is a planned upstream slice.
 - **No 0-RTT / session resumption** wired (adapter supports it via
   `snow_quic_ngtcp2_server_tls_t`; v1 uses per-connection contexts).
 - **No connection migration** surfaced to the app.
@@ -231,8 +238,7 @@ same loopback echo (dual-language policy, Build_Guide §1.1).
 
 ## 9. NOT delivered
 
-- `snow_quic_udp_server_t` listener migration (§6), Retry policy wiring,
-  stateless reset secrets.
+- Connection migration surfaced to the app, multi-stream APIs.
 - QUIC datagrams + `break_replay_window` wiring (§3).
 - Reactor integration (THREAD mode) with the TCP break_net reactor.
 - 0-RTT resumption, migration, multi-stream APIs, per-stream prioritization.
@@ -278,6 +284,11 @@ ctest --test-dir build-quic -R break_net_quic --output-on-failure
   carried the Google-style API rename migration, the ALPN fail-closed fix
   `5fab267e`, the 256 KiB window fix `696a1ec5`, and the SIGPIPE socket
   suppression `a90215bf` upstream).
+- Listener migration evidence (2026-11-19): the server now runs on
+  `SnowUdpEngine` + `SnowQuicUdpServer` with Retry and stateless reset on
+  by default; test_break_net_quic 12/12 unchanged plus the retry_requests
+  assertion, test_break_net_quic_cpp20 echo+auth green, 5/5 repeated runs,
+  full non-graphics suite 413/413 under parallel load.
 - Environment evidence: macOS arm64 + OpenSSL 4.0.3 (self-built,
   `-DOPENSSL_ROOT_DIR`), QUICv1 / TLS_AES_256_GCM_SHA384 loopback verified
   via raw OpenSSL 4.x API (2026-11-08 smoke) and via the snow adapter

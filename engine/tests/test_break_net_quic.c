@@ -175,6 +175,9 @@ static bool test_handshake_echo(void) {
     BreakNetQuicEvent ev;
     ASSERT_TRUE(get_connect_event(&p, &ev));
     ASSERT_EQ_U(ev.type, BREAK_NET_QUIC_EVENT_CONNECT);
+    /* The listener's Retry policy (per-boot secret) answered the tokenless
+     * Initial before accepting: the counter proves the path is live. */
+    ASSERT_TRUE(break_net_quic_server_retry_requests(p.server) >= 1u);
     u32 conn_id = ev.conn_id;
     BreakNetQuicConn *conn = break_net_quic_server_conn(p.server, conn_id);
     ASSERT_TRUE(conn != NULL);
