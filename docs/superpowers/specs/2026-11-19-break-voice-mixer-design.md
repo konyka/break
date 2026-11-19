@@ -30,4 +30,5 @@ Out of scope: gain per source, wiring the mixer into core_app (core_app has no c
 
 - RED (stub: 0/6) then GREEN (6/6) in `test_break_voice_mixer`.
 - Mutations: no saturation; eviction ignoring the idle timeout; `concealed` set when any input was concealed. Each fails a test.
-- Note: the summed receiver stats cover live sources only; an evicted source's counts go with its receiver.
+- Note (superseded after review): the summed receiver stats first covered live sources only.
+- Review (Ready, no Critical). Fixes: a removed source's receiver counts are folded into the mixer, so the summed stats never decrease; a frame above `BREAK_VOICE_MAX_DATAGRAM_SIZE` returns INVALID before taking an entry; destroy off the owner thread is a no-op. Header now documents the idle timeout vs jitter delay, one pop per frame period, and malformed frames taking an entry. Five new tests (11 total); four mutations (no fold, no size check, no destroy owner check, evict the first idle source) each fail a test.

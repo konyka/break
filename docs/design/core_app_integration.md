@@ -1745,4 +1745,6 @@ loopback 测试：对端 A、A2、F（late_auth 模式下为 G）各自恰好收
 - **stats**：`sources`、`sources_created`、`sources_evicted`、`sources_refused`、`mixed_frames`、`clipped_samples`，以及当前来源接收器的 `accepted`/`played`/`concealed`/`invalid` 之和（被淘汰来源的计数随其接收器一起丢弃）。
 - **测试**：`test_break_voice_mixer` 6 项：两路精确相加；饱和与计数；仅全部补偿时标记 concealed；参数、配置与线程校验；来源上限、空闲淘汰与超时 0 不淘汰；一路畸形帧不影响其他来源。变异（不饱和、淘汰忽略超时、任一补偿就标记 concealed）都判红。
 
+- **评审后的修改**（独立评审结论 Ready，无 Critical）：被移除来源的接收器计数在移除时累加进混音器，`accepted`/`played`/`concealed`/`invalid` 改为统计全部来源、不再随淘汰减少；超过 `BREAK_VOICE_MAX_DATAGRAM_SIZE` 的帧在占用来源表之前返回 INVALID；destroy 在 owner 线程以外调用时什么都不做（与接收器一致，不再泄漏接收器）；内部函数改名为 `mixer_find_or_add`。头文件补充说明：`idle_timeout_ms` 应大于 `stream.jitter_delay_ms`，pop 每个帧周期调用一次，畸形帧仍会为新来源占用一个位置。新增 5 项测试（共 11 项）：淘汰空闲最久的来源、淘汰后计数保留、超长帧不占位置、stats 与 destroy 的线程校验、16 路同时混音。四个变异（移除时不累加、不检查长度、destroy 不检查线程、淘汰第一个空闲来源）都判红。
+
 仍缺：core_app 没有客户端模式，混音器尚未接入应用；每来源增益；漂移补偿；Opus；真实声学验证。

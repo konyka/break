@@ -2,6 +2,7 @@
 
 - **交付**：`break_online` 新增 `BreakVoiceMixer`（`src/network/break_voice_mixer.h/.c`）。每个来源会话一个 `BreakVoiceReceiver`（第一帧时创建），最多 16 个来源；满时淘汰空闲至少 `idle_timeout_ms` 且空闲最久的来源，否则 OVERLOAD 并计 `sources_refused`。pop 按插入顺序以 i32 累加各来源到期的帧并饱和到 i16（计 `clipped_samples`），只有全部参与帧都是补偿帧时输出标记 concealed。只允许创建线程调用。设计与计划见 `docs/superpowers/specs/2026-11-19-break-voice-mixer-design.md`、`docs/superpowers/plans/2026-11-19-break-voice-mixer.md`。
 - **TDD**：新 ctest `test_break_voice_mixer`（6 项）先 RED（桩实现 0/6）后 GREEN。三个变异（不饱和、淘汰忽略空闲超时、任一补偿就标记 concealed）都判红。
+- **评审**：独立评审结论 Ready。按意见修复：淘汰后接收器计数保留（不再减少）、超长帧在占位前返回 INVALID、owner 线程以外的 destroy 不做任何事；测试增至 11 项，四个新变异都判红。
 - **边界**：core_app 没有客户端模式，混音器未接入应用；没有每来源增益；所有来源共用一种流格式。
 
 ## Core App 运行中切换采集设备（2026-11-19）

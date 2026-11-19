@@ -21,6 +21,8 @@ struct BreakVoiceMixer {
     u32 count;
     u32 next_sequence;
     BreakVoiceMixerStats stats;
+    /* receiver counts of the sources already removed */
+    BreakVoiceReceiverStats removed;
 };
 
 static bool mixer_owner(const BreakVoiceMixer *mixer)
@@ -57,14 +59,24 @@ BreakRuntimeError break_voice_mixer_create(const BreakVoiceMixerConfig *config,
 
 void break_voice_mixer_destroy(BreakVoiceMixer *mixer)
 {
-    if (!mixer) return;
-    for (u32 i = 0u; i < mixer->count; ++i) break_voice_receiver_destroy(mixer->sources[i].receiver);
+    if (!mixer || !mixer_owner(mixer)) return;
+    for (u32 i = 0u; i < mixer->count; ++i) {
+        break_voice_receiver_destroy(mixer->sources[i].receiver);
+    }
     free(mixer->sources);
     free(mixer);
 }
 
 static void mixer_remove(BreakVoiceMixer *mixer, u32 index)
 {
+    BreakVoiceReceiverStats receiver;
+    if (break_voice_receiver_stats(mixer->sources[index].receiver, &receiver) ==
+        BREAK_RUNTIME_OK) {
+        mixer->removed.accepted += receiver.accepted;
+        mixer->removed.played += receiver.played;
+        mixer->removed.concealed += receiver.concealed;
+        mixer->removed.invalid += receiver.invalid;
+    }
     break_voice_receiver_destroy(mixer->sources[index].receiver);
     memmove(&mixer->sources[index], &mixer->sources[index + 1u],
             (mixer->count - index - 1u) * sizeof(*mixer->sources));
@@ -89,8 +101,8 @@ static i32 mixer_evictable(const BreakVoiceMixer *mixer, u64 now_ms)
     return chosen;
 }
 
-static BreakRuntimeError mixer_source(BreakVoiceMixer *mixer, u64 session, u64 now_ms,
-                                      MixerSource **out)
+static BreakRuntimeError mixer_find_or_add(BreakVoiceMixer *mixer, u64 session, u64 now_ms,
+                                           MixerSource **out)
 {
     for (u32 i = 0u; i < mixer->count; ++i) {
         if (mixer->sources[i].session == session) {
@@ -123,10 +135,13 @@ static BreakRuntimeError mixer_source(BreakVoiceMixer *mixer, u64 session, u64 n
 BreakRuntimeError break_voice_mixer_push(BreakVoiceMixer *mixer, u64 source,
                                          const void *bytes, u32 size, u64 now_ms)
 {
-    if (!mixer || !bytes || size == 0u || source == 0u) return BREAK_RUNTIME_INVALID;
+    if (!mixer || !bytes || size == 0u || size > BREAK_VOICE_MAX_DATAGRAM_SIZE ||
+        source == 0u) {
+        return BREAK_RUNTIME_INVALID;
+    }
     if (!mixer_owner(mixer)) return BREAK_RUNTIME_REJECTED;
     MixerSource *entry = NULL;
-    BreakRuntimeError result = mixer_source(mixer, source, now_ms, &entry);
+    BreakRuntimeError result = mixer_find_or_add(mixer, source, now_ms, &entry);
     if (result != BREAK_RUNTIME_OK) return result;
     entry->last_push_ms = now_ms;
     result = break_voice_receiver_push(entry->receiver, bytes, size);
@@ -185,7 +200,10 @@ BreakRuntimeError break_voice_mixer_stats(BreakVoiceMixer *mixer, BreakVoiceMixe
     if (!mixer_owner(mixer)) return BREAK_RUNTIME_REJECTED;
     BreakVoiceMixerStats stats = mixer->stats;
     stats.sources = mixer->count;
-    stats.accepted = stats.played = stats.concealed = stats.invalid = 0u;
+    stats.accepted = mixer->removed.accepted;
+    stats.played = mixer->removed.played;
+    stats.concealed = mixer->removed.concealed;
+    stats.invalid = mixer->removed.invalid;
     for (u32 i = 0u; i < mixer->count; ++i) {
         BreakVoiceReceiverStats receiver;
         const BreakRuntimeError result =

@@ -243,7 +243,114 @@ TEST(mixer_ignores_a_malformed_frame_from_one_source)
     break_voice_mixer_destroy(mixer);
 }
 
+TEST(mixer_evicts_the_source_idle_longest)
+{
+    BreakVoiceMixer *mixer = make_mixer(3u, 100u);
+    ASSERT_NOT_NULL(mixer);
+    ASSERT_EQ(push_tone(mixer, 1u, 0u, 1, 50u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(push_tone(mixer, 2u, 0u, 1, 0u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(push_tone(mixer, 3u, 0u, 1, 300u), BREAK_RUNTIME_OK);
+    /* at 200 ms sources 1 (150 ms) and 2 (200 ms) are both idle: 2 goes */
+    ASSERT_EQ(push_tone(mixer, 4u, 0u, 1, 200u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(push_tone(mixer, 1u, 1u, 1, 200u), BREAK_RUNTIME_OK);
+    BreakVoiceMixerStats stats = mixer_stats(mixer);
+    ASSERT_EQ(stats.sources, 3u);
+    ASSERT_EQ(stats.sources_created, 4u);
+    /* source 2 is gone, so it needs a free entry and finds none */
+    ASSERT_EQ(push_tone(mixer, 2u, 1u, 1, 200u), BREAK_RUNTIME_OVERLOAD);
+    break_voice_mixer_destroy(mixer);
+}
+
+TEST(mixer_receiver_counts_survive_an_eviction)
+{
+    BreakVoiceMixer *mixer = make_mixer(1u, 10u);
+    ASSERT_NOT_NULL(mixer);
+    ASSERT_EQ(push_tone(mixer, 1u, 0u, 1, 0u), BREAK_RUNTIME_OK);
+    const u8 garbage[5] = {1u, 2u, 3u, 4u, 5u};
+    ASSERT_EQ(break_voice_mixer_push(mixer, 1u, garbage, sizeof(garbage), 0u),
+              BREAK_RUNTIME_OK);
+    BreakVoicePlayback out;
+    bool ready = false;
+    ASSERT_EQ(break_voice_mixer_pop(mixer, 0u, &out, &ready), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(ready);
+    ASSERT_EQ(push_tone(mixer, 2u, 0u, 1, 50u), BREAK_RUNTIME_OK);
+    const BreakVoiceMixerStats stats = mixer_stats(mixer);
+    ASSERT_EQ(stats.sources_evicted, 1u);
+    ASSERT_EQ(stats.accepted, 2u);
+    ASSERT_EQ(stats.played, 1u);
+    ASSERT_EQ(stats.invalid, 1u);
+    break_voice_mixer_destroy(mixer);
+}
+
+TEST(mixer_refuses_an_oversized_frame_without_taking_an_entry)
+{
+    BreakVoiceMixer *mixer = make_mixer(1u, 0u);
+    ASSERT_NOT_NULL(mixer);
+    u8 big[BREAK_VOICE_MAX_DATAGRAM_SIZE + 1u];
+    memset(big, 0, sizeof(big));
+    ASSERT_EQ(break_voice_mixer_push(mixer, 7u, big, sizeof(big), 0u), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_voice_mixer_push(mixer, 7u, big, 0u, 0u), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(mixer_stats(mixer).sources, 0u);
+    ASSERT_EQ(mixer_stats(mixer).sources_created, 0u);
+    /* the single entry is still free for a well-formed frame */
+    ASSERT_EQ(push_tone(mixer, 8u, 0u, 1, 0u), BREAK_RUNTIME_OK);
+    break_voice_mixer_destroy(mixer);
+}
+
+typedef struct ElsewhereStats {
+    BreakVoiceMixer *mixer;
+    BreakRuntimeError stats;
+} ElsewhereStats;
+
+static PLATFORM_THREAD_RET stats_and_destroy_elsewhere(PLATFORM_THREAD_ARG argument)
+{
+    ElsewhereStats *other = (ElsewhereStats *)argument;
+    BreakVoiceMixerStats stats;
+    other->stats = break_voice_mixer_stats(other->mixer, &stats);
+    break_voice_mixer_destroy(other->mixer);
+    return PLATFORM_THREAD_RETURN;
+}
+
+TEST(mixer_stats_and_destroy_stay_on_the_owner_thread)
+{
+    BreakVoiceMixer *mixer = make_mixer(4u, 0u);
+    ASSERT_NOT_NULL(mixer);
+    ASSERT_EQ(push_tone(mixer, 1u, 0u, 1, 0u), BREAK_RUNTIME_OK);
+    ElsewhereStats other = {mixer, BREAK_RUNTIME_OK};
+    PlatformThread thread;
+    ASSERT_TRUE(platform_thread_create(&thread, stats_and_destroy_elsewhere, &other));
+    platform_thread_join(thread);
+    ASSERT_EQ(other.stats, BREAK_RUNTIME_REJECTED);
+    /* destroy off the owner thread is a no-op: the mixer still works */
+    ASSERT_EQ(push_tone(mixer, 2u, 0u, 1, 0u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(mixer_stats(mixer).sources, 2u);
+    break_voice_mixer_destroy(mixer);
+}
+
+TEST(mixer_sums_every_source_at_the_limit)
+{
+    BreakVoiceMixer *mixer = make_mixer(BREAK_VOICE_MIXER_MAX_SOURCES, 0u);
+    ASSERT_NOT_NULL(mixer);
+    for (u32 i = 0u; i < BREAK_VOICE_MIXER_MAX_SOURCES; ++i) {
+        ASSERT_EQ(push_tone(mixer, 100u + i, 0u, 1000, 0u), BREAK_RUNTIME_OK);
+    }
+    BreakVoicePlayback out;
+    bool ready = false;
+    ASSERT_EQ(break_voice_mixer_pop(mixer, 0u, &out, &ready), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(ready);
+    for (u32 i = 0u; i < 10u; ++i) {
+        ASSERT_EQ(out.samples[i], (i16)(BREAK_VOICE_MIXER_MAX_SOURCES * (1000u + i)));
+    }
+    ASSERT_EQ(mixer_stats(mixer).clipped_samples, 0u);
+    break_voice_mixer_destroy(mixer);
+}
+
 TEST_MAIN_BEGIN()
+    RUN_TEST(mixer_evicts_the_source_idle_longest);
+    RUN_TEST(mixer_receiver_counts_survive_an_eviction);
+    RUN_TEST(mixer_refuses_an_oversized_frame_without_taking_an_entry);
+    RUN_TEST(mixer_stats_and_destroy_stay_on_the_owner_thread);
+    RUN_TEST(mixer_sums_every_source_at_the_limit);
     RUN_TEST(mixer_sums_two_sources_exactly);
     RUN_TEST(mixer_saturates_and_counts_clipped_samples);
     RUN_TEST(mixer_output_is_concealed_only_when_every_input_is);
