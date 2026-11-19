@@ -1108,7 +1108,7 @@ slice 3 时关卡只产生 LISTENER 与卸载时的 STOP，真实进程里 `play
 
 - 引擎 `audio.h` 新增两个只读查询：`audio_system_backend_name`（miniaudio 实际打开的后端名，如 `PulseAudio`、`ALSA`、`WASAPI`、`Null`；FAKE 系统报 `fake`，NULL 指针报 `none`）与 `audio_system_device_name`（播放设备名，无设备时写 `none` 并返回 false）。
 - `core_app_audio_start_device(audio, trace, require_device, asset_root)` 用 `AUDIO_BACKEND_DEFAULT` 打开默认播放设备。后端名是 `Null`、`fake` 或 `none` 时不算设备：销毁系统，写 `result=unavailable backend=<名称> fallback=null|none`，required 时返回 UNAVAILABLE（进程退出 77），optional 时降级为 null 泵。
-- 打开到真实后端后，以 0.25 音量播放一次 `asset_root/tone.wav` 作为探测源，写 `result=ready backend=<后端> device=<设备> probe_source=<id>`。`tone.wav` 无法播放时返回 FAILED，不降级。
+- 打开到真实后端后，以 0.25 音量播放一次 `asset_root/tone.wav` 作为探测源，写 `result=ready backend=<后端> device=<设备> probe_source=<id>`。`tone.wav` 无法播放时返回 FAILED，不降级。backend 字段是机器解析的单 token（空格归一化为 `_`，与运行时设备切换行同名设备字段的约定一致）：miniaudio 原生名 `Core Audio` 落 trace 为 `Core_Audio`，保证 `backend=[^ \n]+` 类契约在 macOS 上成立（2026-11-19 修复，两个 core_app 音频契约用例）。设备名字段保留原始空格。
 - `core_app_audio_destroy`（停机最后一步，在 join 之后）最多轮询 400×5 ms 等探测音结束，记录游标秒数，停止源并销毁 `AudioSystem`，写 `result=stopped backend=<后端> probe_complete=0|1 probe_seconds=<s>`。
 - `core_app_audio_start_device_backend` 是同一合同、显式传引擎后端的入口，单测用 NULL/FAKE 确定性地走 unavailable 分支。
 - config 校验不再拒绝 `--audio=device --require-device`。

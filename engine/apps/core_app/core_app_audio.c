@@ -182,6 +182,13 @@ static BreakRuntimeError sound_attach(CoreAppAudio *audio, FILE *trace, AudioSys
     audio->max_reopen_failures = CORE_APP_AUDIO_MAX_REOPEN_FAILURES;
     snprintf(audio->device_backend, sizeof(audio->device_backend), "%s",
              audio_system_backend_name(system));
+    /* The trace is a machine-parsed contract: the backend field must be one
+     * token (tests match backend=[^ \n]+). miniaudio reports e.g. "Core
+     * Audio" with a space, which broke those contracts on macOS; use the
+     * same space-to-underscore convention as runtime device-switch lines. */
+    for (char *p = audio->device_backend; *p != '\0'; ++p) {
+        if (*p == ' ') *p = '_';
+    }
     (void)audio_system_device_name(system, audio->device_name, sizeof(audio->device_name));
     if (break_trace_core_app_fprintf(trace, "COREAPPTRACE version=1 event=audio mode=device result=ready "
                        "backend=%s device=%s probe_source=%u\n",
