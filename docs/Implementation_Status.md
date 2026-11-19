@@ -1,3 +1,9 @@
+## 对端语音混音器（2026-11-19）
+
+- **交付**：`break_online` 新增 `BreakVoiceMixer`（`src/network/break_voice_mixer.h/.c`）。每个来源会话一个 `BreakVoiceReceiver`（第一帧时创建），最多 16 个来源；满时淘汰空闲至少 `idle_timeout_ms` 且空闲最久的来源，否则 OVERLOAD 并计 `sources_refused`。pop 按插入顺序以 i32 累加各来源到期的帧并饱和到 i16（计 `clipped_samples`），只有全部参与帧都是补偿帧时输出标记 concealed。只允许创建线程调用。设计与计划见 `docs/superpowers/specs/2026-11-19-break-voice-mixer-design.md`、`docs/superpowers/plans/2026-11-19-break-voice-mixer.md`。
+- **TDD**：新 ctest `test_break_voice_mixer`（6 项）先 RED（桩实现 0/6）后 GREEN。三个变异（不饱和、淘汰忽略空闲超时、任一补偿就标记 concealed）都判红。
+- **边界**：core_app 没有客户端模式，混音器未接入应用；没有每来源增益；所有来源共用一种流格式。
+
 ## Core App 运行中切换采集设备（2026-11-19）
 
 - **交付**：scenario 新命令 `TICK voice-capture-device NAME` 与 `TICK voice-capture-device`（切回默认输入），名称规则与 `audio-device` 相同。`core_app_voice_request_capture_device` 把名称放入单槽请求，语音泵线程在下一次 pump 时调用 `audio_capture_reopen`；未知名称被拒且旧输入继续采集，不退回默认；切换成功后之后的丢失恢复重开新名称。结果写 `event=voice_capture_device result=switched device=NAME|default`、`result=rejected reason=device_name` 或 `result=failed`；没有 voice lane 时写 `result=rejected tick=N reason=mode`。voice `result=stopped` 行追加 `capture_switches`、`capture_switch_rejected`、`capture_switch_failures`。设计与计划见 `docs/superpowers/specs/2026-11-19-core-app-runtime-capture-switch-design.md`、`docs/superpowers/plans/2026-11-19-core-app-runtime-capture-switch.md`。

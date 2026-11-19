@@ -25,3 +25,9 @@ New component in `break_online` (`src/network/break_voice_mixer.h/.c`), same own
 6. Mutations: summing without saturation; eviction ignoring the idle timeout; `concealed` set when any input was concealed.
 
 Out of scope: gain per source, wiring the mixer into core_app (core_app has no client mode), resampling between sources of different rates (all sources share one stream format).
+
+## Result
+
+- RED (stub: 0/6) then GREEN (6/6) in `test_break_voice_mixer`.
+- Mutations: no saturation; eviction ignoring the idle timeout; `concealed` set when any input was concealed. Each fails a test.
+- Note: the summed receiver stats cover live sources only; an evicted source's counts go with its receiver.

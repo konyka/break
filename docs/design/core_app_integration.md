@@ -1736,3 +1736,13 @@ loopback 测试：对端 A、A2、F（late_auth 模式下为 G）各自恰好收
 验证：`test_core_app_voice` 16 项（新增 2 项），`test_core_app_runtime` 60 项（新增 1 项），本机真实设备切换通过。变异（未知名称退回默认、待处理请求被覆盖、槽位不释放）都判红。
 
 仍缺：UI 或控制台入口、对端语音混音、漂移补偿、Opus、真实声学验证。
+
+## 补充（2026-11-19）：对端语音混音
+
+- **组件**：`src/network/break_voice_mixer.h/.c`，编入 `break_online`。`BreakVoiceMixerConfig` 包含所有来源共用的 `stream`（`BreakVoiceStreamConfig`）、`max_sources`（1..16）和 `idle_timeout_ms`（0 表示从不淘汰）。create 用一个临时接收器校验流格式，并分配来源表；每个来源的接收器在其第一帧时创建。只允许创建线程调用（其他线程 REJECTED）。
+- **push**：`break_voice_mixer_push(mixer, source, bytes, size, now_ms)`，source 为非零会话号（与 `0x4007` 转发头中的来源一致）。新来源占用空位；没有空位时淘汰空闲时间至少为超时且空闲最久的来源（计 `sources_evicted`），否则返回 OVERLOAD 并计 `sources_refused`。帧交给该来源的接收器 push + pump；畸形帧返回 OK，由接收器计 `invalid`。
+- **pop**：`break_voice_mixer_pop` 从每个来源最多取一帧到期的播放帧，按插入顺序以 i32 累加，饱和到 i16 并计 `clipped_samples`。没有来源出帧时 `ready=false`；`sequence` 是混音器自己的帧计数；只有所有参与的帧都是补偿帧时 `concealed=true`。
+- **stats**：`sources`、`sources_created`、`sources_evicted`、`sources_refused`、`mixed_frames`、`clipped_samples`，以及当前来源接收器的 `accepted`/`played`/`concealed`/`invalid` 之和（被淘汰来源的计数随其接收器一起丢弃）。
+- **测试**：`test_break_voice_mixer` 6 项：两路精确相加；饱和与计数；仅全部补偿时标记 concealed；参数、配置与线程校验；来源上限、空闲淘汰与超时 0 不淘汰；一路畸形帧不影响其他来源。变异（不饱和、淘汰忽略超时、任一补偿就标记 concealed）都判红。
+
+仍缺：core_app 没有客户端模式，混音器尚未接入应用；每来源增益；漂移补偿；Opus；真实声学验证。

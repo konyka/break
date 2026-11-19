@@ -383,3 +383,4 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 - 2026-11-19 补充：core_app 服务端在语音进入抖动缓冲前按连接限速（`BreakMsgRate`，120 帧/秒、突发 64 帧），超限帧计 `voice_frames_rate_limited`，不进入接收器，也不会被转发。
 - 2026-11-19 补充：core_app 在运行中通过音频命令队列调用 `audio_system_switch_device`（scenario `audio-device [NAME]`），调用发生在音频 owner 线程上，满足“只能在 owner 线程调用”的约束。
 - 2026-11-19 补充：core_app 语音层在运行中通过单槽请求（`core_app_voice_request_capture_device`）调用 `audio_capture_reopen`，调用发生在语音泵线程上，满足“只能在泵线程调用”的约束；未知名称返回 REJECTED，旧设备保持运行。
+- 2026-11-19 补充：`BreakVoiceMixer`（`break_online`）把多个来源的 `BreakVoiceReceiver` 输出逐样本相加并饱和到 i16，`clipped_samples` 计饱和样本数；只有所有参与的帧都是补偿帧时输出才标记为 concealed。
