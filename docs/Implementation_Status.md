@@ -1,3 +1,9 @@
+## Core App 语音限速（2026-11-19）
+
+- **交付**：服务端为每个连接的语音（`0x4006`）设一个 `BreakMsgRate` 令牌桶：每秒 120 帧（一路 10 ms 语音是 100 帧/秒，留 20% 余量），突发 64 帧（等于抖动缓冲大小）；字节桶按同样帧数的整帧 BRV1 计算，所以起作用的是帧桶。限速在接收器 push 之前检查，超限帧计 `voice_frames_rate_limited`，不解码、不计接收、不转发，连接保持。限速器在该连接第一条语音时创建，接收器释放时复位。会话层的通用限速仍关闭，因为它会同时限制快照、物理和时钟消息。设计与计划见 `docs/superpowers/specs/2026-11-19-core-app-voice-rate-limit-design.md`、`docs/superpowers/plans/2026-11-19-core-app-voice-rate-limit.md`。
+- **TDD**：`test_core_app_net_transport`（stats 行尾）与新 ctest `test_core_app_network_voice_flood` 先 RED 后 GREEN。端到端：A 一次发 200 帧，服务端接受 64 帧、限速 136 帧，转发给 B 64 帧，B 恰好收到 64 帧，A 的连接保持。已有 voice、voice_relay、voice_relay_off、voice_mute 合同都要求 `voice_frames_rate_limited=0`。两个变异（不检查限速、每条消息都重置限速器）都判红。全量 451/451；开启网络的 ASan+UBSan 树相关 13 项通过。
+- **边界**：限额不可配置；不关闭持续超限的连接；其他消息 id 没有单独限速。
+
 ## Core App 按用户屏蔽语音（2026-11-19）
 
 - **交付**：新消息 `0x4008`（`BREAK_NET_MESSAGE_ID_CORE_VOICE_MUTE`，对端发往服务端，v1，`AUTHENTICATED`，`IDEMPOTENT`，恰好 16 B），默认注册表 count 变为 29 / 28。载荷为 magic "VMUT"、flags（bit 0 = 屏蔽，其余位必须为 0）、目标会话号（u64，非零）；编解码 `core_app_voice_mute_encode/decode`。服务端处理函数 `net_on_voice_mute` 为每个槽位维护最多 16 个被屏蔽的来源会话号，屏蔽与取消屏蔽都是幂等的；槽位释放或复用时清空。`net_send_voice_relay` 跳过屏蔽了该来源的接收方。`network_stats` 追加 `voice_mute_requests`、`voice_mute_rejected`、`voice_frames_muted`。设计与计划见 `docs/superpowers/specs/2026-11-19-core-app-voice-mute-design.md`、`docs/superpowers/plans/2026-11-19-core-app-voice-mute.md`。

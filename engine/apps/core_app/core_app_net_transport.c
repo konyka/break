@@ -3,6 +3,7 @@
 #include <network/break_net_adapter.h>
 #include <network/break_net_events.h>
 #include <network/break_net_message_registry.h>
+#include <network/break_msg_rate.h>
 #include <network/break_online_voice.h>
 #include <network/break_session.h>
 #include <physics/physics_sync.h>
@@ -93,6 +94,11 @@ _Static_assert(CORE_APP_VOICE_MUTE_BYTES == BREAK_NET_CORE_VOICE_MUTE_PAYLOAD,
 /* Source sessions one peer muted. Session ids are never reused, so an id
  * of a peer that left stays harmless until the slot is released. */
 #define CORE_APP_NET_VOICE_MUTE_CAPACITY 16u
+/* Voice a single connection may send: one 10 ms stream is 100 frames/s,
+ * plus 20% for jitter; the burst equals the jitter buffer. The byte bucket
+ * allows the same number of full BRV1 frames, so the frame bucket binds. */
+#define CORE_APP_NET_VOICE_RATE_PER_SEC 120u
+#define CORE_APP_NET_VOICE_RATE_BURST 64u
 
 static const u8 k_core_app_net_key_id[8] = {'c', 'o', 'r', 'e', 'a', 'p', 'p', '1'};
 
@@ -135,6 +141,7 @@ typedef struct CoreAppNetStats {
     u64 voice_mute_requests;
     u64 voice_mute_rejected;
     u64 voice_frames_muted;
+    u64 voice_frames_rate_limited;
 } CoreAppNetStats;
 
 typedef struct CoreAppNetRelayFrame {
@@ -187,6 +194,8 @@ struct CoreAppNetTransport {
     BreakSessionId session_ids[CORE_APP_NET_MAX_CONNECTIONS];
     u64 opened_us[CORE_APP_NET_MAX_CONNECTIONS];
     BreakVoiceReceiver *voice_receivers[CORE_APP_NET_MAX_CONNECTIONS];
+    BreakMsgRate voice_rates[CORE_APP_NET_MAX_CONNECTIONS];
+    bool voice_rate_ready[CORE_APP_NET_MAX_CONNECTIONS];
     BreakSessionId voice_mutes[CORE_APP_NET_MAX_CONNECTIONS][CORE_APP_NET_VOICE_MUTE_CAPACITY];
     u32 voice_mute_count[CORE_APP_NET_MAX_CONNECTIONS];
     bool voice_relay;
@@ -310,6 +319,7 @@ static void net_voice_play(CoreAppNetTransport *t, u32 slot, u64 now_ms, u32 max
 static void net_voice_release(CoreAppNetTransport *t, u32 slot) {
     BreakVoiceReceiver *receiver = t->voice_receivers[slot];
     BreakVoiceReceiverStats stats;
+    t->voice_rate_ready[slot] = false;
     if (!receiver) return;
     net_voice_play(t, slot, UINT64_MAX, CORE_APP_NET_VOICE_FLUSH_POPS);
     memset(&stats, 0, sizeof(stats));
@@ -655,8 +665,10 @@ static bool net_on_voice_mute(BreakConnectionKey connection, const BreakNetOwned
 /* Peer voice is decoded into the connection's jitter buffer at once, so the
  * receiver's inbox never holds more than this one message. The session
  * layer already admits 0x4006 only after AUTH; a slot that is closing (or
- * that no longer exists) refuses it. Malformed, duplicate and stale frames
- * are counted by the receiver and keep the session open. */
+ * that no longer exists) refuses it. A frame over the connection's voice
+ * rate limit is counted and dropped before it is decoded or relayed.
+ * Malformed, duplicate and stale frames are counted by the receiver and
+ * keep the session open. */
 static bool net_on_voice(BreakConnectionKey connection, const BreakNetOwnedMessage *message,
                          void *user) {
     CoreAppNetTransport *t = (CoreAppNetTransport *)user;
@@ -667,6 +679,19 @@ static bool net_on_voice(BreakConnectionKey connection, const BreakNetOwnedMessa
         return true;
     }
     const u64 now_ms = time_microseconds() / 1000u;
+    if (!t->voice_rate_ready[slot]) {
+        t->voice_rate_ready[slot] = break_msg_rate_init(
+            &t->voice_rates[slot], CORE_APP_NET_VOICE_RATE_PER_SEC,
+            CORE_APP_NET_VOICE_RATE_BURST,
+            CORE_APP_NET_VOICE_RATE_PER_SEC * BREAK_NET_CORE_VOICE_MAX_PAYLOAD,
+            CORE_APP_NET_VOICE_RATE_BURST * BREAK_NET_CORE_VOICE_MAX_PAYLOAD, now_ms);
+        if (!t->voice_rate_ready[slot]) return false;
+    }
+    if (break_msg_rate_admit(&t->voice_rates[slot], (u32)message->size, now_ms) !=
+        BREAK_MSG_RATE_OK) {
+        t->stats.voice_frames_rate_limited++;
+        return true;
+    }
     if (!t->voice_receivers[slot]) {
         BreakVoiceStreamConfig config;
         memset(&config, 0, sizeof(config));
@@ -1012,7 +1037,7 @@ static void net_trace_stats(CoreAppNetTransport *t) {
              " voice_frames_dropped=%" PRIu64 " voice_peak=%" PRIu64
              " voice_frames_relayed=%" PRIu64 " voice_relay_dropped=%" PRIu64
              " voice_mute_requests=%" PRIu64 " voice_mute_rejected=%" PRIu64
-             " voice_frames_muted=%" PRIu64 "\n",
+             " voice_frames_muted=%" PRIu64 " voice_frames_rate_limited=%" PRIu64 "\n",
              t->stats.opened, t->stats.closed, t->stats.refused, t->stats.authenticated,
              t->stats.snapshots_sent, t->stats.send_overloads, t->stats.send_closed,
              t->stats.outbox_overloads, t->stats.auth_timeouts, t->stats.decode_failed, t->inbox.accepted_snapshots,
@@ -1032,7 +1057,8 @@ static void net_trace_stats(CoreAppNetTransport *t) {
              t->stats.voice_frames_concealed, t->stats.voice_frames_dropped,
              t->stats.voice_peak, t->stats.voice_frames_relayed,
              t->stats.voice_relay_dropped, t->stats.voice_mute_requests,
-             t->stats.voice_mute_rejected, t->stats.voice_frames_muted);
+             t->stats.voice_mute_rejected, t->stats.voice_frames_muted,
+             t->stats.voice_frames_rate_limited);
     net_trace(t, line);
 }
 

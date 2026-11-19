@@ -1691,3 +1691,13 @@ loopback 测试：对端 A、A2、F（late_auth 模式下为 G）各自恰好收
 验证：全量 450/450；`build-voice-relay-asan`（ASan+UBSan，网络开启）相关 12 项通过。变异（转发忽略屏蔽、取消屏蔽不移除、解码不查未知 flag 位）都使 voice_mute 判红。
 
 仍缺：对端语音混音、语音专用限速、漂移补偿、运行中通过命令切换设备、Opus、真实声学验证。
+
+## 补充（2026-11-19）：语音限速
+
+- **限额**：`CORE_APP_NET_VOICE_RATE_PER_SEC` = 120 帧/秒（一路 10 ms 语音 100 帧/秒，加 20% 抖动余量），`CORE_APP_NET_VOICE_RATE_BURST` = 64 帧（与抖动缓冲容量相同）。字节桶为每秒 120 × 976 B、突发 64 × 976 B，任何合法帧都不会先触发字节限制。时钟用 transport 的 `time_microseconds() / 1000`，与抖动缓冲一致。
+- **服务端**：每个槽位一个 `BreakMsgRate`（`src/network/break_msg_rate.h`）和就绪标志。`net_on_voice` 在槽位检查与空载荷检查之后、接收器 push 之前初始化（第一条语音时）并检查限速；超限时计 `voice_frames_rate_limited` 并返回 true，帧不进入接收器，因此不计入 received、dropped，也不会被转发。`net_voice_release` 复位就绪标志，连接关闭或复用后桶重新装满。会话层的 `break_session_manager_set_message_rate` 保持关闭，因为它会同时限制快照、物理和时钟消息，而这些消息的速率不同。`network_stats` 追加 `voice_frames_rate_limited`。突发上限 64 帧大于 32 项的转发环：一次 pump 内集中到达的 64 帧最多转发 32 帧，其余计 `voice_relay_dropped`；按 100 帧/秒正常到达的语音流不会这样集中。
+- **合同**：`test_core_app_network.cmake` MODE=voice_flood（服务端加 `--voice-relay`）。A 以 TLS 能达到的最快速度连续发 200 帧，然后 A 和 B 各用时钟探测作屏障。要求 `voice_frames_rate_limited ≥ 1`、`voice_frames_received ≥ 64`、received + rate_limited ≤ 200 且 received + dropped + rate_limited ≥ 200、`voice_frames_relayed ≥ 1` 且 relayed + relay_dropped ≤ received，B 收到的转发数恰好等于 `voice_frames_relayed`，A 收不到自己的帧，非网络 trace 与离线一致。voice、voice_relay、voice_relay_off、voice_mute 合同要求 `voice_frames_rate_limited=0`。
+
+验证：本机一次运行为 received=64、rate_limited=136、relayed=64，B 收到 64 条。全量 451/451；`build-voice-relay-asan` 相关 13 项通过。变异（不检查限速、每条消息都重置限速器）都使 voice_flood 判红。
+
+仍缺：对端语音混音、漂移补偿、运行中通过命令切换设备、Opus、真实声学验证。

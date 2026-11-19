@@ -147,7 +147,8 @@ TEST(voice_frame_counts_invalid_and_skipped_frames) {
         "voice_frames_sent=0 voice_frames_skipped=2 voice_frames_invalid=2"
         " voice_frames_received=0 voice_frames_played=0 voice_frames_concealed=0"
         " voice_frames_dropped=0 voice_peak=0 voice_frames_relayed=0 voice_relay_dropped=0"
-        " voice_mute_requests=0 voice_mute_rejected=0 voice_frames_muted=0\n"));
+        " voice_mute_requests=0 voice_mute_rejected=0 voice_frames_muted=0"
+        " voice_frames_rate_limited=0\n"));
     core_app_net_transport_free(transport);
     fclose(trace);
 }

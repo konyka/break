@@ -21,3 +21,9 @@ The `--network` server limits how much voice (0x4006) one connection may send, s
 4. Mutations, each must fail test 2: no admit check; limiter state reset on every message.
 
 Out of scope: configurable limits, closing a flooding connection, limits for other message ids.
+
+## Result
+
+- RED: the stats tail, and voice_flood failed with `the flood was not rate limited` (B received all 64 frames the jitter buffer could hold, limited=0). GREEN after the limiter: received=64, rate_limited=136, relayed=64, B received 64.
+- Mutations: no admit check; limiter re-initialised on every message. Both fail voice_flood.
+- Full suite 451/451; `build-voice-relay-asan` 13 network tests pass.

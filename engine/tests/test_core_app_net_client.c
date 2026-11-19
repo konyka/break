@@ -7,10 +7,10 @@
  * networked trace with an offline run of the same scenario. "late-auth"
  * runs only the delayed-AUTH peer; "voice" runs only the voice peer;
  * "voice-relay" runs the two relay peers; "voice-mute" runs the two mute
- * peers.
+ * peers; "voice-flood" runs the two rate-limit peers.
  *
  * Usage: test_core_app_net_client PORT_FILE REPORT_FILE
- *        [late-auth|voice|voice-relay|voice-mute]
+ *        [late-auth|voice|voice-relay|voice-mute|voice-flood]
  * The PSK is read from CORE_APP_TEST_PSK (64 hex digits). */
 #define _POSIX_C_SOURCE 200809L
 #include "core_app_network.h"
@@ -942,18 +942,22 @@ static void scenario_late_auth(void) {
 
 /* 20 consecutive BRV2 frames (sequences first..first+19) of a 0.25 square
  * tone, then a duplicate of the last one and one frame that claims 16 kHz. */
+static void tone_frame_init(BreakVoiceFrame *frame) {
+    memset(frame, 0, sizeof(*frame));
+    frame->sample_rate = 48000u;
+    frame->channels = 1u;
+    frame->sample_count = BREAK_VOICE_MAX_SAMPLES;
+    for (u32 i = 0u; i < BREAK_VOICE_MAX_SAMPLES; ++i) {
+        frame->samples[i] = (i / 24u) % 2u == 0u ? (i16)8191 : (i16)-8191;
+    }
+}
+
 static bool client_send_tone_burst(NetClient *c, u32 first) {
     BreakVoiceFrame back;
     u8 wire[BREAK_VOICE_MAX_DATAGRAM_SIZE];
     u32 wire_size = 0u;
     bool sent = true;
-    memset(&back, 0, sizeof(back));
-    back.sample_rate = 48000u;
-    back.channels = 1u;
-    back.sample_count = BREAK_VOICE_MAX_SAMPLES;
-    for (u32 i = 0u; i < BREAK_VOICE_MAX_SAMPLES; ++i) {
-        back.samples[i] = (i / 24u) % 2u == 0u ? (i16)8191 : (i16)-8191;
-    }
+    tone_frame_init(&back);
     for (u32 i = 0u; i < NET_CLIENT_VOICE_BACK_FRAMES && sent; ++i) {
         back.sequence = first + i;
         sent = break_voice_encode_adpcm(&back, wire, sizeof(wire), &wire_size) ==
@@ -1199,6 +1203,57 @@ static void scenario_voice_mute(void) {
     if (unmuted.receiver) break_voice_receiver_destroy(unmuted.receiver);
 }
 
+/* F: two peers on a --voice-relay server. A sends 200 consecutive frames
+ * as fast as TLS allows, far above the server's voice rate limit. The
+ * session must stay open, and B must receive exactly the frames the
+ * server relayed (the driver compares the counts with network_stats). */
+#define NET_CLIENT_VOICE_FLOOD_FRAMES 200u
+static void scenario_voice_flood(void) {
+    NetClient a;
+    NetClient b;
+    CoreAppSnapshot snapshot;
+    RelayTally at_a;
+    RelayTally at_b;
+    memset(&at_a, 0, sizeof(at_a));
+    memset(&at_b, 0, sizeof(at_b));
+    at_a.receiver = relay_receiver_create();
+    at_b.receiver = relay_receiver_create();
+    check(at_a.receiver && at_b.receiver, "f_receivers_created");
+    check(client_open(&a), "fa_tls_challenge");
+    check(client_auth(&a, g_psk), "fa_auth_sent");
+    check(client_next_snapshot(&a, &snapshot, 10000u) == 1, "fa_authenticated");
+    check_welcome(&a, "fa");
+    check(client_open(&b), "fb_tls_challenge");
+    check(client_auth(&b, g_psk), "fb_auth_sent");
+    check(client_next_snapshot(&b, &snapshot, 10000u) == 1, "fb_authenticated");
+    check_welcome(&b, "fb");
+    at_a.expected_source = a.session_id;
+    at_b.expected_source = a.session_id;
+    {
+        BreakVoiceFrame frame;
+        u8 wire[BREAK_VOICE_MAX_DATAGRAM_SIZE];
+        u32 wire_size = 0u;
+        bool sent = true;
+        tone_frame_init(&frame);
+        for (u32 i = 0u; i < NET_CLIENT_VOICE_FLOOD_FRAMES && sent; ++i) {
+            frame.sequence = i;
+            sent = break_voice_encode_adpcm(&frame, wire, sizeof(wire), &wire_size) ==
+                       BREAK_RUNTIME_OK &&
+                   client_send(&a, BREAK_NET_MESSAGE_ID_CORE_VOICE, 1u, wire, wire_size);
+        }
+        check(sent, "fa_sent_voice_flood");
+    }
+    check(client_barrier(&a, &at_a, 15000u), "fa_session_survives_flood");
+    check(client_barrier(&b, &at_b, 15000u), "fb_barrier_after_flood");
+    check(at_a.received == 0u, "fa_never_receives_own_voice");
+    fprintf(g_report, "voice_flood relayed_received=%u foreign=%u malformed=%u echoed=%u\n",
+            at_b.received, at_b.foreign, at_b.malformed, at_a.received);
+    client_close(&b);
+    client_close(&a);
+    if (at_a.receiver) break_voice_receiver_destroy(at_a.receiver);
+    if (at_b.receiver) break_voice_receiver_destroy(at_b.receiver);
+}
+
 static void scenario_voice(void) {
     NetClient v;
     CoreAppSnapshot snapshot;
@@ -1307,9 +1362,10 @@ int main(int argc, char **argv) {
     bool voice = argc == 4 && strcmp(argv[3], "voice") == 0;
     bool voice_relay = argc == 4 && strcmp(argv[3], "voice-relay") == 0;
     bool voice_mute = argc == 4 && strcmp(argv[3], "voice-mute") == 0;
-    if (argc != 3 && !late_auth && !voice && !voice_relay && !voice_mute) {
+    bool voice_flood = argc == 4 && strcmp(argv[3], "voice-flood") == 0;
+    if (argc != 3 && !late_auth && !voice && !voice_relay && !voice_mute && !voice_flood) {
         fprintf(stderr, "usage: test_core_app_net_client PORT_FILE REPORT_FILE"
-                        " [late-auth|voice|voice-relay|voice-mute]\n");
+                        " [late-auth|voice|voice-relay|voice-mute|voice-flood]\n");
         return 2;
     }
     signal(SIGPIPE, SIG_IGN);
@@ -1325,6 +1381,8 @@ int main(int argc, char **argv) {
         scenario_voice_relay();
     } else if (g_failures == 0 && voice_mute) {
         scenario_voice_mute();
+    } else if (g_failures == 0 && voice_flood) {
+        scenario_voice_flood();
     } else if (g_failures == 0) {
         scenario_authenticated();
         scenario_unauthenticated();
