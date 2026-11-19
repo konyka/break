@@ -121,6 +121,16 @@ bool break_editor_doc_audio_limit_true_peak(BreakEditorDoc *doc, double ceiling_
  * argument out of range, or for a silent clip. */
 bool break_editor_doc_audio_limit_dynamic(BreakEditorDoc *doc, double ceiling_dbfs,
                                           double lookahead_ms, double release_ms);
+/* The same look-ahead limiter against a true-peak ceiling: the requirement
+ * at each frame comes from the 4x reconstruction rather than the stored
+ * sample, so intersample peaks are bounded too. The achieved true peak is
+ * at or below `ceiling_dbtp` (a per-frame gain also lowers its neighbours'
+ * reconstruction, so it can land below). Arguments and refusals match the
+ * sample-domain version. */
+bool break_editor_doc_audio_limit_dynamic_true_peak(BreakEditorDoc *doc,
+                                                    double ceiling_dbtp,
+                                                    double lookahead_ms,
+                                                    double release_ms);
 /* fade / normalize applied to frames [begin, end) only (the normalize peak
  * is measured there); frames outside are unchanged. One undoable snapshot
  * command each; false and no change for an empty or out-of-clip range or the

@@ -557,6 +557,13 @@ bool break_editor_shell_audio_limit_true_peak(BreakEditorShell *shell, double ce
  * edit-failed line. */
 bool break_editor_shell_audio_limit_dynamic(BreakEditorShell *shell, double ceiling,
                                             double lookahead_ms, double release_ms);
+/* The same against a true-peak ceiling (design
+ * 2026-11-20-editor-audio-tp-dynamic): bounds intersample peaks, which the
+ * sample-domain limiter leaves above the ceiling. */
+bool break_editor_shell_audio_limit_dynamic_true_peak(BreakEditorShell *shell,
+                                                      double ceiling,
+                                                      double lookahead_ms,
+                                                      double release_ms);
 double break_editor_shell_audio_rms_db(const BreakEditorShell *shell);
 u32 break_editor_shell_audio_set_mute(BreakEditorShell *shell, u32 channel);
 u32 break_editor_shell_audio_mute(const BreakEditorShell *shell);

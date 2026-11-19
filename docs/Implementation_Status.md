@@ -1,3 +1,10 @@
+## 编辑器音频过采样域动态限幅（2026-11-20）
+
+- **交付**：核心新增 `break_editor_doc_audio_limit_dynamic_true_peak(doc, ceiling_dbtp, lookahead_ms, release_ms)`：包络与采样域版本相同，但每帧的所需增益来自 4 倍重建信号而非存储采样，因此采样间峰值也被约束。重建复用真峰值测量的多相核（两者对"真峰值"的定义一致），先算出逐帧最大重建幅度再跑一遍包络。由于增益逐帧变化，降低某帧的增益也会降低邻帧的重建值，所以结果的真峰值落在上限之处或之下——函数保证"不超过"，用例重测确认。参数与拒绝条件同采样域版本，上限为 dBTP。音频页视图行新增 `editor-audio-dyn-tp-limit` 按钮（-1 dBTP / 5 ms / 50 ms，中文"动态限真峰"）；shell 新增 `break_editor_shell_audio_limit_dynamic_true_peak`。设计与计划见 `docs/superpowers/specs/2026-11-20-editor-audio-tp-dynamic-design.md`、`docs/superpowers/plans/2026-11-20-editor-audio-tp-dynamic.md`。
+- **用例构造**：素材是采样点落在正弦 ±45° 的突发（幅度 29000，采样读数 20506，低于 -1 dBFS 的 29204，而重建超过它）。用例先跑采样域限幅并断言它一字节未改、真峰值仍在上限之上，再跑本函数并重测——这个对比正是第二个函数存在的理由，所以直接写进断言而不是只单独检查新函数。
+- **TDD**：核心与 shell 各一个新用例，先链接失败再通过，`test_editor_audio` 23/23、`test_editor_shell` 233/233。3 个变异判红：逐帧重建换成采样幅度、去掉"已低于上限"的提前返回、按钮改调采样域限幅。
+- **边界**：输出仍是原采样率（不做过采样输出）、没有独立攻击时间、不分声道包络、不迭代增益以精确落在上限。
+
 ## 编辑器音频前瞻式动态限幅（2026-11-20）
 
 - **交付**：核心新增 `break_editor_doc_audio_limit_dynamic(doc, ceiling_dbfs, lookahead_ms, release_ms)`：逐样本增益把采样峰值压到上限（[-20, 0] dBFS）以下，一条可撤销快照。增益包络为——每帧取其前瞻窗（(0, 50] ms）内所需增益的最小值，因此瞬态到来前增益已经降下；之后以给定时间常数（(0, 1000] ms）的一阶释放回到 1.0。上限是逐样本 dBFS 界而非 dBTP（要声称 dBTP 得在过采样信号上限幅）。已低于上限时不改动且不进历史，仍返回 true；无附件、参数越界、数字静音返回 false。音频页视图行新增 `editor-audio-dyn-limit` 按钮（-1 dBFS / 5 ms / 50 ms，中文标签"动态限峰"），失败记编辑失败日志；shell 新增 `break_editor_shell_audio_limit_dynamic`。设计与计划见 `docs/superpowers/specs/2026-11-20-editor-audio-lookahead-limiter-design.md`、`docs/superpowers/plans/2026-11-20-editor-audio-lookahead-limiter.md`。

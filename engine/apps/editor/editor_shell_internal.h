@@ -180,6 +180,9 @@ bool editor_panel_audio_limit_true_peak(EditorPanelAudio *panel, double ceiling)
 /* Look-ahead dynamic limiter on the document, then refresh. */
 bool editor_panel_audio_limit_dynamic(EditorPanelAudio *panel, double ceiling,
                                       double lookahead_ms, double release_ms);
+/* The same against a true-peak ceiling. */
+bool editor_panel_audio_limit_dynamic_true_peak(EditorPanelAudio *panel, double ceiling,
+                                                double lookahead_ms, double release_ms);
 double editor_panel_audio_rms_db(const EditorPanelAudio *panel);
 u32 editor_panel_audio_set_mute(EditorPanelAudio *panel, u32 channel);
 u32 editor_panel_audio_mute(const EditorPanelAudio *panel);

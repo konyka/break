@@ -684,6 +684,95 @@ bool break_editor_doc_audio_loudness_curve(const BreakEditorDoc *doc, u32 begin,
     return true;
 }
 
+/* The largest reconstructed magnitude at each frame of the snapshot: the
+ * value a true-peak ceiling has to bound. Shares the measurement's kernel,
+ * so the two agree about what "true peak" means. */
+static void audio_tp_per_frame(const i16 *samples, u32 frames, u32 channels,
+                               double *out_magnitude) {
+    audio_tp_build_kernel();
+    for (u32 f = 0u; f < frames; ++f) {
+        double worst = 0.0;
+        for (u32 c = 0u; c < channels; ++c) {
+            for (u32 phase = 0u; phase < TP_PHASES; ++phase) {
+                double acc = 0.0;
+                for (int t = 0; t < TP_TAPS; ++t) {
+                    const i64 index = (i64)f + (i64)(t - TP_HALF);
+                    if (index < 0 || index >= (i64)frames) {
+                        continue;
+                    }
+                    acc += (double)samples[(usize)index * channels + c] *
+                           g_tp_kernel[phase][t];
+                }
+                if (acc < 0.0) acc = -acc;
+                if (acc > worst) worst = acc;
+            }
+        }
+        out_magnitude[f] = worst;
+    }
+}
+
+bool break_editor_doc_audio_limit_dynamic_true_peak(BreakEditorDoc *doc,
+                                                    double ceiling_dbtp,
+                                                    double lookahead_ms,
+                                                    double release_ms) {
+    static double frame_tp[BREAK_EDITOR_AUDIO_MAX_FRAMES];
+    double tp = 0.0;
+    if (!doc || !doc->audio || !isfinite(ceiling_dbtp) || ceiling_dbtp < -20.0 ||
+        ceiling_dbtp > 0.0 || !isfinite(lookahead_ms) || lookahead_ms <= 0.0 ||
+        lookahead_ms > 50.0 || !isfinite(release_ms) || release_ms <= 0.0 ||
+        release_ms > 1000.0) {
+        return false;
+    }
+    const u32 frames = doc->audio->frames;
+    const u32 channels = doc->audio->channels;
+    const u32 rate = doc->audio->sample_rate;
+    if (frames == 0u || rate == 0u || frames > BREAK_EDITOR_AUDIO_MAX_FRAMES) {
+        return false;
+    }
+    const double ceiling = pow(10.0, ceiling_dbtp / 20.0) * 32768.0;
+    if (!break_editor_doc_audio_true_peak_range(doc, 0u, frames, &tp) || tp <= 0.0) {
+        return false; /* silent */
+    }
+    if (tp <= ceiling) {
+        return true; /* already under it */
+    }
+    u32 lookahead = (u32)(lookahead_ms * (double)rate / 1000.0 + 0.5);
+    if (lookahead == 0u) lookahead = 1u;
+    if (lookahead > frames) lookahead = frames;
+    BreakEditorAudioSnapshotCmd *snapshot = audio_snapshot_create(doc, "limit_dyn_tp");
+    if (!snapshot) return false;
+    audio_tp_per_frame(snapshot->after, frames, channels, frame_tp);
+    {
+        const double release_coeff = exp(-1.0 / (release_ms * (double)rate / 1000.0));
+        double gain = 1.0;
+        for (u32 f = 0u; f < frames; ++f) {
+            double needed = 1.0;
+            const u32 stop = f + lookahead < frames ? f + lookahead : frames;
+            for (u32 w = f; w < stop; ++w) {
+                if (frame_tp[w] > ceiling) {
+                    const double g = ceiling / frame_tp[w];
+                    if (g < needed) needed = g;
+                }
+            }
+            if (needed < gain) {
+                gain = needed;
+            } else {
+                gain = needed - (needed - gain) * release_coeff;
+            }
+            for (u32 c = 0u; c < channels; ++c) {
+                const usize index = (usize)f * channels + c;
+                const double scaled = (double)snapshot->after[index] * gain;
+                const double rounded = scaled >= 0.0 ? scaled + 0.5 : scaled - 0.5;
+                snapshot->after[index] = rounded > 32767.0
+                                             ? (i16)32767
+                                             : (rounded < -32768.0 ? (i16)-32768
+                                                                   : (i16)rounded);
+            }
+        }
+    }
+    return audio_snapshot_commit(snapshot, doc, snapshot->before_frames);
+}
+
 bool break_editor_doc_audio_limit_dynamic(BreakEditorDoc *doc, double ceiling_dbfs,
                                           double lookahead_ms, double release_ms) {
     if (!doc || !doc->audio || !isfinite(ceiling_dbfs) || ceiling_dbfs < -20.0 ||

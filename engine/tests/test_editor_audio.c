@@ -1325,7 +1325,84 @@ TEST(limit_dynamic_spares_the_quiet_part_a_static_scale_would_cost)
     break_editor_doc_destroy(doc);
 }
 
+/* True-peak dynamic limiting (design 2026-11-20-editor-audio-tp-dynamic). */
+TEST(limit_dynamic_true_peak_bounds_what_the_sample_domain_misses)
+{
+    static i16 pcm[24000u];
+    static i16 original[24000u];
+    double tp = 0.0, sample_domain_tp = 0.0;
+    BreakEditorDoc *doc = break_editor_doc_create();
+    const double two_pi = 2.0 * 3.14159265358979323846;
+    ASSERT_NOT_NULL(doc);
+    /* quiet, with a burst of intersample peaks: samples at +-45 degrees of
+     * a sine reach 20506 while the crest between them is 29000, so the
+     * sample peak is under a -1 dBFS ceiling (29204) but the true peak is
+     * not under -1 dBTP */
+    for (u32 i = 0u; i < 24000u; ++i) {
+        if (i >= 12000u && i < 12400u) {
+            const double phase = two_pi * ((double)i / 4.0 + 0.125);
+            pcm[i] = (i16)(sin(phase) * 29000.0);
+        } else {
+            pcm[i] = (i16)(i % 2u == 0u ? 3000 : -3000);
+        }
+        original[i] = pcm[i];
+    }
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 24000u));
+    {
+        double peak = 0.0, rms = 0.0;
+        ASSERT_TRUE(break_editor_doc_audio_peak_range(doc, 0u, 24000u, &peak, &rms));
+        ASSERT_TRUE(peak < 29204.0); /* the samples are under a -1 dBFS ceiling */
+        ASSERT_TRUE(break_editor_doc_audio_true_peak_range(doc, 0u, 24000u, &tp));
+        ASSERT_TRUE(tp > 29204.0); /* the reconstruction is not */
+    }
+    /* the sample-domain limiter has nothing to do here */
+    ASSERT_TRUE(break_editor_doc_audio_limit_dynamic(doc, -1.0, 5.0, 50.0));
+    ASSERT_EQ(memcmp(break_editor_doc_audio_samples(doc), original, sizeof(original)), 0);
+    ASSERT_TRUE(break_editor_doc_audio_true_peak_range(doc, 0u, 24000u,
+                                                       &sample_domain_tp));
+    ASSERT_TRUE(sample_domain_tp > 29204.0);
+    /* the true-peak version brings it under the ceiling */
+    ASSERT_TRUE(break_editor_doc_audio_limit_dynamic_true_peak(doc, -1.0, 5.0, 50.0));
+    ASSERT_TRUE(break_editor_doc_audio_true_peak_range(doc, 0u, 24000u, &tp));
+    ASSERT_TRUE(tp <= 29300.0);
+    ASSERT_TRUE(tp < sample_domain_tp);
+    /* and the quiet part keeps its level */
+    ASSERT_EQ(break_editor_doc_audio_samples(doc)[0] < 0
+                  ? -break_editor_doc_audio_samples(doc)[0]
+                  : break_editor_doc_audio_samples(doc)[0],
+              3000);
+    /* the undo restores the samples */
+    ASSERT_TRUE(break_editor_undo(doc));
+    ASSERT_EQ(memcmp(break_editor_doc_audio_samples(doc), original, sizeof(original)), 0);
+    /* a clip already under the ceiling is untouched and adds no history */
+    for (u32 i = 0u; i < 24000u; ++i) pcm[i] = (i16)(i % 2u == 0u ? 1000 : -1000);
+    break_editor_doc_reset(doc);
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 24000u));
+    {
+        const u64 revision = break_editor_doc_audio_revision(doc);
+        ASSERT_TRUE(break_editor_doc_audio_limit_dynamic_true_peak(doc, -1.0, 5.0, 50.0));
+        ASSERT_EQ(break_editor_doc_audio_revision(doc), revision);
+    }
+    /* the rejected arguments change nothing */
+    {
+        const u64 revision = break_editor_doc_audio_revision(doc);
+        ASSERT_TRUE(!break_editor_doc_audio_limit_dynamic_true_peak(doc, -20.1, 5.0, 50.0));
+        ASSERT_TRUE(!break_editor_doc_audio_limit_dynamic_true_peak(doc, 0.1, 5.0, 50.0));
+        ASSERT_TRUE(!break_editor_doc_audio_limit_dynamic_true_peak(doc, -1.0, 0.0, 50.0));
+        ASSERT_TRUE(!break_editor_doc_audio_limit_dynamic_true_peak(doc, -1.0, 5.0, 0.0));
+        ASSERT_TRUE(!break_editor_doc_audio_limit_dynamic_true_peak(NULL, -1.0, 5.0, 50.0));
+        ASSERT_EQ(break_editor_doc_audio_revision(doc), revision);
+    }
+    /* a silent clip has nothing to limit */
+    break_editor_doc_reset(doc);
+    memset(pcm, 0, sizeof(pcm));
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 24000u));
+    ASSERT_TRUE(!break_editor_doc_audio_limit_dynamic_true_peak(doc, -1.0, 5.0, 50.0));
+    break_editor_doc_destroy(doc);
+}
+
 TEST_MAIN_BEGIN()
+    RUN_TEST(limit_dynamic_true_peak_bounds_what_the_sample_domain_misses);
     RUN_TEST(limit_dynamic_spares_the_quiet_part_a_static_scale_would_cost);
     RUN_TEST(limit_true_peak_brings_a_hot_clip_under_the_ceiling);
     RUN_TEST(loudness_curve_follows_the_level_over_time);

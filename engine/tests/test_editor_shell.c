@@ -3936,6 +3936,59 @@ TEST(audio_page_scales_each_lane_independently)
     break_editor_shell_destroy(shell);
 }
 
+/* True-peak dynamic limiting (design 2026-11-20-editor-audio-tp-dynamic). */
+TEST(audio_page_limits_the_true_peak_dynamically)
+{
+    static i16 pcm[24000u];
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    my_widget_t *button;
+    u32 i;
+    double before;
+    const double two_pi = 2.0 * 3.14159265358979323846;
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    /* quiet, with a burst whose intersample peaks exceed -1 dBTP while its
+     * samples stay under -1 dBFS */
+    for (i = 0u; i < 24000u; i++) {
+        if (i >= 12000u && i < 12400u) {
+            const double phase = two_pi * ((double)i / 4.0 + 0.125);
+            pcm[i] = (i16)(sin(phase) * 29000.0);
+        } else {
+            pcm[i] = (i16)(i % 2u == 0u ? 3000 : -3000);
+        }
+    }
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 24000u));
+    ASSERT_TRUE(break_editor_shell_select_tab(shell, 0u, 4u));
+    shell_paint(shell);
+    break_editor_shell_tick(shell);
+    button = find(shell, "editor-audio-dyn-tp-limit");
+    ASSERT_NOT_NULL(button);
+    ASSERT_STR_EQ(((const my_button_t *)button)->text, "Limit TP");
+    before = break_editor_shell_audio_true_peak_db(shell);
+    ASSERT_TRUE(before > -1.0);
+    /* the button brings it under the ceiling and keeps the quiet part */
+    emit_click(button);
+    break_editor_shell_tick(shell);
+    ASSERT_TRUE(break_editor_shell_audio_true_peak_db(shell) <= -0.9);
+    ASSERT_EQ(break_editor_doc_audio_samples(doc)[0] < 0
+                  ? -break_editor_doc_audio_samples(doc)[0]
+                  : break_editor_doc_audio_samples(doc)[0],
+              3000);
+    ASSERT_TRUE(break_editor_undo(doc));
+    break_editor_shell_tick(shell);
+    ASSERT_TRUE(break_editor_shell_audio_true_peak_db(shell) > -1.0);
+    /* a silent clip logs the edit-failed line */
+    ASSERT_TRUE(break_editor_doc_reset(doc));
+    memset(pcm, 0, sizeof(pcm));
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 24000u));
+    break_editor_shell_tick(shell);
+    ASSERT_FALSE(break_editor_shell_audio_limit_dynamic_true_peak(shell, -1.0, 5.0, 50.0));
+    ASSERT_STR_EQ(last_console_line(break_editor_shell_console_text(shell)),
+                  "audio edit failed\n");
+    break_editor_shell_destroy(shell);
+}
+
 /* Look-ahead dynamic limiter (design
  * 2026-11-20-editor-audio-lookahead-limiter). */
 TEST(audio_page_limits_dynamically_without_costing_the_quiet_part)
@@ -14842,6 +14895,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(audio_page_draws_the_loudness_curve);
     RUN_TEST(audio_page_limits_the_true_peak);
     RUN_TEST(audio_page_limits_dynamically_without_costing_the_quiet_part);
+    RUN_TEST(audio_page_limits_the_true_peak_dynamically);
     RUN_TEST(audio_page_scales_each_lane_independently);
     RUN_TEST(audio_page_zooms_and_scrolls_the_view);
     RUN_TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo);
