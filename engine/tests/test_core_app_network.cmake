@@ -27,6 +27,15 @@
 # all 20 (the tail is flushed when the peer closes), concealed none, dropped
 # the other two, and seen the tone's peak.
 #
+# MODE=voice_relay: the server runs with --voice-relay. Peer A sends the
+# same tone burst; peer B must receive exactly the 20 frames the server
+# accepted, all tagged with A's session, in order, and decodable. A gets
+# none of its own frames back. B also sends a relay message the server has
+# no handler for and must stay connected.
+#
+# MODE=voice_relay_off: the same peers without --voice-relay; B must
+# receive no relay message.
+#
 # MODE=offline: the same scenario twice without --network must give
 # byte-identical traces with no network line. In a build without the
 # transport, nm must find no break_net_/break_session_/snow_/Snow symbol.
@@ -164,7 +173,8 @@ if(MODE STREQUAL "start_failure")
     return()
 endif()
 
-if(NOT MODE STREQUAL "loopback" AND NOT MODE STREQUAL "late_auth" AND NOT MODE STREQUAL "voice")
+if(NOT MODE STREQUAL "loopback" AND NOT MODE STREQUAL "late_auth" AND NOT MODE STREQUAL "voice"
+   AND NOT MODE STREQUAL "voice_relay" AND NOT MODE STREQUAL "voice_relay_off")
     message(FATAL_ERROR "unknown MODE=${MODE}")
 endif()
 foreach(var NET_CLIENT TLS_CERT TLS_KEY)
@@ -183,12 +193,18 @@ if(MODE STREQUAL "late_auth")
     set(client_mode late-auth)
 elseif(MODE STREQUAL "voice")
     set(client_mode voice)
+elseif(MODE STREQUAL "voice_relay" OR MODE STREQUAL "voice_relay_off")
+    set(client_mode voice-relay)
+endif()
+set(relay_args "")
+if(MODE STREQUAL "voice_relay")
+    set(relay_args --voice-relay)
 endif()
 execute_process(
     COMMAND "${CORE_APP}" ${common_args} --trace "${WORK_DIR}/network.trace"
         --network --bind 127.0.0.1:0 --tls-cert "${TLS_CERT}" --tls-key "${TLS_KEY}"
         --psk-env CORE_APP_TEST_PSK --port-file "${WORK_DIR}/server.port"
-        --net-poll-ms ${poll_ms}
+        --net-poll-ms ${poll_ms} ${relay_args}
     COMMAND "${NET_CLIENT}" "${WORK_DIR}/server.port" "${WORK_DIR}/client.report"
         ${client_mode}
     RESULTS_VARIABLE results
@@ -313,6 +329,43 @@ if(MODE STREQUAL "voice")
         message(FATAL_ERROR "voice over the network changed the non-network trace")
     endif()
     message(STATUS "core_app voice send and receive contract passed (skipped=${voice_skipped})")
+    return()
+endif()
+if(MODE STREQUAL "voice_relay" OR MODE STREQUAL "voice_relay_off")
+    stat_value("${stats}" authenticated authenticated)
+    if(NOT authenticated EQUAL 2)
+        message(FATAL_ERROR "only peers A and B connect in MODE=${MODE}: ${stats}")
+    endif()
+    foreach(pair voice_frames_received=20 voice_frames_dropped=2 voice_relay_dropped=0)
+        if(NOT stats MATCHES " ${pair}( |$)")
+            message(FATAL_ERROR "expected ${pair}: ${stats}")
+        endif()
+    endforeach()
+    expect_at_least("${stats}" session_handler_failed 1)
+    if(MODE STREQUAL "voice_relay")
+        set(want_relayed 20)
+        set(want_report "voice_relay received=20 foreign=0 gaps=0 malformed=0 played=20 peak=([0-9]+) echoed=0\n")
+    else()
+        set(want_relayed 0)
+        set(want_report "voice_relay received=0 foreign=0 gaps=0 malformed=0 played=0 peak=0 echoed=0\n")
+    endif()
+    stat_value("${stats}" voice_frames_relayed relayed)
+    if(NOT relayed EQUAL want_relayed)
+        message(FATAL_ERROR "want voice_frames_relayed=${want_relayed}: ${stats}")
+    endif()
+    if(NOT report MATCHES "${want_report}")
+        message(FATAL_ERROR "peer B relay report does not match ${want_report}:\n${report}")
+    endif()
+    if(MODE STREQUAL "voice_relay" AND CMAKE_MATCH_1 LESS 4000)
+        message(FATAL_ERROR "relayed voice is too quiet for the 0.25 tone: ${report}")
+    endif()
+    run_offline(offline)
+    read_core_lines("${WORK_DIR}/network.trace" networked)
+    read_core_lines("${WORK_DIR}/offline.trace" offline)
+    if(NOT networked STREQUAL offline)
+        message(FATAL_ERROR "voice relay changed the non-network trace")
+    endif()
+    message(STATUS "core_app ${MODE} contract passed")
     return()
 endif()
 stat_value("${stats}" authenticated authenticated)

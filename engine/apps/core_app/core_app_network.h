@@ -142,6 +142,32 @@ CoreAppSnapshotOutcome core_app_session_welcome_encode(u64 session_id, u8 *out_b
 CoreAppSnapshotOutcome core_app_session_welcome_decode(const u8 *payload, size_t size,
                                                        u64 *out_session_id);
 
+/* Voice relay: with --voice-relay the server forwards a voice frame it
+ * accepted from one peer to every other peer. Little-endian layout: [0] u32
+ * magic, [4] u32 reserved zero, [8] u64 source session id (non-zero, the
+ * number the source peer received in its welcome), [16] the frame bytes as
+ * the source sent them (1..976 bytes, one BRV1 or BRV2 frame). */
+#define CORE_APP_VOICE_RELAY_MAGIC 0x594C5256u /* "VRLY" */
+#define CORE_APP_VOICE_RELAY_HEADER_BYTES 16u
+#define CORE_APP_VOICE_RELAY_MAX_FRAME_BYTES 976u
+#define CORE_APP_VOICE_RELAY_MAX_BYTES \
+    (CORE_APP_VOICE_RELAY_HEADER_BYTES + CORE_APP_VOICE_RELAY_MAX_FRAME_BYTES)
+#define CORE_APP_VOICE_RELAY_MESSAGE_ID 0x4007u
+
+/* Writes the header and copies the frame. A zero source or a NULL or empty
+ * frame is INVALID; a frame over the limit or a short buffer is OVER_LIMIT.
+ * On failure neither the buffer nor *out_size is touched. */
+CoreAppSnapshotOutcome core_app_voice_relay_encode(u64 source_session_id, const u8 *frame,
+                                                   size_t frame_size, u8 *out_buffer,
+                                                   size_t capacity, size_t *out_size);
+/* Validates size, magic, reserved bytes and a non-zero source. *out_frame
+ * points into payload; the frame itself is not parsed. Outputs are written
+ * only on success. */
+CoreAppSnapshotOutcome core_app_voice_relay_decode(const u8 *payload, size_t size,
+                                                   u64 *out_source_session_id,
+                                                   const u8 **out_frame,
+                                                   size_t *out_frame_size);
+
 /* Inbound authority firewall.
  *
  * A decoded peer snapshot is diagnostic data. Feeding it to this function is

@@ -43,3 +43,10 @@ Relaying only touches transport state. The non-network trace stays equal to an o
 7. Mutations, each must fail test 4 or 5: source not excluded; relay not gated by the flag; relay before the accepted check (duplicate relayed).
 
 Out of scope: per-peer muting, mixing peer voice on the server, voice rate limits, drift compensation, Opus.
+
+## Result
+
+- All new tests went RED first (undeclared constants and codec, stats tail, CLI contract) and are GREEN. End to end: B received 20 relay messages from A's session, consecutive, all decoded, peak 9334; A received none; with the flag off B received none.
+- Mutations: source not excluded (fails voice_relay: `ra_never_receives_own_voice`, echoed=20); relay not gated by the flag (fails voice_relay_off); relay before the accepted check (fails voice_relay). A first attempt at the source mutation (`&& 0`) did not compile under `-Werror` and was replaced by `t->session_ids[i] == 0u`.
+- Full suite 449/449. The existing sanitizer trees build without the network transport, so a new tree `build-voice-relay-asan` (ASan + UBSan, Snowflake, network on) ran the 11 network tests, all passing.
+- Review (Ready) minors addressed: `voice_frames_relayed` documented as one per recipient send; server-side overload/stale frames are not relayed and a newly welcomed peer can receive up to 32 queued frames (documented); the test barrier computes the remaining time once so it cannot wrap; `usize` in the sender.

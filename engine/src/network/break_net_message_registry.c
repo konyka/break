@@ -117,12 +117,15 @@ const BreakNetMessageRegistry *break_net_message_registry_default(void)
              BREAK_NET_MESSAGE_PHASE_AUTHENTICATED, BREAK_NET_DUPLICATE_IDEMPOTENT},
             {BREAK_NET_MESSAGE_ID_CORE_VOICE, 1u, 1u,
              BREAK_NET_CORE_VOICE_MAX_PAYLOAD,
+             BREAK_NET_MESSAGE_PHASE_AUTHENTICATED, BREAK_NET_DUPLICATE_IDEMPOTENT},
+            {BREAK_NET_MESSAGE_ID_CORE_VOICE_RELAY, 1u, 1u,
+             BREAK_NET_CORE_VOICE_RELAY_MAX_PAYLOAD,
              BREAK_NET_MESSAGE_PHASE_AUTHENTICATED, BREAK_NET_DUPLICATE_IDEMPOTENT}
         },
 #ifdef BREAK_ENABLE_CRYPTO
-        27u
+        28u
 #else
-        26u
+        27u
 #endif
     };
 #undef BREAK_EDITOR_DEF

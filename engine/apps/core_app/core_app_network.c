@@ -269,6 +269,43 @@ CoreAppSnapshotOutcome core_app_session_welcome_decode(const u8 *payload, size_t
     return CORE_APP_SNAPSHOT_OK;
 }
 
+CoreAppSnapshotOutcome core_app_voice_relay_encode(u64 source_session_id, const u8 *frame,
+                                                   size_t frame_size, u8 *out_buffer,
+                                                   size_t capacity, size_t *out_size) {
+    if (!frame || frame_size == 0u || !out_buffer || !out_size || source_session_id == 0u) {
+        return CORE_APP_SNAPSHOT_INVALID;
+    }
+    if (frame_size > CORE_APP_VOICE_RELAY_MAX_FRAME_BYTES ||
+        capacity < CORE_APP_VOICE_RELAY_HEADER_BYTES + frame_size) {
+        return CORE_APP_SNAPSHOT_OVER_LIMIT;
+    }
+    put_u32(out_buffer, CORE_APP_VOICE_RELAY_MAGIC);
+    put_u32(out_buffer + 4, 0u);
+    put_u64(out_buffer + 8, source_session_id);
+    memcpy(out_buffer + CORE_APP_VOICE_RELAY_HEADER_BYTES, frame, frame_size);
+    *out_size = CORE_APP_VOICE_RELAY_HEADER_BYTES + frame_size;
+    return CORE_APP_SNAPSHOT_OK;
+}
+
+CoreAppSnapshotOutcome core_app_voice_relay_decode(const u8 *payload, size_t size,
+                                                   u64 *out_source_session_id,
+                                                   const u8 **out_frame,
+                                                   size_t *out_frame_size) {
+    if (!payload || !out_source_session_id || !out_frame || !out_frame_size) {
+        return CORE_APP_SNAPSHOT_INVALID;
+    }
+    if (size <= CORE_APP_VOICE_RELAY_HEADER_BYTES) return CORE_APP_SNAPSHOT_TRUNCATED;
+    if (size > CORE_APP_VOICE_RELAY_MAX_BYTES) return CORE_APP_SNAPSHOT_OVER_LIMIT;
+    if (get_u32(payload) != CORE_APP_VOICE_RELAY_MAGIC) return CORE_APP_SNAPSHOT_BAD_MAGIC;
+    if (get_u32(payload + 4) != 0u) return CORE_APP_SNAPSHOT_INVALID;
+    u64 source = get_u64(payload + 8);
+    if (source == 0u) return CORE_APP_SNAPSHOT_INVALID;
+    *out_source_session_id = source;
+    *out_frame = payload + CORE_APP_VOICE_RELAY_HEADER_BYTES;
+    *out_frame_size = size - CORE_APP_VOICE_RELAY_HEADER_BYTES;
+    return CORE_APP_SNAPSHOT_OK;
+}
+
 void core_app_snapshot_outbox_init(CoreAppSnapshotOutbox *outbox) {
     if (!outbox) return;
     memset(outbox, 0, sizeof(*outbox));

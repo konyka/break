@@ -22,6 +22,7 @@ typedef struct CoreAppNetTransportConfig {
     const char *psk_env;   /* environment variable holding 64 hex digits */
     const char *port_file; /* receives the bound port after start; removed on exit */
     u32 poll_ms;           /* per-tick socket wait, 0..100; 0 never blocks the tick */
+    bool voice_relay;      /* forward accepted peer voice to every other peer */
 } CoreAppNetTransportConfig;
 
 /* Validates the configuration shape (every field present, bind parses).

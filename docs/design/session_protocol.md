@@ -120,10 +120,13 @@ typedef enum BreakNetEventType {
 | `BREAK_NET_MESSAGE_ID_CLOCK_PROBE == 0x4004` | 1..1 | 32 B | `AUTHENTICATED` | `IDEMPOTENT` |
 | `BREAK_NET_MESSAGE_ID_SESSION_WELCOME == 0x4005` | 1..1 | 16 B | `AUTHENTICATED` | `IDEMPOTENT` |
 | `BREAK_NET_MESSAGE_ID_CORE_VOICE == 0x4006` | 1..1 | 976 B（16 + 480×2，一帧 BRV1） | `AUTHENTICATED` | `IDEMPOTENT` |
+| `BREAK_NET_MESSAGE_ID_CORE_VOICE_RELAY == 0x4007` | 1..1 | 992 B（16 字节头 + 一帧 976 B） | `AUTHENTICATED` | `IDEMPOTENT` |
 
 `0x4001` 是 core_app 只读 snapshot（`engine/apps/core_app/core_app_network.h`），只在认证后接受；默认表另含编辑器远程消息 4..21（v1..1，4096 B，`ANY`，`IDEMPOTENT`，见 `docs/design/editor_remote.md`），以及 `0x4002`/`0x4003` 物理同步报文（`engine/src/physics/physics_sync.h`：16 字节状态哈希报告；修正包为 16 字节头加完整物理快照，大小随刚体数变化，因此上限取全局 64 KiB），以及 `0x4004` 时钟探测报文（`core_app_network.h`：恰好 32 字节，transport 用 `_Static_assert` 绑定 `CORE_APP_CLOCK_PROBE_BYTES == BREAK_NET_CLOCK_PROBE_PAYLOAD`），以及 `0x4005` 会话欢迎报文（`core_app_network.h`：恰好 16 字节，服务端在认证后告诉对端它的会话号，transport 同样用 `_Static_assert` 绑定大小），因此 count 为 26（CRYPTO=ON）/ 25（OFF）。2026-11-18 追加 `0x4006` core_app 语音帧（服务端发往对端，一帧 BRV1 或 BRV2，见 `network/break_online_voice.h`；上限是一帧 480 样本的 BRV1，`test_break_session` 断言 `BREAK_NET_CORE_VOICE_MAX_PAYLOAD == BREAK_VOICE_MAX_DATAGRAM_SIZE`），count 变为 27 / 26。注册表头文件不依赖物理头文件，`break_session_registry_has_physics_sync_messages` 断言 `BREAK_NET_PHYSICS_SYNC_REPORT_PAYLOAD == PHYSICS_SYNC_REPORT_BYTES`。
 
 同日补充：服务端也接收 `0x4006`（core_app 传输层的 `net_on_voice`，按连接做抖动缓冲，只计数），因此对端发来的语音不再计为 `handler_failed`；格式不符或重复的帧由接收器计数，连接不关闭。
+
+2026-11-19 追加 `0x4007` core_app 语音转发（服务端发往对端；16 字节头含来源会话号，后接来源原样帧，见 `engine/apps/core_app/core_app_network.h`），count 变为 28 / 27。服务端只发不收：对端发来的 `0x4007` 没有处理函数，记为 `handler_failed`，连接保持。
 
 默认表加入 `0x4001` 后，其他使用默认 registry 的 manager（例如编辑器远程会话）也会通过它的 envelope 校验。这些 manager 没有为 `0x4001` 注册 handler：已认证会话收到它时 `break_session.c` 记为 `HANDLER_FAILED`（计入 `handler_failed`），连接不关闭；只有 AUTH 的 handler 失败才会关闭连接。未认证的会话先受 `AUTHENTICATED` phase 检查。
 

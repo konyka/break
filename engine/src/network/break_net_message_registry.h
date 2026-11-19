@@ -39,6 +39,11 @@ extern "C" {
  * (network/break_online_voice.h); the limit is one full BRV1 frame. */
 #define BREAK_NET_MESSAGE_ID_CORE_VOICE 0x4006u
 #define BREAK_NET_CORE_VOICE_MAX_PAYLOAD (16u + 480u * 2u)
+/* core_app voice relay (engine/apps/core_app/core_app_network.h), sent
+ * server to peer, AUTHENTICATED only: a 16-byte header naming the source
+ * session, then one voice frame as the source sent it. */
+#define BREAK_NET_MESSAGE_ID_CORE_VOICE_RELAY 0x4007u
+#define BREAK_NET_CORE_VOICE_RELAY_MAX_PAYLOAD (16u + BREAK_NET_CORE_VOICE_MAX_PAYLOAD)
 #define BREAK_NET_MESSAGE_ID_MAX 65535u
 #define BREAK_NET_REGISTRY_MAX_MESSAGES 64u
 #define BREAK_NET_MAX_PAYLOAD_SIZE (64u * 1024u)

@@ -39,6 +39,7 @@ static void print_help(void) {
          "  --psk-env NAME\n"
          "  --port-file PATH\n"
          "  --net-poll-ms 0..100\n"
+         "  --voice-relay\n"
 #endif
          "  --help");
 }
@@ -239,6 +240,9 @@ int main(int argc, char **argv) {
             if (matched < 0 || !parse_poll_ms(value, &poll_ms))
                 return cli_error("--net-poll-ms requires 0..100");
             net_config.poll_ms = poll_ms;
+            net_option_seen = true;
+        } else if (strcmp(argv[i], "--voice-relay") == 0) {
+            net_config.voice_relay = true;
             net_option_seen = true;
 #endif
         } else if (strcmp(argv[i], "--trace-timestamps") == 0) {

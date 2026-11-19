@@ -1,3 +1,9 @@
+## Core App 服务端语音转发（2026-11-19）
+
+- **交付**：新消息 `0x4007`（`BREAK_NET_MESSAGE_ID_CORE_VOICE_RELAY`，v1，`AUTHENTICATED`，`IDEMPOTENT`，上限 992 B = 16 字节头 + 一帧 976 B），默认注册表 count 变为 28 / 27。载荷为 magic "VRLY"、保留 0、来源会话号（u64，非零）、来源发来的原样帧字节；编解码 `core_app_voice_relay_encode/decode`（`core_app_network.h`）。CLI `--voice-relay`（网络选项，需 `--network`，默认关闭）。开启后，`net_on_voice` 只在接收器的 `accepted` 计数增加时把帧复制进 32 项的转发环，`net_send_pending` 在事件队列为空时发给除来源外的所有可发送对端。`network_stats` 追加 `voice_frames_relayed`、`voice_relay_dropped`。设计与计划见 `docs/superpowers/specs/2026-11-19-core-app-voice-relay-design.md`、`docs/superpowers/plans/2026-11-19-core-app-voice-relay.md`。
+- **TDD**：`test_break_session`（0x4007 定义与 count）、`test_core_app_network`（新增 3 项：黄金字节往返、畸形载荷、编码拒绝）、`test_core_app_net_transport`（stats 行尾）、`test_core_app_target_contract`（`--voice-relay` 无 `--network` 被拒、help 列出）、新 ctest `test_core_app_network_voice_relay` 与 `test_core_app_network_voice_relay_off` 均先 RED 后 GREEN。端到端：对端 A 发 20 帧音调 + 1 重复 + 1 错误采样率，B 收到 20 条转发，来源都是 A、序号连续、全部解码、peak 9334，A 收不到自己的帧；关闭时 B 收到 0 条。三个变异（不排除来源、不受开关控制、不看 accepted 计数）都判红。全量 449/449；开启网络的 ASan+UBSan 树相关 11 项通过。
+- **边界**：服务端不混音、不按对端静音、无语音专用限速；转发环满时丢帧计数。
+
 ## Core App 按名称选择音频设备（2026-11-18）
 
 - **交付**：`audio_system_list_devices`、`audio_system_create_named`、`audio_system_switch_device`、`audio_system_selected_device`；`audio_system_reopen` 打开已选设备，名称消失时退回默认并保留选择。切换先打开新设备，失败时旧设备继续播放；声源、总线、听者和播放参考环保留。`CoreAppVoiceConfig.capture_device_name`（create 时复制，恢复时重开同名输入，名称消失退回默认）。`core_app_audio_start_device_named`。CLI 新增 `--audio-device NAME`（需 `--audio=device`）、`--voice-capture-device NAME`（需 `--voice=device`，与 `--voice-null-capture` 冲突）。未知名称写 `result=rejected reason=device_name`，exit 2，不降级。设计与计划见 `docs/superpowers/specs/2026-11-18-named-audio-devices-design.md`、`docs/superpowers/plans/2026-11-18-named-audio-devices.md`。

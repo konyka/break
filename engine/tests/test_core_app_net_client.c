@@ -5,9 +5,11 @@
  * which hostile inputs close a connection. Whether hostile input changed
  * the simulation is checked by the CMake driver, which compares the
  * networked trace with an offline run of the same scenario. "late-auth"
- * runs only the delayed-AUTH peer; "voice" runs only the voice peer.
+ * runs only the delayed-AUTH peer; "voice" runs only the voice peer;
+ * "voice-relay" runs the two relay peers.
  *
- * Usage: test_core_app_net_client PORT_FILE REPORT_FILE [late-auth|voice]
+ * Usage: test_core_app_net_client PORT_FILE REPORT_FILE
+ *        [late-auth|voice|voice-relay]
  * The PSK is read from CORE_APP_TEST_PSK (64 hex digits). */
 #define _POSIX_C_SOURCE 200809L
 #include "core_app_network.h"
@@ -936,6 +938,184 @@ static void scenario_late_auth(void) {
  * sequence. */
 #define NET_CLIENT_VOICE_FRAMES 30u
 #define NET_CLIENT_VOICE_BACK_FRAMES 20u
+
+/* 20 consecutive BRV2 frames (sequences 0..19) of a 0.25 square tone, then
+ * a duplicate of the last one and one frame that claims 16 kHz. */
+static bool client_send_tone_burst(NetClient *c) {
+    BreakVoiceFrame back;
+    u8 wire[BREAK_VOICE_MAX_DATAGRAM_SIZE];
+    u32 wire_size = 0u;
+    bool sent = true;
+    memset(&back, 0, sizeof(back));
+    back.sample_rate = 48000u;
+    back.channels = 1u;
+    back.sample_count = BREAK_VOICE_MAX_SAMPLES;
+    for (u32 i = 0u; i < BREAK_VOICE_MAX_SAMPLES; ++i) {
+        back.samples[i] = (i / 24u) % 2u == 0u ? (i16)8191 : (i16)-8191;
+    }
+    for (u32 sequence = 0u; sequence < NET_CLIENT_VOICE_BACK_FRAMES && sent; ++sequence) {
+        back.sequence = sequence;
+        sent = break_voice_encode_adpcm(&back, wire, sizeof(wire), &wire_size) ==
+                   BREAK_RUNTIME_OK &&
+               client_send(c, BREAK_NET_MESSAGE_ID_CORE_VOICE, 1u, wire, wire_size);
+    }
+    sent = sent && client_send(c, BREAK_NET_MESSAGE_ID_CORE_VOICE, 1u, wire, wire_size);
+    wire[8] = 0x80u;
+    wire[9] = 0x3eu;
+    wire[10] = 0u;
+    wire[11] = 0u;
+    return sent && client_send(c, BREAK_NET_MESSAGE_ID_CORE_VOICE, 1u, wire, wire_size);
+}
+
+/* Relay messages one peer received, decoded through its own receiver. */
+typedef struct RelayTally {
+    BreakVoiceReceiver *receiver;
+    u64 expected_source;
+    u32 received;
+    u32 foreign;
+    u32 gaps;
+    u32 malformed;
+    u32 played;
+    u32 next;
+    u32 peak;
+} RelayTally;
+
+static void relay_tally_add(RelayTally *tally, const BreakNetEnvelope *env) {
+    u64 source = 0u;
+    const u8 *bytes = NULL;
+    size_t size = 0u;
+    tally->received++;
+    if (env->protocol_version != 1u ||
+        core_app_voice_relay_decode((const u8 *)env->payload, env->payload_size, &source,
+                                    &bytes, &size) != CORE_APP_SNAPSHOT_OK ||
+        size != BREAK_VOICE_ADPCM_SIZE(1u, BREAK_VOICE_MAX_SAMPLES) ||
+        memcmp(bytes, "BRV2", 4u) != 0 || le32(bytes + 8u) != 48000u) {
+        tally->malformed++;
+        return;
+    }
+    if (source != tally->expected_source) tally->foreign++;
+    u32 sequence = le32(bytes + 4u);
+    if (sequence != tally->next) tally->gaps++;
+    tally->next = sequence + 1u;
+    const u64 virtual_ms = (u64)sequence * 10u;
+    if (!tally->receiver ||
+        break_voice_receiver_push(tally->receiver, bytes, (u32)size) != BREAK_RUNTIME_OK ||
+        break_voice_receiver_pump(tally->receiver, 8u, virtual_ms) != BREAK_RUNTIME_OK) {
+        tally->malformed++;
+        return;
+    }
+    for (;;) {
+        BreakVoicePlayback playback;
+        bool ready = false;
+        if (break_voice_receiver_pop(tally->receiver, virtual_ms, &playback, &ready) !=
+                BREAK_RUNTIME_OK ||
+            !ready) {
+            break;
+        }
+        if (playback.concealed) continue;
+        tally->played++;
+        for (u32 i = 0u; i < playback.sample_count; ++i) {
+            i32 sample = playback.samples[i];
+            u32 magnitude = (u32)(sample < 0 ? -sample : sample);
+            if (magnitude > tally->peak) tally->peak = magnitude;
+        }
+    }
+}
+
+/* Sends a clock probe and reads until its reply, adding every relay
+ * message on the way to the tally. The server applies one session's
+ * messages in order and sends relays before clock replies, so the reply
+ * follows everything this peer sent and every relay queued before it. */
+static bool client_barrier(NetClient *c, RelayTally *tally, u32 timeout_ms) {
+    CoreAppClockProbe probe = {CORE_APP_CLOCK_PROBE_REQUEST, 0u, 0u, 0u};
+    probe.t0 = now_us();
+    if (!send_clock_probe(c, &probe, CORE_APP_CLOCK_PROBE_BYTES)) return false;
+    u64 deadline = now_ms() + timeout_ms;
+    for (;;) {
+        u64 now = now_ms();
+        if (now >= deadline) return false;
+        BreakNetEnvelope env;
+        CoreAppClockProbe reply;
+        if (client_recv(c, &env, (u32)(deadline - now)) != 1) return false;
+        if (env.message_id == CORE_APP_VOICE_RELAY_MESSAGE_ID) {
+            relay_tally_add(tally, &env);
+            continue;
+        }
+        if (env.message_id == CORE_APP_CLOCK_PROBE_MESSAGE_ID &&
+            core_app_clock_probe_decode((const u8 *)env.payload, env.payload_size, &reply) ==
+                CORE_APP_SNAPSHOT_OK &&
+            reply.kind == CORE_APP_CLOCK_PROBE_REPLY && reply.t0 == probe.t0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static BreakVoiceReceiver *relay_receiver_create(void) {
+    BreakVoiceReceiver *receiver = NULL;
+    BreakVoiceStreamConfig config;
+    memset(&config, 0, sizeof(config));
+    config.sample_rate = 48000u;
+    config.channels = 1u;
+    config.sample_count = BREAK_VOICE_MAX_SAMPLES;
+    config.jitter_capacity = 8u;
+    config.queue_capacity = 8u;
+    return break_voice_receiver_create(NULL, &config, &receiver) == BREAK_RUNTIME_OK ? receiver
+                                                                                    : NULL;
+}
+
+/* R: two peers. A sends the tone burst; with --voice-relay the server must
+ * forward the 20 frames it accepted to B, tagged with A's session, and
+ * none back to A. B also sends a relay message to the server, which has no
+ * handler for it and must keep B connected. The driver checks the counts
+ * against the server's mode. */
+static void scenario_voice_relay(void) {
+    NetClient a;
+    NetClient b;
+    CoreAppSnapshot snapshot;
+    RelayTally at_a;
+    RelayTally at_b;
+    memset(&at_a, 0, sizeof(at_a));
+    memset(&at_b, 0, sizeof(at_b));
+    at_a.receiver = relay_receiver_create();
+    at_b.receiver = relay_receiver_create();
+    check(at_a.receiver && at_b.receiver, "r_receivers_created");
+    check(client_open(&a), "ra_tls_challenge");
+    check(client_auth(&a, g_psk), "ra_auth_sent");
+    check(client_next_snapshot(&a, &snapshot, 10000u) == 1, "ra_authenticated");
+    check_welcome(&a, "ra");
+    check(client_open(&b), "rb_tls_challenge");
+    check(client_auth(&b, g_psk), "rb_auth_sent");
+    check(client_next_snapshot(&b, &snapshot, 10000u) == 1, "rb_authenticated");
+    check_welcome(&b, "rb");
+    check(a.session_id != b.session_id, "rb_session_differs_from_ra");
+    at_a.expected_source = a.session_id;
+    at_b.expected_source = a.session_id;
+    check(client_send_tone_burst(&a), "ra_sent_voice_to_server");
+    check(client_barrier(&a, &at_a, 10000u), "ra_server_handled_voice");
+    {
+        static const u8 frame[4] = {'B', 'R', 'V', '2'};
+        u8 wire[CORE_APP_VOICE_RELAY_MAX_BYTES];
+        size_t size = 0u;
+        check(core_app_voice_relay_encode(b.session_id ? b.session_id : 1u, frame,
+                                          sizeof(frame), wire, sizeof(wire), &size) ==
+                      CORE_APP_SNAPSHOT_OK &&
+                  client_send(&b, CORE_APP_VOICE_RELAY_MESSAGE_ID, 1u, wire, size),
+              "rb_sent_relay_to_server");
+    }
+    check(client_barrier(&b, &at_b, 10000u), "rb_session_survives_relay_to_server");
+    check(at_a.received == 0u, "ra_never_receives_own_voice");
+    fprintf(g_report,
+            "voice_relay received=%u foreign=%u gaps=%u malformed=%u played=%u peak=%u"
+            " echoed=%u\n",
+            at_b.received, at_b.foreign, at_b.gaps, at_b.malformed, at_b.played, at_b.peak,
+            at_a.received);
+    client_close(&b);
+    client_close(&a);
+    if (at_a.receiver) break_voice_receiver_destroy(at_a.receiver);
+    if (at_b.receiver) break_voice_receiver_destroy(at_b.receiver);
+}
+
 static void scenario_voice(void) {
     NetClient v;
     CoreAppSnapshot snapshot;
@@ -1018,30 +1198,7 @@ static void scenario_voice(void) {
      * closes and plays only through the tail flush. The last two count as
      * dropped and the session stays open. */
     {
-        BreakVoiceFrame back;
-        u8 wire[BREAK_VOICE_MAX_DATAGRAM_SIZE];
-        u32 wire_size = 0u;
-        bool sent = true;
-        memset(&back, 0, sizeof(back));
-        back.sample_rate = 48000u;
-        back.channels = 1u;
-        back.sample_count = BREAK_VOICE_MAX_SAMPLES;
-        for (u32 i = 0u; i < BREAK_VOICE_MAX_SAMPLES; ++i) {
-            back.samples[i] = (i / 24u) % 2u == 0u ? (i16)8191 : (i16)-8191;
-        }
-        for (u32 sequence = 0u; sequence < NET_CLIENT_VOICE_BACK_FRAMES && sent; ++sequence) {
-            back.sequence = sequence;
-            sent = break_voice_encode_adpcm(&back, wire, sizeof(wire), &wire_size) ==
-                       BREAK_RUNTIME_OK &&
-                   client_send(&v, BREAK_NET_MESSAGE_ID_CORE_VOICE, 1u, wire, wire_size);
-        }
-        sent = sent && client_send(&v, BREAK_NET_MESSAGE_ID_CORE_VOICE, 1u, wire, wire_size);
-        wire[8] = 0x80u;
-        wire[9] = 0x3eu;
-        wire[10] = 0u;
-        wire[11] = 0u;
-        sent = sent && client_send(&v, BREAK_NET_MESSAGE_ID_CORE_VOICE, 1u, wire, wire_size);
-        check(sent, "v_sent_voice_to_server");
+        check(client_send_tone_burst(&v), "v_sent_voice_to_server");
         /* Nothing acknowledges voice, but the server applies one session's
          * messages in order: a reply to a clock probe sent after the voice
          * proves every voice message was handled before this peer closes. */
@@ -1065,9 +1222,10 @@ static void scenario_voice(void) {
 int main(int argc, char **argv) {
     bool late_auth = argc == 4 && strcmp(argv[3], "late-auth") == 0;
     bool voice = argc == 4 && strcmp(argv[3], "voice") == 0;
-    if (argc != 3 && !late_auth && !voice) {
-        fprintf(stderr,
-                "usage: test_core_app_net_client PORT_FILE REPORT_FILE [late-auth|voice]\n");
+    bool voice_relay = argc == 4 && strcmp(argv[3], "voice-relay") == 0;
+    if (argc != 3 && !late_auth && !voice && !voice_relay) {
+        fprintf(stderr, "usage: test_core_app_net_client PORT_FILE REPORT_FILE"
+                        " [late-auth|voice|voice-relay]\n");
         return 2;
     }
     signal(SIGPIPE, SIG_IGN);
@@ -1079,6 +1237,8 @@ int main(int argc, char **argv) {
         scenario_late_auth();
     } else if (g_failures == 0 && voice) {
         scenario_voice();
+    } else if (g_failures == 0 && voice_relay) {
+        scenario_voice_relay();
     } else if (g_failures == 0) {
         scenario_authenticated();
         scenario_unauthenticated();

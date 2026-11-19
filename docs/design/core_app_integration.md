@@ -1670,3 +1670,14 @@ loopback 测试：对端 A、A2、F（late_auth 模式下为 G）各自恰好收
 - rejected trace 行写入失败时返回 FAILED（与 ready 行一致），不再 exit 2 却没有原因行。
 
 仍缺：运行中通过命令或 UI 切换设备、漂移补偿、对端语音混音与转发、按对端静音、Opus、真实声学验证。
+
+## 补充（2026-11-19）：服务端语音转发
+
+- **协议**：`0x4007` core_app voice relay，服务端发往对端，v1..1，`AUTHENTICATED`，`IDEMPOTENT`，上限 `BREAK_NET_CORE_VOICE_RELAY_MAX_PAYLOAD` = 992 B。小端布局：`[0]` u32 magic `0x594C5256`（"VRLY"），`[4]` u32 保留 0，`[8]` u64 来源会话号（非零，即来源对端在 welcome 中收到的号），`[16]` 来源发来的原样帧（1..976 B，一帧 BRV1 或 BRV2）。`core_app_voice_relay_decode` 只检查长度、magic、保留字段和来源号，返回指向载荷内的帧指针，不解析帧；失败时不写输出。transport 用 `#error` / `_Static_assert` 绑定 id、总上限和帧上限与注册表一致。单独用新 id 而不复用 `0x4006`，因为不同来源的序号互相独立，客户端需要按来源分开抖动缓冲。
+- **服务端**：`--voice-relay`（`CoreAppNetTransportConfig.voice_relay`）默认关闭，属于网络选项，没有 `--network` 时报 "network options require --network"。`net_on_voice` 在 push/pump 前后读取接收器 stats，只有 `accepted` 增加时才把帧复制进 32 项转发环；来源号取 `break_session_manager_session_id`，因为语音可能与 AUTH 同批应用，此时槽位自己的 session id 还没记录。处理函数本身不发送；`net_send_pending` 在事件队列为空时，于 welcome 之后、时钟回复之前，把每帧编码一次，发给每个 `net_slot_sendable` 且会话号不等于来源的槽位。每次成功发给一个接收方计一次 `voice_frames_relayed`（3 个对端时 20 帧计 40），overload / closed 计入已有计数；环满、编码失败或销毁时仍在环中的帧计 `voice_relay_dropped`。服务端自身抖动缓冲判为 overload（64 槽已满）或 stale（播放开始后才到）的合法帧不转发，尽管接收方有自己的缓冲；排队时尚未 welcome 的对端被 welcome 后仍会收到环中最多 32 帧旧帧。服务端不为 `0x4007` 注册处理函数：对端发来的 `0x4007` 记为 `handler_failed`，连接保持。
+- **确定性**：转发只改 transport 状态，非网络 trace 与离线运行一致；编解码是纯字节打包，离线构建不引入语音编解码或 crypto（已有 nm 检查）。
+- **合同**：`test_core_app_network.cmake` 新增 MODE=voice_relay（服务端加 `--voice-relay`）和 MODE=voice_relay_off。对端 A、B 认证；A 发 20 帧音调、1 帧重复、1 帧错误采样率，再用时钟探测作屏障；B 发一条 `0x4007` 给服务端后用时钟探测作屏障，途中统计转发消息并用真实接收器解码。开启时要求 B 收到 `received=20 foreign=0 gaps=0 malformed=0 played=20`、peak ≥ 4000，A 收到 0 条，`voice_frames_relayed=20`；关闭时 B 收到 0 条，`voice_frames_relayed=0`。两种模式都要求 `authenticated=2`、`voice_frames_received=20`、`voice_frames_dropped=2`、`voice_relay_dropped=0`、`session_handler_failed ≥ 1`，以及非网络 trace 与离线一致。
+
+验证：全量 449/449；开启网络传输的 ASan+UBSan 树（`build-voice-relay-asan`）中网络相关 11 项通过。变异（不排除来源、不受开关控制、不看 accepted 计数）分别使 voice_relay、voice_relay_off、voice_relay 判红。
+
+仍缺：对端语音混音、按对端静音、语音专用限速、漂移补偿、运行中通过命令切换设备、Opus、真实声学验证。

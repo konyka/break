@@ -434,6 +434,114 @@ TEST(session_welcome_encode_refuses_invalid_values_without_writing) {
     for (usize i = 0; i < sizeof(wire); ++i) ASSERT_EQ(wire[i], 0x5au);
 }
 
+static const u8 k_relay[CORE_APP_VOICE_RELAY_HEADER_BYTES + 3u] = {
+    0x56, 0x52, 0x4c, 0x59, 0x00, 0x00, 0x00, 0x00,
+    0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01,
+    0x42, 0x52, 0x56};
+
+TEST(voice_relay_round_trips_with_golden_bytes) {
+    static const u8 frame[3] = {0x42, 0x52, 0x56};
+    u8 wire[CORE_APP_VOICE_RELAY_MAX_BYTES + 4u];
+    size_t size = 0u;
+    u64 source = 0u;
+    const u8 *out_frame = NULL;
+    size_t out_frame_size = 0u;
+    ASSERT_EQ(CORE_APP_VOICE_RELAY_MESSAGE_ID, 0x4007u);
+    ASSERT_EQ(CORE_APP_VOICE_RELAY_MAX_FRAME_BYTES, 976u);
+    ASSERT_EQ(CORE_APP_VOICE_RELAY_MAX_BYTES, 992u);
+    memset(wire, 0xa5, sizeof(wire));
+    ASSERT_EQ(core_app_voice_relay_encode(0x0102030405060708ull, frame, sizeof(frame), wire,
+                                          sizeof(wire), &size),
+              CORE_APP_SNAPSHOT_OK);
+    ASSERT_EQ(size, sizeof(k_relay));
+    ASSERT_TRUE(memcmp(wire, k_relay, sizeof(k_relay)) == 0);
+    ASSERT_EQ(wire[sizeof(k_relay)], 0xa5u);
+    ASSERT_EQ(core_app_voice_relay_decode(wire, size, &source, &out_frame, &out_frame_size),
+              CORE_APP_SNAPSHOT_OK);
+    ASSERT_EQ(source, 0x0102030405060708ull);
+    ASSERT_TRUE(out_frame == wire + CORE_APP_VOICE_RELAY_HEADER_BYTES);
+    ASSERT_EQ(out_frame_size, sizeof(frame));
+    {
+        static u8 big[CORE_APP_VOICE_RELAY_MAX_FRAME_BYTES];
+        memset(big, 0x11, sizeof(big));
+        ASSERT_EQ(core_app_voice_relay_encode(9u, big, sizeof(big), wire,
+                                              CORE_APP_VOICE_RELAY_MAX_BYTES, &size),
+                  CORE_APP_SNAPSHOT_OK);
+        ASSERT_EQ(size, (size_t)CORE_APP_VOICE_RELAY_MAX_BYTES);
+        ASSERT_EQ(core_app_voice_relay_decode(wire, size, &source, &out_frame, &out_frame_size),
+                  CORE_APP_SNAPSHOT_OK);
+        ASSERT_EQ(source, 9u);
+        ASSERT_EQ(out_frame_size, sizeof(big));
+    }
+}
+
+TEST(voice_relay_decode_rejects_every_malformed_payload) {
+    u8 wire[CORE_APP_VOICE_RELAY_MAX_BYTES + 1u];
+    u64 source = 77u;
+    const u8 *frame = (const u8 *)&source;
+    size_t frame_size = 55u;
+    memset(wire, 0, sizeof(wire));
+    memcpy(wire, k_relay, sizeof(k_relay));
+    for (size_t n = 0u; n <= CORE_APP_VOICE_RELAY_HEADER_BYTES; ++n) {
+        ASSERT_EQ(core_app_voice_relay_decode(wire, n, &source, &frame, &frame_size),
+                  CORE_APP_SNAPSHOT_TRUNCATED);
+    }
+    ASSERT_EQ(core_app_voice_relay_decode(wire, sizeof(wire), &source, &frame, &frame_size),
+              CORE_APP_SNAPSHOT_OVER_LIMIT);
+    ASSERT_EQ(core_app_voice_relay_decode(NULL, sizeof(k_relay), &source, &frame, &frame_size),
+              CORE_APP_SNAPSHOT_INVALID);
+    ASSERT_EQ(core_app_voice_relay_decode(wire, sizeof(k_relay), NULL, &frame, &frame_size),
+              CORE_APP_SNAPSHOT_INVALID);
+    ASSERT_EQ(core_app_voice_relay_decode(wire, sizeof(k_relay), &source, NULL, &frame_size),
+              CORE_APP_SNAPSHOT_INVALID);
+    ASSERT_EQ(core_app_voice_relay_decode(wire, sizeof(k_relay), &source, &frame, NULL),
+              CORE_APP_SNAPSHOT_INVALID);
+    static const struct { usize at; u8 value; CoreAppSnapshotOutcome want; } bad[] = {
+        {0u, 0x00u, CORE_APP_SNAPSHOT_BAD_MAGIC},
+        {3u, 0x58u, CORE_APP_SNAPSHOT_BAD_MAGIC},
+        {4u, 0x01u, CORE_APP_SNAPSHOT_INVALID},
+        {7u, 0x80u, CORE_APP_SNAPSHOT_INVALID},
+    };
+    for (usize i = 0; i < sizeof(bad) / sizeof(bad[0]); ++i) {
+        memcpy(wire, k_relay, sizeof(k_relay));
+        wire[bad[i].at] = bad[i].value;
+        ASSERT_EQ(core_app_voice_relay_decode(wire, sizeof(k_relay), &source, &frame, &frame_size),
+                  bad[i].want);
+    }
+    memcpy(wire, k_relay, sizeof(k_relay));
+    memset(wire + 8, 0, 8u);
+    ASSERT_EQ(core_app_voice_relay_decode(wire, sizeof(k_relay), &source, &frame, &frame_size),
+              CORE_APP_SNAPSHOT_INVALID);
+    ASSERT_EQ(source, 77u);
+    ASSERT_TRUE(frame == (const u8 *)&source);
+    ASSERT_EQ(frame_size, 55u);
+}
+
+TEST(voice_relay_encode_refuses_invalid_values_without_writing) {
+    static u8 frame[CORE_APP_VOICE_RELAY_MAX_FRAME_BYTES + 1u];
+    u8 wire[CORE_APP_VOICE_RELAY_MAX_BYTES + 16u];
+    size_t size = 99u;
+    memset(frame, 0x11, sizeof(frame));
+    memset(wire, 0x5a, sizeof(wire));
+    ASSERT_EQ(core_app_voice_relay_encode(0u, frame, 3u, wire, sizeof(wire), &size),
+              CORE_APP_SNAPSHOT_INVALID);
+    ASSERT_EQ(core_app_voice_relay_encode(1u, NULL, 3u, wire, sizeof(wire), &size),
+              CORE_APP_SNAPSHOT_INVALID);
+    ASSERT_EQ(core_app_voice_relay_encode(1u, frame, 0u, wire, sizeof(wire), &size),
+              CORE_APP_SNAPSHOT_INVALID);
+    ASSERT_EQ(core_app_voice_relay_encode(1u, frame, sizeof(frame), wire, sizeof(wire), &size),
+              CORE_APP_SNAPSHOT_OVER_LIMIT);
+    ASSERT_EQ(core_app_voice_relay_encode(1u, frame, 3u, wire,
+                                          CORE_APP_VOICE_RELAY_HEADER_BYTES + 2u, &size),
+              CORE_APP_SNAPSHOT_OVER_LIMIT);
+    ASSERT_EQ(core_app_voice_relay_encode(1u, frame, 3u, NULL, sizeof(wire), &size),
+              CORE_APP_SNAPSHOT_INVALID);
+    ASSERT_EQ(core_app_voice_relay_encode(1u, frame, 3u, wire, sizeof(wire), NULL),
+              CORE_APP_SNAPSHOT_INVALID);
+    ASSERT_EQ(size, 99u);
+    for (usize i = 0; i < sizeof(wire); ++i) ASSERT_EQ(wire[i], 0x5au);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(snapshot_build_rejects_entity_count_over_capacity);
     RUN_TEST(snapshot_roundtrip_preserves_fields);
@@ -454,4 +562,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(session_welcome_round_trips_with_golden_bytes);
     RUN_TEST(session_welcome_decode_rejects_every_malformed_payload);
     RUN_TEST(session_welcome_encode_refuses_invalid_values_without_writing);
+    RUN_TEST(voice_relay_round_trips_with_golden_bytes);
+    RUN_TEST(voice_relay_decode_rejects_every_malformed_payload);
+    RUN_TEST(voice_relay_encode_refuses_invalid_values_without_writing);
 TEST_MAIN_END()
