@@ -1,3 +1,10 @@
+## 编辑器音频分声道静音（2026-11-19）
+
+- **交付**：预览新增 `break_editor_audio_preview_set_mute`/`_mute`（`BREAK_EDITOR_AUDIO_MUTE_NONE` 为默认的不静音）。设置静音声道后，下一次 Play 取的副本把该声道清零、其余声道原样保留，声道数与位置映射不变；声道号超出素材声道数时忽略。独奏已经把所有声道替换成同一个，因此独奏生效时不再应用静音（两个字段独立保存，只是应用有先后）。音频页视图行新增 `editor-audio-mute` 按钮，循环方式与独奏一致，标签 Mute/Mute L/Mute R/Mute 1（中文 静音/静音左/静音右/静音 1）；附件变化时重置。shell 新增 `break_editor_shell_audio_set_mute`、`break_editor_shell_audio_mute`。设计与计划见 `docs/superpowers/specs/2026-11-19-editor-audio-mute-design.md`、`docs/superpowers/plans/2026-11-19-editor-audio-mute.md`。
+- **TDD**：新用例先链接失败再通过，`test_editor_shell` 225/225。6 个变异全部判红：静音分支永不进入、写入时丢掉声道偏移、把 `mute < channels` 换成“设了静音就算”、附件变化不重置、把独奏分支改成“没静音才生效”（会让静音反过来压过独奏）、循环从声道 0 直接跳回无。其中范围检查那个最初存活——只断言第一帧时，越界下标写到的是后一帧的采样，首帧照样正确；用例改为核对越界那次播放的每一帧后判红。
+- **复用**：独奏与静音共用 `audio_panel_label_channel` 与 `audio_panel_cycle_channel`，独奏切片里手写的那两份被替换而不是复制，避免两个按钮日后走偏。
+- **边界**：不能同时静音多个声道、绘制层不跟随静音（泳道照常显示数据）、播放中途改不生效、不支持两个以上声道。
+
 ## 编辑器音频分声道独奏（2026-11-19）
 
 - **交付**：预览新增 `break_editor_audio_preview_set_solo`/`_solo`（`BREAK_EDITOR_AUDIO_SOLO_NONE` 为默认的全声道）。设置独奏声道后，下一次 Play 取的副本把该声道的采样写进所有输出声道，因此立体声素材的单声道可居中听到；输出端仍按素材自身声道数打开，下游无需改动。声道号超出素材声道数时按“无独奏”处理而不是拒绝播放；已排队的音频不受影响。音频页视图行新增 `editor-audio-solo` 按钮，立体声循环 无→左→右→无、单声道 无→0→无，标签分别为 Solo/Solo L/Solo R 与 Solo 1（中文 独奏/独奏左/独奏右/独奏 1，均走 i18n 表）；附件变化时重置为无。shell 新增 `break_editor_shell_audio_set_solo`、`break_editor_shell_audio_solo`。设计与计划见 `docs/superpowers/specs/2026-11-19-editor-audio-solo-design.md`、`docs/superpowers/plans/2026-11-19-editor-audio-solo.md`。

@@ -77,6 +77,7 @@ struct EditorPanelAudio {
     my_widget_t *gain_up;     /* weak */
     my_widget_t *gain_down;   /* weak */
     my_widget_t *solo;        /* weak */
+    my_widget_t *mute;        /* weak */
     u32 gain;                 /* display-only amplitude multiplier */
     bool following;           /* the view chases the playing position */
     u32 view_begin, view_end; /* visible [begin, end) frames; empty = whole clip */
@@ -222,6 +223,7 @@ static void audio_panel_refresh(EditorPanelAudio *panel) {
         panel->view_begin = panel->view_end = 0u;
         panel->gain = 1u;
         break_editor_audio_preview_set_solo(panel->preview, BREAK_EDITOR_AUDIO_SOLO_NONE);
+        break_editor_audio_preview_set_mute(panel->preview, BREAK_EDITOR_AUDIO_MUTE_NONE);
         panel->dragging = false;
     }
     const i32 width = panel->waveform != NULL ? panel->waveform->rect.w : 0;
@@ -818,29 +820,79 @@ u32 editor_panel_audio_gain(const EditorPanelAudio *panel) {
     return panel != NULL ? panel->gain : 0u;
 }
 
-/* "Solo" with nothing soloed, "Solo L"/"Solo R" for a stereo clip's two
- * channels, "Solo <n>" otherwise (mono, or an index beyond R). */
-static void audio_panel_label_solo(EditorPanelAudio *panel) {
-    const u32 channel = break_editor_audio_preview_solo(panel->preview);
+/* "<Verb>" with no channel picked, "<Verb> L"/"<Verb> R" for a stereo
+ * clip's two channels, "<Verb> <n>" otherwise (mono, or an index beyond R).
+ * Shared by the Solo and Mute buttons, which differ only in their keys. */
+static void audio_panel_label_channel(EditorPanelAudio *panel, my_widget_t *button,
+                                      u32 channel, BreakEditorTr none, BreakEditorTr left,
+                                      BreakEditorTr right, BreakEditorTr fmt) {
     char text[32];
-    if (panel->solo == NULL) {
+    if (button == NULL) {
         return;
     }
-    if (channel == BREAK_EDITOR_AUDIO_SOLO_NONE) {
-        (void)my_button_set_text(panel->solo, break_editor_tr(BREAK_EDITOR_TR_AUDIO_SOLO));
+    if (channel == UINT32_MAX) {
+        (void)my_button_set_text(button, break_editor_tr(none));
         return;
     }
     if (break_editor_doc_audio_channels(break_editor_shell_doc(panel->shell)) == 2u &&
         channel < 2u) {
-        (void)my_button_set_text(panel->solo,
-                                 break_editor_tr(channel == 0u
-                                                     ? BREAK_EDITOR_TR_AUDIO_SOLO_LEFT
-                                                     : BREAK_EDITOR_TR_AUDIO_SOLO_RIGHT));
+        (void)my_button_set_text(button, break_editor_tr(channel == 0u ? left : right));
         return;
     }
-    (void)snprintf(text, sizeof(text), break_editor_tr(BREAK_EDITOR_TR_AUDIO_SOLO_FMT),
-                   (unsigned)(channel + 1u));
-    (void)my_button_set_text(panel->solo, text);
+    (void)snprintf(text, sizeof(text), break_editor_tr(fmt), (unsigned)(channel + 1u));
+    (void)my_button_set_text(button, text);
+}
+
+static void audio_panel_label_solo(EditorPanelAudio *panel) {
+    audio_panel_label_channel(panel, panel->solo,
+                              break_editor_audio_preview_solo(panel->preview),
+                              BREAK_EDITOR_TR_AUDIO_SOLO, BREAK_EDITOR_TR_AUDIO_SOLO_LEFT,
+                              BREAK_EDITOR_TR_AUDIO_SOLO_RIGHT,
+                              BREAK_EDITOR_TR_AUDIO_SOLO_FMT);
+    audio_panel_label_channel(panel, panel->mute,
+                              break_editor_audio_preview_mute(panel->preview),
+                              BREAK_EDITOR_TR_AUDIO_MUTE, BREAK_EDITOR_TR_AUDIO_MUTE_LEFT,
+                              BREAK_EDITOR_TR_AUDIO_MUTE_RIGHT,
+                              BREAK_EDITOR_TR_AUDIO_MUTE_FMT);
+}
+
+u32 editor_panel_audio_set_mute(EditorPanelAudio *panel, u32 channel) {
+    if (panel == NULL) {
+        return BREAK_EDITOR_AUDIO_MUTE_NONE;
+    }
+    break_editor_audio_preview_set_mute(panel->preview, channel);
+    audio_panel_label_solo(panel);
+    return break_editor_audio_preview_mute(panel->preview);
+}
+
+u32 editor_panel_audio_mute(const EditorPanelAudio *panel) {
+    return panel != NULL ? break_editor_audio_preview_mute(panel->preview)
+                         : BREAK_EDITOR_AUDIO_MUTE_NONE;
+}
+
+/* The next channel in the none -> 0 -> ... -> last -> none cycle. */
+static u32 audio_panel_cycle_channel(const EditorPanelAudio *panel, u32 current) {
+    const u32 channels =
+        break_editor_doc_audio_channels(break_editor_shell_doc(panel->shell));
+    if (channels == 0u) {
+        return UINT32_MAX;
+    }
+    if (current == UINT32_MAX) {
+        return 0u;
+    }
+    return current + 1u < channels ? current + 1u : UINT32_MAX;
+}
+
+static void on_audio_mute_click(void *ctx, const char *event, void *data) {
+    EditorPanelAudio *panel = (EditorPanelAudio *)ctx;
+    (void)event;
+    (void)data;
+    if (panel != NULL) {
+        audio_panel_catch_up(panel);
+        (void)editor_panel_audio_set_mute(
+            panel, audio_panel_cycle_channel(
+                       panel, break_editor_audio_preview_mute(panel->preview)));
+    }
 }
 
 u32 editor_panel_audio_set_solo(EditorPanelAudio *panel, u32 channel) {
@@ -857,26 +909,16 @@ u32 editor_panel_audio_solo(const EditorPanelAudio *panel) {
                          : BREAK_EDITOR_AUDIO_SOLO_NONE;
 }
 
-/* none -> 0 -> ... -> last channel -> none */
 static void on_audio_solo_click(void *ctx, const char *event, void *data) {
     EditorPanelAudio *panel = (EditorPanelAudio *)ctx;
-    u32 channels, next;
     (void)event;
     (void)data;
-    if (panel == NULL) {
-        return;
+    if (panel != NULL) {
+        audio_panel_catch_up(panel);
+        (void)editor_panel_audio_set_solo(
+            panel, audio_panel_cycle_channel(
+                       panel, break_editor_audio_preview_solo(panel->preview)));
     }
-    audio_panel_catch_up(panel);
-    channels = break_editor_doc_audio_channels(break_editor_shell_doc(panel->shell));
-    next = break_editor_audio_preview_solo(panel->preview);
-    if (channels == 0u) {
-        next = BREAK_EDITOR_AUDIO_SOLO_NONE;
-    } else if (next == BREAK_EDITOR_AUDIO_SOLO_NONE) {
-        next = 0u;
-    } else {
-        next = next + 1u < channels ? next + 1u : BREAK_EDITOR_AUDIO_SOLO_NONE;
-    }
-    (void)editor_panel_audio_set_solo(panel, next);
 }
 
 u32 editor_panel_audio_fit_gain(EditorPanelAudio *panel) {
@@ -1220,7 +1262,7 @@ static bool audio_panel_add(my_widget_t *parent, my_widget_t *child, const char 
 bool editor_panel_audio_build(EditorPanelAudio *panel, my_widget_t *parent) {
     my_widget_t *section, *bar, *info, *play, *trim, *cut, *fade, *normalize, *loop, *ruler,
         *waveform, *view_bar, *zoom_in, *zoom_out, *scroll_left, *scroll_right,
-        *follow_box, *scrollbar, *gain_up, *gain_down, *gain_fit, *solo_btn;
+        *follow_box, *scrollbar, *gain_up, *gain_down, *gain_fit, *solo_btn, *mute_btn;
     if (panel == NULL || parent == NULL) {
         return false;
     }
@@ -1387,10 +1429,22 @@ bool editor_panel_audio_build(EditorPanelAudio *panel, my_widget_t *parent) {
     }
     (void)my_widget_set_name(solo_btn, "editor-audio-solo");
     (void)my_widget_on(solo_btn, "click", on_audio_solo_click, panel);
+    mute_btn = my_button_create(NULL, break_editor_tr(BREAK_EDITOR_TR_AUDIO_MUTE));
+    if (mute_btn == NULL) {
+        my_widget_unref(gain_down);
+        my_widget_unref(gain_up);
+        my_widget_unref(gain_fit);
+        my_widget_unref(solo_btn);
+        my_widget_unref(section);
+        return false;
+    }
+    (void)my_widget_set_name(mute_btn, "editor-audio-mute");
+    (void)my_widget_on(mute_btn, "click", on_audio_mute_click, panel);
     if (!audio_panel_add(view_bar, gain_down, "w:26 h:100%") ||
         !audio_panel_add(view_bar, gain_up, "w:26 h:100%") ||
         !audio_panel_add(view_bar, gain_fit, "w:26 h:100%") ||
-        !audio_panel_add(view_bar, solo_btn, "w:70 h:100%")) {
+        !audio_panel_add(view_bar, solo_btn, "w:70 h:100%") ||
+        !audio_panel_add(view_bar, mute_btn, "w:75 h:100%")) {
         my_widget_unref(section);
         return false;
     }
@@ -1467,6 +1521,7 @@ bool editor_panel_audio_build(EditorPanelAudio *panel, my_widget_t *parent) {
     panel->gain_up = gain_up;
     panel->gain_down = gain_down;
     panel->solo = solo_btn;
+    panel->mute = mute_btn;
     panel->waveform = waveform;
     panel->ruler = ruler;
     panel->fresh = false;

@@ -65,6 +65,14 @@ bool break_editor_audio_preview_loop(const BreakEditorAudioPreview *preview);
 #define BREAK_EDITOR_AUDIO_SOLO_NONE UINT32_MAX
 void break_editor_audio_preview_set_solo(BreakEditorAudioPreview *preview, u32 channel);
 u32 break_editor_audio_preview_solo(const BreakEditorAudioPreview *preview);
+/* Mute: the copy taken at the next Play zeroes that channel and leaves the
+ * others in place. BREAK_EDITOR_AUDIO_MUTE_NONE (after create) mutes
+ * nothing, and an index at or above the clip's channel count is ignored. A
+ * solo already replaces every channel, so when one is in effect the mute is
+ * not applied. */
+#define BREAK_EDITOR_AUDIO_MUTE_NONE UINT32_MAX
+void break_editor_audio_preview_set_mute(BreakEditorAudioPreview *preview, u32 channel);
+u32 break_editor_audio_preview_mute(const BreakEditorAudioPreview *preview);
 /* Playing: restarts from `frame` (queued audio is dropped), to the end of
  * the playing range when `frame` is inside it, otherwise to the clip end.
  * Stopped: only sets the cursor. Returns whether it plays afterwards. */

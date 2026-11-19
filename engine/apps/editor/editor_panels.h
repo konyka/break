@@ -498,6 +498,10 @@ u32 break_editor_shell_audio_fit_gain(BreakEditorShell *shell);
  * resets it. */
 u32 break_editor_shell_audio_set_solo(BreakEditorShell *shell, u32 channel);
 u32 break_editor_shell_audio_solo(const BreakEditorShell *shell);
+/* Mute of the Audio page's preview (design 2026-11-19-editor-audio-mute):
+ * that channel is silent and the others stay put. A solo in effect wins. */
+u32 break_editor_shell_audio_set_mute(BreakEditorShell *shell, u32 channel);
+u32 break_editor_shell_audio_mute(const BreakEditorShell *shell);
 u32 break_editor_shell_audio_lane_count(const BreakEditorShell *shell);
 bool break_editor_shell_audio_lane_column(const BreakEditorShell *shell, u32 lane, u32 i,
                                           i16 *out_min, i16 *out_max);

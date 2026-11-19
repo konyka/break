@@ -22,6 +22,7 @@ struct BreakEditorAudioPreview {
     bool to_clip_end; /* the playing range ends at the clip end */
     bool loop;        /* re-arm the range instead of stopping at its end */
     u32 solo;         /* channel played in every output channel, or _SOLO_NONE */
+    u32 mute;         /* channel zeroed in the copy, or _MUTE_NONE */
     i16 *pcm;    /* BREAK_EDITOR_AUDIO_MAX_FRAMES x 2 */
 };
 
@@ -34,6 +35,7 @@ BreakEditorAudioPreview *break_editor_audio_preview_create(void) {
     preview->pcm = (i16 *)calloc((usize)(BREAK_EDITOR_AUDIO_MAX_FRAMES + EDITOR_PREVIEW_MAX_TAIL) * 2u,
                                  sizeof(i16));
     preview->solo = BREAK_EDITOR_AUDIO_SOLO_NONE;
+    preview->mute = BREAK_EDITOR_AUDIO_MUTE_NONE;
     if (preview->pcm == NULL) {
         free(preview);
         return NULL;
@@ -107,6 +109,12 @@ bool break_editor_audio_preview_play_range(BreakEditorAudioPreview *preview,
         }
     } else {
         memcpy(preview->pcm, samples, (usize)frames * channels * sizeof(i16));
+        if (preview->mute < channels) {
+            /* zero that channel, leaving the others where they are */
+            for (u32 f = 0u; f < frames; ++f) {
+                preview->pcm[(usize)f * channels + preview->mute] = 0;
+            }
+        }
     }
     memset(preview->pcm + (usize)frames * channels, 0, (usize)tail * channels * sizeof(i16));
     preview->sample_rate = break_editor_doc_audio_sample_rate(doc);
@@ -131,6 +139,16 @@ void break_editor_audio_preview_set_solo(BreakEditorAudioPreview *preview, u32 c
 
 u32 break_editor_audio_preview_solo(const BreakEditorAudioPreview *preview) {
     return preview != NULL ? preview->solo : BREAK_EDITOR_AUDIO_SOLO_NONE;
+}
+
+void break_editor_audio_preview_set_mute(BreakEditorAudioPreview *preview, u32 channel) {
+    if (preview != NULL) {
+        preview->mute = channel;
+    }
+}
+
+u32 break_editor_audio_preview_mute(const BreakEditorAudioPreview *preview) {
+    return preview != NULL ? preview->mute : BREAK_EDITOR_AUDIO_MUTE_NONE;
 }
 
 void break_editor_audio_preview_set_loop(BreakEditorAudioPreview *preview, bool loop) {

@@ -3839,6 +3839,102 @@ static u32 waveform_painted_rows(BreakEditorShell *shell, my_widget_t *w) {
     return rows;
 }
 
+/* Mute one channel in the preview (design 2026-11-19-editor-audio-mute). */
+TEST(audio_page_mutes_one_channel_in_the_preview)
+{
+    static i16 stereo[400u];
+    static i16 mono[100u];
+    static FakeAudioSink fake;
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    my_widget_t *mute;
+    u32 i;
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    memset(&fake, 0, sizeof(fake));
+    fake.chunk = 4096u;
+    /* left 1000s, right 2000s: both audible, so a mute is visible */
+    for (i = 0u; i < 200u; i++) {
+        stereo[i * 2u] = 1000;
+        stereo[i * 2u + 1u] = 2000;
+    }
+    for (i = 0u; i < 100u; i++) mono[i] = 500;
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 2u, stereo, 200u));
+    ASSERT_TRUE(break_editor_shell_select_tab(shell, 0u, 4u));
+    shell_paint(shell);
+    break_editor_shell_tick(shell);
+    mute = find(shell, "editor-audio-mute");
+    ASSERT_NOT_NULL(mute);
+    ASSERT_EQ(break_editor_shell_audio_mute(shell), BREAK_EDITOR_AUDIO_MUTE_NONE);
+    ASSERT_STR_EQ(((const my_button_t *)mute)->text, "Mute");
+    break_editor_shell_set_audio_sink(shell, &k_fake_sink, &fake);
+    /* no mute: both channels as they are */
+    ASSERT_TRUE(break_editor_shell_audio_play(shell));
+    ASSERT_EQ(fake.data[0], 1000);
+    ASSERT_EQ(fake.data[1], 2000);
+    ASSERT_FALSE(break_editor_shell_audio_play(shell));
+    /* mute the right channel: the left stays put */
+    ASSERT_EQ(break_editor_shell_audio_set_mute(shell, 1u), 1u);
+    ASSERT_TRUE(break_editor_shell_audio_play(shell));
+    ASSERT_EQ(fake.data[0], 1000);
+    ASSERT_EQ(fake.data[1], 0);
+    ASSERT_EQ(fake.data[20], 1000);
+    ASSERT_EQ(fake.data[21], 0);
+    ASSERT_FALSE(break_editor_shell_audio_play(shell));
+    /* mute the left channel: the mirror image */
+    ASSERT_EQ(break_editor_shell_audio_set_mute(shell, 0u), 0u);
+    ASSERT_TRUE(break_editor_shell_audio_play(shell));
+    ASSERT_EQ(fake.data[0], 0);
+    ASSERT_EQ(fake.data[1], 2000);
+    ASSERT_FALSE(break_editor_shell_audio_play(shell));
+    /* an out-of-range mute plays as if none: an index past the frame must
+     * not reach a later frame's samples either */
+    ASSERT_EQ(break_editor_shell_audio_set_mute(shell, 7u), 7u);
+    ASSERT_TRUE(break_editor_shell_audio_play(shell));
+    for (i = 0u; i < 200u; i++) {
+        ASSERT_EQ(fake.data[i * 2u], 1000);
+        ASSERT_EQ(fake.data[i * 2u + 1u], 2000);
+    }
+    ASSERT_FALSE(break_editor_shell_audio_play(shell));
+    /* a solo wins over a mute: both outputs carry the soloed channel */
+    ASSERT_EQ(break_editor_shell_audio_set_mute(shell, 0u), 0u);
+    ASSERT_EQ(break_editor_shell_audio_set_solo(shell, 0u), 0u);
+    ASSERT_TRUE(break_editor_shell_audio_play(shell));
+    ASSERT_EQ(fake.data[0], 1000);
+    ASSERT_EQ(fake.data[1], 1000);
+    ASSERT_FALSE(break_editor_shell_audio_play(shell));
+    ASSERT_EQ(break_editor_shell_audio_set_solo(shell, BREAK_EDITOR_AUDIO_SOLO_NONE),
+              BREAK_EDITOR_AUDIO_SOLO_NONE);
+    /* the button cycles and relabels */
+    ASSERT_EQ(break_editor_shell_audio_set_mute(shell, BREAK_EDITOR_AUDIO_MUTE_NONE),
+              BREAK_EDITOR_AUDIO_MUTE_NONE);
+    emit_click(mute);
+    ASSERT_EQ(break_editor_shell_audio_mute(shell), 0u);
+    ASSERT_STR_EQ(((const my_button_t *)mute)->text, "Mute L");
+    emit_click(mute);
+    ASSERT_EQ(break_editor_shell_audio_mute(shell), 1u);
+    ASSERT_STR_EQ(((const my_button_t *)mute)->text, "Mute R");
+    emit_click(mute);
+    ASSERT_EQ(break_editor_shell_audio_mute(shell), BREAK_EDITOR_AUDIO_MUTE_NONE);
+    ASSERT_STR_EQ(((const my_button_t *)mute)->text, "Mute");
+    /* an attachment change resets it */
+    ASSERT_EQ(break_editor_shell_audio_set_mute(shell, 1u), 1u);
+    ASSERT_TRUE(break_editor_doc_reset(doc));
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, mono, 100u));
+    break_editor_shell_tick(shell);
+    ASSERT_EQ(break_editor_shell_audio_mute(shell), BREAK_EDITOR_AUDIO_MUTE_NONE);
+    /* mono: muting channel 0 is silence */
+    ASSERT_EQ(break_editor_shell_audio_set_mute(shell, 0u), 0u);
+    ASSERT_TRUE(break_editor_shell_audio_play(shell));
+    ASSERT_EQ(fake.channels, 1u);
+    ASSERT_EQ(fake.data[0], 0);
+    ASSERT_EQ(fake.data[50], 0);
+    ASSERT_FALSE(break_editor_shell_audio_play(shell));
+    ASSERT_STR_EQ(((const my_button_t *)mute)->text, "Mute 1");
+    break_editor_shell_set_audio_sink(shell, NULL, NULL);
+    break_editor_shell_destroy(shell);
+}
+
 /* Solo one channel in the preview (design 2026-11-19-editor-audio-solo). */
 TEST(audio_page_solos_one_channel_in_the_preview)
 {
@@ -14126,6 +14222,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(audio_page_draws_one_lane_per_channel);
     RUN_TEST(audio_page_fits_the_gain_to_the_visible_peak);
     RUN_TEST(audio_page_solos_one_channel_in_the_preview);
+    RUN_TEST(audio_page_mutes_one_channel_in_the_preview);
     RUN_TEST(audio_page_zooms_and_scrolls_the_view);
     RUN_TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo);
     RUN_TEST(assets_panel_load_guards_unsaved_changes);

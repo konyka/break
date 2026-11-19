@@ -201,6 +201,10 @@ const char *const g_break_editor_tr_tables[BREAK_EDITOR_LANG_COUNT]
         T(AUDIO_SOLO_LEFT, "Solo L"),
         T(AUDIO_SOLO_RIGHT, "Solo R"),
         T(AUDIO_SOLO_FMT, "Solo %u"),
+        T(AUDIO_MUTE, "Mute"),
+        T(AUDIO_MUTE_LEFT, "Mute L"),
+        T(AUDIO_MUTE_RIGHT, "Mute R"),
+        T(AUDIO_MUTE_FMT, "Mute %u"),
     },
     [BREAK_EDITOR_LANG_ZH_CN] = {
         T(ADD, "添加"),
@@ -392,5 +396,9 @@ const char *const g_break_editor_tr_tables[BREAK_EDITOR_LANG_COUNT]
         T(AUDIO_SOLO_LEFT, "独奏左"),
         T(AUDIO_SOLO_RIGHT, "独奏右"),
         T(AUDIO_SOLO_FMT, "独奏 %u"),
+        T(AUDIO_MUTE, "静音"),
+        T(AUDIO_MUTE_LEFT, "静音左"),
+        T(AUDIO_MUTE_RIGHT, "静音右"),
+        T(AUDIO_MUTE_FMT, "静音 %u"),
     },
 };
