@@ -1,3 +1,10 @@
+## 编辑器音频短期响度与响度范围（LRA）（2026-11-20）
+
+- **交付**：核心新增 `break_editor_doc_audio_short_term_range`（范围末尾 3 秒的响度）与 `break_editor_doc_audio_loudness_range_lra`（EBU R128 的响度范围：3 秒窗按 1 秒步进，-70 LUFS 绝对门后再按存活窗均值下移 20 LU 的相对门，取第 95 与第 10 百分位之差）。整体响度里的分块循环提取为 `audio_window_loudness(doc, begin, end, window, step, …)`，三种测量共用 K 加权与逐声道滤波，只在窗长、步长和归约方式上不同。shell 新增 `break_editor_shell_audio_short_term_lufs`、`break_editor_shell_audio_lra`，电平标签在有读数时追加 "lra x.x LU"。设计与计划见 `docs/superpowers/specs/2026-11-20-editor-audio-lra-design.md`、`docs/superpowers/plans/2026-11-20-editor-audio-lra.md`。
+- **TDD**：核心一个新用例、shell 一处新断言，先链接失败再通过，`test_editor_audio` 18/18、`test_editor_shell` 228/228。4 个变异判红：短期窗取范围开头而非末尾、LRA 步长等于窗长（失去重叠）、第 10 百分位换成最小值、测量失败时标签仍写出 LRA。
+- **一处测试力所不及**：-20 LU 相对门与第 10 百分位在本仓库可用的长度下会丢掉同一个窗。`break_editor_doc_audio_attach` 上限 65536 帧且采样率不低于 8 kHz，最长可测 8.19 秒，即 6 个按 1 秒步进的 3 秒窗；6 个窗时第 10 百分位下标为 1、第 95 为 5，单个安静离群窗无论相对门是否生效都会被百分位剔除，把相对门换成绝对地板套件仍全绿。用例只钉住“两者之一在起作用”并在注释中说明；相对门本身的算式由整体响度用例钉住（同一表达式，-10 LU）。
+- **边界**：没有把瞬时（400 ms）响度做成单独接口（整体响度的块本就是 400 ms）、没有响度随时间的曲线、没有“归一化到 LUFS”的编辑动作。
+
 ## 编辑器音频整体响度（LUFS）（2026-11-20）
 
 - **交付**：核心新增 `break_editor_doc_audio_loudness_range(doc, begin, end, out_lufs)`，按 ITU-R BS.1770-4 的结构给出门控整体响度：K 加权（高架 + 高通两级双二阶）、400 毫秒块 75% 重叠的均方、-70 LUFS 绝对门，再按存活块均值下移 10 LU 的相对门。系数不是标准表里的 48 kHz 常数，而是按素材自身采样率从同一组模拟原型推导，低采样率素材也被正确滤波。单/双声道的声道权重都是 1.0；范围短于一个 400 毫秒块时返回 false（不足一块没有整体响度定义），数字静音返回 -70 地板。shell 新增 `break_editor_shell_audio_lufs`，电平标签在有读数时追加 "lufs x.x"。设计与计划见 `docs/superpowers/specs/2026-11-20-editor-audio-lufs-design.md`、`docs/superpowers/plans/2026-11-20-editor-audio-lufs.md`。

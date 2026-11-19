@@ -289,27 +289,26 @@ static double audio_biquad_step(const AudioBiquad *f, AudioBiquadState *s, doubl
 #define AUDIO_LUFS_STEP_DIV 4u /* 75% overlap */
 #define AUDIO_LUFS_MAX_BLOCKS 4096u
 
-bool break_editor_doc_audio_loudness_range(const BreakEditorDoc *doc, u32 begin, u32 end,
-                                           double *out_lufs) {
-    if (!doc || !doc->audio || !out_lufs || begin >= end || end > doc->audio->frames) {
-        return false;
-    }
+/* K-weighted loudness of each `window` frame window, stepped by `step`,
+ * over [begin, end). Shared by the integrated, short-term and range
+ * measurements, which differ only in those two lengths and in how they
+ * reduce the result. Returns the window count, 0 when the range cannot
+ * hold one; `out_lufs` and `out_mean` each receive that many entries. */
+static u32 audio_window_loudness(const BreakEditorDoc *doc, u32 begin, u32 end,
+                                 u32 window, u32 step, double *out_lufs,
+                                 double *out_mean, u32 capacity) {
     const BreakEditorAudioState *audio = doc->audio;
     const u32 rate = audio->sample_rate;
-    const u32 block = (u32)((u64)rate * AUDIO_LUFS_BLOCK_MS / 1000u);
-    const u32 step = block / AUDIO_LUFS_STEP_DIV;
-    if (rate == 0u || block == 0u || step == 0u || end - begin < block) {
-        return false; /* an integrated figure needs at least one block */
+    if (rate == 0u || window == 0u || step == 0u || end - begin < window) {
+        return 0u;
     }
+    u32 count = (end - begin - window) / step + 1u;
+    if (count > capacity) count = capacity;
     AudioBiquad shelf, highpass;
     audio_k_shelf((double)rate, &shelf);
     audio_k_highpass((double)rate, &highpass);
-    /* one pass of K-weighted squares per channel, accumulated per block */
-    static double block_sum[AUDIO_LUFS_MAX_BLOCKS];
-    u32 blocks = (end - begin - block) / step + 1u;
-    if (blocks > AUDIO_LUFS_MAX_BLOCKS) blocks = AUDIO_LUFS_MAX_BLOCKS;
-    for (u32 b = 0u; b < blocks; ++b) {
-        block_sum[b] = 0.0;
+    for (u32 w = 0u; w < count; ++w) {
+        out_mean[w] = 0.0;
     }
     for (u32 channel = 0u; channel < audio->channels; ++channel) {
         AudioBiquadState s1 = {0.0, 0.0, 0.0, 0.0}, s2 = {0.0, 0.0, 0.0, 0.0};
@@ -319,30 +318,49 @@ bool break_editor_doc_audio_loudness_range(const BreakEditorDoc *doc, u32 begin,
             const double y = audio_biquad_step(&highpass, &s2,
                                                audio_biquad_step(&shelf, &s1, x));
             const double sq = y * y;
-            /* the frame belongs to every block whose window covers it */
+            /* the frame belongs to every window covering it */
             const u32 rel = f - begin;
-            const u32 first = rel >= block ? (rel - block) / step + 1u : 0u;
-            for (u32 b = first; b < blocks; ++b) {
-                const u32 start = b * step;
+            const u32 first = rel >= window ? (rel - window) / step + 1u : 0u;
+            for (u32 w = first; w < count; ++w) {
+                const u32 start = w * step;
                 if (rel < start) {
                     break;
                 }
-                if (rel < start + block) {
-                    block_sum[b] += sq;
+                if (rel < start + window) {
+                    out_mean[w] += sq;
                 }
             }
         }
     }
-    /* block loudness, then the two gates */
-    double gated_sum = 0.0, above_absolute = 0.0;
-    u32 above_count = 0u;
+    for (u32 w = 0u; w < count; ++w) {
+        out_mean[w] /= (double)window; /* channel weights are 1 for 1-2 ch */
+        out_lufs[w] = out_mean[w] > 0.0 ? -0.691 + 10.0 * log10(out_mean[w])
+                                        : BREAK_EDITOR_AUDIO_LUFS_FLOOR;
+    }
+    return count;
+}
+
+bool break_editor_doc_audio_loudness_range(const BreakEditorDoc *doc, u32 begin, u32 end,
+                                           double *out_lufs) {
     static double block_lufs[AUDIO_LUFS_MAX_BLOCKS];
+    static double block_mean[AUDIO_LUFS_MAX_BLOCKS];
+    if (!doc || !doc->audio || !out_lufs || begin >= end || end > doc->audio->frames) {
+        return false;
+    }
+    const u32 rate = doc->audio->sample_rate;
+    const u32 block = (u32)((u64)rate * AUDIO_LUFS_BLOCK_MS / 1000u);
+    const u32 blocks = audio_window_loudness(doc, begin, end, block,
+                                             block / AUDIO_LUFS_STEP_DIV, block_lufs,
+                                             block_mean, AUDIO_LUFS_MAX_BLOCKS);
+    if (blocks == 0u) {
+        return false; /* an integrated figure needs at least one block */
+    }
+    /* the absolute gate, then a relative gate 10 LU below what survives */
+    double above_sum = 0.0;
+    u32 above_count = 0u;
     for (u32 b = 0u; b < blocks; ++b) {
-        const double mean = block_sum[b] / (double)block; /* channel weights are 1 */
-        block_lufs[b] = mean > 0.0 ? -0.691 + 10.0 * log10(mean)
-                                   : BREAK_EDITOR_AUDIO_LUFS_FLOOR;
         if (block_lufs[b] > BREAK_EDITOR_AUDIO_LUFS_FLOOR) {
-            above_absolute += mean;
+            above_sum += block_mean[b];
             above_count++;
         }
     }
@@ -351,23 +369,106 @@ bool break_editor_doc_audio_loudness_range(const BreakEditorDoc *doc, u32 begin,
         return true;
     }
     {
-        const double mean_above = above_absolute / (double)above_count;
-        const double relative = -0.691 + 10.0 * log10(mean_above) - 10.0;
+        const double relative =
+            -0.691 + 10.0 * log10(above_sum / (double)above_count) - 10.0;
+        double gated_sum = 0.0;
         u32 count = 0u;
         for (u32 b = 0u; b < blocks; ++b) {
             if (block_lufs[b] > BREAK_EDITOR_AUDIO_LUFS_FLOOR && block_lufs[b] > relative) {
-                gated_sum += block_sum[b] / (double)block;
+                gated_sum += block_mean[b];
                 count++;
             }
         }
-        if (count == 0u) {
-            *out_lufs = BREAK_EDITOR_AUDIO_LUFS_FLOOR;
-            return true;
-        }
-        *out_lufs = -0.691 + 10.0 * log10(gated_sum / (double)count);
+        *out_lufs = count != 0u ? -0.691 + 10.0 * log10(gated_sum / (double)count)
+                                : BREAK_EDITOR_AUDIO_LUFS_FLOOR;
     }
     if (*out_lufs < BREAK_EDITOR_AUDIO_LUFS_FLOOR) {
         *out_lufs = BREAK_EDITOR_AUDIO_LUFS_FLOOR;
+    }
+    return true;
+}
+
+#define AUDIO_SHORT_TERM_MS 3000u
+#define AUDIO_LRA_STEP_MS 1000u
+#define AUDIO_LRA_MAX_WINDOWS 2048u
+
+bool break_editor_doc_audio_short_term_range(const BreakEditorDoc *doc, u32 begin, u32 end,
+                                             double *out_lufs) {
+    static double win_lufs[1];
+    static double win_mean[1];
+    if (!doc || !doc->audio || !out_lufs || begin >= end || end > doc->audio->frames) {
+        return false;
+    }
+    /* the last 3 seconds of the range: one window ending at `end` */
+    const u32 window = (u32)((u64)doc->audio->sample_rate * AUDIO_SHORT_TERM_MS / 1000u);
+    if (window == 0u || end - begin < window) {
+        return false;
+    }
+    if (audio_window_loudness(doc, end - window, end, window, window, win_lufs, win_mean,
+                              1u) == 0u) {
+        return false;
+    }
+    *out_lufs = win_lufs[0] > BREAK_EDITOR_AUDIO_LUFS_FLOOR
+                    ? win_lufs[0]
+                    : BREAK_EDITOR_AUDIO_LUFS_FLOOR;
+    return true;
+}
+
+static int audio_double_compare(const void *a, const void *b) {
+    const double x = *(const double *)a, y = *(const double *)b;
+    return x < y ? -1 : (x > y ? 1 : 0);
+}
+
+bool break_editor_doc_audio_loudness_range_lra(const BreakEditorDoc *doc, u32 begin,
+                                               u32 end, double *out_lra) {
+    static double win_lufs[AUDIO_LRA_MAX_WINDOWS];
+    static double win_mean[AUDIO_LRA_MAX_WINDOWS];
+    static double kept[AUDIO_LRA_MAX_WINDOWS];
+    if (!doc || !doc->audio || !out_lra || begin >= end || end > doc->audio->frames) {
+        return false;
+    }
+    const u32 rate = doc->audio->sample_rate;
+    const u32 window = (u32)((u64)rate * AUDIO_SHORT_TERM_MS / 1000u);
+    const u32 step = (u32)((u64)rate * AUDIO_LRA_STEP_MS / 1000u);
+    const u32 count = audio_window_loudness(doc, begin, end, window, step, win_lufs,
+                                            win_mean, AUDIO_LRA_MAX_WINDOWS);
+    if (count < 2u) {
+        return false; /* one window is a level, not a range */
+    }
+    /* the absolute gate, then a relative gate 20 LU below the survivors */
+    double above_sum = 0.0;
+    u32 above_count = 0u;
+    for (u32 w = 0u; w < count; ++w) {
+        if (win_lufs[w] > BREAK_EDITOR_AUDIO_LUFS_FLOOR) {
+            above_sum += win_mean[w];
+            above_count++;
+        }
+    }
+    if (above_count < 2u) {
+        return false;
+    }
+    {
+        const double relative =
+            -0.691 + 10.0 * log10(above_sum / (double)above_count) - 20.0;
+        u32 kept_count = 0u;
+        for (u32 w = 0u; w < count; ++w) {
+            if (win_lufs[w] > BREAK_EDITOR_AUDIO_LUFS_FLOOR && win_lufs[w] > relative) {
+                kept[kept_count++] = win_lufs[w];
+            }
+        }
+        if (kept_count < 2u) {
+            return false;
+        }
+        qsort(kept, kept_count, sizeof(kept[0]), audio_double_compare);
+        {
+            /* the 10th and 95th percentiles of what survived */
+            const u32 low = (u32)(((double)kept_count - 1.0) * 0.10 + 0.5);
+            const u32 high = (u32)(((double)kept_count - 1.0) * 0.95 + 0.5);
+            *out_lra = kept[high] - kept[low];
+        }
+    }
+    if (*out_lra < 0.0) {
+        *out_lra = 0.0;
     }
     return true;
 }

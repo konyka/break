@@ -165,6 +165,10 @@ double editor_panel_audio_peak_db(const EditorPanelAudio *panel);
 double editor_panel_audio_true_peak_db(const EditorPanelAudio *panel);
 /* The view's integrated loudness in LUFS, or the -70 floor. */
 double editor_panel_audio_lufs(const EditorPanelAudio *panel);
+/* The view's short-term loudness (-70 floor) and loudness range (0 LU
+ * when the view is too short). */
+double editor_panel_audio_short_term_lufs(const EditorPanelAudio *panel);
+double editor_panel_audio_lra(const EditorPanelAudio *panel);
 double editor_panel_audio_rms_db(const EditorPanelAudio *panel);
 u32 editor_panel_audio_set_mute(EditorPanelAudio *panel, u32 channel);
 u32 editor_panel_audio_mute(const EditorPanelAudio *panel);

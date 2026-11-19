@@ -4183,6 +4183,25 @@ TEST(audio_page_reports_peak_and_rms_in_db)
          * (design 2026-11-20-editor-audio-lufs) */
         ASSERT_TRUE(break_editor_shell_audio_lufs(shell) > BREAK_EDITOR_AUDIO_LUFS_FLOOR);
         ASSERT_TRUE(strstr(((const my_label_t *)label)->text, "lufs ") != NULL);
+        /* the short-term figure and the range need 3 s and two 3 s windows:
+         * a 500 ms view has neither (design 2026-11-20-editor-audio-lra) */
+        ASSERT_TRUE(break_editor_shell_audio_short_term_lufs(shell) <=
+                    BREAK_EDITOR_AUDIO_LUFS_FLOOR + 0.001);
+        ASSERT_TRUE(break_editor_shell_audio_lra(shell) == 0.0);
+        ASSERT_TRUE(strstr(((const my_label_t *)label)->text, "lra ") == NULL);
+        /* a 5 s clip has both, and the label names the range */
+        {
+            static i16 longer[40000u];
+            for (i = 0u; i < 40000u; i++) {
+                longer[i] = (i16)(i % 2u == 0u ? 8000 : -8000);
+            }
+            ASSERT_TRUE(break_editor_doc_reset(doc));
+            ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, longer, 40000u));
+            break_editor_shell_tick(shell);
+            ASSERT_TRUE(break_editor_shell_audio_short_term_lufs(shell) >
+                        BREAK_EDITOR_AUDIO_LUFS_FLOOR);
+            ASSERT_TRUE(strstr(((const my_label_t *)label)->text, "lra ") != NULL);
+        }
         /* a 100 ms clip is too short: the floor, and no "lufs" in the label */
         ASSERT_TRUE(break_editor_doc_reset(doc));
         ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 800u));

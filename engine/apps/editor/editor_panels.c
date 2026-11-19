@@ -4294,6 +4294,15 @@ double break_editor_shell_audio_lufs(const BreakEditorShell *shell) {
                          : BREAK_EDITOR_AUDIO_LUFS_FLOOR;
 }
 
+double break_editor_shell_audio_short_term_lufs(const BreakEditorShell *shell) {
+    return shell != NULL ? editor_panel_audio_short_term_lufs(shell->audio_panel)
+                         : BREAK_EDITOR_AUDIO_LUFS_FLOOR;
+}
+
+double break_editor_shell_audio_lra(const BreakEditorShell *shell) {
+    return shell != NULL ? editor_panel_audio_lra(shell->audio_panel) : 0.0;
+}
+
 double break_editor_shell_audio_true_peak_db(const BreakEditorShell *shell) {
     return shell != NULL ? editor_panel_audio_true_peak_db(shell->audio_panel)
                          : BREAK_EDITOR_AUDIO_DB_FLOOR;

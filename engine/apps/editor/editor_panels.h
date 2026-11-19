@@ -531,6 +531,11 @@ double break_editor_shell_audio_true_peak_db(const BreakEditorShell *shell);
  * 2026-11-20-editor-audio-lufs); the -70 floor when the view is shorter
  * than one 400 ms block or silent. */
 double break_editor_shell_audio_lufs(const BreakEditorShell *shell);
+/* The view's short-term loudness and loudness range (design
+ * 2026-11-20-editor-audio-lra): the -70 LUFS and 0 LU floors when the view
+ * cannot hold the 3-second window(s) each needs. */
+double break_editor_shell_audio_short_term_lufs(const BreakEditorShell *shell);
+double break_editor_shell_audio_lra(const BreakEditorShell *shell);
 double break_editor_shell_audio_rms_db(const BreakEditorShell *shell);
 u32 break_editor_shell_audio_set_mute(BreakEditorShell *shell, u32 channel);
 u32 break_editor_shell_audio_mute(const BreakEditorShell *shell);

@@ -912,7 +912,126 @@ TEST(loudness_range_weights_by_frequency_and_gates)
     break_editor_doc_destroy(doc);
 }
 
+/* Short-term loudness and LRA (design 2026-11-20-editor-audio-lra). */
+TEST(short_term_and_lra_describe_level_variation)
+{
+    /* 8 kHz keeps 8 s inside BREAK_EDITOR_AUDIO_MAX_FRAMES (65536): the
+     * 3 s window is 24000 frames and the 1 s step is 8000 */
+    static i16 pcm[64000u];
+    double integrated = 0.0, short_term = 0.0, lra = -1.0, steady_lra = 0.0;
+    BreakEditorDoc *doc = break_editor_doc_create();
+    const double two_pi = 2.0 * 3.14159265358979323846;
+    ASSERT_NOT_NULL(doc);
+    /* 8 s of a steady 1 kHz tone: no variation, so LRA is near 0 and the
+     * short-term figure matches the integrated one */
+    for (u32 i = 0u; i < 64000u; ++i) {
+        pcm[i] = (i16)(sin(two_pi * 1000.0 * (double)i / 8000.0) * 3276.8);
+    }
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 64000u));
+    ASSERT_TRUE(break_editor_doc_audio_loudness_range(doc, 0u, 64000u, &integrated));
+    ASSERT_TRUE(break_editor_doc_audio_short_term_range(doc, 0u, 64000u, &short_term));
+    ASSERT_TRUE(break_editor_doc_audio_loudness_range_lra(doc, 0u, 64000u, &lra));
+    ASSERT_TRUE(short_term > integrated - 1.0 && short_term < integrated + 1.0);
+    ASSERT_TRUE(lra >= 0.0 && lra < 1.0);
+    steady_lra = lra;
+    /* loud first half, quiet second half: the windows span a real range */
+    break_editor_doc_reset(doc);
+    for (u32 i = 0u; i < 64000u; ++i) {
+        const double amp = i < 32000u ? 3276.8 : 327.68;
+        pcm[i] = (i16)(sin(two_pi * 1000.0 * (double)i / 8000.0) * amp);
+    }
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 64000u));
+    ASSERT_TRUE(break_editor_doc_audio_loudness_range_lra(doc, 0u, 64000u, &lra));
+    ASSERT_TRUE(lra > steady_lra + 5.0);
+    /* the 10th percentile trims a single outlier: one ultra-quiet second at
+     * the very end only reaches the last window, so the range is measured
+     * from the second-lowest window instead of that one. (The 95th
+     * percentile index equals the top index while there are 6 windows, so
+     * the upper trim is not observable at this length.) */
+    {
+        double outlier_lra = 0.0;
+        for (u32 i = 0u; i < 64000u; ++i) {
+            double amp = i < 32000u ? 3276.8 : 327.68;
+            /* about -55 LUFS for that window: above the -70 absolute gate,
+             * so only the relative gate or the percentile can drop it */
+            if (i >= 56000u) amp = 6.0;
+            pcm[i] = (i16)(sin(two_pi * 1000.0 * (double)i / 8000.0) * amp);
+        }
+        break_editor_doc_reset(doc);
+        ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 64000u));
+        ASSERT_TRUE(break_editor_doc_audio_loudness_range_lra(doc, 0u, 64000u,
+                                                              &outlier_lra));
+        /* within a fraction of a LU of the un-outliered figure: the outlier
+         * was dropped rather than widening the range */
+        ASSERT_TRUE(outlier_lra < lra + 1.0);
+        /* and the outlier really is above the absolute gate */
+        {
+            double tail = 0.0;
+            ASSERT_TRUE(break_editor_doc_audio_short_term_range(doc, 40000u, 64000u,
+                                                                &tail));
+            ASSERT_TRUE(tail > BREAK_EDITOR_AUDIO_LUFS_FLOOR + 5.0);
+        }
+        /* a loud clip with a quiet tail, which the gating must not let
+         * dominate the range. With only 6 windows (8 kHz and the 65536
+         * frame cap allow 8.19 s, so 6 three-second windows stepped by one
+         * second) the -20 LU relative gate and the 10th percentile drop the
+         * same single window, so this case does not separate the two; it
+         * pins that one of them acts. The relative gate itself is pinned by
+         * the integrated measurement's own case. */
+        for (u32 i = 0u; i < 64000u; ++i) {
+            /* the tail is about -55 LUFS: above the -70 absolute gate, but
+             * more than 20 LU below the loud part's mean, so only the
+             * relative gate can drop it */
+            const double amp = i < 40000u ? 3276.8 : 82.0;
+            pcm[i] = (i16)(sin(two_pi * 1000.0 * (double)i / 8000.0) * amp);
+        }
+        break_editor_doc_reset(doc);
+        ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 64000u));
+        ASSERT_TRUE(break_editor_doc_audio_loudness_range_lra(doc, 0u, 64000u,
+                                                              &outlier_lra));
+        ASSERT_TRUE(outlier_lra < 12.0);
+    }
+    /* back to the plain half/half clip for the short-term check below */
+    for (u32 i = 0u; i < 64000u; ++i) {
+        const double amp = i < 32000u ? 3276.8 : 327.68;
+        pcm[i] = (i16)(sin(two_pi * 1000.0 * (double)i / 8000.0) * amp);
+    }
+    break_editor_doc_reset(doc);
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 64000u));
+    /* the same clip's last 3 s are the quiet half, so the short-term figure
+     * sits well below the integrated one */
+    ASSERT_TRUE(break_editor_doc_audio_loudness_range(doc, 0u, 64000u, &integrated));
+    ASSERT_TRUE(break_editor_doc_audio_short_term_range(doc, 0u, 64000u, &short_term));
+    ASSERT_TRUE(short_term < integrated - 5.0);
+    /* silence is the floor */
+    break_editor_doc_reset(doc);
+    memset(pcm, 0, sizeof(pcm));
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 64000u));
+    ASSERT_TRUE(break_editor_doc_audio_short_term_range(doc, 0u, 64000u, &short_term));
+    ASSERT_TRUE(short_term <= BREAK_EDITOR_AUDIO_LUFS_FLOOR + 0.001);
+    /* too short for the 3 s window: both refuse */
+    lra = -1.0;
+    short_term = -1.0;
+    ASSERT_TRUE(!break_editor_doc_audio_short_term_range(doc, 0u, 16000u, &short_term));
+    ASSERT_TRUE(!break_editor_doc_audio_loudness_range_lra(doc, 0u, 16000u, &lra));
+    /* exactly one window: a short-term figure exists, a range does not */
+    break_editor_doc_reset(doc);
+    for (u32 i = 0u; i < 64000u; ++i) {
+        pcm[i] = (i16)(sin(two_pi * 1000.0 * (double)i / 8000.0) * 3276.8);
+    }
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 64000u));
+    ASSERT_TRUE(break_editor_doc_audio_short_term_range(doc, 0u, 24000u, &short_term));
+    ASSERT_TRUE(short_term > BREAK_EDITOR_AUDIO_LUFS_FLOOR);
+    ASSERT_TRUE(!break_editor_doc_audio_loudness_range_lra(doc, 0u, 24000u, &lra));
+    ASSERT_TRUE(!break_editor_doc_audio_short_term_range(NULL, 0u, 64000u, &short_term));
+    ASSERT_TRUE(!break_editor_doc_audio_loudness_range_lra(doc, 0u, 64001u, &lra));
+    ASSERT_TRUE(!break_editor_doc_audio_loudness_range_lra(doc, 0u, 64000u, NULL));
+    ASSERT_EQ((int)lra, -1);
+    break_editor_doc_destroy(doc);
+}
+
 TEST_MAIN_BEGIN()
+    RUN_TEST(short_term_and_lra_describe_level_variation);
     RUN_TEST(loudness_range_weights_by_frequency_and_gates);
     RUN_TEST(true_peak_range_sees_intersample_peaks);
     RUN_TEST(peak_range_reports_peak_and_rms);

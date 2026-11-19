@@ -222,7 +222,17 @@ static void audio_panel_format_info(EditorPanelAudio *panel) {
                 break_editor_doc_audio_loudness_range(break_editor_shell_doc(panel->shell),
                                                       audio_view_begin(panel),
                                                       audio_view_end(panel), &lufs)) {
-                (void)snprintf(text + n, sizeof(text) - (usize)n, "  lufs %.1f", lufs);
+                double lra = 0.0;
+                const int m = n + snprintf(text + n, sizeof(text) - (usize)n,
+                                           "  lufs %.1f", lufs);
+                /* the range needs two 3 s windows, so it is named separately */
+                if (m > 0 && (usize)m < sizeof(text) &&
+                    break_editor_doc_audio_loudness_range_lra(
+                        break_editor_shell_doc(panel->shell), audio_view_begin(panel),
+                        audio_view_end(panel), &lra)) {
+                    (void)snprintf(text + m, sizeof(text) - (usize)m, "  lra %.1f LU",
+                                   lra);
+                }
             }
         } else {
             text[0] = '\0';
@@ -1058,6 +1068,28 @@ double editor_panel_audio_lufs(const EditorPanelAudio *panel) {
         return BREAK_EDITOR_AUDIO_LUFS_FLOOR;
     }
     return lufs;
+}
+
+double editor_panel_audio_short_term_lufs(const EditorPanelAudio *panel) {
+    double lufs = BREAK_EDITOR_AUDIO_LUFS_FLOOR;
+    if (panel == NULL ||
+        !break_editor_doc_audio_short_term_range(break_editor_shell_doc(panel->shell),
+                                                 audio_view_begin(panel),
+                                                 audio_view_end(panel), &lufs)) {
+        return BREAK_EDITOR_AUDIO_LUFS_FLOOR;
+    }
+    return lufs;
+}
+
+double editor_panel_audio_lra(const EditorPanelAudio *panel) {
+    double lra = 0.0;
+    if (panel == NULL ||
+        !break_editor_doc_audio_loudness_range_lra(break_editor_shell_doc(panel->shell),
+                                                   audio_view_begin(panel),
+                                                   audio_view_end(panel), &lra)) {
+        return 0.0;
+    }
+    return lra;
 }
 
 double editor_panel_audio_true_peak_db(const EditorPanelAudio *panel) {

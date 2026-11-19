@@ -72,6 +72,16 @@ bool break_editor_doc_audio_true_peak_range(const BreakEditorDoc *doc, u32 begin
 #define BREAK_EDITOR_AUDIO_LUFS_FLOOR (-70.0)
 bool break_editor_doc_audio_loudness_range(const BreakEditorDoc *doc, u32 begin, u32 end,
                                            double *out_lufs);
+/* Short-term loudness: the last 3 seconds of [begin, end) in LUFS. False
+ * for a range shorter than that window. */
+bool break_editor_doc_audio_short_term_range(const BreakEditorDoc *doc, u32 begin, u32 end,
+                                             double *out_lufs);
+/* Loudness range (EBU R128) in LU, from 3-second windows stepped by 1 s:
+ * the 95th percentile minus the 10th, after a -70 LUFS absolute gate and a
+ * -20 LU relative gate. False for a range with fewer than two surviving
+ * windows. */
+bool break_editor_doc_audio_loudness_range_lra(const BreakEditorDoc *doc, u32 begin,
+                                               u32 end, double *out_lra);
 
 /* One snapshot command per successful edit; false leaves PCM/history unchanged. */
 bool break_editor_doc_audio_trim(BreakEditorDoc *doc, u32 begin, u32 end);
