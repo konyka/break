@@ -37,6 +37,9 @@
 #include <network/break_replication.h>
 #include <network/break_replication_fragment.h>
 #include <network/break_session.h>
+#include <network/break_online_aspect.h>
+#include <network/break_online_inbox.h>
+#include <network/break_online_lobby.h>
 #include <update/break_update.h>
 #include <update/break_update_client.h>
 

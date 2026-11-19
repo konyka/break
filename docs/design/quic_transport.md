@@ -1,6 +1,6 @@
 # QUIC Transport — break_net_quic over Snowflake ngtcp2 adapter
 
-Status: **delivered as a library seam with loopback evidence** (v1, 2026-11-08; Snowflake pin `696a1ec5`).
+Status: **delivered as a library seam with loopback evidence** (v1, 2026-11-08; Snowflake pin `a90215bf`).
 This document is the contract record for the first QUIC slice. It is honest
 about what exists: a client/server channel module driven by the caller's
 thread, exercised over real UDP loopback — not a reactor-integrated transport,
@@ -274,9 +274,10 @@ ctest --test-dir build-quic -R break_net_quic --output-on-failure
   full non-graphics suite reads 281/281 with the suite included.
 - Fixtures: `engine/tests/fixtures/ssl/` (CN=localhost, 2020–2049), same
   trust model as break_http's tests (transport_security.md §7).
-- Snowflake pin: `696a1ec5` (tracks main per policy; the integration also
+- Snowflake pin: `a90215bf` (tracks main per policy; the integration also
   carried the Google-style API rename migration, the ALPN fail-closed fix
-  `5fab267e`, and the 256 KiB window fix `696a1ec5` upstream).
+  `5fab267e`, the 256 KiB window fix `696a1ec5`, and the SIGPIPE socket
+  suppression `a90215bf` upstream).
 - Environment evidence: macOS arm64 + OpenSSL 4.0.3 (self-built,
   `-DOPENSSL_ROOT_DIR`), QUICv1 / TLS_AES_256_GCM_SHA384 loopback verified
   via raw OpenSSL 4.x API (2026-11-08 smoke) and via the snow adapter
