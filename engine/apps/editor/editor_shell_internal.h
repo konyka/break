@@ -142,6 +142,9 @@ u32 editor_panel_audio_gain(const EditorPanelAudio *panel);
 /* One lane per channel, stacked; lane 0 is what editor_panel_audio_column
  * reads. 0 lanes without an attachment. */
 u32 editor_panel_audio_fit_gain(EditorPanelAudio *panel);
+/* Preview solo; BREAK_EDITOR_AUDIO_SOLO_NONE plays every channel. */
+u32 editor_panel_audio_set_solo(EditorPanelAudio *panel, u32 channel);
+u32 editor_panel_audio_solo(const EditorPanelAudio *panel);
 u32 editor_panel_audio_lane_count(const EditorPanelAudio *panel);
 bool editor_panel_audio_lane_column(const EditorPanelAudio *panel, u32 lane, u32 i,
                                     i16 *out_min, i16 *out_max);

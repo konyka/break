@@ -360,4 +360,5 @@
 - **第 10 节（音频）/第 12 节（编辑器）追加**：2026-11-19 编辑器音频页新增视图滚动条（水平 `my_scroll_bar`，映射视图位置与占比并可拖动跳转）；`my_scroll_bar` 本身新增水平方向支持。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「离线音频编辑」。「滚动条控件」由此交付。
 - **第 10 节（音频）/第 12 节（编辑器）追加**：2026-11-19 编辑器音频页新增幅度缩放（只作用于显示的 1~32 倍，2 的幂步进），安静素材的包络也能看清。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「离线音频编辑」。仍缺：dB/对数刻度、按峰值自动增益、逐帧平滑滚动、其他格式、VFS 与真实听测。
 - **第 10 节（音频）/第 12 节（编辑器）追加**：2026-11-19 编辑器音频页按声道分泳道绘制波形（核心 `break_editor_doc_audio_waveform_channel`），立体声可分别看左右声道。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「离线音频编辑」。「分声道显示」由此交付。
-- **第 10 节（音频）/第 12 节（编辑器）追加**：2026-11-19 编辑器音频页新增幅度自适应（"=" 按钮按当前视图峰值选显示倍数）。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「离线音频编辑」。「按峰值自动增益」由此交付。仍缺：分声道静音/独奏、各泳道独立幅度缩放、dB/对数刻度与真实听测。
+- **第 10 节（音频）/第 12 节（编辑器）追加**：2026-11-19 编辑器音频页新增幅度自适应（"=" 按钮按当前视图峰值选显示倍数）。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「离线音频编辑」。「按峰值自动增益」由此交付。
+- **第 10 节（音频）/第 12 节（编辑器）追加**：2026-11-19 编辑器音频预览支持分声道独奏（独奏声道写进所有输出声道，`editor-audio-solo` 按钮循环切换）。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「离线音频编辑」。「分声道独奏」由此交付。仍缺：分声道静音、各泳道独立幅度缩放、dB/对数刻度与真实听测。

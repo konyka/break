@@ -1,3 +1,9 @@
+## 编辑器音频分声道独奏（2026-11-19）
+
+- **交付**：预览新增 `break_editor_audio_preview_set_solo`/`_solo`（`BREAK_EDITOR_AUDIO_SOLO_NONE` 为默认的全声道）。设置独奏声道后，下一次 Play 取的副本把该声道的采样写进所有输出声道，因此立体声素材的单声道可居中听到；输出端仍按素材自身声道数打开，下游无需改动。声道号超出素材声道数时按“无独奏”处理而不是拒绝播放；已排队的音频不受影响。音频页视图行新增 `editor-audio-solo` 按钮，立体声循环 无→左→右→无、单声道 无→0→无，标签分别为 Solo/Solo L/Solo R 与 Solo 1（中文 独奏/独奏左/独奏右/独奏 1，均走 i18n 表）；附件变化时重置为无。shell 新增 `break_editor_shell_audio_set_solo`、`break_editor_shell_audio_solo`。设计与计划见 `docs/superpowers/specs/2026-11-19-editor-audio-solo-design.md`、`docs/superpowers/plans/2026-11-19-editor-audio-solo.md`。
+- **TDD**：新用例先链接失败再通过，经 fake sink 逐样本核对写出的交织数据，`test_editor_shell` 224/224。6 个变异全部判红：独奏分支永不进入、读采样时丢掉声道偏移、把 `solo < channels` 换成“设了独奏就算”、循环从声道 0 直接跳回无、附件变化不重置、绕过立体声左右标签规则。
+- **边界**：没有静音（独奏的反向操作）、绘制层没有分泳道静音、播放中途改独奏不生效、不支持两个以上声道。
+
 ## 编辑器音频幅度自适应（2026-11-19）
 
 - **交付**：音频页新增 `break_editor_shell_audio_fit_gain`（面板侧 `editor_panel_audio_fit_gain`）与视图行的 `editor-audio-gain-fit`（"="）按钮：扫描当前视图已算好的各泳道列，取绝对值最大的采样作为峰值，选出使 `倍数 * 峰值 <= 32768` 成立的最大允许 2 的幂并经既有 setter 应用，返回生效倍数；没有附件返回 0，数字静音的视图保持原倍数不变。因为峰值取自视图的列，缩放或滚动后再点一次就按当前可见部分重新适配。设计与计划见 `docs/superpowers/specs/2026-11-19-editor-audio-autogain-design.md`、`docs/superpowers/plans/2026-11-19-editor-audio-autogain.md`。

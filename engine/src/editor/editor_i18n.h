@@ -216,6 +216,10 @@ typedef enum {
     BREAK_EDITOR_TR_AUDIO_NORMALIZE,
     BREAK_EDITOR_TR_AUDIO_LOOP,
     BREAK_EDITOR_TR_AUDIO_FOLLOW,
+    BREAK_EDITOR_TR_AUDIO_SOLO,       /* no channel soloed */
+    BREAK_EDITOR_TR_AUDIO_SOLO_LEFT,
+    BREAK_EDITOR_TR_AUDIO_SOLO_RIGHT,
+    BREAK_EDITOR_TR_AUDIO_SOLO_FMT,   /* %u: 1-based channel, mono or beyond R */
     BREAK_EDITOR_TR_COUNT
 } BreakEditorTr;
 

@@ -3839,6 +3839,101 @@ static u32 waveform_painted_rows(BreakEditorShell *shell, my_widget_t *w) {
     return rows;
 }
 
+/* Solo one channel in the preview (design 2026-11-19-editor-audio-solo). */
+TEST(audio_page_solos_one_channel_in_the_preview)
+{
+    static i16 stereo[400u];
+    static i16 mono[100u];
+    static FakeAudioSink fake;
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    my_widget_t *solo;
+    u32 i;
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    memset(&fake, 0, sizeof(fake));
+    fake.chunk = 4096u;
+    /* left silent, right a loud ramp */
+    for (i = 0u; i < 200u; i++) {
+        stereo[i * 2u] = 0;
+        stereo[i * 2u + 1u] = (i16)(i * 100u);
+    }
+    for (i = 0u; i < 100u; i++) mono[i] = (i16)(i + 1u);
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 2u, stereo, 200u));
+    ASSERT_TRUE(break_editor_shell_select_tab(shell, 0u, 4u));
+    shell_paint(shell);
+    break_editor_shell_tick(shell);
+    solo = find(shell, "editor-audio-solo");
+    ASSERT_NOT_NULL(solo);
+    ASSERT_EQ(break_editor_shell_audio_solo(shell), BREAK_EDITOR_AUDIO_SOLO_NONE);
+    ASSERT_STR_EQ(((const my_button_t *)solo)->text, "Solo");
+    break_editor_shell_set_audio_sink(shell, &k_fake_sink, &fake);
+    /* no solo: both channels go out as they are */
+    ASSERT_TRUE(break_editor_shell_audio_play(shell));
+    ASSERT_EQ(fake.channels, 2u);
+    ASSERT_EQ(fake.data[0], 0);
+    ASSERT_EQ(fake.data[1], 0);
+    ASSERT_EQ(fake.data[20], 0);
+    ASSERT_EQ(fake.data[21], 1000);
+    ASSERT_FALSE(break_editor_shell_audio_play(shell)); /* stop */
+    /* solo the right channel: both output channels carry it */
+    ASSERT_EQ(break_editor_shell_audio_set_solo(shell, 1u), 1u);
+    ASSERT_TRUE(break_editor_shell_audio_play(shell));
+    ASSERT_EQ(fake.channels, 2u);
+    ASSERT_EQ(fake.data[20], 1000);
+    ASSERT_EQ(fake.data[21], 1000);
+    ASSERT_EQ(fake.data[40], 2000);
+    ASSERT_EQ(fake.data[41], 2000);
+    ASSERT_FALSE(break_editor_shell_audio_play(shell));
+    /* solo the silent left channel: silence out */
+    ASSERT_EQ(break_editor_shell_audio_set_solo(shell, 0u), 0u);
+    ASSERT_TRUE(break_editor_shell_audio_play(shell));
+    ASSERT_EQ(fake.data[20], 0);
+    ASSERT_EQ(fake.data[21], 0);
+    ASSERT_EQ(fake.data[40], 0);
+    ASSERT_FALSE(break_editor_shell_audio_play(shell));
+    /* an out-of-range solo plays as if none */
+    ASSERT_EQ(break_editor_shell_audio_set_solo(shell, 5u), 5u);
+    ASSERT_TRUE(break_editor_shell_audio_play(shell));
+    ASSERT_EQ(fake.data[20], 0);
+    ASSERT_EQ(fake.data[21], 1000);
+    ASSERT_FALSE(break_editor_shell_audio_play(shell));
+    /* the button cycles none -> L -> R -> none and relabels */
+    ASSERT_EQ(break_editor_shell_audio_set_solo(shell, BREAK_EDITOR_AUDIO_SOLO_NONE),
+              BREAK_EDITOR_AUDIO_SOLO_NONE);
+    emit_click(solo);
+    ASSERT_EQ(break_editor_shell_audio_solo(shell), 0u);
+    ASSERT_STR_EQ(((const my_button_t *)solo)->text, "Solo L");
+    emit_click(solo);
+    ASSERT_EQ(break_editor_shell_audio_solo(shell), 1u);
+    ASSERT_STR_EQ(((const my_button_t *)solo)->text, "Solo R");
+    emit_click(solo);
+    ASSERT_EQ(break_editor_shell_audio_solo(shell), BREAK_EDITOR_AUDIO_SOLO_NONE);
+    ASSERT_STR_EQ(((const my_button_t *)solo)->text, "Solo");
+    /* an attachment change resets it */
+    ASSERT_EQ(break_editor_shell_audio_set_solo(shell, 1u), 1u);
+    ASSERT_TRUE(break_editor_doc_reset(doc));
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, mono, 100u));
+    break_editor_shell_tick(shell);
+    ASSERT_EQ(break_editor_shell_audio_solo(shell), BREAK_EDITOR_AUDIO_SOLO_NONE);
+    /* mono: channel 0 soloed changes nothing, and the cycle is none -> 0 */
+    ASSERT_EQ(break_editor_shell_audio_set_solo(shell, 0u), 0u);
+    ASSERT_TRUE(break_editor_shell_audio_play(shell));
+    ASSERT_EQ(fake.channels, 1u);
+    ASSERT_EQ(fake.data[0], 1);
+    ASSERT_EQ(fake.data[10], 11);
+    ASSERT_FALSE(break_editor_shell_audio_play(shell));
+    ASSERT_EQ(break_editor_shell_audio_set_solo(shell, BREAK_EDITOR_AUDIO_SOLO_NONE),
+              BREAK_EDITOR_AUDIO_SOLO_NONE);
+    emit_click(solo);
+    ASSERT_EQ(break_editor_shell_audio_solo(shell), 0u);
+    ASSERT_STR_EQ(((const my_button_t *)solo)->text, "Solo 1");
+    emit_click(solo);
+    ASSERT_EQ(break_editor_shell_audio_solo(shell), BREAK_EDITOR_AUDIO_SOLO_NONE);
+    break_editor_shell_set_audio_sink(shell, NULL, NULL);
+    break_editor_shell_destroy(shell);
+}
+
 /* Fit the amplitude zoom to the peak (design 2026-11-19-editor-audio-autogain). */
 TEST(audio_page_fits_the_gain_to_the_visible_peak)
 {
@@ -14030,6 +14125,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(audio_page_amplitude_zoom_scales_the_drawn_columns);
     RUN_TEST(audio_page_draws_one_lane_per_channel);
     RUN_TEST(audio_page_fits_the_gain_to_the_visible_peak);
+    RUN_TEST(audio_page_solos_one_channel_in_the_preview);
     RUN_TEST(audio_page_zooms_and_scrolls_the_view);
     RUN_TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo);
     RUN_TEST(assets_panel_load_guards_unsaved_changes);

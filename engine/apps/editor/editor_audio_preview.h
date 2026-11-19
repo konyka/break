@@ -7,6 +7,8 @@
  * One allocation at create (BREAK_EDITOR_AUDIO_MAX_FRAMES stereo frames).
  * Shell thread only. */
 
+#include <stdint.h>
+
 #include <core/types.h>
 #include <editor/editor_doc.h>
 
@@ -54,6 +56,15 @@ bool break_editor_audio_preview_play_range(BreakEditorAudioPreview *preview,
  * next end. */
 void break_editor_audio_preview_set_loop(BreakEditorAudioPreview *preview, bool loop);
 bool break_editor_audio_preview_loop(const BreakEditorAudioPreview *preview);
+/* Solo: with a channel index set, the copy taken at the next Play carries
+ * that channel's samples in every output channel, so one channel of a
+ * stereo clip can be heard centred. BREAK_EDITOR_AUDIO_SOLO_NONE (the state
+ * after create) plays every channel as it is, and an index at or above the
+ * clip's channel count is treated the same way. Audio already queued keeps
+ * playing as it was. */
+#define BREAK_EDITOR_AUDIO_SOLO_NONE UINT32_MAX
+void break_editor_audio_preview_set_solo(BreakEditorAudioPreview *preview, u32 channel);
+u32 break_editor_audio_preview_solo(const BreakEditorAudioPreview *preview);
 /* Playing: restarts from `frame` (queued audio is dropped), to the end of
  * the playing range when `frame` is inside it, otherwise to the clip end.
  * Stopped: only sets the cursor. Returns whether it plays afterwards. */

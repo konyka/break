@@ -21,6 +21,7 @@ struct BreakEditorAudioPreview {
     u32 cursor;  /* where the next play starts */
     bool to_clip_end; /* the playing range ends at the clip end */
     bool loop;        /* re-arm the range instead of stopping at its end */
+    u32 solo;         /* channel played in every output channel, or _SOLO_NONE */
     i16 *pcm;    /* BREAK_EDITOR_AUDIO_MAX_FRAMES x 2 */
 };
 
@@ -32,6 +33,7 @@ BreakEditorAudioPreview *break_editor_audio_preview_create(void) {
     }
     preview->pcm = (i16 *)calloc((usize)(BREAK_EDITOR_AUDIO_MAX_FRAMES + EDITOR_PREVIEW_MAX_TAIL) * 2u,
                                  sizeof(i16));
+    preview->solo = BREAK_EDITOR_AUDIO_SOLO_NONE;
     if (preview->pcm == NULL) {
         free(preview);
         return NULL;
@@ -94,7 +96,18 @@ bool break_editor_audio_preview_play_range(BreakEditorAudioPreview *preview,
         return false;
     }
     const u32 start = start_frame < frames ? start_frame : frames - 1u;
-    memcpy(preview->pcm, samples, (usize)frames * channels * sizeof(i16));
+    if (preview->solo < channels && channels > 1u) {
+        /* one channel in every output channel: heard centred, and the sink
+         * still opens with the clip's own channel count */
+        for (u32 f = 0u; f < frames; ++f) {
+            const i16 value = samples[(usize)f * channels + preview->solo];
+            for (u32 c = 0u; c < channels; ++c) {
+                preview->pcm[(usize)f * channels + c] = value;
+            }
+        }
+    } else {
+        memcpy(preview->pcm, samples, (usize)frames * channels * sizeof(i16));
+    }
     memset(preview->pcm + (usize)frames * channels, 0, (usize)tail * channels * sizeof(i16));
     preview->sample_rate = break_editor_doc_audio_sample_rate(doc);
     preview->channels = channels;
@@ -108,6 +121,16 @@ bool break_editor_audio_preview_play_range(BreakEditorAudioPreview *preview,
     }
     preview->playing = true;
     return true;
+}
+
+void break_editor_audio_preview_set_solo(BreakEditorAudioPreview *preview, u32 channel) {
+    if (preview != NULL) {
+        preview->solo = channel;
+    }
+}
+
+u32 break_editor_audio_preview_solo(const BreakEditorAudioPreview *preview) {
+    return preview != NULL ? preview->solo : BREAK_EDITOR_AUDIO_SOLO_NONE;
 }
 
 void break_editor_audio_preview_set_loop(BreakEditorAudioPreview *preview, bool loop) {
