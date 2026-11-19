@@ -70,6 +70,8 @@ struct EditorPanelAudio {
     my_widget_t *zoom_out;    /* weak */
     my_widget_t *scroll_left; /* weak */
     my_widget_t *scroll_right; /* weak */
+    my_widget_t *follow;      /* weak */
+    bool following;           /* the view chases the playing position */
     u32 view_begin, view_end; /* visible [begin, end) frames; empty = whole clip */
     u32 sel_begin, sel_end;   /* [begin, end) frames; empty when equal */
     bool dragging;            /* a primary press is down on the waveform */
@@ -147,6 +149,9 @@ static void audio_panel_format_info(EditorPanelAudio *panel) {
     }
     if (panel->loop != NULL) {
         (void)my_checkbox_set_text(panel->loop, break_editor_tr(BREAK_EDITOR_TR_AUDIO_LOOP));
+    }
+    if (panel->follow != NULL) {
+        (void)my_checkbox_set_text(panel->follow, break_editor_tr(BREAK_EDITOR_TR_AUDIO_FOLLOW));
     }
 }
 
@@ -286,6 +291,45 @@ static bool audio_has_grab(const EditorPanelAudio *panel, const my_widget_t *wid
     return window != NULL && window->dispatcher.grabbed == widget;
 }
 
+/* The frame under the pointer, through the view. */
+static u32 audio_frame_at_pointer(const EditorPanelAudio *panel, const my_widget_t *widget,
+                                  const my_event_t *event) {
+    int32_t gx = event->u.pointer.x;
+    int32_t gy = event->u.pointer.y;
+    my_widget_global_to_local((my_widget_t *)widget, &gx, &gy);
+    if (gx < 0) gx = 0;
+    if (gx >= widget->rect.w) gx = widget->rect.w - 1;
+    return audio_view_begin(panel) +
+           (u32)((u64)(u32)gx * audio_view_len(panel) / (u32)widget->rect.w);
+}
+
+/* The wheel zooms around the frame under the pointer, one step per row; with
+ * Shift it scrolls the view instead, forward on a scroll down. */
+static bool audio_waveform_on_wheel(EditorPanelAudio *panel, my_widget_t *widget,
+                                    const my_event_t *event) {
+    i32 rows = event->u.pointer.delta;
+    u32 steps;
+    bool changed = false;
+    if (panel == NULL || rows == 0) {
+        return false;
+    }
+    audio_panel_catch_up(panel);
+    if (break_editor_doc_audio_frames(break_editor_shell_doc(panel->shell)) == 0u) {
+        return false;
+    }
+    steps = (u32)(rows > 0 ? rows : -rows);
+    for (u32 i = 0u; i < steps; ++i) {
+        if ((event->u.pointer.modifiers & MY_KEYMOD_SHIFT) != 0u) {
+            changed = editor_panel_audio_scroll(panel, rows < 0) || changed;
+        } else {
+            changed = editor_panel_audio_zoom_at(panel, rows > 0,
+                                                 audio_frame_at_pointer(panel, widget, event)) ||
+                      changed;
+        }
+    }
+    return changed;
+}
+
 /* A primary-button press seeks to the frame under the pointer and clears the
  * selection; dragging from there selects the frames passed over (both ends
  * included), and Shift+press selects from the cursor to that frame. */
@@ -299,10 +343,14 @@ static my_ret_t audio_waveform_on_event(my_widget_t *widget, const my_event_t *e
     /* any release ends the drag: the dispatcher drops the grab on all of
      * them, so a non-primary one would otherwise leave the drag live */
     const bool release = event != NULL && event->type == MY_EVENT_POINTER_UP;
-    if (widget == NULL || (!press && !move && !release) || widget->rect.w <= 0) {
+    const bool wheel = event != NULL && event->type == MY_EVENT_POINTER_WHEEL;
+    if (widget == NULL || (!press && !move && !release && !wheel) || widget->rect.w <= 0) {
         return MY_RET_FAIL;
     }
     panel = (EditorPanelAudio *)my_widget_get_user_data(widget);
+    if (wheel) {
+        return audio_waveform_on_wheel(panel, widget, event) ? MY_RET_OK : MY_RET_FAIL;
+    }
     if (panel == NULL || (!press && !panel->dragging)) {
         return MY_RET_FAIL; /* a move or release outside a drag is not ours */
     }
@@ -584,8 +632,8 @@ static bool audio_view_set(EditorPanelAudio *panel, u32 begin, u32 end) {
     return true;
 }
 
-bool editor_panel_audio_zoom(EditorPanelAudio *panel, bool in) {
-    u32 frames, len, centre, new_len, begin;
+bool editor_panel_audio_zoom_at(EditorPanelAudio *panel, bool in, u32 anchor) {
+    u32 frames, len, new_len, begin, offset;
     if (panel == NULL) {
         return false;
     }
@@ -595,7 +643,11 @@ bool editor_panel_audio_zoom(EditorPanelAudio *panel, bool in) {
         return false;
     }
     len = audio_view_len(panel);
-    centre = audio_view_begin(panel) + len / 2u;
+    begin = audio_view_begin(panel);
+    if (anchor < begin || anchor >= begin + len) {
+        anchor = begin + len / 2u; /* outside the view: fall back to its centre */
+    }
+    offset = anchor - begin; /* where in the view the anchor sits */
     if (in) {
         new_len = len / 2u;
         if (new_len < EDITOR_AUDIO_VIEW_MIN_FRAMES) {
@@ -610,12 +662,70 @@ bool editor_panel_audio_zoom(EditorPanelAudio *panel, bool in) {
     if (new_len >= frames) {
         return audio_view_set(panel, 0u, frames);
     }
-    /* keep the centre where it was, then push the range inside the clip */
-    begin = centre > new_len / 2u ? centre - new_len / 2u : 0u;
+    /* keep the anchor at the same fraction of the view, then push the range
+     * inside the clip */
+    {
+        const u32 keep = (u32)((u64)offset * new_len / len);
+        begin = anchor > keep ? anchor - keep : 0u;
+    }
     if (begin + new_len > frames) {
         begin = frames - new_len;
     }
     return audio_view_set(panel, begin, begin + new_len);
+}
+
+bool editor_panel_audio_zoom(EditorPanelAudio *panel, bool in) {
+    if (panel == NULL) {
+        return false;
+    }
+    /* the centre of the view: the buttons have no pointer to anchor at */
+    return editor_panel_audio_zoom_at(panel, in,
+                                      audio_view_begin(panel) + audio_view_len(panel) / 2u);
+}
+
+void editor_panel_audio_set_follow(EditorPanelAudio *panel, bool follow) {
+    if (panel == NULL) {
+        return;
+    }
+    panel->following = follow;
+    if (panel->follow != NULL) {
+        (void)my_checkbox_set_checked(panel->follow, follow);
+    }
+}
+
+bool editor_panel_audio_follow(const EditorPanelAudio *panel) {
+    return panel != NULL && panel->following;
+}
+
+/* While Follow is on and a preview is playing, keep the playing position
+ * inside a view shorter than the clip, a view length at a time. */
+static void audio_panel_follow_position(EditorPanelAudio *panel) {
+    u32 frames, len, begin, at;
+    if (!panel->following || !break_editor_audio_preview_playing(panel->preview)) {
+        return;
+    }
+    frames = break_editor_doc_audio_frames(break_editor_shell_doc(panel->shell));
+    len = audio_view_len(panel);
+    if (frames == 0u) {
+        return;
+    }
+    at = break_editor_audio_preview_position_frames(panel->preview);
+    begin = audio_view_begin(panel);
+    /* a view covering the whole clip always holds the position, so the
+     * check below also makes it stay put */
+    if (at >= begin && at < begin + len) {
+        return;
+    }
+    while (at >= begin + len) {
+        begin += len;
+    }
+    while (at < begin) {
+        begin = begin > len ? begin - len : 0u;
+    }
+    if (begin + len > frames) {
+        begin = frames - len;
+    }
+    (void)audio_view_set(panel, begin, begin + len);
 }
 
 bool editor_panel_audio_scroll(EditorPanelAudio *panel, bool forward) {
@@ -694,6 +804,15 @@ void editor_panel_audio_set_loop(EditorPanelAudio *panel, bool loop) {
     break_editor_audio_preview_set_loop(panel->preview, loop);
     if (panel->loop != NULL) {
         (void)my_checkbox_set_checked(panel->loop, loop);
+    }
+}
+
+static void on_audio_follow_changed(void *ctx, const char *event, void *data) {
+    EditorPanelAudio *panel = (EditorPanelAudio *)ctx;
+    (void)event;
+    (void)data;
+    if (panel != NULL && panel->follow != NULL) {
+        panel->following = my_checkbox_get_checked(panel->follow);
     }
 }
 
@@ -829,7 +948,8 @@ static bool audio_panel_add(my_widget_t *parent, my_widget_t *child, const char 
 
 bool editor_panel_audio_build(EditorPanelAudio *panel, my_widget_t *parent) {
     my_widget_t *section, *bar, *info, *play, *trim, *cut, *fade, *normalize, *loop, *ruler,
-        *waveform, *view_bar, *zoom_in, *zoom_out, *scroll_left, *scroll_right;
+        *waveform, *view_bar, *zoom_in, *zoom_out, *scroll_left, *scroll_right,
+        *follow_box;
     if (panel == NULL || parent == NULL) {
         return false;
     }
@@ -964,6 +1084,17 @@ bool editor_panel_audio_build(EditorPanelAudio *panel, my_widget_t *parent) {
         my_widget_unref(section);
         return false;
     }
+    follow_box = my_checkbox_create(NULL, break_editor_tr(BREAK_EDITOR_TR_AUDIO_FOLLOW));
+    if (follow_box == NULL) {
+        my_widget_unref(section);
+        return false;
+    }
+    (void)my_widget_set_name(follow_box, "editor-audio-follow");
+    (void)my_widget_on(follow_box, "changed", on_audio_follow_changed, panel);
+    if (!audio_panel_add(view_bar, follow_box, "w:80 h:100%")) {
+        my_widget_unref(section);
+        return false;
+    }
     ruler = my_widget_create(NULL, "editor-audio-ruler");
     if (ruler == NULL || my_widget_subclass_init(ruler, &k_audio_ruler_vtable) != MY_RET_OK) {
         if (ruler != NULL) {
@@ -1007,6 +1138,7 @@ bool editor_panel_audio_build(EditorPanelAudio *panel, my_widget_t *parent) {
     panel->zoom_out = zoom_out;
     panel->scroll_left = scroll_left;
     panel->scroll_right = scroll_right;
+    panel->follow = follow_box;
     panel->waveform = waveform;
     panel->ruler = ruler;
     panel->fresh = false;
@@ -1026,6 +1158,7 @@ void editor_panel_audio_tick(EditorPanelAudio *panel) {
         break_editor_audio_preview_stop(panel->preview);
     }
     break_editor_audio_preview_pump(panel->preview);
+    audio_panel_follow_position(panel);
     if (!panel->fresh || panel->seen_revision != break_editor_doc_audio_revision(doc) ||
         (panel->waveform != NULL && panel->seen_width != panel->waveform->rect.w) ||
         panel->seen_view_begin != audio_view_begin(panel) ||

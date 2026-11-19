@@ -196,6 +196,7 @@ const char *const g_break_editor_tr_tables[BREAK_EDITOR_LANG_COUNT]
         T(AUDIO_FADE, "Fade"),
         T(AUDIO_NORMALIZE, "Normalize"),
         T(AUDIO_LOOP, "Loop"),
+        T(AUDIO_FOLLOW, "Follow"),
     },
     [BREAK_EDITOR_LANG_ZH_CN] = {
         T(ADD, "添加"),
@@ -382,5 +383,6 @@ const char *const g_break_editor_tr_tables[BREAK_EDITOR_LANG_COUNT]
         T(AUDIO_FADE, "淡入淡出"),
         T(AUDIO_NORMALIZE, "归一化"),
         T(AUDIO_LOOP, "循环"),
+        T(AUDIO_FOLLOW, "跟随"),
     },
 };

@@ -127,8 +127,15 @@ bool editor_panel_audio_edit_selection(EditorPanelAudio *panel, bool cut);
 bool editor_panel_audio_effect(EditorPanelAudio *panel, bool normalize);
 
 bool editor_panel_audio_zoom(EditorPanelAudio *panel, bool in);
+/* The same zoom with an explicit anchor frame: it keeps its position in the
+ * view, so a wheel zoom leaves the frame under the pointer where it was. */
+bool editor_panel_audio_zoom_at(EditorPanelAudio *panel, bool in, u32 anchor);
 bool editor_panel_audio_scroll(EditorPanelAudio *panel, bool forward);
 bool editor_panel_audio_view(const EditorPanelAudio *panel, u32 *out_begin, u32 *out_end);
+/* The page's Follow checkbox: while playing, the view keeps the playing
+ * position inside itself by jumping a view length at a time. */
+void editor_panel_audio_set_follow(EditorPanelAudio *panel, bool follow);
+bool editor_panel_audio_follow(const EditorPanelAudio *panel);
 
 /* The page's Loop checkbox: forwards to the preview and updates the box. */
 void editor_panel_audio_set_loop(EditorPanelAudio *panel, bool loop);

@@ -47,7 +47,7 @@ root（vertical）
 
 > **2026-11-19 更新（音频跳转）**：`editor-audio-waveform` 处理主键按下：按 x 位置跳转（播放中重播，停止时设为下次起点），并画出播放光标。设计见 `docs/superpowers/specs/2026-11-19-editor-audio-seek-design.md`。
 
-> **2026-11-19 更新（音频选区）**：音频页顶部一行依次为播放、`editor-audio-trim`、`editor-audio-cut`、`editor-audio-fade`、`editor-audio-normalize` 按钮、`editor-audio-loop` 复选框和信息标签（淡入淡出/归一化作用于选区，无选区时整段）。Shift+点击或拖动波形选区，按钮对选区执行可撤销的裁剪/剪切；波形上方是 16 像素的 `editor-audio-ruler` 时间刻度条，刻度条之上是 20 像素的 `editor-audio-view-bar` 视图行（`editor-audio-zoom-out`、`editor-audio-zoom-in`、`editor-audio-scroll-left`、`editor-audio-scroll-right` 四个符号按钮，另起一行以免挤掉信息标签）。设计见 `docs/superpowers/specs/2026-11-19-editor-audio-selection-design.md`、`docs/superpowers/specs/2026-11-19-editor-audio-zoom-design.md`。
+> **2026-11-19 更新（音频选区）**：音频页顶部一行依次为播放、`editor-audio-trim`、`editor-audio-cut`、`editor-audio-fade`、`editor-audio-normalize` 按钮、`editor-audio-loop` 复选框和信息标签（淡入淡出/归一化作用于选区，无选区时整段）。Shift+点击或拖动波形选区，按钮对选区执行可撤销的裁剪/剪切；波形上方是 16 像素的 `editor-audio-ruler` 时间刻度条，刻度条之上是 20 像素的 `editor-audio-view-bar` 视图行（`editor-audio-zoom-out`、`editor-audio-zoom-in`、`editor-audio-scroll-left`、`editor-audio-scroll-right` 四个符号按钮和 `editor-audio-follow` 复选框，另起一行以免挤掉信息标签）。波形上滚轮缩放、Shift+滚轮平移。设计见 `docs/superpowers/specs/2026-11-19-editor-audio-selection-design.md`、`docs/superpowers/specs/2026-11-19-editor-audio-zoom-design.md`。
 
 
 坐标注意：myui `widget->rect` 在**父坐标系**（my_widget.h）。inspector

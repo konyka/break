@@ -1,3 +1,10 @@
+## 编辑器音频滚轮缩放与跟随播放头（2026-11-19）
+
+- **交付**：波形控件处理 `MY_EVENT_POINTER_WHEEL`：向上滚放大、向下滚缩小，每行一步，指针下的帧在视图中的比例位置保持不变（新增 `editor_panel_audio_zoom_at(panel, in, anchor)`，按钮用的 `editor_panel_audio_zoom` 以视图中心转发给它）；按住 Shift 滚动则平移视图（向下为前进），仍是视图长度的四分之一。视图行新增“跟随/Follow”复选框 `editor-audio-follow`（默认关闭）：开启且正在播放时，每次 tick 把视图按自身长度整段前跳或后跳，直到播放位置落在视图内，覆盖整段的视图自然不动。shell 新增 `break_editor_shell_audio_set_follow`、`break_editor_shell_audio_follow`。设计与计划见 `docs/superpowers/specs/2026-11-19-editor-audio-wheel-design.md`、`docs/superpowers/plans/2026-11-19-editor-audio-wheel.md`。
+- **TDD**：两个新用例先失败（滚轮用例卡在视图长度，跟随用例卡在复选框不存在）再通过，`test_editor_shell` 218/218。5 个变异全部判红：锚点比例换成视图中心、滚轮方向反转、Shift 分支永不进入、跟随每次只前进 1 帧、忽略跟随开关。其中“每次前进 1 帧”最初存活，把断言从范围改为每次跳转后的精确视图后判红。
+- **已核对**：计划里的“整段视图直接返回”是多余的——覆盖整段的视图必然包含播放位置，包含判断会先返回；去掉该分支测试仍全绿，因此只保留包含判断并加注释，用例仍覆盖整段情形。右边缘缩放断言用的是容差（落在视图最后 1%），因为按比例保持锚点不会把它正好留在末端。
+- **边界**：没有键盘缩放快捷键、滚动条控件，跟随是整段跳转而非逐帧平滑滚动。
+
 ## 编辑器音频拖动选区的评审修正（2026-11-19）
 
 - **背景**：拖动选区切片上线后的独立评审发现 5 个拖动生命周期问题，均已修复并补了用例（同一个 `audio_page_selects_by_dragging_the_waveform`）。

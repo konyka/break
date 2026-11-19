@@ -3718,6 +3718,162 @@ TEST(audio_page_zooms_and_scrolls_the_view)
     break_editor_shell_destroy(shell);
 }
 
+static void wheel_at(BreakEditorShell *shell, my_widget_t *w, int32_t lx, int32_t delta,
+                     u8 mods) {
+    my_window_t *win = break_editor_shell_window(shell);
+    int32_t gx = 0, gy = 0;
+    my_event_t ev = my_event_init(MY_EVENT_POINTER_WHEEL);
+    my_widget_local_to_global(w, &gx, &gy);
+    ev.u.pointer.x = gx + lx;
+    ev.u.pointer.y = gy + w->rect.h / 2;
+    ev.u.pointer.delta = delta;
+    ev.u.pointer.modifiers = mods;
+    (void)my_event_dispatch(&win->dispatcher, &ev);
+}
+
+/* Wheel zoom and scroll (design 2026-11-19-editor-audio-wheel). */
+TEST(audio_page_zooms_with_the_wheel_around_the_pointer)
+{
+    static i16 pcm[4000u];
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    my_widget_t *wave;
+    u32 b = 0u, e = 0u, i, w;
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    for (i = 0u; i < 4000u; i++) pcm[i] = (i16)(i % 100u);
+    ASSERT_TRUE(break_editor_shell_select_tab(shell, 0u, 4u));
+    shell_paint(shell);
+    wave = find(shell, "editor-audio-waveform");
+    ASSERT_NOT_NULL(wave);
+    w = (u32)wave->rect.w;
+    wheel_at(shell, wave, (int32_t)(w / 4u), 1, 0u); /* no attachment: no-op */
+    ASSERT_FALSE(break_editor_shell_audio_view(shell, &b, &e));
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 4000u));
+    break_editor_shell_tick(shell);
+    /* a wheel up over the left quarter halves the view and keeps frame 1000
+     * (the quarter point of [0, 4000)) at the same quarter of the view */
+    wheel_at(shell, wave, (int32_t)(w / 4u), 1, 0u);
+    ASSERT_TRUE(break_editor_shell_audio_view(shell, &b, &e));
+    ASSERT_EQ(e - b, 2000u);
+    ASSERT_TRUE(b <= 500u + 2u && b + 2u >= 500u); /* 1000 - 2000/4 */
+    /* a wheel down returns to the whole clip */
+    wheel_at(shell, wave, (int32_t)(w / 4u), -1, 0u);
+    ASSERT_TRUE(break_editor_shell_audio_view(shell, &b, &e));
+    ASSERT_EQ(b, 0u);
+    ASSERT_EQ(e, 4000u);
+    /* Shift+wheel scrolls instead: down moves forward, up moves back */
+    for (i = 0u; i < 2u; i++) (void)break_editor_shell_audio_zoom(shell, true);
+    ASSERT_TRUE(break_editor_shell_audio_view(shell, &b, &e));
+    ASSERT_EQ(e - b, 1000u);
+    {
+        const u32 was = b;
+        wheel_at(shell, wave, (int32_t)(w / 2u), -1, MY_KEYMOD_SHIFT);
+        ASSERT_TRUE(break_editor_shell_audio_view(shell, &b, &e));
+        ASSERT_EQ(b, was + 250u);
+        ASSERT_EQ(e - b, 1000u);
+        wheel_at(shell, wave, (int32_t)(w / 2u), 1, MY_KEYMOD_SHIFT);
+        ASSERT_TRUE(break_editor_shell_audio_view(shell, &b, &e));
+        ASSERT_EQ(b, was);
+    }
+    /* scrolling back stops at frame 0, and a full view does not scroll */
+    for (i = 0u; i < 20u; i++) wheel_at(shell, wave, 0, 1, MY_KEYMOD_SHIFT);
+    ASSERT_TRUE(break_editor_shell_audio_view(shell, &b, &e));
+    ASSERT_EQ(b, 0u);
+    ASSERT_EQ(e, 1000u);
+    for (i = 0u; i < 4u; i++) (void)break_editor_shell_audio_zoom(shell, false);
+    ASSERT_TRUE(break_editor_shell_audio_view(shell, &b, &e));
+    ASSERT_EQ(e - b, 4000u);
+    wheel_at(shell, wave, 0, -1, MY_KEYMOD_SHIFT);
+    ASSERT_TRUE(break_editor_shell_audio_view(shell, &b, &e));
+    ASSERT_EQ(b, 0u);
+    /* a zoom at the right edge keeps the frame there near the right edge */
+    {
+        const u32 anchor = (u32)((u64)(w - 1u) * 4000u / w);
+        wheel_at(shell, wave, (int32_t)(w - 1u), 1, 0u);
+        ASSERT_TRUE(break_editor_shell_audio_view(shell, &b, &e));
+        ASSERT_EQ(e - b, 2000u);
+        ASSERT_TRUE(anchor >= b && anchor < e);
+        ASSERT_TRUE(e - anchor <= 2000u / 100u); /* still in the last percent */
+    }
+    shell_paint(shell);
+    break_editor_shell_destroy(shell);
+}
+
+/* Follow the playing position (design 2026-11-19-editor-audio-wheel). */
+TEST(audio_page_follows_the_playing_position)
+{
+    static i16 pcm[4000u];
+    static FakeAudioSink fake;
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    my_widget_t *follow;
+    u32 b = 0u, e = 0u, i;
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    memset(&fake, 0, sizeof(fake));
+    fake.chunk = 4096u;
+    for (i = 0u; i < 4000u; i++) pcm[i] = (i16)(i % 100u);
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 4000u));
+    ASSERT_TRUE(break_editor_shell_select_tab(shell, 0u, 4u));
+    shell_paint(shell);
+    break_editor_shell_tick(shell);
+    follow = find(shell, "editor-audio-follow");
+    ASSERT_NOT_NULL(follow);
+    ASSERT_FALSE(break_editor_shell_audio_follow(shell));
+    break_editor_shell_set_audio_sink(shell, &k_fake_sink, &fake);
+    /* a quarter view at the start, playing from frame 0 */
+    for (i = 0u; i < 2u; i++) (void)break_editor_shell_audio_zoom(shell, true);
+    ASSERT_TRUE(break_editor_shell_audio_view(shell, &b, &e));
+    ASSERT_EQ(b, 1500u);
+    ASSERT_EQ(e, 2500u);
+    ASSERT_TRUE(break_editor_shell_audio_play(shell));
+    /* follow off: the position leaving the view does not move it */
+    fake.played = 3000u;
+    break_editor_shell_tick(shell);
+    ASSERT_TRUE(break_editor_shell_audio_view(shell, &b, &e));
+    ASSERT_EQ(b, 1500u);
+    ASSERT_EQ(e, 2500u);
+    /* follow on: the view jumps a view length at a time until it holds it */
+    ASSERT_TRUE(break_editor_shell_audio_set_follow(shell, true));
+    ASSERT_TRUE(my_checkbox_get_checked(follow));
+    break_editor_shell_tick(shell);
+    /* one jump of a full view length: [1500, 2500) -> [2500, 3500) */
+    ASSERT_TRUE(break_editor_shell_audio_view(shell, &b, &e));
+    ASSERT_EQ(b, 2500u);
+    ASSERT_EQ(e, 3500u);
+    /* a position before the view brings it back, again a length at a time:
+     * [2500, 3500) -> [1500, 2500) -> [500, 1500) -> [0, 1000) */
+    fake.played = 100u;
+    break_editor_shell_tick(shell);
+    ASSERT_TRUE(break_editor_shell_audio_view(shell, &b, &e));
+    ASSERT_EQ(b, 0u);
+    ASSERT_EQ(e, 1000u);
+    /* a full view never moves */
+    for (i = 0u; i < 4u; i++) (void)break_editor_shell_audio_zoom(shell, false);
+    ASSERT_TRUE(break_editor_shell_audio_view(shell, &b, &e));
+    ASSERT_EQ(e - b, 4000u);
+    fake.played = 3900u;
+    break_editor_shell_tick(shell);
+    ASSERT_TRUE(break_editor_shell_audio_view(shell, &b, &e));
+    ASSERT_EQ(b, 0u);
+    ASSERT_EQ(e, 4000u);
+    /* the checkbox drives the flag, and it survives a stop */
+    pointer_press_at(shell, follow, follow->rect.w / 2, 0u);
+    ASSERT_FALSE(my_checkbox_get_checked(follow));
+    ASSERT_FALSE(break_editor_shell_audio_follow(shell));
+    ASSERT_FALSE(break_editor_shell_audio_play(shell)); /* Stop */
+    ASSERT_TRUE(break_editor_shell_audio_set_follow(shell, true));
+    for (i = 0u; i < 2u; i++) (void)break_editor_shell_audio_zoom(shell, true);
+    ASSERT_TRUE(break_editor_shell_audio_view(shell, &b, &e));
+    ASSERT_EQ(e - b, 1000u);
+    break_editor_shell_tick(shell); /* not playing: no jump */
+    ASSERT_TRUE(break_editor_shell_audio_view(shell, &b, &e));
+    ASSERT_EQ(e - b, 1000u);
+    break_editor_shell_set_audio_sink(shell, NULL, NULL);
+    break_editor_shell_destroy(shell);
+}
+
 /* Loop playback (design 2026-11-19-editor-audio-loop). */
 TEST(audio_page_loops_the_playing_range)
 {
@@ -13417,6 +13573,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(audio_page_selects_by_dragging_the_waveform);
     RUN_TEST(audio_page_shows_a_timeline_ruler);
     RUN_TEST(audio_page_loops_the_playing_range);
+    RUN_TEST(audio_page_zooms_with_the_wheel_around_the_pointer);
+    RUN_TEST(audio_page_follows_the_playing_position);
     RUN_TEST(audio_page_zooms_and_scrolls_the_view);
     RUN_TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo);
     RUN_TEST(assets_panel_load_guards_unsaved_changes);

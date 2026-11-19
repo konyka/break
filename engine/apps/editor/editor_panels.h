@@ -472,6 +472,12 @@ bool break_editor_shell_audio_normalize(BreakEditorShell *shell);
 bool break_editor_shell_audio_zoom(BreakEditorShell *shell, bool in);
 bool break_editor_shell_audio_scroll(BreakEditorShell *shell, bool forward);
 bool break_editor_shell_audio_view(const BreakEditorShell *shell, u32 *out_begin, u32 *out_end);
+/* Follow toggle of the Audio page (the "Follow" checkbox, design
+ * 2026-11-19-editor-audio-wheel): while playing, a view shorter than the
+ * clip jumps forward or back by its own length to keep the playing position
+ * inside it. Returns the state afterwards. */
+bool break_editor_shell_audio_set_follow(BreakEditorShell *shell, bool follow);
+bool break_editor_shell_audio_follow(const BreakEditorShell *shell);
 /* Loop toggle of the Audio page (the "Loop" checkbox): at the end of the
  * played range playback starts it again. Returns the state afterwards. */
 bool break_editor_shell_audio_set_loop(BreakEditorShell *shell, bool loop);
