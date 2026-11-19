@@ -123,6 +123,8 @@ bool editor_panel_audio_select(EditorPanelAudio *panel, u32 begin, u32 end);
 bool editor_panel_audio_selection(const EditorPanelAudio *panel, u32 *out_begin, u32 *out_end);
 /* cut = false: trim to the selection; true: remove it. */
 bool editor_panel_audio_edit_selection(EditorPanelAudio *panel, bool cut);
+/* normalize = false: fade; true: normalize. Selection or whole clip. */
+bool editor_panel_audio_effect(EditorPanelAudio *panel, bool normalize);
 /* Asset browser: opens a .wav file into the document's attachment (only when
  * none is attached), logs the outcome, selects the Audio tab on success. */
 bool editor_shell_open_audio(BreakEditorShell *shell, const char *path,

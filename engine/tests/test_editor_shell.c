@@ -3615,6 +3615,60 @@ TEST(audio_page_selects_and_trims_or_cuts)
     break_editor_shell_destroy(shell);
 }
 
+/* Fade / Normalize on the selection or the whole clip (design
+ * 2026-11-19-editor-audio-range-effects). */
+TEST(audio_page_fades_and_normalizes_the_selection_or_clip)
+{
+    static i16 pcm[800u];
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    my_widget_t *fade, *norm;
+    const i16 *now;
+    u32 i;
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    ASSERT_FALSE(break_editor_shell_audio_normalize(shell));
+    ASSERT_STR_EQ(last_console_line(break_editor_shell_console_text(shell)),
+                  "audio edit failed\n");
+    for (i = 0u; i < 800u; i++) pcm[i] = 1000;
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 800u));
+    break_editor_shell_tick(shell);
+    fade = find(shell, "editor-audio-fade");
+    norm = find(shell, "editor-audio-normalize");
+    ASSERT_TRUE(fade && norm);
+    ASSERT_STR_EQ(((const my_button_t *)fade)->text, "Fade");
+    ASSERT_STR_EQ(((const my_button_t *)norm)->text, "Normalize");
+    /* Normalize with a selection: only the selection reaches -1 dBFS */
+    ASSERT_TRUE(break_editor_shell_audio_select(shell, 200u, 400u));
+    emit_click(norm);
+    now = break_editor_doc_audio_samples(doc);
+    ASSERT_EQ(now[199], 1000);
+    ASSERT_TRUE(now[200] > 29000 && now[399] > 29000);
+    ASSERT_EQ(now[400], 1000);
+    ASSERT_FALSE(break_editor_shell_audio_selection(shell, NULL, NULL));
+    ASSERT_TRUE(break_editor_undo(doc));
+    ASSERT_EQ(break_editor_doc_audio_samples(doc)[300], 1000);
+    /* Fade without a selection: the whole clip, 10 ms = 80 frames each end */
+    emit_click(fade);
+    now = break_editor_doc_audio_samples(doc);
+    ASSERT_TRUE(now[0] < 50);
+    ASSERT_EQ(now[400], 1000);
+    ASSERT_TRUE(now[799] < 50);
+    ASSERT_TRUE(break_editor_undo(doc));
+    ASSERT_EQ(break_editor_doc_audio_samples(doc)[0], 1000);
+    /* the toolbar leaves room for the info label at the default size */
+    ASSERT_TRUE(break_editor_shell_select_tab(shell, 0u, 4u));
+    shell_paint(shell);
+    ASSERT_TRUE(find(shell, "editor-audio-info")->rect.w > 200);
+    ASSERT_TRUE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_ZH_CN));
+    ASSERT_STR_EQ(((const my_button_t *)fade)->text,
+                  "\xE6\xB7\xA1\xE5\x85\xA5\xE6\xB7\xA1\xE5\x87\xBA"); /* 淡入淡出 */
+    ASSERT_STR_EQ(((const my_button_t *)norm)->text,
+                  "\xE5\xBD\x92\xE4\xB8\x80\xE5\x8C\x96"); /* 归一化 */
+    ASSERT_TRUE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_EN_US));
+    break_editor_shell_destroy(shell);
+}
+
 /* The editor applies its JetBrains New UI dark sheet at shell create
  * (editor_theme.c): widgets resolve the palette through the real cascade. */
 TEST(shell_applies_the_new_ui_dark_theme)
@@ -12795,6 +12849,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(audio_page_plays_the_attachment_through_the_sink);
     RUN_TEST(audio_page_seeks_from_the_waveform);
     RUN_TEST(audio_page_selects_and_trims_or_cuts);
+    RUN_TEST(audio_page_fades_and_normalizes_the_selection_or_clip);
     RUN_TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo);
     RUN_TEST(assets_panel_load_guards_unsaved_changes);
     RUN_TEST(palette_save_as_writes_the_typed_path);

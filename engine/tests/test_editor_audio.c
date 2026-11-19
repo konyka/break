@@ -519,7 +519,75 @@ TEST(audio_revision_tracks_every_attachment_change)
     break_editor_doc_destroy(doc);
 }
 
+TEST(fade_and_normalize_ranges_change_only_the_range)
+{
+    static i16 ramp[2u * 400u];
+    i16 expected[2u * 400u];
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    for (u32 i = 0u; i < 800u; ++i) ramp[i] = (i16)((i % 2u) ? -(i16)(i * 10u) : (i16)(i * 10u));
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 2u, ramp, 400u));
+    BreakEditorCmdStack *stack = break_editor_doc_stack(doc);
+    /* fade [100, 300): 5 ms = 40 frames at each end of the range */
+    memcpy(expected, ramp, sizeof(ramp));
+    ASSERT_EQ(audio_edit_fade_i16(expected + 2u * 100u, 200u, 2u, 8000u, 5.0, 5.0), AUDIO_OK);
+    ASSERT_TRUE(break_editor_doc_audio_fade_range(doc, 100u, 300u, 5.0, 5.0));
+    ASSERT_EQ(memcmp(break_editor_doc_audio_samples(doc), expected, sizeof(expected)), 0);
+    ASSERT_EQ(break_editor_cmd_stack_undo_count(stack), 1u);
+    ASSERT_TRUE(break_editor_undo(doc));
+    ASSERT_EQ(memcmp(break_editor_doc_audio_samples(doc), ramp, sizeof(ramp)), 0);
+    ASSERT_TRUE(break_editor_redo(doc));
+    ASSERT_EQ(memcmp(break_editor_doc_audio_samples(doc), expected, sizeof(expected)), 0);
+    ASSERT_TRUE(break_editor_undo(doc));
+    /* normalize [50, 60): the peak is measured inside the range */
+    memcpy(expected, ramp, sizeof(ramp));
+    ASSERT_EQ(audio_edit_normalize_i16(expected + 2u * 50u, 10u, 2u, -1.0), AUDIO_OK);
+    ASSERT_TRUE(break_editor_doc_audio_normalize_range(doc, 50u, 60u, -1.0));
+    ASSERT_EQ(memcmp(break_editor_doc_audio_samples(doc), expected, sizeof(expected)), 0);
+    ASSERT_TRUE(break_editor_doc_audio_samples(doc)[2u * 59u] > 25000);
+    ASSERT_EQ(break_editor_doc_audio_samples(doc)[2u * 60u], ramp[2u * 60u]);
+    ASSERT_TRUE(break_editor_undo(doc));
+    ASSERT_EQ(memcmp(break_editor_doc_audio_samples(doc), ramp, sizeof(ramp)), 0);
+    /* invalid: nothing changes, no history entry */
+    const u32 undo = break_editor_cmd_stack_undo_count(stack);
+    ASSERT_TRUE(!break_editor_doc_audio_fade_range(doc, 10u, 10u, 5.0, 5.0));
+    ASSERT_TRUE(!break_editor_doc_audio_fade_range(doc, 20u, 10u, 5.0, 5.0));
+    ASSERT_TRUE(!break_editor_doc_audio_fade_range(doc, 10u, 401u, 5.0, 5.0));
+    ASSERT_TRUE(!break_editor_doc_audio_fade_range(doc, 10u, 20u, -1.0, 5.0));
+    ASSERT_TRUE(!break_editor_doc_audio_normalize_range(doc, 10u, 20u, 1.0));
+    ASSERT_TRUE(!break_editor_doc_audio_normalize_range(doc, 400u, 400u, -1.0));
+    ASSERT_TRUE(!break_editor_doc_audio_normalize_range(NULL, 0u, 1u, -1.0));
+    ASSERT_EQ(break_editor_cmd_stack_undo_count(stack), undo);
+    ASSERT_EQ(memcmp(break_editor_doc_audio_samples(doc), ramp, sizeof(ramp)), 0);
+    /* digital silence: normalize reports success and changes nothing, like
+     * the whole-clip call, so it still records one undoable command */
+    {
+        BreakEditorDoc *quiet = break_editor_doc_create();
+        static const i16 zeros[4] = {0, 0, 0, 0};
+        ASSERT_NOT_NULL(quiet);
+        ASSERT_TRUE(break_editor_doc_audio_attach(quiet, 8000u, 1u, zeros, 4u));
+        ASSERT_TRUE(break_editor_doc_audio_normalize_range(quiet, 0u, 4u, -1.0));
+        ASSERT_EQ(memcmp(break_editor_doc_audio_samples(quiet), zeros, sizeof(zeros)), 0);
+        ASSERT_EQ(break_editor_cmd_stack_undo_count(break_editor_doc_stack(quiet)), 1u);
+        break_editor_doc_destroy(quiet);
+    }
+    /* a range shorter than the fade length still fades inside it */
+    memcpy(expected, ramp, sizeof(ramp));
+    ASSERT_EQ(audio_edit_fade_i16(expected + 2u * 10u, 3u, 2u, 8000u, 100.0, 100.0), AUDIO_OK);
+    ASSERT_TRUE(break_editor_doc_audio_fade_range(doc, 10u, 13u, 100.0, 100.0));
+    ASSERT_EQ(memcmp(break_editor_doc_audio_samples(doc), expected, sizeof(expected)), 0);
+    ASSERT_EQ(break_editor_doc_audio_samples(doc)[2u * 13u], ramp[2u * 13u]);
+    ASSERT_TRUE(break_editor_undo(doc));
+    /* the whole clip as a range equals the whole-clip call */
+    memcpy(expected, ramp, sizeof(ramp));
+    ASSERT_EQ(audio_edit_normalize_i16(expected, 400u, 2u, -6.0), AUDIO_OK);
+    ASSERT_TRUE(break_editor_doc_audio_normalize_range(doc, 0u, 400u, -6.0));
+    ASSERT_EQ(memcmp(break_editor_doc_audio_samples(doc), expected, sizeof(expected)), 0);
+    break_editor_doc_destroy(doc);
+}
+
 TEST_MAIN_BEGIN()
+    RUN_TEST(fade_and_normalize_ranges_change_only_the_range);
     RUN_TEST(waveform_reports_min_max_per_column);
     RUN_TEST(waveform_rejects_invalid_arguments_without_writing);
     RUN_TEST(audio_revision_tracks_every_attachment_change);

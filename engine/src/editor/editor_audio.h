@@ -46,5 +46,13 @@ bool break_editor_doc_audio_cut(BreakEditorDoc *doc, u32 begin, u32 end);
 bool break_editor_doc_audio_fade(BreakEditorDoc *doc, double fade_in_ms,
                                  double fade_out_ms);
 bool break_editor_doc_audio_normalize(BreakEditorDoc *doc, double target_dbfs);
+/* fade / normalize applied to frames [begin, end) only (the normalize peak
+ * is measured there); frames outside are unchanged. One undoable snapshot
+ * command each; false and no change for an empty or out-of-clip range or the
+ * whole-clip calls' invalid arguments. */
+bool break_editor_doc_audio_fade_range(BreakEditorDoc *doc, u32 begin, u32 end,
+                                       double fade_in_ms, double fade_out_ms);
+bool break_editor_doc_audio_normalize_range(BreakEditorDoc *doc, u32 begin, u32 end,
+                                            double target_dbfs);
 bool break_editor_doc_audio_mix(BreakEditorDoc *doc, const i16 *source,
                                 u32 source_frames, double gain);

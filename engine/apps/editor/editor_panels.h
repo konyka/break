@@ -460,6 +460,10 @@ bool break_editor_shell_audio_selection(const BreakEditorShell *shell, u32 *out_
                                         u32 *out_end);
 bool break_editor_shell_audio_trim(BreakEditorShell *shell);
 bool break_editor_shell_audio_cut(BreakEditorShell *shell);
+/* Fade (10 ms in and out) and Normalize (-1 dBFS) on the selection, or on
+ * the whole clip without one; undoable. False without an attachment. */
+bool break_editor_shell_audio_fade(BreakEditorShell *shell);
+bool break_editor_shell_audio_normalize(BreakEditorShell *shell);
 
 /* Profiler panel snapshot rows (top-N by duration, N <= 16, refreshed from
  * profiler_last_frame at <= 4 Hz from break_editor_shell_tick; the panel is

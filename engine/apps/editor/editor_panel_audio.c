@@ -23,7 +23,8 @@
  * the cursor. With a selection, Play plays only the selection. Shift+press
  * selects from the cursor to the pressed frame (both
  * included); Trim/Cut run the document's undoable edits on the selection,
- * and an attachment change clears it.
+ * and an attachment change clears it. Fade (10 ms) and Normalize (-1 dBFS)
+ * act on the selection, or on the whole clip without one.
  *
  * Bounds: 2 x 4096 i16 columns + a 128-byte info line; the preview allocates
  * its copy buffer once at create. Threading: shell thread only. */
@@ -55,6 +56,8 @@ struct EditorPanelAudio {
     my_widget_t *play;        /* weak */
     my_widget_t *trim;        /* weak */
     my_widget_t *cut;         /* weak */
+    my_widget_t *fade;        /* weak */
+    my_widget_t *normalize;   /* weak */
     u32 sel_begin, sel_end;   /* [begin, end) frames; empty when equal */
     BreakEditorAudioPreview *preview; /* owned */
     bool shown_playing;       /* state the button label shows */
@@ -119,6 +122,12 @@ static void audio_panel_format_info(EditorPanelAudio *panel) {
     }
     if (panel->cut != NULL) {
         (void)my_button_set_text(panel->cut, break_editor_tr(BREAK_EDITOR_TR_AUDIO_CUT));
+    }
+    if (panel->fade != NULL) {
+        (void)my_button_set_text(panel->fade, break_editor_tr(BREAK_EDITOR_TR_AUDIO_FADE));
+    }
+    if (panel->normalize != NULL) {
+        (void)my_button_set_text(panel->normalize, break_editor_tr(BREAK_EDITOR_TR_AUDIO_NORMALIZE));
     }
 }
 
@@ -408,6 +417,47 @@ bool editor_panel_audio_edit_selection(EditorPanelAudio *panel, bool cut) {
     return true;
 }
 
+#define EDITOR_AUDIO_FADE_MS 10.0
+#define EDITOR_AUDIO_NORMALIZE_DBFS -1.0
+
+bool editor_panel_audio_effect(EditorPanelAudio *panel, bool normalize) {
+    BreakEditorDoc *doc;
+    u32 begin, end;
+    bool ok;
+    if (panel == NULL) {
+        return false;
+    }
+    audio_panel_catch_up(panel);
+    doc = break_editor_shell_doc(panel->shell);
+    /* the selection, or the whole clip without one */
+    begin = panel->sel_begin < panel->sel_end ? panel->sel_begin : 0u;
+    end = panel->sel_begin < panel->sel_end ? panel->sel_end : break_editor_doc_audio_frames(doc);
+    ok = normalize ? break_editor_doc_audio_normalize_range(doc, begin, end,
+                                                            EDITOR_AUDIO_NORMALIZE_DBFS)
+                   : break_editor_doc_audio_fade_range(doc, begin, end, EDITOR_AUDIO_FADE_MS,
+                                                       EDITOR_AUDIO_FADE_MS);
+    if (!ok) {
+        editor_shell_log(panel->shell, "%s", break_editor_tr(BREAK_EDITOR_TR_LOG_AUDIO_EDIT_FAILED));
+        return false;
+    }
+    break_editor_audio_preview_stop(panel->preview);
+    audio_panel_refresh(panel);
+    editor_shell_refresh_all(panel->shell);
+    return true;
+}
+
+static void on_audio_fade_click(void *ctx, const char *event, void *data) {
+    (void)event;
+    (void)data;
+    (void)editor_panel_audio_effect((EditorPanelAudio *)ctx, false);
+}
+
+static void on_audio_normalize_click(void *ctx, const char *event, void *data) {
+    (void)event;
+    (void)data;
+    (void)editor_panel_audio_effect((EditorPanelAudio *)ctx, true);
+}
+
 static void on_audio_trim_click(void *ctx, const char *event, void *data) {
     (void)event;
     (void)data;
@@ -437,7 +487,7 @@ static bool audio_panel_add(my_widget_t *parent, my_widget_t *child, const char 
 }
 
 bool editor_panel_audio_build(EditorPanelAudio *panel, my_widget_t *parent) {
-    my_widget_t *section, *bar, *info, *play, *trim, *cut, *waveform;
+    my_widget_t *section, *bar, *info, *play, *trim, *cut, *fade, *normalize, *waveform;
     if (panel == NULL || parent == NULL) {
         return false;
     }
@@ -489,6 +539,28 @@ bool editor_panel_audio_build(EditorPanelAudio *panel, my_widget_t *parent) {
         my_widget_unref(section);
         return false;
     }
+    fade = my_button_create(NULL, break_editor_tr(BREAK_EDITOR_TR_AUDIO_FADE));
+    if (fade == NULL) {
+        my_widget_unref(section);
+        return false;
+    }
+    (void)my_widget_set_name(fade, "editor-audio-fade");
+    (void)my_widget_on(fade, "click", on_audio_fade_click, panel);
+    if (!audio_panel_add(bar, fade, "w:90 h:100%")) {
+        my_widget_unref(section);
+        return false;
+    }
+    normalize = my_button_create(NULL, break_editor_tr(BREAK_EDITOR_TR_AUDIO_NORMALIZE));
+    if (normalize == NULL) {
+        my_widget_unref(section);
+        return false;
+    }
+    (void)my_widget_set_name(normalize, "editor-audio-normalize");
+    (void)my_widget_on(normalize, "click", on_audio_normalize_click, panel);
+    if (!audio_panel_add(bar, normalize, "w:90 h:100%")) {
+        my_widget_unref(section);
+        return false;
+    }
     info = my_label_create(NULL, "");
     if (info == NULL) {
         my_widget_unref(section);
@@ -522,6 +594,8 @@ bool editor_panel_audio_build(EditorPanelAudio *panel, my_widget_t *parent) {
     panel->play = play;
     panel->trim = trim;
     panel->cut = cut;
+    panel->fade = fade;
+    panel->normalize = normalize;
     panel->waveform = waveform;
     panel->fresh = false;
     audio_panel_format_info(panel);

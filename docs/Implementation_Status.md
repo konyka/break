@@ -1,3 +1,10 @@
+## 编辑器音频选区淡入淡出与归一化（2026-11-19）
+
+- **交付**：核心新增 `break_editor_doc_audio_fade_range` 与 `break_editor_doc_audio_normalize_range`，只对 `[begin, end)` 施加原有的淡入淡出或归一化（峰值在范围内测量），范围外逐字节不变，每次一个可撤销快照命令，非法范围不改动也不进历史。音频页新增“淡入淡出”（两端各 10 ms）和“归一化”（-1 dBFS）按钮，有选区时只作用于选区，没有选区时作用于整段。设计与计划见 `docs/superpowers/specs/2026-11-19-editor-audio-range-effects-design.md`、`docs/superpowers/plans/2026-11-19-editor-audio-range-effects.md`。
+- **TDD**：核心与 shell 各一个新用例，先在桩实现上失败再通过（`test_editor_audio` 12/12，`test_editor_shell` 212/212）。6 个变异全部判红。
+- **已核对**：范围内全为数字静音时归一化返回成功且不改变样本（与整段调用一致），仍记一条可撤销命令；范围短于淡入淡出时长时在范围内完成淡变；默认窗口下六个按钮之外信息标签仍有 200 像素以上。
+- **边界**：淡入淡出时长和归一化目标不能在界面上调整；没有增益、反转等其他效果。
+
 ## 编辑器音频选区裁剪与剪切（2026-11-19）
 
 - **交付**：音频页波形上 Shift+点击从播放起点选到点击处（两端都包含）；普通点击跳转并清除选区。新增“裁剪/剪切”按钮，对选区调用文档已有的可撤销 `trim`/`cut`，成功后清除选区和起点；没有选区时记日志。附件变化时清除选区。选区以主题选中色的色带画在波形后面，停止时信息行显示“ | sel a - b s”。shell 新增 `break_editor_shell_audio_select`、`_selection`、`_trim`、`_cut`。设计与计划见 `docs/superpowers/specs/2026-11-19-editor-audio-selection-design.md`、`docs/superpowers/plans/2026-11-19-editor-audio-selection.md`。

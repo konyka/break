@@ -4253,6 +4253,14 @@ bool break_editor_shell_audio_cut(BreakEditorShell *shell) {
     return shell != NULL && editor_panel_audio_edit_selection(shell->audio_panel, true);
 }
 
+bool break_editor_shell_audio_fade(BreakEditorShell *shell) {
+    return shell != NULL && editor_panel_audio_effect(shell->audio_panel, false);
+}
+
+bool break_editor_shell_audio_normalize(BreakEditorShell *shell) {
+    return shell != NULL && editor_panel_audio_effect(shell->audio_panel, true);
+}
+
 u32 break_editor_shell_audio_cursor_frames(const BreakEditorShell *shell) {
     return shell != NULL ? break_editor_audio_preview_cursor_frames(
                                editor_panel_audio_preview(shell->audio_panel))

@@ -193,6 +193,8 @@ const char *const g_break_editor_tr_tables[BREAK_EDITOR_LANG_COUNT]
         T(AUDIO_SELECTION_FMT, " | sel %.3f - %.3f s"),
         T(LOG_AUDIO_NO_SELECTION, "select a range first (Shift+click)"),
         T(LOG_AUDIO_EDIT_FAILED, "audio edit failed"),
+        T(AUDIO_FADE, "Fade"),
+        T(AUDIO_NORMALIZE, "Normalize"),
     },
     [BREAK_EDITOR_LANG_ZH_CN] = {
         T(ADD, "添加"),
@@ -376,5 +378,7 @@ const char *const g_break_editor_tr_tables[BREAK_EDITOR_LANG_COUNT]
         T(AUDIO_SELECTION_FMT, " | 选区 %.3f - %.3f 秒"),
         T(LOG_AUDIO_NO_SELECTION, "请先选择范围（Shift+点击）"),
         T(LOG_AUDIO_EDIT_FAILED, "音频编辑失败"),
+        T(AUDIO_FADE, "淡入淡出"),
+        T(AUDIO_NORMALIZE, "归一化"),
     },
 };

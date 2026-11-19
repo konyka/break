@@ -244,6 +244,47 @@ bool break_editor_doc_audio_normalize(BreakEditorDoc *doc, double target_dbfs) {
     return audio_snapshot_commit(snapshot, doc, snapshot->before_frames);
 }
 
+static bool audio_range_valid(const BreakEditorDoc *doc, u32 begin, u32 end) {
+    return doc && doc->audio && begin < end && end <= doc->audio->frames;
+}
+
+bool break_editor_doc_audio_fade_range(BreakEditorDoc *doc, u32 begin, u32 end,
+                                       double fade_in_ms, double fade_out_ms) {
+    if (!audio_range_valid(doc, begin, end) || !isfinite(fade_in_ms) ||
+        !isfinite(fade_out_ms) || fade_in_ms < 0.0 || fade_out_ms < 0.0) {
+        return false;
+    }
+    BreakEditorAudioSnapshotCmd *snapshot = audio_snapshot_create(doc, "fade");
+    if (!snapshot) return false;
+    const u32 channels = doc->audio->channels;
+    const AudioResult result =
+        audio_edit_fade_i16(snapshot->after + (usize)begin * channels, end - begin, channels,
+                            doc->audio->sample_rate, fade_in_ms, fade_out_ms);
+    if (result != AUDIO_OK) {
+        audio_snapshot_destroy(&snapshot->base);
+        return false;
+    }
+    return audio_snapshot_commit(snapshot, doc, snapshot->before_frames);
+}
+
+bool break_editor_doc_audio_normalize_range(BreakEditorDoc *doc, u32 begin, u32 end,
+                                            double target_dbfs) {
+    if (!audio_range_valid(doc, begin, end) || !isfinite(target_dbfs) ||
+        target_dbfs < -120.0 || target_dbfs > 0.0) {
+        return false;
+    }
+    BreakEditorAudioSnapshotCmd *snapshot = audio_snapshot_create(doc, "normalize");
+    if (!snapshot) return false;
+    const u32 channels = doc->audio->channels;
+    const AudioResult result = audio_edit_normalize_i16(
+        snapshot->after + (usize)begin * channels, end - begin, channels, target_dbfs);
+    if (result != AUDIO_OK) {
+        audio_snapshot_destroy(&snapshot->base);
+        return false;
+    }
+    return audio_snapshot_commit(snapshot, doc, snapshot->before_frames);
+}
+
 bool break_editor_doc_audio_mix(BreakEditorDoc *doc, const i16 *source,
                                 u32 source_frames, double gain) {
     if (!doc || !doc->audio || !isfinite(gain) || gain < -8.0 || gain > 8.0 ||
