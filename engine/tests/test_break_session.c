@@ -1040,9 +1040,9 @@ TEST(break_session_registry_has_physics_sync_messages)
     ASSERT_EQ(correction->phase, BREAK_NET_MESSAGE_PHASE_AUTHENTICATED);
     ASSERT_EQ(correction->duplicate_policy, BREAK_NET_DUPLICATE_IDEMPOTENT);
 #ifdef BREAK_ENABLE_CRYPTO
-    ASSERT_EQ(registry->count, 28u);
+    ASSERT_EQ(registry->count, 29u);
 #else
-    ASSERT_EQ(registry->count, 27u);
+    ASSERT_EQ(registry->count, 28u);
 #endif
     {
         const BreakNetMessageDefinition *voice = break_net_message_registry_lookup(
@@ -1068,6 +1068,18 @@ TEST(break_session_registry_has_physics_sync_messages)
                   16u + BREAK_NET_CORE_VOICE_MAX_PAYLOAD);
         ASSERT_EQ(relay->phase, BREAK_NET_MESSAGE_PHASE_AUTHENTICATED);
         ASSERT_EQ(relay->duplicate_policy, BREAK_NET_DUPLICATE_IDEMPOTENT);
+    }
+    {
+        const BreakNetMessageDefinition *mute = break_net_message_registry_lookup(
+            registry, BREAK_NET_MESSAGE_ID_CORE_VOICE_MUTE);
+        ASSERT_EQ(BREAK_NET_MESSAGE_ID_CORE_VOICE_MUTE, 0x4008u);
+        ASSERT_NOT_NULL(mute);
+        ASSERT_EQ(mute->minimum_version, 1u);
+        ASSERT_EQ(mute->maximum_version, 1u);
+        ASSERT_EQ(mute->payload_limit, (size_t)BREAK_NET_CORE_VOICE_MUTE_PAYLOAD);
+        ASSERT_EQ(BREAK_NET_CORE_VOICE_MUTE_PAYLOAD, 16u);
+        ASSERT_EQ(mute->phase, BREAK_NET_MESSAGE_PHASE_AUTHENTICATED);
+        ASSERT_EQ(mute->duplicate_policy, BREAK_NET_DUPLICATE_IDEMPOTENT);
     }
     {
         const BreakNetMessageDefinition *probe = break_net_message_registry_lookup(

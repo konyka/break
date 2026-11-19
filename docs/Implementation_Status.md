@@ -1,3 +1,9 @@
+## Core App 按用户屏蔽语音（2026-11-19）
+
+- **交付**：新消息 `0x4008`（`BREAK_NET_MESSAGE_ID_CORE_VOICE_MUTE`，对端发往服务端，v1，`AUTHENTICATED`，`IDEMPOTENT`，恰好 16 B），默认注册表 count 变为 29 / 28。载荷为 magic "VMUT"、flags（bit 0 = 屏蔽，其余位必须为 0）、目标会话号（u64，非零）；编解码 `core_app_voice_mute_encode/decode`。服务端处理函数 `net_on_voice_mute` 为每个槽位维护最多 16 个被屏蔽的来源会话号，屏蔽与取消屏蔽都是幂等的；槽位释放或复用时清空。`net_send_voice_relay` 跳过屏蔽了该来源的接收方。`network_stats` 追加 `voice_mute_requests`、`voice_mute_rejected`、`voice_frames_muted`。设计与计划见 `docs/superpowers/specs/2026-11-19-core-app-voice-mute-design.md`、`docs/superpowers/plans/2026-11-19-core-app-voice-mute.md`。
+- **TDD**：`test_break_session`（0x4008 定义与 count）、`test_core_app_network`（新增 3 项）、`test_core_app_net_transport`（stats 行尾）、新 ctest `test_core_app_network_voice_mute` 均先 RED 后 GREEN。端到端：B 先发一条畸形屏蔽请求，再屏蔽 A 两次；A 的第一组 20 帧没有到达 B；B 取消屏蔽一次并屏蔽 17 个不存在的会话号（第 17 个被拒）后，A 的第二组（序号 20..39）20 帧全部到达、连续、可解码，peak 9334。服务端 `voice_frames_relayed=20`、`voice_frames_muted=20`、`voice_mute_requests=20`、`voice_mute_rejected=2`。三个变异（转发忽略屏蔽、取消屏蔽不生效、解码不查未知 flag 位）都判红。全量 450/450；开启网络的 ASan+UBSan 树相关 12 项通过。
+- **边界**：屏蔽不跨重连保存；被屏蔽方不会收到通知；没有服务端混音与语音专用限速。
+
 ## Core App 服务端语音转发（2026-11-19）
 
 - **交付**：新消息 `0x4007`（`BREAK_NET_MESSAGE_ID_CORE_VOICE_RELAY`，v1，`AUTHENTICATED`，`IDEMPOTENT`，上限 992 B = 16 字节头 + 一帧 976 B），默认注册表 count 变为 28 / 27。载荷为 magic "VRLY"、保留 0、来源会话号（u64，非零）、来源发来的原样帧字节；编解码 `core_app_voice_relay_encode/decode`（`core_app_network.h`）。CLI `--voice-relay`（网络选项，需 `--network`，默认关闭）。开启后，`net_on_voice` 只在接收器的 `accepted` 计数增加时把帧复制进 32 项的转发环，`net_send_pending` 在事件队列为空时发给除来源外的所有可发送对端。`network_stats` 追加 `voice_frames_relayed`、`voice_relay_dropped`。设计与计划见 `docs/superpowers/specs/2026-11-19-core-app-voice-relay-design.md`、`docs/superpowers/plans/2026-11-19-core-app-voice-relay.md`。

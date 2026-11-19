@@ -50,6 +50,11 @@ _Static_assert(CORE_APP_VOICE_RELAY_MAX_BYTES == BREAK_NET_CORE_VOICE_RELAY_MAX_
                "core_app voice relay size must match the registry payload limit");
 _Static_assert(CORE_APP_VOICE_RELAY_MAX_FRAME_BYTES == BREAK_NET_CORE_VOICE_MAX_PAYLOAD,
                "a relayed frame must fit one core_app voice message");
+#if CORE_APP_VOICE_MUTE_MESSAGE_ID != BREAK_NET_MESSAGE_ID_CORE_VOICE_MUTE
+#error "core_app voice mute id must match the default message registry"
+#endif
+_Static_assert(CORE_APP_VOICE_MUTE_BYTES == BREAK_NET_CORE_VOICE_MUTE_PAYLOAD,
+               "core_app voice mute size must match the registry payload limit");
 
 #define CORE_APP_NET_MAX_CONNECTIONS 8u
 #define CORE_APP_NET_EVENTS_PER_TICK 64u
@@ -85,6 +90,9 @@ _Static_assert(CORE_APP_VOICE_RELAY_MAX_FRAME_BYTES == BREAK_NET_CORE_VOICE_MAX_
  * until the event queue is empty, like every other send; a burst larger
  * than the ring is dropped and counted. */
 #define CORE_APP_NET_VOICE_RELAY_QUEUE 32u
+/* Source sessions one peer muted. Session ids are never reused, so an id
+ * of a peer that left stays harmless until the slot is released. */
+#define CORE_APP_NET_VOICE_MUTE_CAPACITY 16u
 
 static const u8 k_core_app_net_key_id[8] = {'c', 'o', 'r', 'e', 'a', 'p', 'p', '1'};
 
@@ -124,6 +132,9 @@ typedef struct CoreAppNetStats {
     u64 voice_peak;
     u64 voice_frames_relayed;
     u64 voice_relay_dropped;
+    u64 voice_mute_requests;
+    u64 voice_mute_rejected;
+    u64 voice_frames_muted;
 } CoreAppNetStats;
 
 typedef struct CoreAppNetRelayFrame {
@@ -176,6 +187,8 @@ struct CoreAppNetTransport {
     BreakSessionId session_ids[CORE_APP_NET_MAX_CONNECTIONS];
     u64 opened_us[CORE_APP_NET_MAX_CONNECTIONS];
     BreakVoiceReceiver *voice_receivers[CORE_APP_NET_MAX_CONNECTIONS];
+    BreakSessionId voice_mutes[CORE_APP_NET_MAX_CONNECTIONS][CORE_APP_NET_VOICE_MUTE_CAPACITY];
+    u32 voice_mute_count[CORE_APP_NET_MAX_CONNECTIONS];
     bool voice_relay;
     u32 relay_head;
     u32 relay_count;
@@ -336,6 +349,7 @@ static int net_slot_add(CoreAppNetTransport *t, BreakConnectionKey key) {
             memset(&t->clock[i], 0, sizeof(t->clock[i]));
             clock_offset_init(&t->clock[i].estimator);
             t->session_ids[i] = 0u;
+            t->voice_mute_count[i] = 0u;
             t->opened_us[i] = time_microseconds();
             return (int)i;
         }
@@ -517,6 +531,7 @@ static void net_pump(CoreAppNetTransport *t, int timeout_ms, u32 *budget, u32 ti
                 t->welcomed[slot] = false;
                 t->closing[slot] = false;
                 t->session_ids[slot] = 0u;
+                t->voice_mute_count[slot] = 0u;
                 t->correction_pending[slot] = false;
                 physics_sync_baseline_release(&t->physics_baselines[slot]);
                 t->clock_probe_pending[slot] = false;
@@ -568,6 +583,13 @@ static void net_voice_relay_queue(CoreAppNetTransport *t, BreakConnectionKey con
     t->relay_count++;
 }
 
+static bool net_voice_muted(const CoreAppNetTransport *t, u32 slot, BreakSessionId source) {
+    for (u32 i = 0u; i < t->voice_mute_count[slot]; ++i) {
+        if (t->voice_mutes[slot][i] == source) return true;
+    }
+    return false;
+}
+
 /* Sends every queued frame to each sendable slot except its source, so
  * voice_frames_relayed counts one per recipient. A peer welcomed after a
  * frame was queued still receives it. Only called from net_send_pending,
@@ -581,6 +603,10 @@ static void net_send_voice_relay(CoreAppNetTransport *t) {
                                                    &size) == CORE_APP_SNAPSHOT_OK;
         for (u32 i = 0u; encoded && i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
             if (!net_slot_sendable(t, i) || t->session_ids[i] == entry->source) continue;
+            if (net_voice_muted(t, i, entry->source)) {
+                t->stats.voice_frames_muted++;
+                continue;
+            }
             BreakNetSendResult sent = break_net_reactor_send(
                 t->reactor, t->keys[i], CORE_APP_VOICE_RELAY_MESSAGE_ID, 1u, t->relay_wire,
                 size);
@@ -592,6 +618,38 @@ static void net_send_voice_relay(CoreAppNetTransport *t) {
         t->relay_head = (t->relay_head + 1u) % CORE_APP_NET_VOICE_RELAY_QUEUE;
         t->relay_count--;
     }
+}
+
+/* A peer mutes or unmutes one source session in the relay to itself. Both
+ * are idempotent. A payload that does not decode, or a mute when the list
+ * is full, is counted and keeps the session open. */
+static bool net_on_voice_mute(BreakConnectionKey connection, const BreakNetOwnedMessage *message,
+                              void *user) {
+    CoreAppNetTransport *t = (CoreAppNetTransport *)user;
+    int slot = net_slot_find(t, connection);
+    if (slot < 0 || t->closing[slot]) return false;
+    u64 target = 0u;
+    bool muted = false;
+    if (core_app_voice_mute_decode((const u8 *)message->data, message->size, &target, &muted) !=
+        CORE_APP_SNAPSHOT_OK) {
+        t->stats.voice_mute_rejected++;
+        return true;
+    }
+    t->stats.voice_mute_requests++;
+    BreakSessionId *list = t->voice_mutes[slot];
+    u32 *count = &t->voice_mute_count[slot];
+    for (u32 i = 0u; i < *count; ++i) {
+        if (list[i] != target) continue;
+        if (!muted) list[i] = list[--*count];
+        return true;
+    }
+    if (!muted) return true;
+    if (*count >= CORE_APP_NET_VOICE_MUTE_CAPACITY) {
+        t->stats.voice_mute_rejected++;
+        return true;
+    }
+    list[(*count)++] = target;
+    return true;
 }
 
 /* Peer voice is decoded into the connection's jitter buffer at once, so the
@@ -816,7 +874,9 @@ static BreakRuntimeError net_start(void *user, FILE *trace) {
         !break_session_manager_set_message_handler(t->manager, CORE_APP_CLOCK_PROBE_MESSAGE_ID,
                                                    net_on_clock_probe, t) ||
         !break_session_manager_set_message_handler(t->manager, BREAK_NET_MESSAGE_ID_CORE_VOICE,
-                                                   net_on_voice, t)) {
+                                                   net_on_voice, t) ||
+        !break_session_manager_set_message_handler(
+            t->manager, BREAK_NET_MESSAGE_ID_CORE_VOICE_MUTE, net_on_voice_mute, t)) {
         goto fail;
     }
     stage = "bind";
@@ -950,7 +1010,9 @@ static void net_trace_stats(CoreAppNetTransport *t) {
              " voice_frames_invalid=%" PRIu64 " voice_frames_received=%" PRIu64
              " voice_frames_played=%" PRIu64 " voice_frames_concealed=%" PRIu64
              " voice_frames_dropped=%" PRIu64 " voice_peak=%" PRIu64
-             " voice_frames_relayed=%" PRIu64 " voice_relay_dropped=%" PRIu64 "\n",
+             " voice_frames_relayed=%" PRIu64 " voice_relay_dropped=%" PRIu64
+             " voice_mute_requests=%" PRIu64 " voice_mute_rejected=%" PRIu64
+             " voice_frames_muted=%" PRIu64 "\n",
              t->stats.opened, t->stats.closed, t->stats.refused, t->stats.authenticated,
              t->stats.snapshots_sent, t->stats.send_overloads, t->stats.send_closed,
              t->stats.outbox_overloads, t->stats.auth_timeouts, t->stats.decode_failed, t->inbox.accepted_snapshots,
@@ -969,7 +1031,8 @@ static void net_trace_stats(CoreAppNetTransport *t) {
              t->stats.voice_frames_received, t->stats.voice_frames_played,
              t->stats.voice_frames_concealed, t->stats.voice_frames_dropped,
              t->stats.voice_peak, t->stats.voice_frames_relayed,
-             t->stats.voice_relay_dropped);
+             t->stats.voice_relay_dropped, t->stats.voice_mute_requests,
+             t->stats.voice_mute_rejected, t->stats.voice_frames_muted);
     net_trace(t, line);
 }
 

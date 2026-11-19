@@ -44,6 +44,11 @@ extern "C" {
  * session, then one voice frame as the source sent it. */
 #define BREAK_NET_MESSAGE_ID_CORE_VOICE_RELAY 0x4007u
 #define BREAK_NET_CORE_VOICE_RELAY_MAX_PAYLOAD (16u + BREAK_NET_CORE_VOICE_MAX_PAYLOAD)
+/* core_app voice mute (engine/apps/core_app/core_app_network.h), sent peer
+ * to server, AUTHENTICATED only: mute or unmute one source session in the
+ * relay to this peer; exactly 16 bytes. */
+#define BREAK_NET_MESSAGE_ID_CORE_VOICE_MUTE 0x4008u
+#define BREAK_NET_CORE_VOICE_MUTE_PAYLOAD 16u
 #define BREAK_NET_MESSAGE_ID_MAX 65535u
 #define BREAK_NET_REGISTRY_MAX_MESSAGES 64u
 #define BREAK_NET_MAX_PAYLOAD_SIZE (64u * 1024u)

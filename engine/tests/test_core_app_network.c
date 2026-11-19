@@ -542,6 +542,88 @@ TEST(voice_relay_encode_refuses_invalid_values_without_writing) {
     for (usize i = 0; i < sizeof(wire); ++i) ASSERT_EQ(wire[i], 0x5au);
 }
 
+static const u8 k_mute[CORE_APP_VOICE_MUTE_BYTES] = {
+    0x56, 0x4d, 0x55, 0x54, 0x01, 0x00, 0x00, 0x00,
+    0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01};
+
+TEST(voice_mute_round_trips_with_golden_bytes) {
+    u8 wire[CORE_APP_VOICE_MUTE_BYTES + 4u];
+    size_t size = 0u;
+    u64 target = 0u;
+    bool muted = false;
+    ASSERT_EQ(CORE_APP_VOICE_MUTE_MESSAGE_ID, 0x4008u);
+    memset(wire, 0xa5, sizeof(wire));
+    ASSERT_EQ(core_app_voice_mute_encode(0x0102030405060708ull, true, wire, sizeof(wire), &size),
+              CORE_APP_SNAPSHOT_OK);
+    ASSERT_EQ(size, (size_t)CORE_APP_VOICE_MUTE_BYTES);
+    ASSERT_TRUE(memcmp(wire, k_mute, sizeof(k_mute)) == 0);
+    ASSERT_EQ(wire[CORE_APP_VOICE_MUTE_BYTES], 0xa5u);
+    ASSERT_EQ(core_app_voice_mute_decode(wire, size, &target, &muted), CORE_APP_SNAPSHOT_OK);
+    ASSERT_EQ(target, 0x0102030405060708ull);
+    ASSERT_TRUE(muted);
+    ASSERT_EQ(core_app_voice_mute_encode(3u, false, wire, CORE_APP_VOICE_MUTE_BYTES, &size),
+              CORE_APP_SNAPSHOT_OK);
+    ASSERT_EQ(wire[4], 0x00u);
+    ASSERT_EQ(core_app_voice_mute_decode(wire, size, &target, &muted), CORE_APP_SNAPSHOT_OK);
+    ASSERT_EQ(target, 3u);
+    ASSERT_FALSE(muted);
+}
+
+TEST(voice_mute_decode_rejects_every_malformed_payload) {
+    u8 wire[CORE_APP_VOICE_MUTE_BYTES + 1u];
+    u64 target = 77u;
+    bool muted = false;
+    memcpy(wire, k_mute, sizeof(k_mute));
+    wire[CORE_APP_VOICE_MUTE_BYTES] = 0u;
+    for (size_t n = 0u; n < CORE_APP_VOICE_MUTE_BYTES; ++n) {
+        ASSERT_EQ(core_app_voice_mute_decode(wire, n, &target, &muted),
+                  CORE_APP_SNAPSHOT_TRUNCATED);
+    }
+    ASSERT_EQ(core_app_voice_mute_decode(wire, sizeof(wire), &target, &muted),
+              CORE_APP_SNAPSHOT_OVER_LIMIT);
+    ASSERT_EQ(core_app_voice_mute_decode(NULL, CORE_APP_VOICE_MUTE_BYTES, &target, &muted),
+              CORE_APP_SNAPSHOT_INVALID);
+    ASSERT_EQ(core_app_voice_mute_decode(wire, CORE_APP_VOICE_MUTE_BYTES, NULL, &muted),
+              CORE_APP_SNAPSHOT_INVALID);
+    ASSERT_EQ(core_app_voice_mute_decode(wire, CORE_APP_VOICE_MUTE_BYTES, &target, NULL),
+              CORE_APP_SNAPSHOT_INVALID);
+    static const struct { usize at; u8 value; CoreAppSnapshotOutcome want; } bad[] = {
+        {0u, 0x00u, CORE_APP_SNAPSHOT_BAD_MAGIC},
+        {3u, 0x55u, CORE_APP_SNAPSHOT_BAD_MAGIC},
+        {4u, 0x03u, CORE_APP_SNAPSHOT_INVALID},
+        {5u, 0x01u, CORE_APP_SNAPSHOT_INVALID},
+        {7u, 0x80u, CORE_APP_SNAPSHOT_INVALID},
+    };
+    for (usize i = 0; i < sizeof(bad) / sizeof(bad[0]); ++i) {
+        memcpy(wire, k_mute, sizeof(k_mute));
+        wire[bad[i].at] = bad[i].value;
+        ASSERT_EQ(core_app_voice_mute_decode(wire, CORE_APP_VOICE_MUTE_BYTES, &target, &muted),
+                  bad[i].want);
+    }
+    memcpy(wire, k_mute, sizeof(k_mute));
+    memset(wire + 8, 0, 8u);
+    ASSERT_EQ(core_app_voice_mute_decode(wire, CORE_APP_VOICE_MUTE_BYTES, &target, &muted),
+              CORE_APP_SNAPSHOT_INVALID);
+    ASSERT_EQ(target, 77u);
+    ASSERT_FALSE(muted);
+}
+
+TEST(voice_mute_encode_refuses_invalid_values_without_writing) {
+    u8 wire[CORE_APP_VOICE_MUTE_BYTES];
+    size_t size = 99u;
+    memset(wire, 0x5a, sizeof(wire));
+    ASSERT_EQ(core_app_voice_mute_encode(0u, true, wire, sizeof(wire), &size),
+              CORE_APP_SNAPSHOT_INVALID);
+    ASSERT_EQ(core_app_voice_mute_encode(1u, true, wire, sizeof(wire) - 1u, &size),
+              CORE_APP_SNAPSHOT_OVER_LIMIT);
+    ASSERT_EQ(core_app_voice_mute_encode(1u, true, NULL, sizeof(wire), &size),
+              CORE_APP_SNAPSHOT_INVALID);
+    ASSERT_EQ(core_app_voice_mute_encode(1u, true, wire, sizeof(wire), NULL),
+              CORE_APP_SNAPSHOT_INVALID);
+    ASSERT_EQ(size, 99u);
+    for (usize i = 0; i < sizeof(wire); ++i) ASSERT_EQ(wire[i], 0x5au);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(snapshot_build_rejects_entity_count_over_capacity);
     RUN_TEST(snapshot_roundtrip_preserves_fields);
@@ -565,4 +647,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(voice_relay_round_trips_with_golden_bytes);
     RUN_TEST(voice_relay_decode_rejects_every_malformed_payload);
     RUN_TEST(voice_relay_encode_refuses_invalid_values_without_writing);
+    RUN_TEST(voice_mute_round_trips_with_golden_bytes);
+    RUN_TEST(voice_mute_decode_rejects_every_malformed_payload);
+    RUN_TEST(voice_mute_encode_refuses_invalid_values_without_writing);
 TEST_MAIN_END()

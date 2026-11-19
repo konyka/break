@@ -34,7 +34,13 @@ Only transport state changes. The non-network trace stays equal to an offline ru
 1. `test_core_app_network`: golden bytes for mute and unmute; malformed payloads (short, long, bad magic, unknown flag bits, zero target) rejected with outputs untouched; encode refuses a zero target, NULL buffers and a short buffer.
 2. `test_break_session`: 0x4008 definition and count 29 / 28.
 3. `test_core_app_net_transport`: stats tail with the three new fields at 0.
-4. `test_core_app_network_voice_mute` (MODE=voice_mute, server with `--voice-relay`): A and B authenticate. B sends a malformed mute, then mute(A), then a barrier. A sends 20 tone frames (sequences 0..19) plus a duplicate and a wrong-rate frame, then a barrier; B's barrier must see no relay. B sends unmute(A) and a barrier. A sends sequences 20..39 the same way; B must receive exactly those 20 relays from A, consecutive, decodable, peak at least 4000. Server stats: `voice_frames_received=40`, `voice_frames_dropped=4`, `voice_frames_relayed=20`, `voice_frames_muted=20`, `voice_mute_requests=2`, `voice_mute_rejected=1`; trace equal to offline.
+4. `test_core_app_network_voice_mute` (MODE=voice_mute, server with `--voice-relay`): A and B authenticate. B sends a malformed mute, then mute(A), then a barrier. A sends 20 tone frames (sequences 0..19) plus a duplicate and a wrong-rate frame, then a barrier; B's barrier must see no relay. B sends unmute(A) and a barrier. A sends sequences 20..39 the same way; B must receive exactly those 20 relays from A, consecutive, decodable, peak at least 4000. Server stats: `voice_frames_received=40`, `voice_frames_dropped=4`, `voice_frames_relayed=20`, `voice_frames_muted=20`, `voice_mute_requests=20`, `voice_mute_rejected=2` (after review: B also repeats the mute and sends 17 mutes of unknown ids after the unmute); trace equal to offline.
 5. Mutations, each must fail test 4: mute ignored in the relay; unmute does not remove; malformed mute applied as a mute of the decoded bits (decode check skipped).
 
 Out of scope: server-side mixing, voice rate limits, telling the target it was muted, persisting mutes across reconnects.
+
+## Result
+
+- Every new test went RED first and is GREEN. End to end: while A was muted B received 0 relays; after unmute B received 20 relays from A starting at sequence 20, consecutive, decoded, peak 9334. Server: relayed=20, muted=20, requests=20, rejected=2 (after review: a repeated mute and 17 mutes past the 16-entry capacity were added to the scenario).
+- Mutations: mute ignored in the relay, unmute not removing (the first form `t->voice_relay == 2` did not compile under -Werror and was replaced by `target == 0u`), unknown flag bits accepted. Each fails `test_core_app_network_voice_mute`.
+- Full suite 450/450; `build-voice-relay-asan` 12 network tests pass.

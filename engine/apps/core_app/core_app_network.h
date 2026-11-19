@@ -168,6 +168,26 @@ CoreAppSnapshotOutcome core_app_voice_relay_decode(const u8 *payload, size_t siz
                                                    const u8 **out_frame,
                                                    size_t *out_frame_size);
 
+/* Voice mute: a peer asks the server to stop (or resume) relaying one
+ * source session's voice to it. Little-endian layout: [0] u32 magic,
+ * [4] u32 flags (bit 0 = mute, every other bit zero), [8] u64 target
+ * session id (non-zero, as named in relay headers). */
+#define CORE_APP_VOICE_MUTE_MAGIC 0x54554D56u /* "VMUT" */
+#define CORE_APP_VOICE_MUTE_BYTES 16u
+#define CORE_APP_VOICE_MUTE_FLAG_MUTED 1u
+#define CORE_APP_VOICE_MUTE_MESSAGE_ID 0x4008u
+
+/* Writes exactly CORE_APP_VOICE_MUTE_BYTES. A zero target is INVALID. On
+ * failure neither the buffer nor *out_size is touched. */
+CoreAppSnapshotOutcome core_app_voice_mute_encode(u64 target_session_id, bool muted,
+                                                  u8 *out_buffer, size_t capacity,
+                                                  size_t *out_size);
+/* Validates size, magic, unknown flag bits and a non-zero target; outputs
+ * are written only on success. */
+CoreAppSnapshotOutcome core_app_voice_mute_decode(const u8 *payload, size_t size,
+                                                  u64 *out_target_session_id,
+                                                  bool *out_muted);
+
 /* Inbound authority firewall.
  *
  * A decoded peer snapshot is diagnostic data. Feeding it to this function is

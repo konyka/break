@@ -1681,3 +1681,13 @@ loopback 测试：对端 A、A2、F（late_auth 模式下为 G）各自恰好收
 验证：全量 449/449；开启网络传输的 ASan+UBSan 树（`build-voice-relay-asan`）中网络相关 11 项通过。变异（不排除来源、不受开关控制、不看 accepted 计数）分别使 voice_relay、voice_relay_off、voice_relay 判红。
 
 仍缺：对端语音混音、按对端静音、语音专用限速、漂移补偿、运行中通过命令切换设备、Opus、真实声学验证。
+
+## 补充（2026-11-19）：按用户屏蔽语音
+
+- **协议**：`0x4008` core_app voice mute，对端发往服务端，v1..1，`AUTHENTICATED`，`IDEMPOTENT`，恰好 `BREAK_NET_CORE_VOICE_MUTE_PAYLOAD` = 16 B。小端布局：`[0]` u32 magic `0x54554D56`（"VMUT"），`[4]` u32 flags（bit 0 = 屏蔽，0 = 取消屏蔽，其余位必须为 0），`[8]` u64 目标会话号（非零，与转发头里的来源号相同）。decode 检查长度、magic、未知 flag 位和零目标，失败时不写输出。transport 用 `#error` / `_Static_assert` 绑定 id 和大小。
+- **服务端**：`net_on_voice_mute` 在 CoreAppThread 上运行。槽位不存在或正在关闭时返回 false（会话层计 `handler_failed`）；载荷过短、magic 错误、含未知 flag 位或目标为零时计 `voice_mute_rejected`，连接保持；超过 16 字节的载荷在会话层的 payload 上限检查处就关闭连接，到不了处理函数。每个解码成功的请求计 `voice_mute_requests`。每个槽位最多保存 `CORE_APP_NET_VOICE_MUTE_CAPACITY` = 16 个来源号：屏蔽时不存在才加入，取消屏蔽时移除，两者都幂等；列表已满时再屏蔽新来源计 `voice_mute_rejected`。会话号不复用，已离开的用户的号留在列表里无害。槽位释放（连接关闭或传输错误）和复用时清空列表，新连接不会继承屏蔽。`net_send_voice_relay` 对列表中含该帧来源的接收方跳过发送并计 `voice_frames_muted`（每个被跳过的接收方计一次）；屏蔽在发送时检查，因此也作用于转发环中已排队的帧。未开 `--voice-relay` 时屏蔽请求照常处理，只改计数。
+- **合同**：`test_core_app_network.cmake` MODE=voice_mute（服务端加 `--voice-relay`）。B 发一条 flags=3 的畸形请求，再屏蔽 A 两次，用时钟探测作屏障；A 发第一组（序号 0..19 加 1 帧重复、1 帧错误采样率）并作屏障，B 的屏障途中不得收到转发；B 取消屏蔽一次（重复屏蔽没有存两份），再屏蔽 17 个不存在的会话号（第 17 个因列表已满被拒），然后作屏障；A 发第二组（序号 20..39）并作屏障，B 必须收到 20 条、来源为 A、从 20 开始连续、全部解码、peak ≥ 4000。服务端要求 `voice_frames_received=40`、`voice_frames_dropped=4`、`voice_frames_relayed=20`、`voice_frames_muted=20`、`voice_mute_requests=20`、`voice_mute_rejected=2`、`voice_relay_dropped=0`，非网络 trace 与离线一致。
+
+验证：全量 450/450；`build-voice-relay-asan`（ASan+UBSan，网络开启）相关 12 项通过。变异（转发忽略屏蔽、取消屏蔽不移除、解码不查未知 flag 位）都使 voice_mute 判红。
+
+仍缺：对端语音混音、语音专用限速、漂移补偿、运行中通过命令切换设备、Opus、真实声学验证。

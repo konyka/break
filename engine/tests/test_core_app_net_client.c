@@ -6,10 +6,11 @@
  * the simulation is checked by the CMake driver, which compares the
  * networked trace with an offline run of the same scenario. "late-auth"
  * runs only the delayed-AUTH peer; "voice" runs only the voice peer;
- * "voice-relay" runs the two relay peers.
+ * "voice-relay" runs the two relay peers; "voice-mute" runs the two mute
+ * peers.
  *
  * Usage: test_core_app_net_client PORT_FILE REPORT_FILE
- *        [late-auth|voice|voice-relay]
+ *        [late-auth|voice|voice-relay|voice-mute]
  * The PSK is read from CORE_APP_TEST_PSK (64 hex digits). */
 #define _POSIX_C_SOURCE 200809L
 #include "core_app_network.h"
@@ -939,9 +940,9 @@ static void scenario_late_auth(void) {
 #define NET_CLIENT_VOICE_FRAMES 30u
 #define NET_CLIENT_VOICE_BACK_FRAMES 20u
 
-/* 20 consecutive BRV2 frames (sequences 0..19) of a 0.25 square tone, then
- * a duplicate of the last one and one frame that claims 16 kHz. */
-static bool client_send_tone_burst(NetClient *c) {
+/* 20 consecutive BRV2 frames (sequences first..first+19) of a 0.25 square
+ * tone, then a duplicate of the last one and one frame that claims 16 kHz. */
+static bool client_send_tone_burst(NetClient *c, u32 first) {
     BreakVoiceFrame back;
     u8 wire[BREAK_VOICE_MAX_DATAGRAM_SIZE];
     u32 wire_size = 0u;
@@ -953,8 +954,8 @@ static bool client_send_tone_burst(NetClient *c) {
     for (u32 i = 0u; i < BREAK_VOICE_MAX_SAMPLES; ++i) {
         back.samples[i] = (i / 24u) % 2u == 0u ? (i16)8191 : (i16)-8191;
     }
-    for (u32 sequence = 0u; sequence < NET_CLIENT_VOICE_BACK_FRAMES && sent; ++sequence) {
-        back.sequence = sequence;
+    for (u32 i = 0u; i < NET_CLIENT_VOICE_BACK_FRAMES && sent; ++i) {
+        back.sequence = first + i;
         sent = break_voice_encode_adpcm(&back, wire, sizeof(wire), &wire_size) ==
                    BREAK_RUNTIME_OK &&
                client_send(c, BREAK_NET_MESSAGE_ID_CORE_VOICE, 1u, wire, wire_size);
@@ -1091,7 +1092,7 @@ static void scenario_voice_relay(void) {
     check(a.session_id != b.session_id, "rb_session_differs_from_ra");
     at_a.expected_source = a.session_id;
     at_b.expected_source = a.session_id;
-    check(client_send_tone_burst(&a), "ra_sent_voice_to_server");
+    check(client_send_tone_burst(&a, 0u), "ra_sent_voice_to_server");
     check(client_barrier(&a, &at_a, 10000u), "ra_server_handled_voice");
     {
         static const u8 frame[4] = {'B', 'R', 'V', '2'};
@@ -1114,6 +1115,88 @@ static void scenario_voice_relay(void) {
     client_close(&a);
     if (at_a.receiver) break_voice_receiver_destroy(at_a.receiver);
     if (at_b.receiver) break_voice_receiver_destroy(at_b.receiver);
+}
+
+static bool client_send_mute(NetClient *c, u64 target, bool muted) {
+    u8 wire[CORE_APP_VOICE_MUTE_BYTES];
+    size_t size = 0u;
+    return core_app_voice_mute_encode(target, muted, wire, sizeof(wire), &size) ==
+               CORE_APP_SNAPSHOT_OK &&
+           client_send(c, CORE_APP_VOICE_MUTE_MESSAGE_ID, 1u, wire, size);
+}
+
+/* M: two peers on a --voice-relay server. B sends a malformed mute, then
+ * mutes A twice; A's first burst (sequences 0..19) must not reach B. One
+ * unmute clears A (the repeated mute was not stored twice), B then mutes
+ * 17 unknown ids (the last is rejected: the list holds 16), and A's
+ * second burst (20..39) must reach B in full. */
+static void scenario_voice_mute(void) {
+    NetClient a;
+    NetClient b;
+    CoreAppSnapshot snapshot;
+    RelayTally at_a;
+    RelayTally muted;
+    RelayTally unmuted;
+    memset(&at_a, 0, sizeof(at_a));
+    memset(&muted, 0, sizeof(muted));
+    memset(&unmuted, 0, sizeof(unmuted));
+    at_a.receiver = relay_receiver_create();
+    muted.receiver = relay_receiver_create();
+    unmuted.receiver = relay_receiver_create();
+    check(at_a.receiver && muted.receiver && unmuted.receiver, "m_receivers_created");
+    check(client_open(&a), "ma_tls_challenge");
+    check(client_auth(&a, g_psk), "ma_auth_sent");
+    check(client_next_snapshot(&a, &snapshot, 10000u) == 1, "ma_authenticated");
+    check_welcome(&a, "ma");
+    check(client_open(&b), "mb_tls_challenge");
+    check(client_auth(&b, g_psk), "mb_auth_sent");
+    check(client_next_snapshot(&b, &snapshot, 10000u) == 1, "mb_authenticated");
+    check_welcome(&b, "mb");
+    at_a.expected_source = a.session_id;
+    muted.expected_source = a.session_id;
+    unmuted.expected_source = a.session_id;
+    unmuted.next = NET_CLIENT_VOICE_BACK_FRAMES;
+    {
+        u8 wire[CORE_APP_VOICE_MUTE_BYTES];
+        size_t size = 0u;
+        bool built = core_app_voice_mute_encode(a.session_id ? a.session_id : 1u, true, wire,
+                                                sizeof(wire), &size) == CORE_APP_SNAPSHOT_OK;
+        wire[4] = 0x03u;
+        check(built && client_send(&b, CORE_APP_VOICE_MUTE_MESSAGE_ID, 1u, wire, size),
+              "mb_sent_malformed_mute");
+    }
+    check(client_send_mute(&b, a.session_id, true), "mb_sent_mute");
+    check(client_send_mute(&b, a.session_id, true), "mb_sent_repeated_mute");
+    check(client_barrier(&b, &muted, 10000u), "mb_server_applied_mute");
+    check(client_send_tone_burst(&a, 0u), "ma_sent_first_burst");
+    check(client_barrier(&a, &at_a, 10000u), "ma_server_handled_first_burst");
+    check(client_barrier(&b, &muted, 10000u), "mb_barrier_after_first_burst");
+    check(client_send_mute(&b, a.session_id, false), "mb_sent_unmute");
+    {
+        /* Ids no peer holds fill the 16-entry list; the 17th is rejected.
+         * A is no longer in the list, so its second burst still reaches B. */
+        bool sent = true;
+        for (u64 i = 0u; i < 17u && sent; ++i) {
+            sent = client_send_mute(&b, 1000000u + i, true);
+        }
+        check(sent, "mb_sent_mutes_past_capacity");
+    }
+    check(client_barrier(&b, &unmuted, 10000u), "mb_server_applied_unmute");
+    check(client_send_tone_burst(&a, NET_CLIENT_VOICE_BACK_FRAMES), "ma_sent_second_burst");
+    check(client_barrier(&a, &at_a, 10000u), "ma_server_handled_second_burst");
+    check(client_barrier(&b, &unmuted, 10000u), "mb_barrier_after_second_burst");
+    check(at_a.received == 0u, "ma_never_receives_own_voice");
+    fprintf(g_report, "voice_mute muted_received=%u\n", muted.received);
+    fprintf(g_report,
+            "voice_unmute received=%u foreign=%u gaps=%u malformed=%u played=%u peak=%u"
+            " first=%u echoed=%u\n",
+            unmuted.received, unmuted.foreign, unmuted.gaps, unmuted.malformed,
+            unmuted.played, unmuted.peak, unmuted.next - unmuted.received, at_a.received);
+    client_close(&b);
+    client_close(&a);
+    if (at_a.receiver) break_voice_receiver_destroy(at_a.receiver);
+    if (muted.receiver) break_voice_receiver_destroy(muted.receiver);
+    if (unmuted.receiver) break_voice_receiver_destroy(unmuted.receiver);
 }
 
 static void scenario_voice(void) {
@@ -1198,7 +1281,7 @@ static void scenario_voice(void) {
      * closes and plays only through the tail flush. The last two count as
      * dropped and the session stays open. */
     {
-        check(client_send_tone_burst(&v), "v_sent_voice_to_server");
+        check(client_send_tone_burst(&v, 0u), "v_sent_voice_to_server");
         /* Nothing acknowledges voice, but the server applies one session's
          * messages in order: a reply to a clock probe sent after the voice
          * proves every voice message was handled before this peer closes. */
@@ -1223,9 +1306,10 @@ int main(int argc, char **argv) {
     bool late_auth = argc == 4 && strcmp(argv[3], "late-auth") == 0;
     bool voice = argc == 4 && strcmp(argv[3], "voice") == 0;
     bool voice_relay = argc == 4 && strcmp(argv[3], "voice-relay") == 0;
-    if (argc != 3 && !late_auth && !voice && !voice_relay) {
+    bool voice_mute = argc == 4 && strcmp(argv[3], "voice-mute") == 0;
+    if (argc != 3 && !late_auth && !voice && !voice_relay && !voice_mute) {
         fprintf(stderr, "usage: test_core_app_net_client PORT_FILE REPORT_FILE"
-                        " [late-auth|voice|voice-relay]\n");
+                        " [late-auth|voice|voice-relay|voice-mute]\n");
         return 2;
     }
     signal(SIGPIPE, SIG_IGN);
@@ -1239,6 +1323,8 @@ int main(int argc, char **argv) {
         scenario_voice();
     } else if (g_failures == 0 && voice_relay) {
         scenario_voice_relay();
+    } else if (g_failures == 0 && voice_mute) {
+        scenario_voice_mute();
     } else if (g_failures == 0) {
         scenario_authenticated();
         scenario_unauthenticated();

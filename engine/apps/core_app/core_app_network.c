@@ -306,6 +306,34 @@ CoreAppSnapshotOutcome core_app_voice_relay_decode(const u8 *payload, size_t siz
     return CORE_APP_SNAPSHOT_OK;
 }
 
+CoreAppSnapshotOutcome core_app_voice_mute_encode(u64 target_session_id, bool muted,
+                                                  u8 *out_buffer, size_t capacity,
+                                                  size_t *out_size) {
+    if (!out_buffer || !out_size || target_session_id == 0u) return CORE_APP_SNAPSHOT_INVALID;
+    if (capacity < CORE_APP_VOICE_MUTE_BYTES) return CORE_APP_SNAPSHOT_OVER_LIMIT;
+    put_u32(out_buffer, CORE_APP_VOICE_MUTE_MAGIC);
+    put_u32(out_buffer + 4, muted ? CORE_APP_VOICE_MUTE_FLAG_MUTED : 0u);
+    put_u64(out_buffer + 8, target_session_id);
+    *out_size = CORE_APP_VOICE_MUTE_BYTES;
+    return CORE_APP_SNAPSHOT_OK;
+}
+
+CoreAppSnapshotOutcome core_app_voice_mute_decode(const u8 *payload, size_t size,
+                                                  u64 *out_target_session_id,
+                                                  bool *out_muted) {
+    if (!payload || !out_target_session_id || !out_muted) return CORE_APP_SNAPSHOT_INVALID;
+    if (size < CORE_APP_VOICE_MUTE_BYTES) return CORE_APP_SNAPSHOT_TRUNCATED;
+    if (size > CORE_APP_VOICE_MUTE_BYTES) return CORE_APP_SNAPSHOT_OVER_LIMIT;
+    if (get_u32(payload) != CORE_APP_VOICE_MUTE_MAGIC) return CORE_APP_SNAPSHOT_BAD_MAGIC;
+    u32 flags = get_u32(payload + 4);
+    if ((flags & ~CORE_APP_VOICE_MUTE_FLAG_MUTED) != 0u) return CORE_APP_SNAPSHOT_INVALID;
+    u64 target = get_u64(payload + 8);
+    if (target == 0u) return CORE_APP_SNAPSHOT_INVALID;
+    *out_target_session_id = target;
+    *out_muted = (flags & CORE_APP_VOICE_MUTE_FLAG_MUTED) != 0u;
+    return CORE_APP_SNAPSHOT_OK;
+}
+
 void core_app_snapshot_outbox_init(CoreAppSnapshotOutbox *outbox) {
     if (!outbox) return;
     memset(outbox, 0, sizeof(*outbox));
