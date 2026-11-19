@@ -2053,6 +2053,14 @@ static CoreAppVoiceConfig app_voice_config(AudioSystem *playback, AudioBackend c
     config.aligner.tracker.lock_count = 1u;
     config.aligner.tracker.hold_updates = 2u;
     config.aligner.update_period_frames = CORE_APP_VOICE_FRAME_FRAMES;
+    config.drift_enabled = true;
+    config.drift.estimator.window_size = 32u;
+    config.drift.estimator.min_abs_correlation = 0.5f;
+    config.drift.estimator.max_abs_drift_ppm = 1000.0f;
+    config.drift.min_samples = 32u;
+    config.drift.max_correction_ppm = 300.0f;
+    config.drift.gain = 0.5f;
+    config.drift_observe_packets = 10u;
     config.processor = (AudioVoiceProcessorConfig){
         .echo = {48000u, 64u, 0.2f, 0.0f, 0.0f},
         .residual = {48000u, 0.0f, 6.0f, 5.0f, 20.0f, 60.0f, -60.0f, -40.0f, 20.0f},
@@ -2304,13 +2312,15 @@ static BreakRuntimeError app_voice_join_cb(void *user) {
             " capture_overruns=%" PRIu64 " reference_overruns=%" PRIu64
             " capture_recoveries=%" PRIu64 " capture_reopen_failures=%" PRIu64
             " playback_recoveries=%" PRIu64 " capture_switches=%" PRIu64
-            " capture_switch_rejected=%" PRIu64 " capture_switch_failures=%" PRIu64 "\n",
+            " capture_switch_rejected=%" PRIu64 " capture_switch_failures=%" PRIu64
+            " drift_corrections=%" PRIu64 " drift_ppb=%" PRId64 "\n",
             app_voice_mode_name(app->config.voice_mode), stats.produced, lane->consumed,
             stats.dropped, lane->sequence_gaps, lane->peak, stats.capture_overruns,
             stats.reference_overruns, stats.capture_recoveries,
             stats.capture_reopen_failures, stats.playback_recoveries,
             stats.capture_switches, stats.capture_switch_rejected,
-            stats.capture_switch_failures);
+            stats.capture_switch_failures, stats.drift_corrections,
+            stats.drift_correction_ppb);
     }
     core_app_voice_destroy(lane->voice);
     lane->voice = NULL;

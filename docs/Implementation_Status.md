@@ -1,3 +1,9 @@
+## Core App 语音漂移补偿（2026-11-19）
+
+- **交付**：core_app 语音泵把播放参考经 `AudioDriftCompensator` 重采样后再交给对齐器（4096 帧 FIFO）。对齐器锁定后每 10 个包取一次延迟测量，每 32 个被接受的测量更新一次比率，更新后跳过一次测量。采集恢复、切换设备与播放重开时比率归 1。新增统计 `drift_corrections`、`drift_correction_ppb` 与 trace 字段 `drift_corrections=`、`drift_ppb=`，新增 `audio_voice_aligner_correlation` 访问器。设计与计划见 `docs/superpowers/specs/2026-11-19-core-app-voice-drift-design.md`、`docs/superpowers/plans/2026-11-19-core-app-voice-drift.md`。
+- **TDD**：先写两个新的 voice 用例并确认失败（RED），再实现到 18/18（GREEN）。对齐器访问器的测试先 RED 后 GREEN。四个变异都判红：绕过 FIFO、恢复时不重置、不调用 update、不检查观测周期。
+- **边界**：只支持单声道与线性插值；没有真实声学验证。
+
 ## 闭环时钟漂移补偿器（2026-11-19）
 
 - **交付**：新增 `AudioDriftCompensator`（`src/audio/audio_drift_compensator.h/.c`，编入音频库），把 `audio_drift_estimator` 与 `audio_drift_resampler` 连成闭环。每次 update 把残余延迟斜率换算成新比率 `r·(1 - gain·slope)`，限幅到 `max_correction_ppm` 以内，然后清空估计窗口。设计与计划见 `docs/superpowers/specs/2026-11-19-audio-drift-compensator-design.md`、`docs/superpowers/plans/2026-11-19-audio-drift-compensator.md`。

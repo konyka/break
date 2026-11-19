@@ -4,8 +4,11 @@
 #include <platform/time.h>
 
 #include <stdatomic.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
+
+#define CORE_APP_VOICE_DRIFT_FIFO_FRAMES 4096u
 
 struct CoreAppVoice {
     AudioSystem *playback;
@@ -35,6 +38,20 @@ struct CoreAppVoice {
     atomic_uint_least64_t capture_switches;
     atomic_uint_least64_t capture_switch_rejected;
     atomic_uint_least64_t capture_switch_failures;
+    /* Drift compensation (pumping thread), NULL when off: the playback
+     * reference resampled with the current ratio, waiting for alignment. */
+    AudioDriftCompensator *drift;
+    i16 drift_fifo[CORE_APP_VOICE_DRIFT_FIFO_FRAMES];
+    u32 drift_fifo_frames;
+    u32 drift_observe_packets;
+    u32 drift_packets_since_observe;
+    u32 drift_min_samples;
+    u32 drift_accepted;
+    bool drift_skip_next;
+    u64 drift_seen_updates;
+    u64 capture_frames_total;
+    atomic_uint_least64_t drift_corrections;
+    atomic_int_least64_t drift_correction_ppb;
     PlatformThread worker;
     PlatformThreadId worker_id;
     atomic_int worker_error;
@@ -106,12 +123,20 @@ BreakRuntimeError core_app_voice_create(const CoreAppVoiceConfig *config,
         return voice_audio_error(result);
     }
     result = audio_voice_processor_create(&config->processor, &voice->processor);
+    if (result == AUDIO_OK && config->drift_enabled) {
+        result = config->drift_observe_packets == 0u || config->drift_observe_packets > 1000u
+                     ? AUDIO_INVALID
+                     : audio_drift_compensator_create(&config->drift, &voice->drift);
+    }
     if (result != AUDIO_OK) {
+        audio_voice_processor_destroy(voice->processor);
         audio_voice_aligner_destroy(voice->aligner);
         audio_capture_destroy(voice->capture);
         free(voice);
         return voice_audio_error(result);
     }
+    voice->drift_observe_packets = config->drift_observe_packets;
+    voice->drift_min_samples = config->drift.min_samples;
     atomic_store_explicit(&voice->worker_error, (int)BREAK_RUNTIME_OK, memory_order_relaxed);
     *out = voice;
     return BREAK_RUNTIME_OK;
@@ -137,11 +162,88 @@ BreakRuntimeError core_app_voice_inject(CoreAppVoice *voice, const f32 *samples,
     return voice_audio_error(audio_capture_inject(voice->capture, samples, frames));
 }
 
+/* A new device has its own clock: the ratio, the measurements and the
+ * resampled reference that was waiting all start over. */
+static void voice_drift_reset(CoreAppVoice *voice) {
+    if (!voice->drift) return;
+    audio_drift_compensator_reset(voice->drift);
+    voice->drift_fifo_frames = 0u;
+    voice->drift_packets_since_observe = 0u;
+    voice->drift_accepted = 0u;
+    voice->drift_skip_next = false;
+    voice->drift_seen_updates = audio_voice_aligner_updates(voice->aligner);
+    atomic_store_explicit(&voice->drift_correction_ppb, 0, memory_order_relaxed);
+}
+
+static bool voice_reference_ready(const CoreAppVoice *voice) {
+    if (voice->drift && voice->drift_fifo_frames >= CORE_APP_VOICE_FRAME_FRAMES) return true;
+    return audio_reference_available(voice->playback) >= CORE_APP_VOICE_FRAME_FRAMES;
+}
+
+/* One packet of reference: the raw read, or with drift compensation the
+ * oldest resampled frames, refilled from one raw read when short. */
+static AudioResult voice_read_reference(CoreAppVoice *voice, i16 *out) {
+    u32 frames = 0u;
+    if (!voice->drift) {
+        const AudioResult result = audio_reference_read_i16(voice->playback, out,
+                                                            CORE_APP_VOICE_FRAME_FRAMES, &frames);
+        return result == AUDIO_OK && frames != CORE_APP_VOICE_FRAME_FRAMES ? AUDIO_FAILED
+                                                                           : result;
+    }
+    while (voice->drift_fifo_frames < CORE_APP_VOICE_FRAME_FRAMES) {
+        i16 raw[CORE_APP_VOICE_FRAME_FRAMES];
+        AudioResult result = audio_reference_read_i16(voice->playback, raw,
+                                                      CORE_APP_VOICE_FRAME_FRAMES, &frames);
+        if (result != AUDIO_OK) return result;
+        if (frames != CORE_APP_VOICE_FRAME_FRAMES) return AUDIO_FAILED;
+        u32 produced = 0u;
+        result = audio_drift_compensator_process_i16(
+            voice->drift, raw, frames, voice->drift_fifo + voice->drift_fifo_frames,
+            CORE_APP_VOICE_DRIFT_FIFO_FRAMES - voice->drift_fifo_frames, &produced);
+        if (result != AUDIO_OK) return result;
+        voice->drift_fifo_frames += produced;
+    }
+    memcpy(out, voice->drift_fifo, CORE_APP_VOICE_FRAME_FRAMES * sizeof(*out));
+    voice->drift_fifo_frames -= CORE_APP_VOICE_FRAME_FRAMES;
+    memmove(voice->drift_fifo, voice->drift_fifo + CORE_APP_VOICE_FRAME_FRAMES,
+            voice->drift_fifo_frames * sizeof(*voice->drift_fifo));
+    return AUDIO_OK;
+}
+
+/* After the aligner updated while locked, every drift_observe_packets
+ * packets: one delay measurement; every min_samples accepted ones: a ratio
+ * update. The first measurement after an update still covers the old ratio. */
+static void voice_drift_observe(CoreAppVoice *voice) {
+    if (!voice->drift) return;
+    const u64 updates = audio_voice_aligner_updates(voice->aligner);
+    const bool updated = updates != voice->drift_seen_updates;
+    voice->drift_seen_updates = updates;
+    if (++voice->drift_packets_since_observe < voice->drift_observe_packets) return;
+    if (!updated || !audio_voice_aligner_locked(voice->aligner)) return;
+    voice->drift_packets_since_observe = 0u;
+    if (voice->drift_skip_next) {
+        voice->drift_skip_next = false;
+        return;
+    }
+    if (!audio_drift_compensator_observe(voice->drift, voice->capture_frames_total,
+                                         audio_voice_aligner_delay(voice->aligner),
+                                         audio_voice_aligner_correlation(voice->aligner))) {
+        return;
+    }
+    if (++voice->drift_accepted < voice->drift_min_samples) return;
+    voice->drift_accepted = 0u;
+    if (!audio_drift_compensator_update(voice->drift)) return;
+    voice->drift_skip_next = true;
+    atomic_fetch_add_explicit(&voice->drift_corrections, 1u, memory_order_relaxed);
+    atomic_store_explicit(&voice->drift_correction_ppb,
+                          (i64)llround(audio_drift_compensator_correction_ppm(voice->drift) * 1000.0),
+                          memory_order_relaxed);
+}
+
 static BreakRuntimeError voice_pump_packet(CoreAppVoice *voice) {
     i16 reference[CORE_APP_VOICE_FRAME_FRAMES];
     i16 capture[CORE_APP_VOICE_FRAME_FRAMES];
     i16 aligned[CORE_APP_VOICE_FRAME_FRAMES];
-    u32 reference_frames = 0u;
     u32 capture_frames = 0u;
     AudioResult result = audio_capture_read_i16(voice->capture, capture,
                                                 CORE_APP_VOICE_FRAME_FRAMES,
@@ -149,14 +251,13 @@ static BreakRuntimeError voice_pump_packet(CoreAppVoice *voice) {
     if (result != AUDIO_OK || capture_frames != CORE_APP_VOICE_FRAME_FRAMES) {
         return result == AUDIO_OK ? BREAK_RUNTIME_FAILED : voice_audio_error(result);
     }
-    result = audio_reference_read_i16(voice->playback, reference,
-                                      CORE_APP_VOICE_FRAME_FRAMES, &reference_frames);
-    if (result != AUDIO_OK || reference_frames != CORE_APP_VOICE_FRAME_FRAMES) {
-        return result == AUDIO_OK ? BREAK_RUNTIME_FAILED : voice_audio_error(result);
-    }
+    result = voice_read_reference(voice, reference);
+    if (result != AUDIO_OK) return voice_audio_error(result);
     result = audio_voice_aligner_process_i16(voice->aligner, reference, capture, aligned,
                                              CORE_APP_VOICE_FRAME_FRAMES);
     if (result != AUDIO_OK) return voice_audio_error(result);
+    voice->capture_frames_total += CORE_APP_VOICE_FRAME_FRAMES;
+    voice_drift_observe(voice);
     audio_voice_processor_process_i16(voice->processor, aligned, capture,
                                       CORE_APP_VOICE_FRAME_FRAMES);
 
@@ -228,6 +329,7 @@ static BreakRuntimeError voice_recover_capture(CoreAppVoice *voice) {
     }
     voice->consecutive_reopen_failures = 0u;
     voice_discard_stale(voice);
+    voice_drift_reset(voice);
     audio_voice_processor_reset(voice->processor);
     atomic_fetch_add_explicit(&voice->capture_recoveries, 1u, memory_order_relaxed);
     return BREAK_RUNTIME_OK;
@@ -242,6 +344,7 @@ static void voice_follow_playback_reopen(CoreAppVoice *voice) {
     const u64 recoveries = audio_system_recoveries(voice->playback);
     if (recoveries == voice->seen_playback_recoveries) return;
     voice->seen_playback_recoveries = recoveries;
+    voice_drift_reset(voice);
     i16 scratch[CORE_APP_VOICE_FRAME_FRAMES];
     for (;;) {
         const u32 capture = audio_capture_available(voice->capture);
@@ -284,6 +387,7 @@ static void voice_switch_capture(CoreAppVoice *voice) {
                sizeof(voice->capture_device_name));
         voice->consecutive_reopen_failures = 0u;
         voice_discard_stale(voice);
+        voice_drift_reset(voice);
         audio_voice_processor_reset(voice->processor);
         atomic_fetch_add_explicit(&voice->capture_switches, 1u, memory_order_relaxed);
     } else if (result == AUDIO_REJECTED) {
@@ -311,7 +415,7 @@ BreakRuntimeError core_app_voice_pump(CoreAppVoice *voice, u32 max_packets) {
     voice_follow_playback_reopen(voice);
     for (u32 packet = 0u; packet < max_packets; ++packet) {
         if (audio_capture_available(voice->capture) < CORE_APP_VOICE_FRAME_FRAMES ||
-            audio_reference_available(voice->playback) < CORE_APP_VOICE_FRAME_FRAMES) {
+            !voice_reference_ready(voice)) {
             break;
         }
         const BreakRuntimeError result = voice_pump_packet(voice);
@@ -346,6 +450,8 @@ BreakRuntimeError core_app_voice_stats(CoreAppVoice *voice, CoreAppVoiceStats *o
         atomic_load_explicit(&voice->capture_switches, memory_order_relaxed),
         atomic_load_explicit(&voice->capture_switch_rejected, memory_order_relaxed),
         atomic_load_explicit(&voice->capture_switch_failures, memory_order_relaxed),
+        atomic_load_explicit(&voice->drift_corrections, memory_order_relaxed),
+        atomic_load_explicit(&voice->drift_correction_ppb, memory_order_relaxed),
     };
     *out = stats;
     return BREAK_RUNTIME_OK;
@@ -434,6 +540,7 @@ BreakRuntimeError core_app_voice_stop(CoreAppVoice *voice) {
 void core_app_voice_destroy(CoreAppVoice *voice) {
     if (!voice) return;
     (void)core_app_voice_stop(voice);
+    audio_drift_compensator_destroy(voice->drift);
     audio_voice_processor_destroy(voice->processor);
     audio_voice_aligner_destroy(voice->aligner);
     audio_capture_destroy(voice->capture);

@@ -1748,3 +1748,19 @@ loopback 测试：对端 A、A2、F（late_auth 模式下为 G）各自恰好收
 - **评审后的修改**（独立评审结论 Ready，无 Critical）：被移除来源的接收器计数在移除时累加进混音器，`accepted`/`played`/`concealed`/`invalid` 改为统计全部来源、不再随淘汰减少；超过 `BREAK_VOICE_MAX_DATAGRAM_SIZE` 的帧在占用来源表之前返回 INVALID；destroy 在 owner 线程以外调用时什么都不做（与接收器一致，不再泄漏接收器）；内部函数改名为 `mixer_find_or_add`。头文件补充说明：`idle_timeout_ms` 应大于 `stream.jitter_delay_ms`，pop 每个帧周期调用一次，畸形帧仍会为新来源占用一个位置。新增 5 项测试（共 11 项）：淘汰空闲最久的来源、淘汰后计数保留、超长帧不占位置、stats 与 destroy 的线程校验、16 路同时混音。四个变异（移除时不累加、不检查长度、destroy 不检查线程、淘汰第一个空闲来源）都判红。
 
 仍缺：core_app 没有客户端模式，混音器尚未接入应用；每来源增益；漂移补偿；Opus；真实声学验证。
+
+## 补充（2026-11-19）：语音漂移补偿
+
+- **配置**：`CoreAppVoiceConfig` 新增 `drift_enabled`、`drift`（`AudioDriftCompensatorConfig`）和 `drift_observe_packets`（1..1000）。启用时，补偿器拒绝的配置或超出范围的观测周期让 create 返回 INVALID。关闭时泵的行为与之前逐字节相同。core_app 在 `app_voice_config` 中启用：窗口 32，`min_samples` 32，最大修正 300 ppm，增益 0.5，每 10 个包观测一次。
+- **泵**：启用时，原始播放参考经补偿器重采样后进入一个 4096 帧的 FIFO，对齐器每次取最旧的 480 帧。FIFO 不足 480 帧时从参考环读一个包补充。只要采集够 480 帧，并且 FIFO 够 480 帧或参考环能读出 480 帧，包就可以处理。
+- **测量**：每个包之后，如果对齐器的更新次数增加且处于锁定状态，并且距上次观测已满 `drift_observe_packets` 个包，就调用 `audio_drift_compensator_observe`，传入累计采集帧数、对齐器延迟和 `audio_voice_aligner_correlation`。每累计 `min_samples` 个被接受的测量调用一次 update。成功更新后跳过下一次测量，因为它的窗口里还有旧比率重采样的样本。
+- **重置**：采集恢复、运行中切换采集设备和播放设备重开都会把比率归 1，并清空 FIFO 与测量。新设备有自己的时钟。修正次数保留。
+- **统计与 trace**：`CoreAppVoiceStats` 新增 `drift_corrections` 和 `drift_correction_ppb`（`correction_ppm × 1000` 四舍五入，有符号）。voice `result=stopped` 行在 `capture_switch_failures` 之后追加 `drift_corrections=N drift_ppb=M`。
+- **测试**：`test_core_app_voice` 新增 2 项，共 18 项。
+  - 第一项让 fake 播放设备每个采集包少渲染 100 ppm 的帧，采集信号是渲染参考在采集时钟上的插值。4000 个包后有修正，`drift_ppb` 与 100000 相差不到 10000；采集恢复后归 0，修正次数不变。
+  - 第二项关闭补偿时同样的运行没有修正；增益为 0 或观测周期为 0 时 create 返回 INVALID。
+  - `test_audio_voice_aligner` 覆盖新访问器。
+  - `test_core_app_voice_lane.cmake` 与 `test_core_app_voice_device.cmake` 匹配新增的 trace 字段。
+  - 四个变异都判红：绕过 FIFO 直接对齐原始参考、恢复时不重置、从不调用 update、create 不检查观测周期。
+
+仍缺：Opus、真实声学验证。

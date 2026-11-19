@@ -1,6 +1,7 @@
 #pragma once
 
 #include <audio/audio_capture.h>
+#include <audio/audio_drift_compensator.h>
 #include <audio/audio_voice_aligner.h>
 #include <audio/audio_voice_processor.h>
 #include <network/break_online_voice.h>
@@ -28,6 +29,14 @@ typedef struct {
      * consecutive refused reopens. */
     u32 reopen_interval_ms;
     u32 max_reopen_failures;
+    /* Clock drift compensation: the playback reference is resampled by an
+     * AudioDriftCompensator before alignment, fed with the locked aligner
+     * delay every drift_observe_packets packets (1..1000) while it is
+     * locked. Off: the raw reference is aligned as is. create returns
+     * INVALID for a drift config the compensator refuses. */
+    bool drift_enabled;
+    AudioDriftCompensatorConfig drift;
+    u32 drift_observe_packets;
 } CoreAppVoiceConfig;
 
 typedef struct CoreAppVoice CoreAppVoice;
@@ -46,6 +55,10 @@ typedef struct {
     u64 capture_switches;
     u64 capture_switch_rejected;
     u64 capture_switch_failures;
+    /* Drift ratio updates applied, and the drift the current ratio removes
+     * in parts per billion; a new device resets the ratio (not the count). */
+    u64 drift_corrections;
+    i64 drift_correction_ppb;
 } CoreAppVoiceStats;
 
 /* Only create/thread-start allocate, and pump when it reopens a lost capture

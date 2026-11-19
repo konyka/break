@@ -407,3 +407,4 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 - **未做**：接入 core_app 语音泵、多声道、sinc 模式、真实设备验证。
 - 2026-11-19 补充：闭环漂移补偿组件已交付，接入 core_app 语音泵是下一步。
 - 2026-11-19 补充：闭环补偿评审后的修改。新增端到端用例：噪声参考经补偿器重采样，采集信号在漂移时钟上生成，用 `audio_delay_estimator_estimate_subframe` 测量延迟，+100 ppm 与 -150 ppm 在增益 1 和 0.5 下都收敛到 1e-6 以内；比率符号取反的变异单靠这一用例就判红。头文件写明测量约定：采集落后于参考时延迟为正，`frame_index` 按采集帧计数；每次 update 后的第一个测量仍包含旧比率重采样的样本，可以跳过。`clamped` 改为比率生效之后才计数。上文“时钟漂移估计”“时钟漂移补偿”两节“未做”中的闭环控制，组件部分已由「时钟漂移闭环补偿」交付。create 同时分配补偿器结构体和估计器。测试共 8 项。
+- 2026-11-19 补充：`audio_voice_aligner_correlation` 返回 tracker 最近一次的带符号相关分数（NULL 返回 0）。core_app 语音泵用它和锁定后的延迟驱动 `AudioDriftCompensator`，见 [`core_app_integration.md`](core_app_integration.md)「语音漂移补偿」。

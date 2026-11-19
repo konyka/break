@@ -117,3 +117,7 @@ bool audio_voice_aligner_uses_gcc(const AudioVoiceAligner *aligner) {
 u64 audio_voice_aligner_rejections(const AudioVoiceAligner *aligner) {
     return aligner ? audio_delay_tracker_rejections(aligner->tracker) : 0u;
 }
+
+double audio_voice_aligner_correlation(const AudioVoiceAligner *aligner) {
+    return aligner ? audio_delay_tracker_correlation(aligner->tracker) : 0.0;
+}

@@ -57,7 +57,7 @@ if(NOT fake_a MATCHES "event=voice mode=fake result=ready frames=480 capture=fak
     message(FATAL_ERROR "the voice lane never became ready\n${fake_a}")
 endif()
 if(NOT fake_a MATCHES
-   "event=voice mode=fake result=stopped produced=([0-9]+) consumed=([0-9]+) dropped=([0-9]+) sequence_gaps=([0-9]+) peak=([0-9]+) capture_overruns=([0-9]+) reference_overruns=([0-9]+) capture_recoveries=0 capture_reopen_failures=0 playback_recoveries=0 capture_switches=0 capture_switch_rejected=0 capture_switch_failures=0\n")
+   "event=voice mode=fake result=stopped produced=([0-9]+) consumed=([0-9]+) dropped=([0-9]+) sequence_gaps=([0-9]+) peak=([0-9]+) capture_overruns=([0-9]+) reference_overruns=([0-9]+) capture_recoveries=0 capture_reopen_failures=0 playback_recoveries=0 capture_switches=0 capture_switch_rejected=0 capture_switch_failures=0 drift_corrections=[0-9]+ drift_ppb=-?[0-9]+\n")
     message(FATAL_ERROR "the voice lane never stopped\n${fake_a}")
 endif()
 set(produced "${CMAKE_MATCH_1}")
@@ -130,7 +130,7 @@ if(switched_at LESS 0 OR refused_at LESS 0 OR NOT switched_at LESS refused_at)
     message(FATAL_ERROR "capture switch results missing or out of order\n${switch_a}")
 endif()
 if(NOT switch_a MATCHES
-   "event=voice mode=fake result=stopped produced=([0-9]+) consumed=([0-9]+) dropped=0 sequence_gaps=0 [^\n]* capture_switches=1 capture_switch_rejected=1 capture_switch_failures=0\n")
+   "event=voice mode=fake result=stopped produced=([0-9]+) consumed=([0-9]+) dropped=0 sequence_gaps=0 [^\n]* capture_switches=1 capture_switch_rejected=1 capture_switch_failures=0 drift_corrections=[0-9]+ drift_ppb=-?[0-9]+\n")
     message(FATAL_ERROR "the stopped line does not count the switches\n${switch_a}")
 endif()
 if(NOT CMAKE_MATCH_1 EQUAL CMAKE_MATCH_2 OR CMAKE_MATCH_1 LESS 150)
@@ -161,7 +161,7 @@ set(scenario "${scenario_saved}")
 string(REGEX MATCHALL "event=voice_capture_device result=[^\n]*\n" late_results "${late}")
 list(LENGTH late_results late_count)
 if(NOT late_count EQUAL 1 OR NOT late MATCHES
-   "event=voice_capture_device result=failed reason=stopped\n[^\n]*\n?.*event=voice mode=fake result=stopped [^\n]* capture_switches=0 capture_switch_rejected=0 capture_switch_failures=0\n")
+   "event=voice_capture_device result=failed reason=stopped\n[^\n]*\n?.*event=voice mode=fake result=stopped [^\n]* capture_switches=0 capture_switch_rejected=0 capture_switch_failures=0 drift_corrections=[0-9]+ drift_ppb=-?[0-9]+\n")
     message(FATAL_ERROR "a request left at stop got no single stopped result\n${late}")
 endif()
 

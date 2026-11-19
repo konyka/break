@@ -113,6 +113,7 @@ TEST(create_validates_configuration_and_calls)
     ASSERT_TRUE(!audio_voice_aligner_locked(NULL));
     ASSERT_TRUE(!audio_voice_aligner_uses_gcc(NULL));
     ASSERT_EQ(audio_voice_aligner_rejections(NULL), 0u);
+    ASSERT_FINITE_NEAR(audio_voice_aligner_correlation(NULL), 0.0, 0.0);
     ASSERT_FINITE_NEAR(audio_voice_aligner_delay(aligner), 0.0, 0.0);
     ASSERT_EQ(audio_voice_aligner_updates(aligner), 0u);
     ASSERT_TRUE(!audio_voice_aligner_locked(aligner));
@@ -154,6 +155,7 @@ TEST(known_fractional_echo_updates_at_exact_period)
     ASSERT_EQ(audio_voice_aligner_updates(aligner), 1u);
     ASSERT_EQ(audio_voice_aligner_rejections(aligner), 0u);
     ASSERT_TRUE(audio_voice_aligner_locked(aligner));
+    ASSERT_TRUE(audio_voice_aligner_correlation(aligner) >= 0.2);
     const double delay = audio_voice_aligner_delay(aligner);
     ASSERT_FINITE_NEAR(delay, 12.5, 0.25);
     ASSERT_EQ(g_whole[ALIGNER_TEST_PERIOD - 1u], g_reference[ALIGNER_TEST_PERIOD - 1u]);
@@ -216,6 +218,7 @@ TEST(silent_capture_rejects_without_moving_delay)
     ASSERT_EQ(audio_voice_aligner_rejections(aligner), 1u);
     ASSERT_TRUE(!audio_voice_aligner_locked(aligner));
     ASSERT_FINITE_NEAR(audio_voice_aligner_delay(aligner), 0.0, 0.0);
+    ASSERT_FINITE_NEAR(audio_voice_aligner_correlation(aligner), 0.0, 0.0);
     ASSERT_TRUE(memcmp(g_whole, g_reference, ALIGNER_TEST_PERIOD * sizeof(g_reference[0])) == 0);
 
     make_fractional_echo(12.5);

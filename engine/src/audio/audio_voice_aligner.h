@@ -27,3 +27,5 @@ u64 audio_voice_aligner_updates(const AudioVoiceAligner *aligner);
 bool audio_voice_aligner_locked(const AudioVoiceAligner *aligner);
 bool audio_voice_aligner_uses_gcc(const AudioVoiceAligner *aligner);
 u64 audio_voice_aligner_rejections(const AudioVoiceAligner *aligner);
+/* The tracker's latest signed score (audio_delay_tracker_correlation); 0 for NULL. */
+double audio_voice_aligner_correlation(const AudioVoiceAligner *aligner);

@@ -33,8 +33,8 @@ it. Drift compensation in the voice pipeline is listed as missing in
   FIFO: a new device has its own clock.
 - `CoreAppVoiceStats` gains `drift_corrections` (u64) and
   `drift_correction_ppb` (i64, `correction_ppm * 1000`, rounded).
-- core_app enables it in `app_voice_config` (window 16, min_samples 8,
-  max 300 ppm, gain 0.5) and the voice `result=stopped` trace line appends
+- core_app enables it in `app_voice_config` (window 32, min_samples 32,
+  max 300 ppm, gain 0.5, observe every 10 packets) and the voice `result=stopped` trace line appends
   `drift_corrections=N drift_ppb=M`.
 
 ## Tests
@@ -52,3 +52,11 @@ it. Drift compensation in the voice pipeline is listed as missing in
 ## Out of scope
 
 Multichannel, sinc mode, real acoustic validation.
+
+## Result
+
+- `audio_voice_aligner_correlation`: RED (stub returned 0) then GREEN in `test_audio_voice_aligner`.
+- Voice pump: the two new `test_core_app_voice` cases failed first (no correction; create accepted a zero gain), then 18/18.
+- `CoreAppVoiceConfig.drift_observe_packets` (1..1000) was added to pace measurements; core_app uses window 32, min_samples 32, gain 0.5, every 10 packets.
+- Mutations: FIFO bypassed, no reset on recovery, update never called, create ignoring the observe period. Each fails a test.
+- Voice lane and device contracts match the new `drift_corrections=` and `drift_ppb=` fields.
