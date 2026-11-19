@@ -1,5 +1,6 @@
 #include "audio_wav.h"
 
+#include <stdint.h>
 #include <string.h>
 
 static u16 wav_read_u16(const u8 *data) {
@@ -72,5 +73,57 @@ AudioResult audio_wav_decode_i16(const void *data, usize size, AudioWavInfo *inf
     }
     parsed.frames = frames;
     *info = parsed;
+    return AUDIO_OK;
+}
+
+static void wav_write_u16(u8 *out, u32 value) {
+    out[0] = (u8)value;
+    out[1] = (u8)(value >> 8u);
+}
+
+static void wav_write_u32(u8 *out, u32 value) {
+    for (u32 i = 0; i < 4u; ++i) out[i] = (u8)(value >> (i * 8u));
+}
+
+AudioResult audio_wav_encoded_size(u32 channels, u32 frames, usize *out_size) {
+    if (!out_size || (channels != 1u && channels != 2u)) return AUDIO_INVALID;
+    const u64 size = (u64)AUDIO_WAV_HEADER_SIZE + (u64)frames * channels * 2u;
+    /* the RIFF size field holds size - 8 */
+    if (size - 8u > UINT32_MAX || size > (u64)SIZE_MAX) return AUDIO_INVALID;
+    *out_size = (usize)size;
+    return AUDIO_OK;
+}
+
+AudioResult audio_wav_encode_i16(const AudioWavInfo *info, const i16 *samples, void *out,
+                                 usize capacity, usize *out_size) {
+    if (!info || !out || !out_size || info->sample_rate < 8000u ||
+        info->sample_rate > 192000u || (info->frames != 0u && !samples)) {
+        return AUDIO_INVALID;
+    }
+    usize size = 0u;
+    if (audio_wav_encoded_size(info->channels, info->frames, &size) != AUDIO_OK ||
+        capacity < size) {
+        return AUDIO_INVALID;
+    }
+    u8 *bytes = (u8 *)out;
+    const u32 align = info->channels * 2u;
+    const u32 data_size = (u32)(size - AUDIO_WAV_HEADER_SIZE);
+    memcpy(bytes, "RIFF", 4u);
+    wav_write_u32(bytes + 4u, (u32)(size - 8u));
+    memcpy(bytes + 8u, "WAVEfmt ", 8u);
+    wav_write_u32(bytes + 16u, 16u);
+    wav_write_u16(bytes + 20u, 1u);
+    wav_write_u16(bytes + 22u, info->channels);
+    wav_write_u32(bytes + 24u, info->sample_rate);
+    wav_write_u32(bytes + 28u, info->sample_rate * align);
+    wav_write_u16(bytes + 32u, align);
+    wav_write_u16(bytes + 34u, 16u);
+    memcpy(bytes + 36u, "data", 4u);
+    wav_write_u32(bytes + 40u, data_size);
+    const u32 count = info->frames * info->channels;
+    for (u32 i = 0; i < count; ++i) {
+        wav_write_u16(bytes + AUDIO_WAV_HEADER_SIZE + i * 2u, (u16)samples[i]);
+    }
+    *out_size = size;
     return AUDIO_OK;
 }

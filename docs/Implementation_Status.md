@@ -1,3 +1,12 @@
+## PCM16 WAV 导出（2026-11-19）
+
+- **交付**：
+  - `audio_wav_encoded_size` 与 `audio_wav_encode_i16`（`src/audio/audio_wav.h/.c`）输出规范的 PCM16 WAV，校验范围与解码器一致，失败时不写任何字节。
+  - `break_editor_doc_audio_save_wav`（`src/editor/editor_audio.h/.c`）把编辑器音频附件写到临时文件后重命名覆盖目标，不改动文档。
+  - 设计与计划见 `docs/superpowers/specs/2026-11-19-audio-wav-export-design.md`、`docs/superpowers/plans/2026-11-19-audio-wav-export.md`。
+- **TDD**：编码器 3 项新测试先在桩实现上失败，再通过，`test_audio_wav` 共 7/7。编辑器保存测试先失败再通过，`test_editor_audio` 共 7/7。5 个变异都判红。其中“失败时不删临时文件”的变异起初存活，补了“目标是目录、重命名失败”的用例后判红。
+- **边界**：只支持 PCM16 单/双声道；没有 VFS 接入，也没有编辑器 UI 入口。
+
 ## Core App 语音漂移补偿（2026-11-19）
 
 - **交付**：core_app 语音泵把播放参考经 `AudioDriftCompensator` 重采样后再交给对齐器（4096 帧 FIFO）。对齐器锁定后每 10 个包取一次延迟测量，每 32 个被接受的测量更新一次比率，更新后跳过一次测量。采集恢复、切换设备与播放重开时比率归 1。新增统计 `drift_corrections`、`drift_correction_ppb` 与 trace 字段 `drift_corrections=`、`drift_ppb=`，新增 `audio_voice_aligner_correlation` 访问器。设计与计划见 `docs/superpowers/specs/2026-11-19-core-app-voice-drift-design.md`、`docs/superpowers/plans/2026-11-19-core-app-voice-drift.md`。

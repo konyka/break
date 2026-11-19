@@ -280,3 +280,38 @@ bool break_editor_doc_audio_attach_wav(BreakEditorDoc *doc, const char *path) {
     free(data);
     return attached;
 }
+
+/* rename(2) replaces atomically on POSIX; Windows rename() fails when the
+ * destination exists, so it is removed first (best effort, as for scenes). */
+static bool editor_audio_rename_replace(const char *tmp, const char *dst) {
+#if defined(_WIN32)
+    remove(dst);
+#endif
+    return rename(tmp, dst) == 0;
+}
+
+bool break_editor_doc_audio_save_wav(const BreakEditorDoc *doc, const char *path) {
+    if (!doc || !doc->audio || !path || path[0] == '\0') return false;
+    const BreakEditorAudioState *audio = doc->audio;
+    char tmp[1024];
+    const int length = snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    if (length < 0 || (usize)length >= sizeof(tmp)) return false;
+    usize size = 0u;
+    if (audio_wav_encoded_size(audio->channels, audio->frames, &size) != AUDIO_OK) return false;
+    u8 *data = break_editor_test_calloc(size);
+    if (!data) return false;
+    const AudioWavInfo info = {audio->sample_rate, audio->channels, audio->frames};
+    usize encoded = 0u;
+    bool ok = audio_wav_encode_i16(&info, audio->samples, data, size, &encoded) == AUDIO_OK;
+    FILE *file = ok ? fopen(tmp, "wb") : NULL;
+    if (file) {
+        const bool written = fwrite(data, 1u, encoded, file) == encoded;
+        const bool closed = fclose(file) == 0;
+        ok = written && closed && editor_audio_rename_replace(tmp, path);
+        if (!ok) remove(tmp);
+    } else {
+        ok = false;
+    }
+    free(data);
+    return ok;
+}

@@ -408,3 +408,11 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 - 2026-11-19 补充：闭环漂移补偿组件已交付，接入 core_app 语音泵是下一步。
 - 2026-11-19 补充：闭环补偿评审后的修改。新增端到端用例：噪声参考经补偿器重采样，采集信号在漂移时钟上生成，用 `audio_delay_estimator_estimate_subframe` 测量延迟，+100 ppm 与 -150 ppm 在增益 1 和 0.5 下都收敛到 1e-6 以内；比率符号取反的变异单靠这一用例就判红。头文件写明测量约定：采集落后于参考时延迟为正，`frame_index` 按采集帧计数；每次 update 后的第一个测量仍包含旧比率重采样的样本，可以跳过。`clamped` 改为比率生效之后才计数。上文“时钟漂移估计”“时钟漂移补偿”两节“未做”中的闭环控制，组件部分已由「时钟漂移闭环补偿」交付。create 同时分配补偿器结构体和估计器。测试共 8 项。
 - 2026-11-19 补充：`audio_voice_aligner_correlation` 返回 tracker 最近一次的带符号相关分数（NULL 返回 0）。core_app 语音泵用它和锁定后的延迟驱动 `AudioDriftCompensator`，见 [`core_app_integration.md`](core_app_integration.md)「语音漂移补偿」。
+- 2026-11-19 补充：WAV 导出。设计见 `docs/superpowers/specs/2026-11-19-audio-wav-export-design.md`。
+  - **大小计算**：`audio_wav_encoded_size(channels, frames, *out_size)` 返回 `44 + frames × channels × 2` 字节。声道不是 1 或 2、RIFF 大小字段放不下（超过 4 GiB）时返回 INVALID。
+  - **编码**：`audio_wav_encode_i16(info, samples, out, capacity, *out_size)` 写规范的 44 字节头（RIFF、16 字节 PCM fmt 块、data 块）和小端样本。校验范围与解码器一致（8000..192000 Hz、1 或 2 声道）；参数无效或容量不足时返回 INVALID，且不写任何字节。
+  - **编辑器保存**：`break_editor_doc_audio_save_wav(doc, path)` 先在内存中编码，写到 `<path>.tmp`，再重命名覆盖 `path`；Windows 上与场景保存一样先删除目标。没有附件、路径为空，或分配、写入、重命名任何一步失败，都返回 false 并删除临时文件。文档、历史和脏标记都不改动。
+  - **测试**：
+    - `test_audio_wav` 共 7 项，新增 3 项：已知单声道头的逐字节比对与立体声字段、单/双声道在 8000/44100/192000 Hz 下 0/16/32 帧经解码器往返一致、所有失败不写输出且大小溢出被拒。
+    - `test_editor_audio` 共 7 项，新增 1 项：剪切后保存，再导入新文档时样本一致；空路径、目录不存在、分配失败、目标是目录导致重命名失败，都不留下文件或临时文件；第二次保存整体替换旧文件。
+    - 变异 5 个，都判红：RIFF 大小写错、跳过容量检查、跳过溢出检查、直接写目标文件、失败时不删临时文件。

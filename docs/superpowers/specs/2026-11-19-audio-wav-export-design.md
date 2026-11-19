@@ -37,3 +37,8 @@ attachment cannot leave the editor. "导出" (export) is listed as missing in
 ## Out of scope
 
 Other formats (compressed, 24/32-bit, float), VFS integration, waveform UI.
+
+## Result
+
+- Encoder: three new `test_audio_wav` cases failed against stubs, then 7/7. Editor save: the new `test_editor_audio` case failed against a stub, then 7/7.
+- Mutations: wrong RIFF size field, capacity check skipped, overflow check skipped, writing the target in place, temporary file kept on failure. Each fails a test; the last one survived until a case where the rename fails (the target is a directory) was added.

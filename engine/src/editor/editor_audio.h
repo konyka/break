@@ -14,6 +14,12 @@ bool break_editor_doc_audio_attach(BreakEditorDoc *doc, u32 sample_rate, u32 cha
 /* Reads a bounded PCM16 mono/stereo WAV file and attaches it as initial content.
  * False leaves document and history unchanged. */
 bool break_editor_doc_audio_attach_wav(BreakEditorDoc *doc, const char *path);
+/* Writes the current attachment as a canonical PCM16 WAV file: encoded in
+ * memory, written to "<path>.tmp", then renamed over path, so a failure never
+ * leaves a partial file at path. False without an attachment, for a NULL or
+ * empty path, or on any allocation or I/O failure (the temporary file is
+ * removed). Never changes the document, its history or its dirty flag. */
+bool break_editor_doc_audio_save_wav(const BreakEditorDoc *doc, const char *path);
 bool break_editor_doc_audio_attached(const BreakEditorDoc *doc);
 u32 break_editor_doc_audio_frames(const BreakEditorDoc *doc);
 u32 break_editor_doc_audio_sample_rate(const BreakEditorDoc *doc);

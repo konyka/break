@@ -11,6 +11,9 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#if !defined(_WIN32)
+#include <sys/stat.h> /* mkdir behind TEST_MKDIR */
+#endif
 
 static const i16 kSamples[8] = {0, 100, 200, 300, 400, 500, 600, 700};
 
@@ -293,6 +296,81 @@ TEST(wav_import_attaches_and_failures_are_atomic)
     remove(path);
 }
 
+static bool file_exists(const char *path) {
+    FILE *file = fopen(path, "rb");
+    if (!file) return false;
+    fclose(file);
+    return true;
+}
+
+TEST(wav_export_round_trips_and_failures_leave_nothing)
+{
+    char path[512], tmp[600];
+    test_tmp(path, sizeof(path), "editor_audio_export.wav");
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    remove(path);
+    remove(tmp);
+
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    ASSERT_TRUE(!break_editor_doc_audio_save_wav(doc, path));
+    ASSERT_TRUE(!file_exists(path));
+    const i16 stereo[8] = {1, -1, 300, -300, 32767, -32768, 7, 8};
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 44100u, 2u, stereo, 4u));
+    ASSERT_TRUE(break_editor_doc_audio_cut(doc, 1u, 2u));
+    const u64 revision = break_editor_cmd_stack_revision(break_editor_doc_stack(doc));
+    const bool dirty = break_editor_doc_is_dirty(doc);
+    ASSERT_TRUE(!break_editor_doc_audio_save_wav(NULL, path));
+    ASSERT_TRUE(!break_editor_doc_audio_save_wav(doc, NULL));
+    ASSERT_TRUE(!break_editor_doc_audio_save_wav(doc, ""));
+    char missing_dir[600];
+    snprintf(missing_dir, sizeof(missing_dir), "%s.no-such-dir/out.wav", path);
+    ASSERT_TRUE(!break_editor_doc_audio_save_wav(doc, missing_dir));
+
+    /* the rename fails when path is a directory: the temporary is removed */
+    char dir_path[600], dir_tmp[700];
+    snprintf(dir_path, sizeof(dir_path), "%s.dir", path);
+    snprintf(dir_tmp, sizeof(dir_tmp), "%s.tmp", dir_path);
+    remove(dir_tmp);
+    TEST_MKDIR(dir_path);
+    ASSERT_TRUE(!break_editor_doc_audio_save_wav(doc, dir_path));
+    ASSERT_TRUE(!file_exists(dir_tmp));
+    TEST_RMDIR(dir_path);
+
+    /* allocation failure: no file and no temporary left behind */
+    break_editor_test_set_alloc_budget(0u);
+    ASSERT_TRUE(!break_editor_doc_audio_save_wav(doc, path));
+    break_editor_test_set_alloc_budget(BREAK_EDITOR_TEST_ALLOC_DISABLED);
+    ASSERT_TRUE(!file_exists(path));
+    ASSERT_TRUE(!file_exists(tmp));
+
+    ASSERT_TRUE(break_editor_doc_audio_save_wav(doc, path));
+    ASSERT_TRUE(!file_exists(tmp));
+    ASSERT_EQ(break_editor_cmd_stack_revision(break_editor_doc_stack(doc)), revision);
+    ASSERT_EQ(break_editor_doc_is_dirty(doc), dirty);
+
+    BreakEditorDoc *copy = break_editor_doc_create();
+    ASSERT_NOT_NULL(copy);
+    ASSERT_TRUE(break_editor_doc_audio_attach_wav(copy, path));
+    ASSERT_EQ(break_editor_doc_audio_sample_rate(copy), 44100u);
+    ASSERT_EQ(break_editor_doc_audio_channels(copy), 2u);
+    const i16 expected[6] = {1, -1, 32767, -32768, 7, 8};
+    ASSERT_EQ(break_editor_doc_audio_frames(copy), 3u);
+    ASSERT_EQ(memcmp(break_editor_doc_audio_samples(copy), expected, sizeof(expected)), 0);
+    break_editor_doc_destroy(copy);
+
+    /* a second save replaces the file whole */
+    ASSERT_TRUE(break_editor_doc_audio_trim(doc, 0u, 1u));
+    ASSERT_TRUE(break_editor_doc_audio_save_wav(doc, path));
+    copy = break_editor_doc_create();
+    ASSERT_NOT_NULL(copy);
+    ASSERT_TRUE(break_editor_doc_audio_attach_wav(copy, path));
+    ASSERT_EQ(break_editor_doc_audio_frames(copy), 1u);
+    break_editor_doc_destroy(copy);
+    break_editor_doc_destroy(doc);
+    remove(path);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(attach_validation_and_reset_or_load_detach);
     RUN_TEST(trim_and_cut_are_byte_exact_undoable_commands);
@@ -300,4 +378,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(origin_conflicts_and_drop_oldest_include_audio);
     RUN_TEST(invalid_and_oom_failures_are_atomic);
     RUN_TEST(wav_import_attaches_and_failures_are_atomic);
+    RUN_TEST(wav_export_round_trips_and_failures_leave_nothing);
 TEST_MAIN_END()
