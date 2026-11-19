@@ -738,6 +738,46 @@ static BreakCrashRecord *craft(u64 rip, u64 rsp, u64 rbp, const Win *w) {
     return r;
 }
 
+/* AAPCS64's frame record is [fp] = caller's fp, [fp+8] = LR, the same
+ * layout and word size the x86-64 walk reads, so one walk serves both
+ * (design 2026-11-20-crash-arm64-registers). */
+TEST(the_walker_follows_an_arm64_frame_pointer_chain_too) {
+    BreakCrashSymbolStore *st;
+    BreakCrashFrame fr[BREAK_CRASH_SYMBOLIZE_MAX_FRAMES];
+    BreakCrashRecord *r;
+    Win w;
+    char empty[300], cmd[CMD_CAP];
+    path_in(empty, sizeof(empty), "nosyms_arm64");
+    snprintf(cmd, sizeof(cmd), "rm -rf '%s'; mkdir -p '%s'", empty, empty);
+    ASSERT_TRUE(run(cmd));
+    st = break_crash_symbol_store_open(empty);
+    ASSERT_NOT_NULL(st);
+    memset(&w, 0, sizeof(w));
+    w.len = 4096u;
+    /* sp = 0x7ff00000, x29 (fp) = sp + 0x40; each record holds the caller's
+     * fp then its LR, exactly as the x86-64 case holds rbp then the return
+     * address */
+    put64(&w, 0x40, 0x7ff00080u);  put64(&w, 0x48, 0x400140u);   /* innermost: LR into the module */
+    put64(&w, 0x80, 0x7ff000c0u);  put64(&w, 0x88, 0x400240u);
+    put64(&w, 0xc0, 0u);           put64(&w, 0xc8, 0x400340u);   /* fp 0 stops the walk after this LR */
+    r = craft(0x400040u, 0x7ff00000u, 0x7ff00040u, &w);
+    ASSERT_NOT_NULL(r);
+    {
+        u32 n = break_crash_symbolize_record(st, r, fr, BREAK_CRASH_SYMBOLIZE_MAX_FRAMES);
+        /* pc, then the three LRs; the last fp is 0, which is not greater
+         * than the current one, so the walk stops there */
+        ASSERT_EQ(n, 4u);
+        ASSERT_EQ(fr[0].pc, 0x400040u);
+        ASSERT_EQ(fr[1].pc, 0x400140u);
+        ASSERT_EQ(fr[2].pc, 0x400240u);
+        ASSERT_EQ(fr[3].pc, 0x400340u);
+        ASSERT_EQ(fr[0].module_offset, 0x40u);
+        ASSERT_STR_EQ(fr[1].module, "mod.bin");
+    }
+    break_crash_record_destroy(r);
+    break_crash_symbol_store_destroy(st);
+}
+
 TEST(the_walker_follows_the_saved_rbp_chain_inside_the_window_only) {
     BreakCrashSymbolStore *st;
     BreakCrashFrame fr[BREAK_CRASH_SYMBOLIZE_MAX_FRAMES];
@@ -1876,6 +1916,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(a_position_independent_executable_is_symbolized_through_its_load_bias);
     RUN_TEST(frames_in_modules_without_stored_symbols_stay_unresolved);
     RUN_TEST(a_missing_symbol_file_leaves_frames_with_module_offsets_only);
+    RUN_TEST(the_walker_follows_an_arm64_frame_pointer_chain_too);
     RUN_TEST(the_walker_follows_the_saved_rbp_chain_inside_the_window_only);
     RUN_TEST(a_forged_chain_cannot_loop_backwards_or_leave_the_window);
     RUN_TEST(a_long_chain_is_cut_at_the_cap);

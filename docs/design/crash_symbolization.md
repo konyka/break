@@ -115,7 +115,7 @@ Mach-O 用例在测试里逐字节构造镜像，不需要 Apple SDK：dylib 与
 
 ## 7. 没有做的
 
-- minidump / PE 格式、Windows SEH/VEH（`_WIN32` 仍是编译期 stub）；Windows 与 macOS lane 未运行（新库只在 `UNIX AND NOT APPLE` 下构建，服务与工具只在 POSIX 下构建）。Mach-O 只读符号表；帧恢复仍只按 x86-64 的 RBP 链走，arm64 记录（FP/LR 链）没有展开；没有验证 macOS 客户端生成的真实崩溃记录。
+- minidump / PE 格式、Windows SEH/VEH（`_WIN32` 仍是编译期 stub）；Windows 与 macOS lane 未运行（新库只在 `UNIX AND NOT APPLE` 下构建，服务与工具只在 POSIX 下构建）。Mach-O 只读符号表。2026-11-20：帧恢复不再是 x86-64 专用——AAPCS64 的帧记录与 x86-64 同为 `[fp]`/`[fp+8]` 布局，同一套遍历两者通用，用例 `the_walker_follows_an_arm64_frame_pointer_chain_too` 以 arm64 形状的链验证；信号处理器在 `__aarch64__ && __linux__` 下读 `uc_mcontext.pc`/`.sp`/`.regs[29]`（x29 即帧指针）而不再写零。**但该分支未经任何构建验证**：本机为 x86-64，无 aarch64 交叉编译器、CI 也没有 arm64 lane，字段名只依据 glibc 的 aarch64 `struct sigcontext` 布局推断。增加 arm64 构建 lane 是闭合这一项的下一步。没有验证 macOS 客户端生成的真实崩溃记录。
 - DWARF CFI 展开；内联帧；无帧指针代码的可靠调用栈。
 - 生产服务：认证上传者、按客户端限速、记录本身的存储与保留、符号库管理与发布流程、统计的数据库、仪表板、告警。
 - GPU/RHI/网络/输入摘要的自动采集（仍由应用经 context-blob 接缝接入）。

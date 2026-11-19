@@ -11,7 +11,8 @@
  *  sized by an unchecked field, a corrupt file gives NULL, never a crash).
  *
  *  Scope: symbol files are 64-bit little-endian ELF or 64-bit Mach-O
- *  (x86_64 / arm64, thin or universal); frames are x86-64. The unwinder follows the
+ *  (x86_64 / arm64, thin or universal). The unwinder serves both x86-64 and
+ *  AAPCS64, whose frame records have the same [fp] / [fp+8] layout. It follows the
  *  saved-RBP chain (frame-pointer code) through the record's stack window; it
  *  does NOT use DWARF CFI, so code compiled without frame pointers yields a
  *  short, possibly wrong chain, and every frame beyond the first is marked as

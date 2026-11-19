@@ -1501,8 +1501,20 @@ static void bc_crash_handler(int sig, siginfo_t *info, void *uctx) {
         rsp = (u64)uc->uc_mcontext.gregs[REG_RSP];
         rbp = (u64)uc->uc_mcontext.gregs[REG_RBP];
     }
+#elif defined(__aarch64__) && defined(__linux__)
+    if (uctx) {
+        /* the same three roles under AAPCS64: pc, sp and x29 (the frame
+         * pointer). The record's field names stay rip/rsp/rbp because the
+         * format is pinned, and the frame walk reads the same
+         * [fp]/[fp+8] layout either way. */
+        const ucontext_t *uc = (const ucontext_t *)uctx;
+        rip = (u64)uc->uc_mcontext.pc;
+        rsp = (u64)uc->uc_mcontext.sp;
+        rbp = (u64)uc->uc_mcontext.regs[29];
+    }
 #else
-    (void)uctx; /* other architectures: registers are zero (documented) */
+    (void)uctx; /* architectures other than linux x86-64 and arm64:
+                 * registers are zero (documented) */
 #endif
     u64 fault = info ? (u64)(uintptr_t)info->si_addr : 0;
     u32 code = info ? (u32)info->si_code : 0;

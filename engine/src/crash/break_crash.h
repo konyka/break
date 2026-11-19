@@ -299,8 +299,9 @@ u32 break_crash_spool_upload_pending(BreakCrashSpool *s, BreakCrashUploadFn up, 
  *  Handler contract (pinned; byte-identical grammar to the builder — the
  *  tests interlock the two writers through the Task 1 parser): one-shot
  *  guard → format the record (siginfo signo/code/si_addr; ucontext
- *  RIP/RSP/RBP on Linux x86-64, ZEROS on every other architecture —
- *  documented degradation; plus pid/tid, build id, modules, stack window,
+ *  RIP/RSP/RBP on Linux x86-64 and the same three roles (pc, sp, x29) on
+ *  Linux arm64, ZEROS on every other architecture — documented
+ *  degradation; plus pid/tid, build id, modules, stack window,
  *  context blob) into the preallocated buffer → lseek(0)+write+fsync to the
  *  pre-opened inbox → restore SIG_DFL, unblock, raise(sig) so the process
  *  dies with the original semantics (core dump, WIFSIGNALED status); an
