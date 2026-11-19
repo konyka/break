@@ -3616,6 +3616,85 @@ TEST(audio_page_selects_and_trims_or_cuts)
     break_editor_shell_destroy(shell);
 }
 
+/* Loop playback (design 2026-11-19-editor-audio-loop). */
+TEST(audio_page_loops_the_playing_range)
+{
+    static i16 pcm[600u];
+    static FakeAudioSink fake;
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    my_widget_t *loop;
+    u32 i;
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    memset(&fake, 0, sizeof(fake));
+    fake.chunk = 4096u;
+    for (i = 0u; i < 600u; i++) pcm[i] = (i16)(i + 1u);
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 600u));
+    ASSERT_TRUE(break_editor_shell_select_tab(shell, 0u, 4u));
+    shell_paint(shell);
+    break_editor_shell_tick(shell);
+    loop = find(shell, "editor-audio-loop");
+    ASSERT_NOT_NULL(loop);
+    ASSERT_FALSE(break_editor_shell_audio_loop(shell));
+    break_editor_shell_set_audio_sink(shell, &k_fake_sink, &fake);
+    /* loop off: the clip stops at its end (the existing behaviour) */
+    ASSERT_TRUE(break_editor_shell_audio_play(shell));
+    fake.played = 600u;
+    break_editor_shell_tick(shell);
+    ASSERT_FALSE(break_editor_shell_audio_playing(shell));
+    ASSERT_EQ(fake.closes, 1u);
+    /* loop on: the same range starts again without closing the sink */
+    ASSERT_TRUE(break_editor_shell_audio_set_loop(shell, true));
+    ASSERT_TRUE(break_editor_shell_audio_loop(shell));
+    ASSERT_TRUE(break_editor_shell_audio_select(shell, 100u, 300u));
+    ASSERT_TRUE(break_editor_shell_audio_play(shell));
+    ASSERT_EQ(fake.written, 200u);
+    ASSERT_EQ(fake.opens, 2u);
+    fake.played = 200u;
+    break_editor_shell_tick(shell);
+    ASSERT_TRUE(break_editor_shell_audio_playing(shell));
+    ASSERT_EQ(fake.opens, 2u); /* the sink stayed open */
+    ASSERT_EQ(fake.closes, 1u);
+    ASSERT_EQ(fake.written, 400u);   /* the range was written again */
+    ASSERT_EQ(fake.data[200], 101);  /* from its start, right after the first pass */
+    ASSERT_EQ(fake.data[399], 300);
+    /* it keeps looping */
+    fake.played = 400u;
+    break_editor_shell_tick(shell);
+    ASSERT_TRUE(break_editor_shell_audio_playing(shell));
+    ASSERT_EQ(fake.written, 600u);
+    /* Stop ends it; the selection and loop flag stay */
+    ASSERT_FALSE(break_editor_shell_audio_play(shell));
+    ASSERT_EQ(fake.closes, 2u);
+    ASSERT_TRUE(break_editor_shell_audio_loop(shell));
+    ASSERT_TRUE(break_editor_shell_audio_selection(shell, NULL, NULL));
+    /* turning it off mid-play stops at the next end */
+    ASSERT_TRUE(break_editor_shell_audio_play(shell));
+    ASSERT_FALSE(break_editor_shell_audio_set_loop(shell, false));
+    fake.played = fake.written;
+    break_editor_shell_tick(shell);
+    ASSERT_FALSE(break_editor_shell_audio_playing(shell));
+    /* an edit while looping stops it */
+    ASSERT_TRUE(break_editor_shell_audio_set_loop(shell, true));
+    ASSERT_TRUE(break_editor_shell_audio_play(shell));
+    ASSERT_TRUE(break_editor_shell_audio_playing(shell));
+    ASSERT_TRUE(break_editor_doc_audio_normalize(doc, -3.0));
+    break_editor_shell_tick(shell);
+    ASSERT_FALSE(break_editor_shell_audio_playing(shell));
+    /* the checkbox itself toggles the loop, and follows the language */
+    ASSERT_FALSE(break_editor_shell_audio_set_loop(shell, false));
+    pointer_click(shell, loop);
+    ASSERT_TRUE(break_editor_shell_audio_loop(shell));
+    pointer_click(shell, loop);
+    ASSERT_FALSE(break_editor_shell_audio_loop(shell));
+    ASSERT_TRUE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_ZH_CN));
+    ASSERT_STR_EQ(((const my_checkbox_t *)loop)->text, "\xE5\xBE\xAA\xE7\x8E\xAF"); /* 循环 */
+    ASSERT_TRUE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_EN_US));
+    break_editor_shell_set_audio_sink(shell, NULL, NULL);
+    break_editor_shell_destroy(shell);
+}
+
 /* Timeline ruler (design 2026-11-19-editor-audio-timeline). */
 TEST(audio_page_shows_a_timeline_ruler)
 {
@@ -13081,6 +13160,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(audio_page_fades_and_normalizes_the_selection_or_clip);
     RUN_TEST(audio_page_selects_by_dragging_the_waveform);
     RUN_TEST(audio_page_shows_a_timeline_ruler);
+    RUN_TEST(audio_page_loops_the_playing_range);
     RUN_TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo);
     RUN_TEST(assets_panel_load_guards_unsaved_changes);
     RUN_TEST(palette_save_as_writes_the_typed_path);

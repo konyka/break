@@ -48,6 +48,12 @@ bool break_editor_audio_preview_play_from(BreakEditorAudioPreview *preview,
 bool break_editor_audio_preview_play_range(BreakEditorAudioPreview *preview,
                                            const BreakEditorDoc *doc, u32 start_frame,
                                            u32 end_frame);
+/* Loop: at the end of the played range the preview starts it again instead
+ * of stopping (the sink is kept open, so playback is seamless apart from the
+ * output's own buffering). Off after create; a change takes effect at the
+ * next end. */
+void break_editor_audio_preview_set_loop(BreakEditorAudioPreview *preview, bool loop);
+bool break_editor_audio_preview_loop(const BreakEditorAudioPreview *preview);
 /* Playing: restarts from `frame` (queued audio is dropped), to the end of
  * the playing range when `frame` is inside it, otherwise to the clip end.
  * Stopped: only sets the cursor. Returns whether it plays afterwards. */

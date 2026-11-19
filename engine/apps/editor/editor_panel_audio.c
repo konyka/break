@@ -25,7 +25,8 @@
  * included), and a drag selects the frames it passes over; Trim/Cut run the document's undoable edits on the selection,
  * and an attachment change clears it. Fade (10 ms) and Normalize (-1 dBFS)
  * act on the selection, or on the whole clip without one. A ruler strip
- * above the waveform draws time ticks from editor_panel_audio_ticks.
+ * above the waveform draws time ticks from editor_panel_audio_ticks. The
+ * Loop checkbox makes playback start the played range again at its end.
  *
  * Bounds: 2 x 4096 i16 columns + a 128-byte info line; the preview allocates
  * its copy buffer once at create. Threading: shell thread only. */
@@ -43,6 +44,7 @@
 #include "editor_theme.h"
 #include "myui/my_layout.h"
 #include "myui/widgets/my_button.h"
+#include "myui/widgets/my_checkbox.h"
 #include "myui/widgets/my_label.h"
 
 #define EDITOR_AUDIO_INFO_BYTES 128u
@@ -60,6 +62,7 @@ struct EditorPanelAudio {
     my_widget_t *cut;         /* weak */
     my_widget_t *fade;        /* weak */
     my_widget_t *normalize;   /* weak */
+    my_widget_t *loop;        /* weak */
     u32 sel_begin, sel_end;   /* [begin, end) frames; empty when equal */
     bool dragging;            /* a primary press is down on the waveform */
     u32 drag_anchor;          /* frame the drag started at */
@@ -132,6 +135,9 @@ static void audio_panel_format_info(EditorPanelAudio *panel) {
     }
     if (panel->normalize != NULL) {
         (void)my_button_set_text(panel->normalize, break_editor_tr(BREAK_EDITOR_TR_AUDIO_NORMALIZE));
+    }
+    if (panel->loop != NULL) {
+        (void)my_checkbox_set_text(panel->loop, break_editor_tr(BREAK_EDITOR_TR_AUDIO_LOOP));
     }
 }
 
@@ -485,6 +491,26 @@ static const u32 k_audio_tick_steps_ms[] = {1u,     2u,     5u,     10u,    20u,
                                             10000u, 20000u, 30000u, 60000u, 120000u, 300000u};
 #define EDITOR_AUDIO_TICK_MIN_PX 60
 
+void editor_panel_audio_set_loop(EditorPanelAudio *panel, bool loop) {
+    if (panel == NULL) {
+        return;
+    }
+    break_editor_audio_preview_set_loop(panel->preview, loop);
+    if (panel->loop != NULL) {
+        (void)my_checkbox_set_checked(panel->loop, loop);
+    }
+}
+
+static void on_audio_loop_changed(void *ctx, const char *event, void *data) {
+    EditorPanelAudio *panel = (EditorPanelAudio *)ctx;
+    (void)event;
+    (void)data;
+    if (panel != NULL && panel->loop != NULL) {
+        break_editor_audio_preview_set_loop(panel->preview,
+                                            my_checkbox_get_checked(panel->loop));
+    }
+}
+
 bool editor_panel_audio_ticks(const EditorPanelAudio *panel, EditorAudioTicks *out) {
     if (out == NULL) {
         return false;
@@ -596,7 +622,7 @@ static bool audio_panel_add(my_widget_t *parent, my_widget_t *child, const char 
 }
 
 bool editor_panel_audio_build(EditorPanelAudio *panel, my_widget_t *parent) {
-    my_widget_t *section, *bar, *info, *play, *trim, *cut, *fade, *normalize, *ruler,
+    my_widget_t *section, *bar, *info, *play, *trim, *cut, *fade, *normalize, *loop, *ruler,
         *waveform;
     if (panel == NULL || parent == NULL) {
         return false;
@@ -671,6 +697,17 @@ bool editor_panel_audio_build(EditorPanelAudio *panel, my_widget_t *parent) {
         my_widget_unref(section);
         return false;
     }
+    loop = my_checkbox_create(NULL, break_editor_tr(BREAK_EDITOR_TR_AUDIO_LOOP));
+    if (loop == NULL) {
+        my_widget_unref(section);
+        return false;
+    }
+    (void)my_widget_set_name(loop, "editor-audio-loop");
+    (void)my_widget_on(loop, "changed", on_audio_loop_changed, panel);
+    if (!audio_panel_add(bar, loop, "w:70 h:100%")) {
+        my_widget_unref(section);
+        return false;
+    }
     info = my_label_create(NULL, "");
     if (info == NULL) {
         my_widget_unref(section);
@@ -720,6 +757,7 @@ bool editor_panel_audio_build(EditorPanelAudio *panel, my_widget_t *parent) {
     panel->cut = cut;
     panel->fade = fade;
     panel->normalize = normalize;
+    panel->loop = loop;
     panel->waveform = waveform;
     panel->ruler = ruler;
     panel->fresh = false;

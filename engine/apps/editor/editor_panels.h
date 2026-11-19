@@ -464,6 +464,10 @@ bool break_editor_shell_audio_cut(BreakEditorShell *shell);
  * the whole clip without one; undoable. False without an attachment. */
 bool break_editor_shell_audio_fade(BreakEditorShell *shell);
 bool break_editor_shell_audio_normalize(BreakEditorShell *shell);
+/* Loop toggle of the Audio page (the "Loop" checkbox): at the end of the
+ * played range playback starts it again. Returns the state afterwards. */
+bool break_editor_shell_audio_set_loop(BreakEditorShell *shell, bool loop);
+bool break_editor_shell_audio_loop(const BreakEditorShell *shell);
 /* Timeline ruler ticks of the Audio page (0 without an attachment). */
 u32 break_editor_shell_audio_tick_count(const BreakEditorShell *shell);
 bool break_editor_shell_audio_tick(const BreakEditorShell *shell, u32 index, u32 *out_frame,

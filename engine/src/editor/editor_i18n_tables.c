@@ -195,6 +195,7 @@ const char *const g_break_editor_tr_tables[BREAK_EDITOR_LANG_COUNT]
         T(LOG_AUDIO_EDIT_FAILED, "audio edit failed"),
         T(AUDIO_FADE, "Fade"),
         T(AUDIO_NORMALIZE, "Normalize"),
+        T(AUDIO_LOOP, "Loop"),
     },
     [BREAK_EDITOR_LANG_ZH_CN] = {
         T(ADD, "添加"),
@@ -380,5 +381,6 @@ const char *const g_break_editor_tr_tables[BREAK_EDITOR_LANG_COUNT]
         T(LOG_AUDIO_EDIT_FAILED, "音频编辑失败"),
         T(AUDIO_FADE, "淡入淡出"),
         T(AUDIO_NORMALIZE, "归一化"),
+        T(AUDIO_LOOP, "循环"),
     },
 };

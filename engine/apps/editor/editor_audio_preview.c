@@ -20,6 +20,7 @@ struct BreakEditorAudioPreview {
     u32 start;   /* clip frame the copy starts at */
     u32 cursor;  /* where the next play starts */
     bool to_clip_end; /* the playing range ends at the clip end */
+    bool loop;        /* re-arm the range instead of stopping at its end */
     i16 *pcm;    /* BREAK_EDITOR_AUDIO_MAX_FRAMES x 2 */
 };
 
@@ -109,10 +110,18 @@ bool break_editor_audio_preview_play_range(BreakEditorAudioPreview *preview,
     return true;
 }
 
-void break_editor_audio_preview_pump(BreakEditorAudioPreview *preview) {
-    if (preview == NULL || !preview->playing) {
-        return;
+void break_editor_audio_preview_set_loop(BreakEditorAudioPreview *preview, bool loop) {
+    if (preview != NULL) {
+        preview->loop = loop;
     }
+}
+
+bool break_editor_audio_preview_loop(const BreakEditorAudioPreview *preview) {
+    return preview != NULL && preview->loop;
+}
+
+/* Writes what the sink accepts from the cursor; stops on a sink error. */
+static void preview_pump_write(BreakEditorAudioPreview *preview) {
     const u32 total = preview->frames + preview->tail;
     if (preview->written < total) {
         u32 accepted = 0u;
@@ -125,9 +134,27 @@ void break_editor_audio_preview_pump(BreakEditorAudioPreview *preview) {
         }
         preview->written += accepted;
     }
+}
+
+void break_editor_audio_preview_pump(BreakEditorAudioPreview *preview) {
+    if (preview == NULL || !preview->playing) {
+        return;
+    }
+    const u32 total = preview->frames + preview->tail;
+    preview_pump_write(preview);
+    if (!preview->playing) {
+        return;
+    }
     if (preview->written == total) {
         u32 queued = 0u;
         if (!preview->sink->queued(preview->user, &queued) || queued <= preview->tail) {
+            if (preview->loop) {
+                /* start the same range again; the sink stays open, so its
+                 * ring is reset by the write that follows */
+                preview->written = preview->start;
+                preview_pump_write(preview);
+                return;
+            }
             break_editor_audio_preview_stop(preview);
             if (preview->to_clip_end) {
                 preview->cursor = 0u; /* played to the end: the next play starts over */

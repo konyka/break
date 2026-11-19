@@ -126,6 +126,9 @@ bool editor_panel_audio_edit_selection(EditorPanelAudio *panel, bool cut);
 /* normalize = false: fade; true: normalize. Selection or whole clip. */
 bool editor_panel_audio_effect(EditorPanelAudio *panel, bool normalize);
 
+/* The page's Loop checkbox: forwards to the preview and updates the box. */
+void editor_panel_audio_set_loop(EditorPanelAudio *panel, bool loop);
+
 /* Timeline ruler model (design 2026-11-19-editor-audio-timeline): the ticks
  * for the current clip and the ruler's width, at least 60 px apart. */
 #define EDITOR_AUDIO_TICKS_MAX 32u

@@ -4253,6 +4253,18 @@ bool break_editor_shell_audio_cut(BreakEditorShell *shell) {
     return shell != NULL && editor_panel_audio_edit_selection(shell->audio_panel, true);
 }
 
+bool break_editor_shell_audio_set_loop(BreakEditorShell *shell, bool loop) {
+    if (shell != NULL) {
+        editor_panel_audio_set_loop(shell->audio_panel, loop);
+    }
+    return break_editor_shell_audio_loop(shell);
+}
+
+bool break_editor_shell_audio_loop(const BreakEditorShell *shell) {
+    return shell != NULL && break_editor_audio_preview_loop(
+                                editor_panel_audio_preview(shell->audio_panel));
+}
+
 u32 break_editor_shell_audio_tick_count(const BreakEditorShell *shell) {
     EditorAudioTicks ticks;
     if (shell == NULL || !editor_panel_audio_ticks(shell->audio_panel, &ticks)) {

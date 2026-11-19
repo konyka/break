@@ -1,3 +1,9 @@
+## 编辑器音频循环播放（2026-11-19）
+
+- **交付**：预览新增 `break_editor_audio_preview_set_loop`/`_loop`，默认关闭。播放范围写完并排空后，若开启循环则回到范围起始帧重新写入，输出端保持打开（不关不重开），起点不变；重新写入时出错照常停止。音频页工具栏新增“循环/Loop”复选框 `editor-audio-loop`，shell 新增 `break_editor_shell_audio_set_loop`、`break_editor_shell_audio_loop`。停止、附件变化和输出端拒绝仍会结束播放；播放中关闭循环则在下一次末尾停止。设计与计划见 `docs/superpowers/specs/2026-11-19-editor-audio-loop-design.md`、`docs/superpowers/plans/2026-11-19-editor-audio-loop.md`。
+- **TDD**：新用例先在桩实现（无复选框）上失败再通过，`test_editor_shell` 215/215。5 个变异全部判红：不重新装填、回到第 0 帧、重新装填后不写入、面板不转发标志、复选框未接线。
+- **边界**：没有循环次数、独立的循环区间和接缝交叉淡化。
+
 ## 编辑器音频时间刻度（2026-11-19）
 
 - **交付**：音频页波形上方新增 16 像素刻度条 `editor-audio-ruler`。刻度模型 `editor_panel_audio_ticks` 从固定阶梯（1/2/5/10/20/50/100/200/500 毫秒，1/2/5/10/20/30/60/120/300 秒）中选第一个使间距不小于 60 像素的步长，最多 32 个刻度，首个在第 0 帧，最后一个仍在片内；标签小于 10 秒用“0.250 s”，否则用“1:30”。shell 新增 `break_editor_shell_audio_tick_count`、`break_editor_shell_audio_tick`。设计与计划见 `docs/superpowers/specs/2026-11-19-editor-audio-timeline-design.md`、`docs/superpowers/plans/2026-11-19-editor-audio-timeline.md`。
