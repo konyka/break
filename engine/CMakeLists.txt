@@ -426,7 +426,7 @@ if(BREAK_ENABLE_SNOWFLAKE)
     # configure time. The pin below is mirrored by the snowflake entry in
     # engine/external/locked_dependencies.json and the pin policy in
     # docs/design/snowflake_c11_adapter.md; all three move in one commit.
-    set(BREAK_SNOWFLAKE_PIN "a90215bf892ee564c03c5d794fa2ee02b49605f3")  # snowflake main HEAD 2026-11-19
+    set(BREAK_SNOWFLAKE_PIN "4ab761fc58a9d15970f295e231003c99a7d44df8")  # snowflake main HEAD 2026-11-19
     execute_process(
         COMMAND git -C "${SNOWFLAKE_SOURCE_DIR}" rev-parse HEAD
         RESULT_VARIABLE _break_snowflake_rev_result
@@ -560,7 +560,8 @@ if(BREAK_ENABLE_QUIC)
             "docs/design/quic_transport.md section 10.")
     endif()
     message(STATUS "Break QUIC transport: enabled (snow ngtcp2 adapter)")
-    add_library(break_net_quic STATIC src/network/break_net_quic.c)
+    add_library(break_net_quic STATIC src/network/break_net_quic.c
+        src/network/break_replay_window.c)
     set_property(TARGET break_net_quic PROPERTY C_STANDARD 11)
     target_compile_definitions(break_net_quic PRIVATE _POSIX_C_SOURCE=199309L)
     target_include_directories(break_net_quic PUBLIC

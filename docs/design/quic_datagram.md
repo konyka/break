@@ -1,6 +1,6 @@
 # QUIC Datagram — 实时流量的不可靠通道 + Replay Window 接线
 
-Status: **设计评审稿，未实现**（2026-11-19）。本文是 break_net_quic 的下一个切片设计，与已交付的流式通道（`docs/design/quic_transport.md`）并存。评审通过后再进入实现。
+Status: **已交付**（2026-11-19，break_net_quic 数据报通道 + snow 上游 `f2a40587`）。本文是 break_net_quic 的实时流量切片，与流式通道（`docs/design/quic_transport.md`）并存。
 
 ## 1. 动机：为什么卸载
 
@@ -106,6 +106,7 @@ QUIC 数据报受**路径 MTU** 和 `max_udp_payload_size` 传输参数约束：
 ## 7. 与现有会话层的共存
 
 - **认证**：CHALLENGE/AUTH-v2 仍在可靠流上完成（已交付，quic_transport.md §3）。数据报通道在会话认证后才对应用开放——未认证连接的数据报被丢弃（计数）
+- **投递模型**：数据报通过**同步回调**（在 `step()` 的接收路径里直接调用应用回调），**不进入事件队列**。理由：实时数据不应排队等待；同步回调保持内存有界（无 per-conn 数据报队列）；回调必须快速返回、不能阻塞。这与可靠流的「事件队列 + 应用读取」模型不同——流式消息需要排队等待应用处理，数据报是「到达即处理」
 - **信封序号**：可靠流的严格递增序号与数据报的重放窗口序号互不干扰（两个计数器、两个语义）
 - **消息注册表**：同一个 message_id 可以在两种传输上注册，但语义必须一致（见 §8 的传输类别标记）
 - **流控**：可靠流走 ngtcp2 的流控窗口（256 KiB，上游 `696a1ec5` 修复）；数据报参与连接级拥塞控制但不占用流控窗口
@@ -145,27 +146,23 @@ typedef enum BreakNetTransportClass {
 
 ## 11. 依赖与上游工作
 
-**关键依赖：Snowflake 的 QUIC 数据报 API 尚未落地**。ngtcp2 库本身支持 RFC 9221（`ngtcp2_conn_write_datagram` / `recv_datagram` 回调），但 pinned snow 适配器（`snow_quic_ngtcp2.h`）目前只暴露流式 API。
+**上游依赖已落地**（snow `f2a40587`）：`SnowQuicNgtcp2SendDatagram` + `recv_datagram` 回调 + `SnowQuicNgtcp2SetDatagramCallback`（运行时更新回调）。ngtcp2 的 RFC 9221 实现提供协议逻辑，snow 适配器透传，break 只做应用层接线——符合「引用不造轮子」原则。
 
-需要先在上游完成：
-- `SnowQuicNgtcp2SendDatagram(adapter, data, len, now_ns)` —— 发送数据报
-- `SnowQuicNgtcp2Config.recv_datagram` 回调 —— 接收数据报
-- 拥塞控制与 0-RTT 的适配（ngtcp2 已处理，snow 只需透传）
+实现要点：
+- transport params 总是 advertise `max_datagram_frame_size=2048`（握手时交换，不能事后启用）
+- 发送是单包直写、不排队、不重传；超过 1350 字节（含 type/sequence 头）fail-closed
+- 接收经 `bnq_recv_datagram` 解析 type/sequence → replay window → 应用回调
 
-这是「引用不造轮子」原则下的正确分工：QUIC 协议逻辑由 snow/ngtcp2 提供，break 只做应用层接线。
+## 12. 测试证据
 
-## 12. 测试计划
+全部真实 UDP loopback，port-0，条件轮询零固定 sleep：
 
-实现后的证据链（全部真实 UDP loopback，port-0，条件轮询零固定 sleep）：
+1. **数据报回声**：`test_datagram_echo` —— 认证后的 client/server 互发数据报，验证 type/sequence/payload 完整到达（server_cap.count、client_cap.count 均 ≥1）
+2. **尺寸边界**：`test_datagram_size_boundary` —— 1200 字节接受，1201 字节发送侧拒绝（不进入网络）
+3. **未认证门控**：`test_datagram_unauthenticated_dropped` —— 未认证连接的数据报被丢弃（server_cap.count == 0）
+4. **C++20 同步**：`test_break_net_quic_cpp20` 的 `run_datagram_echo` —— 封装层 `SendDatagram` / `SetDatagramHandler` 全链路验证
 
-1. **数据报回声**：认证后的 client/server 互发数据报，验证 type/sequence/payload 完整到达
-2. **乱序容忍**：人为重排数据报（测试侧代理），窗口内的乱序消息被接受
-3. **重复拒绝**：同一序号的数据报到达两次，第二次被 replay window 拒绝（计数）
-4. **过老拒绝**：序号超出窗口（>64 之前）的数据报被拒绝
-5. **尺寸边界**：1350 字节接受，1351 字节发送侧拒绝（不进入网络）
-6. **未认证门控**：未认证连接的数据报被丢弃（计数）
-7. **与可靠流共存**：同一连接上可靠流的信封与数据报互不干扰
-8. **C++20 同步**：封装层提供同样的数据报 API（`SendDatagram` / `RecvDatagram` 事件）
+完整套件：`test_break_net_quic` 15/15（传输 8 + 会话 4 + 数据报 3），C++20 封装 echo+auth+datagram 全过。
 
 ## 13. NOT delivered（本切片明确不覆盖）
 
@@ -174,6 +171,7 @@ typedef enum BreakNetTransportClass {
 - 多流并行（语音与控制分流是数据报的职责，不需要多流）
 - Windows/IPv6 支持（与 break_net_quic v1 的平台边界一致）
 - WAN/弱网验证（loopback 证据不覆盖真实丢包/抖动环境）
+- 乱序/重复/过老数据报的显式测试（replay window 的单元测试在 `test_break_replay_window` 里已覆盖；集成路径的乱序注入需要测试侧代理，留作后续硬化）
 
 ## 14. 文档关系
 

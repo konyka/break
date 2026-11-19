@@ -6,6 +6,7 @@
 #include "network/break_net_quic.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* ---- minimal test harness (repo idiom) ---------------------------------- */
@@ -549,6 +550,176 @@ static bool test_auth_timeout(void) {
     return true;
 }
 
+/* ---- RFC 9221 datagram channel -------------------------------------------- */
+
+typedef struct {
+    u8 last_type;
+    u64 last_sequence;
+    u32 last_len;
+    u8 last_payload[1200];
+    u32 count;
+    u64 dropped;
+} DatagramCapture;
+
+static bool capture_datagram(BreakNetQuicConn *conn, u8 type, u64 sequence,
+                             const u8 *payload, u32 payload_len, void *user) {
+    DatagramCapture *cap = (DatagramCapture *)user;
+    if (getenv("BNQ_DEBUG") != NULL) {
+        fprintf(stderr, "DBG capture_datagram called, user=%p count=%u\n",
+                user, cap->count);
+    }
+    (void)conn;
+    cap->last_type = type;
+    cap->last_sequence = sequence;
+    cap->last_len = payload_len;
+    if (payload_len > 0u && payload_len <= sizeof(cap->last_payload)) {
+        memcpy(cap->last_payload, payload, payload_len);
+    }
+    cap->count++;
+    return true;
+}
+
+static bool test_datagram_echo(void) {
+    Pair p = make_auth_pair(0u); /* datagrams require authentication */
+    ASSERT_TRUE(p.server != NULL && p.client != NULL);
+    ASSERT_TRUE(pump_until(&p, cond_handshake, 5000u));
+
+    /* 注册数据报回调 */
+    DatagramCapture server_cap = {0}, client_cap = {0};
+    if (getenv("BNQ_DEBUG") != NULL) {
+        fprintf(stderr, "DBG test: server_cap=%p\n", (void *)&server_cap);
+    }
+    break_net_quic_server_set_datagram_handler(p.server, capture_datagram,
+                                               &server_cap);
+    break_net_quic_client_set_datagram_handler(p.client, capture_datagram,
+                                               &client_cap);
+
+    /* 完成认证（CHALLENGE/AUTH-v2 在可靠流上） */
+    bool authed = false;
+    for (u32 i = 0u; i < 2500u && !authed; i++) {
+        break_net_quic_server_step(p.server, 1u);
+        break_net_quic_client_step(p.client, 1u);
+        if (break_net_quic_client_handshake_done(p.client)) {
+            authed = break_net_quic_client_authenticate(p.client, k_test_key_id,
+                                                        k_test_psk);
+        }
+    }
+    ASSERT_TRUE(authed);
+
+    /* 等待服务器认证完成 */
+    g_want_event = BREAK_NET_QUIC_EVENT_AUTHENTICATED;
+    ASSERT_TRUE(pump_until(&p, cond_server_event_auth, 5000u));
+    BreakNetQuicConn *conn = break_net_quic_server_conn(p.server,
+                                                        p.first_event.conn_id);
+    ASSERT_TRUE(conn != NULL);
+    p.has_first_event = false;
+
+    /* 客户端发数据报给服务器 */
+    const char *voice_frame = "voice-frame-0";
+    ASSERT_TRUE(break_net_quic_client_datagram_send(p.client, 1u,
+                                                    (const u8 *)voice_frame,
+                                                    13u));
+
+    /* 驱动直到服务器收到数据报 */
+    for (u32 i = 0u; i < 2500u && server_cap.count == 0u; i++) {
+        break_net_quic_server_step(p.server, 1u);
+        break_net_quic_client_step(p.client, 1u);
+    }
+    if (getenv("BNQ_DEBUG") != NULL) {
+        fprintf(stderr, "DBG after loop: server_cap.count=%u\n", server_cap.count);
+    }
+    ASSERT_TRUE(server_cap.count >= 1u);
+    ASSERT_EQ_U(server_cap.last_type, 1u);
+    ASSERT_EQ_U(server_cap.last_sequence, 1u); /* 第一个数据报 */
+    ASSERT_EQ_U(server_cap.last_len, 13u);
+    ASSERT_TRUE(memcmp(server_cap.last_payload, voice_frame, 13u) == 0);
+
+    /* 服务器回发数据报给客户端 */
+    const char *reply = "voice-ack-0";
+    ASSERT_TRUE(break_net_quic_datagram_send(p.server, conn, 2u,
+                                             (const u8 *)reply, 11u));
+    for (u32 i = 0u; i < 2500u && client_cap.count == 0u; i++) {
+        break_net_quic_server_step(p.server, 1u);
+        break_net_quic_client_step(p.client, 1u);
+    }
+    ASSERT_TRUE(client_cap.count >= 1u);
+    ASSERT_EQ_U(client_cap.last_type, 2u);
+    ASSERT_EQ_U(client_cap.last_sequence, 1u);
+    ASSERT_EQ_U(client_cap.last_len, 11u);
+    ASSERT_TRUE(memcmp(client_cap.last_payload, reply, 11u) == 0);
+
+    free_pair(&p);
+    return true;
+}
+
+static bool test_datagram_size_boundary(void) {
+    Pair p = make_auth_pair(0u);
+    ASSERT_TRUE(p.server != NULL && p.client != NULL);
+    ASSERT_TRUE(pump_until(&p, cond_handshake, 5000u));
+
+    DatagramCapture cap = {0};
+    break_net_quic_client_set_datagram_handler(p.client, capture_datagram,
+                                               &cap);
+
+    bool authed = false;
+    for (u32 i = 0u; i < 2500u && !authed; i++) {
+        break_net_quic_server_step(p.server, 1u);
+        break_net_quic_client_step(p.client, 1u);
+        if (break_net_quic_client_handshake_done(p.client)) {
+            authed = break_net_quic_client_authenticate(p.client, k_test_key_id,
+                                                        k_test_psk);
+        }
+    }
+    ASSERT_TRUE(authed);
+
+    /* 1200 字节：接受 */
+    u8 payload[1200];
+    memset(payload, 0xA5, sizeof(payload));
+    ASSERT_TRUE(break_net_quic_client_datagram_send(p.client, 1u, payload,
+                                                    sizeof(payload)));
+
+    /* 1201 字节：拒绝（超过 MTU 边界） */
+    u8 oversize[1201];
+    memset(oversize, 0x5A, sizeof(oversize));
+    ASSERT_FALSE(break_net_quic_client_datagram_send(p.client, 1u, oversize,
+                                                     sizeof(oversize)));
+
+    free_pair(&p);
+    return true;
+}
+
+static bool test_datagram_unauthenticated_dropped(void) {
+    Pair p = make_auth_pair(0u);
+    ASSERT_TRUE(p.server != NULL && p.client != NULL);
+    ASSERT_TRUE(pump_until(&p, cond_handshake, 5000u));
+
+    DatagramCapture cap = {0};
+    break_net_quic_server_set_datagram_handler(p.server, capture_datagram,
+                                               &cap);
+
+    /* 未认证就发数据报：服务器应该丢弃（计数）。发送可能暂时被拥塞控制
+     * 拒绝（AGAIN），重试直到发出或超时。 */
+    const char *noise = "unauth-noise";
+    bool sent = false;
+    for (u32 i = 0u; i < 2500u && !sent; i++) {
+        break_net_quic_server_step(p.server, 1u);
+        break_net_quic_client_step(p.client, 1u);
+        sent = break_net_quic_client_datagram_send(p.client, 1u,
+                                                   (const u8 *)noise, 12u);
+    }
+    ASSERT_TRUE(sent);
+
+    for (u32 i = 0u; i < 2500u; i++) {
+        break_net_quic_server_step(p.server, 1u);
+        break_net_quic_client_step(p.client, 1u);
+    }
+    /* 服务器不应该收到任何数据报（未认证被丢弃） */
+    ASSERT_EQ_U(cap.count, 0u);
+
+    free_pair(&p);
+    return true;
+}
+
 /* ---- runner --------------------------------------------------------------- */
 
 typedef bool (*TestFn)(void);
@@ -571,6 +742,9 @@ int main(void) {
         {"auth_wrong_psk_fails_closed", test_auth_wrong_psk_fails_closed},
         {"auth_preauth_noise_fails_closed", test_auth_preauth_noise_fails_closed},
         {"auth_timeout", test_auth_timeout},
+        {"datagram_echo", test_datagram_echo},
+        {"datagram_size_boundary", test_datagram_size_boundary},
+        {"datagram_unauthenticated_dropped", test_datagram_unauthenticated_dropped},
     };
     size_t passed = 0;
     size_t total = sizeof(tests) / sizeof(tests[0]);

@@ -181,6 +181,114 @@ int run_auth_echo() {
     return 0;
 }
 
+int run_datagram_echo() {
+    static const u8 kPsk[32] = {0x42};
+    static const u8 kKeyId[8] = {0};
+
+    bq::Server::Config sc;
+    sc.cert_file = FIXTURE("break_test_cert.pem");
+    sc.key_file = FIXTURE("break_test_key.pem");
+    sc.alpn = "break/1";
+    auto server = bq::Server::Create(sc);
+    CHECK(server.has_value());
+    CHECK(server->SetAuth([](const u8 key_id[8], u8 out[32]) -> bool {
+        (void)key_id;
+        std::memcpy(out, kPsk, 32);
+        return true;
+    }));
+
+    /* Datagram capture (server side) */
+    struct Capture {
+        u8 type = 0;
+        u64 sequence = 0;
+        std::vector<u8> payload;
+        u32 count = 0;
+    };
+    Capture server_cap;
+    server->SetDatagramHandler([&](bq::Conn, u8 type, u64 sequence,
+                                   const u8 *payload, u32 len) -> bool {
+        server_cap.type = type;
+        server_cap.sequence = sequence;
+        server_cap.payload.assign(payload, payload + len);
+        server_cap.count++;
+        return true;
+    });
+
+    bq::Client::Config cc;
+    cc.host = "127.0.0.1";
+    cc.port = server->Port();
+    cc.server_name = "localhost";
+    cc.trust_store_file = FIXTURE("break_test_cert.pem");
+    cc.cert_file = FIXTURE("break_test_cert.pem");
+    cc.key_file = FIXTURE("break_test_key.pem");
+    cc.alpn = "break/1";
+    auto client = bq::Client::Create(cc);
+    CHECK(client.has_value());
+
+    Capture client_cap;
+    client->SetDatagramHandler([&](u8 type, u64 sequence, const u8 *payload,
+                                   u32 len) -> bool {
+        client_cap.type = type;
+        client_cap.sequence = sequence;
+        client_cap.payload.assign(payload, payload + len);
+        client_cap.count++;
+        return true;
+    });
+
+    /* handshake -> READY -> CHALLENGE -> AUTH v2 */
+    bool authed = false;
+    for (u32 i = 0; i < 5000u && !authed; ++i) {
+        server->Step(1);
+        client->Step(1);
+        if (client->HandshakeDone()) {
+            authed = client->Authenticate(kKeyId, kPsk);
+        }
+    }
+    CHECK(authed);
+
+    std::optional<bq::Event> ev;
+    for (u32 i = 0; i < 5000u; ++i) {
+        server->Step(1);
+        client->Step(1);
+        while (auto e = server->PollEvent()) {
+            if (e->type == BREAK_NET_QUIC_EVENT_AUTHENTICATED) {
+                ev = e;
+            }
+        }
+        if (ev.has_value()) break;
+    }
+    CHECK(ev.has_value());
+    auto conn = server->GetConn(ev->conn_id);
+    CHECK(conn.Valid());
+
+    /* client -> server datagram */
+    const char *voice = "voice-frame-0";
+    CHECK(client->SendDatagram(1, std::span<const u8>(
+                                      reinterpret_cast<const u8 *>(voice), 13)));
+    for (u32 i = 0; i < 5000u && server_cap.count == 0; ++i) {
+        server->Step(1);
+        client->Step(1);
+    }
+    CHECK(server_cap.count >= 1);
+    CHECK(server_cap.type == 1 && server_cap.sequence == 1);
+    CHECK(server_cap.payload.size() == 13u &&
+          std::memcmp(server_cap.payload.data(), voice, 13u) == 0);
+
+    /* server -> client datagram */
+    const char *ack = "voice-ack-0";
+    CHECK(conn.SendDatagram(2, std::span<const u8>(
+                                 reinterpret_cast<const u8 *>(ack), 11)));
+    for (u32 i = 0; i < 5000u && client_cap.count == 0; ++i) {
+        server->Step(1);
+        client->Step(1);
+    }
+    CHECK(client_cap.count >= 1);
+    CHECK(client_cap.type == 2 && client_cap.sequence == 1);
+    CHECK(client_cap.payload.size() == 11u &&
+          std::memcmp(client_cap.payload.data(), ack, 11u) == 0);
+    return 0;
+}
+
 } // namespace
 
 int main() {
@@ -190,6 +298,9 @@ int main() {
     if (run_auth_echo() != 0) {
         return 1;
     }
-    std::printf("PASS break_net_quic_cpp20 echo + auth\n");
+    if (run_datagram_echo() != 0) {
+        return 1;
+    }
+    std::printf("PASS break_net_quic_cpp20 echo + auth + datagram\n");
     return 0;
 }

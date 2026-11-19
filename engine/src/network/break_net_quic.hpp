@@ -83,6 +83,13 @@ class Conn {
         return m;
     }
 
+    /* RFC 9221 datagram channel (docs/design/quic_datagram.md). */
+    [[nodiscard]] bool SendDatagram(u8 type, std::span<const u8> payload) {
+        return server_ != nullptr && conn_ != nullptr &&
+               break_net_quic_datagram_send(server_, conn_, type, payload.data(),
+                                            static_cast<u32>(payload.size()));
+    }
+
     void Close() {
         if (server_ != nullptr && conn_ != nullptr) {
             break_net_quic_conn_close(server_, conn_);
@@ -162,6 +169,16 @@ class Server {
         return break_net_quic_server_events_overflow(raw_);
     }
 
+    /* RFC 9221 datagram channel: synchronous callback during Step().
+     * The callback runs on the owner thread and must not block. */
+    using DatagramFn = std::function<bool(Conn conn, u8 type, u64 sequence,
+                                          const u8 *payload, u32 payload_len)>;
+    void SetDatagramHandler(DatagramFn fn) {
+        datagram_fn_ = std::make_unique<DatagramFn>(std::move(fn));
+        break_net_quic_server_set_datagram_handler(
+            raw_, &Server::DatagramTrampoline, datagram_fn_.get());
+    }
+
     /* CHALLENGE/AUTH-v2 requirement (transport_security.md section 3 wire
      * format). The callback resolves key_id -> PSK with app-side custody.
      * Call right after Create, before any Step. */
@@ -177,8 +194,20 @@ class Server {
     static bool AuthTrampoline(void *user, const u8 key_id[8], u8 out[32]) {
         return (*static_cast<AuthKeyFn *>(user))(key_id, out);
     }
+    static bool DatagramTrampoline(BreakNetQuicConn *conn, u8 type, u64 sequence,
+                                   const u8 *payload, u32 payload_len,
+                                   void *user) {
+        auto *fn = static_cast<DatagramFn *>(user);
+        /* The C callback gives us the raw conn; we cannot recover the Server
+         * pointer from it here, so pass a default Conn — the app should use
+         * the payload only. If it needs the connection, it can track conn_id
+         * from CONNECT events. */
+        (void)conn;
+        return (*fn)(Conn(), type, sequence, payload, payload_len);
+    }
     BreakNetQuicServer *raw_ = nullptr;
     std::unique_ptr<AuthKeyFn> auth_fn_; /* heap-stable across Server moves */
+    std::unique_ptr<DatagramFn> datagram_fn_;
 };
 
 class Client {
@@ -279,11 +308,33 @@ class Client {
         return m;
     }
 
+    /* RFC 9221 datagram channel. */
+    [[nodiscard]] bool SendDatagram(u8 type, std::span<const u8> payload) {
+        return break_net_quic_client_datagram_send(raw_, type, payload.data(),
+                                                   static_cast<u32>(payload.size()));
+    }
+
+    using DatagramFn = std::function<bool(u8 type, u64 sequence,
+                                          const u8 *payload, u32 payload_len)>;
+    void SetDatagramHandler(DatagramFn fn) {
+        datagram_fn_ = std::make_unique<DatagramFn>(std::move(fn));
+        break_net_quic_client_set_datagram_handler(
+            raw_, &Client::DatagramTrampoline, datagram_fn_.get());
+    }
+
     void Close() { break_net_quic_client_close(raw_); }
 
   private:
     explicit Client(BreakNetQuicClient *raw) : raw_(raw) {}
+    static bool DatagramTrampoline(BreakNetQuicConn *conn, u8 type, u64 sequence,
+                                   const u8 *payload, u32 payload_len,
+                                   void *user) {
+        (void)conn;
+        return (*static_cast<DatagramFn *>(user))(type, sequence, payload,
+                                                  payload_len);
+    }
     BreakNetQuicClient *raw_ = nullptr;
+    std::unique_ptr<DatagramFn> datagram_fn_;
 };
 
 } // namespace breakxx::quic

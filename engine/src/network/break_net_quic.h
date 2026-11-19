@@ -59,6 +59,44 @@ typedef enum BreakNetQuicEventType {
     BREAK_NET_QUIC_EVENT_AUTHENTICATED /* server only: AUTH v2 verified */
 } BreakNetQuicEventType;
 
+/* ---- RFC 9221 datagram channel (docs/design/quic_datagram.md) ---------- */
+
+/* Datagrams are unreliable, unordered, and never retransmitted. They are
+ * delivered through a synchronous callback during step() — not through the
+ * event queue — because real-time payloads must not sit in a queue and the
+ * single-callback model keeps memory bounded (no per-connection datagram
+ * queue). The callback runs on the owner thread and must not block. */
+
+#define BREAK_NET_QUIC_MAX_DATAGRAM_PAYLOAD 1200u /* conservative path-MTU bound */
+
+/* Datagram receive callback. type is the application message type; sequence
+ * is the 64-bit per-direction message number (already checked against the
+ * replay window). payload is borrowed for the duration of the call; copy it
+ * if you need to keep it. Return false to close the connection fail-closed. */
+typedef bool (*BreakNetQuicDatagramFn)(BreakNetQuicConn *conn, u8 type,
+                                       u64 sequence, const u8 *payload,
+                                       u32 payload_len, void *user);
+
+/* Enable the datagram channel and register its handler. NULL disables it.
+ * Datagrams are only accepted on authenticated connections; unauthenticated
+ * arrivals are dropped and counted. */
+void break_net_quic_server_set_datagram_handler(BreakNetQuicServer *server,
+                                                BreakNetQuicDatagramFn fn,
+                                                void *user);
+void break_net_quic_client_set_datagram_handler(BreakNetQuicClient *client,
+                                                BreakNetQuicDatagramFn fn,
+                                                void *user);
+
+/* Send one datagram. type is the application message type; the sequence is
+ * assigned by the module (64-bit, monotonic per direction, from 1). Returns
+ * false when the datagram was not sent (congestion, oversize, not connected,
+ * or the peer never enabled datagrams); the payload is dropped in that case. */
+bool break_net_quic_datagram_send(BreakNetQuicServer *server,
+                                  BreakNetQuicConn *conn, u8 type,
+                                  const u8 *payload, u32 len);
+bool break_net_quic_client_datagram_send(BreakNetQuicClient *client, u8 type,
+                                         const u8 *payload, u32 len);
+
 typedef enum BreakNetQuicDisconnectReason {
     BREAK_NET_QUIC_DISCONNECT_NONE = 0,
     BREAK_NET_QUIC_DISCONNECT_PEER = 1,       /* peer closed */

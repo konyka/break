@@ -6,6 +6,7 @@
 #include "network/break_net_quic.h"
 
 #include "crypto/break_crypto.h"
+#include "network/break_replay_window.h"
 
 #include <snow/quic_ngtcp2.h>
 #include <snow/quic_udp.h>
@@ -37,6 +38,14 @@ typedef struct {
     u32 head, count;
     u64 overflow;
 } BnqEventQueue;
+
+/* Forward declaration: the client struct is defined later in this file. */
+struct BreakNetQuicClient;
+struct BreakNetQuicConn;
+
+/* The datagram receive path is defined after both endpoint structs. */
+static SnowStatus bnq_recv_datagram(struct BreakNetQuicConn *conn,
+                                    const u8 *data, size_t len);
 
 static void bnq_event_post(BnqEventQueue *q, u8 type, u8 reason, u32 conn_id) {
     if (q->count == BREAK_NET_QUIC_EVENT_CAPACITY) {
@@ -86,15 +95,8 @@ struct BreakNetQuicConn {
     bool connect_posted; /* CONNECT event issued for this slot */
     bool close_reported; /* adapter terminal, DISCONNECT not yet consumed */
     u8 close_reason;
-
-    /* The pinned adapter refuses sends on streams it has never seen
-     * (SnowQuicNgtcp2SendStreamEx returns SNOW_ERR_PROTO), so a server cannot
-     * speak first: the module client emits a frame-level READY marker
-     * (length word 0xFFFFFFFF, no payload, never reaches the app) the moment
-     * its stream opens, and the server learns the stream from that first
-     * inbound data. stream_ready gates every send. */
-    bool stream_ready;
-    bool ready_sent;
+    bool stream_ready; /* stream materialized (server: first inbound data) */
+    bool ready_sent;   /* READY marker queued (client side) */
 
     /* session layer: envelope sequences per direction + auth state */
     u32 tx_seq; /* next outbound envelope sequence (from 1, saturating) */
@@ -104,7 +106,16 @@ struct BreakNetQuicConn {
     u64 auth_deadline_ns;
     bool rx_msg_event_posted; /* MESSAGE event issued for the ready inbox */
 
+    /* RFC 9221 datagram channel (docs/design/quic_datagram.md):
+     * - 64-bit message numbers per direction, from 1, monotonic
+     * - replay window for inbound dedup/reordering (64-message window)
+     * - synchronous application callback lives on the server/client */
+    BreakReplayWindow rx_datagram_window; /* inbound dedup window */
+    u64 tx_datagram_seq;                  /* next outbound datagram number */
+    u64 datagram_dropped; /* unauthenticated or replay-window rejects */
+
     struct BreakNetQuicServer *server; /* back-pointer (server side) */
+    struct BreakNetQuicClient *client; /* back-pointer (client side) */
 };
 
 static u64 bnq_now_ns(void *unused) {
@@ -113,6 +124,13 @@ static u64 bnq_now_ns(void *unused) {
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (u64)ts.tv_sec * UINT64_C(1000000000) + (u64)ts.tv_nsec;
 }
+
+/* Forward declarations for the snow callback wrappers (defined later). */
+static SnowStatus bnq_recv_datagram_snow_server(const uint8_t *data,
+                                                size_t len, void *userdata);
+static SnowStatus bnq_recv_datagram_snow_client(const uint8_t *data,
+                                                size_t len, void *userdata);
+
 
 /* The snow adapter takes ALPN in wire format (length-prefixed, matching
  * SSL_set_alpn_protos); the module's public config carries a plain C string
@@ -429,7 +447,33 @@ struct BreakNetQuicServer {
      * do not survive a restart. */
     u8 retry_secret[32];
     u8 reset_secret[32];
+
+    /* Datagram channel: application callback (all connections share it) */
+    BreakNetQuicDatagramFn datagram_fn;
+    void *datagram_user;
 };
+
+
+/* Snow callback wrappers: the listener hands the slot, the client config
+ * hands the conn. Both unwrap to the module connection. */
+static SnowStatus bnq_recv_datagram_snow_server(const uint8_t *data,
+                                                size_t len, void *userdata) {
+    SnowQuicUdpServerConn *slot = (SnowQuicUdpServerConn *)userdata;
+    BreakNetQuicConn *conn = (BreakNetQuicConn *)slot->userdata;
+    if (conn == NULL) {
+        return SNOW_OK; /* slot not yet attached: drop */
+    }
+    return bnq_recv_datagram(conn, data, len);
+}
+
+static SnowStatus bnq_recv_datagram_snow_client(const uint8_t *data,
+                                                size_t len, void *userdata) {
+    BreakNetQuicConn *conn = (BreakNetQuicConn *)userdata;
+    if (conn == NULL) {
+        return SNOW_OK;
+    }
+    return bnq_recv_datagram(conn, data, len);
+}
 
 /* ------------------------------------------------------------------ client */
 
@@ -441,7 +485,56 @@ struct BreakNetQuicClient {
     u64 created_ns; /* handshake deadline origin */
     u64 handshake_timeout_ns; /* module-enforced (the snow client config has
                                * no such field); default 5 s like the server */
+
+    /* Datagram channel: application callback */
+    BreakNetQuicDatagramFn datagram_fn;
+    void *datagram_user;
 };
+
+/* RFC 9221 datagram receive: extract [type][u64be sequence][payload],
+ * check the replay window, and deliver synchronously to the application.
+ * Unauthenticated connections drop datagrams (counted). */
+static SnowStatus bnq_recv_datagram(BreakNetQuicConn *conn, const u8 *data,
+                                    size_t len) {
+    /* The application callback lives on the endpoint (server or client). */
+    BreakNetQuicDatagramFn fn = NULL;
+    void *user = NULL;
+    if (conn->server != NULL) {
+        fn = conn->server->datagram_fn;
+        user = conn->server->datagram_user;
+    } else if (conn->client != NULL) {
+        fn = conn->client->datagram_fn;
+        user = conn->client->datagram_user;
+    }
+    if (fn == NULL) {
+        return SNOW_OK; /* channel disabled: drop silently */
+    }
+    if (conn->server != NULL && conn->server->auth_fn != NULL &&
+        conn->auth_state != 2u) {
+        conn->datagram_dropped++; /* unauthenticated datagram: drop */
+        return SNOW_OK;
+    }
+    if (len < 9u) {
+        return SNOW_ERR_PROTO; /* too short for type + sequence */
+    }
+    u8 type = data[0];
+    u64 sequence = 0u;
+    for (u32 i = 0u; i < 8u; i++) {
+        sequence = (sequence << 8) | (u64)data[1u + i];
+    }
+    /* Replay window: duplicates and too-old datagrams are dropped, in-window
+     * reordering is accepted. AEAD integrity was already proven by QUIC. */
+    BreakReplayResult rr =
+        break_replay_window_check_and_mark(&conn->rx_datagram_window, sequence);
+    if (rr != BREAK_REPLAY_OK) {
+        conn->datagram_dropped++;
+        return SNOW_OK;
+    }
+    if (!fn(conn, type, sequence, data + 9u, (u32)(len - 9u), user)) {
+        return SNOW_ERR_PROTO; /* application rejected the datagram */
+    }
+    return SNOW_OK;
+}
 
 /* ------------------------------------------------------------------- peers */
 
@@ -512,6 +605,11 @@ static void bnq_fill_client_adapter_config(SnowQuicNgtcp2Config *cfg,
     cfg->remote_address = conn->remote;
     cfg->handshake_completed = bnq_handshake_done;
     cfg->recv_stream_data = bnq_recv_stream;
+    /* RFC 9221: enable datagram delivery through the module's callback.
+     * The application handler is registered separately via
+     * break_net_quic_client_set_datagram_handler; this snow-level callback
+     * always runs the module's parser (type/sequence/replay-window) first. */
+    cfg->recv_datagram = bnq_recv_datagram_snow_client;
     cfg->event_userdata = conn;
 }
 
@@ -685,6 +783,8 @@ static void bnq_server_accepted(SnowQuicUdpServerConn *slot, void *userdata) {
     conn->stream_id = 0;
     conn->conn_id = s->next_conn_id++;
     conn->tx_seq = 1u; /* outbound envelope sequence starts at 1 (TCP parity) */
+    conn->tx_datagram_seq = 1u; /* datagram sequence starts at 1 too */
+    break_replay_window_init(&conn->rx_datagram_window);
     conn->server = s;
     conn->rx = (u8 *)malloc(BNQ_FRAME_CAP);
     conn->tx = (u8 *)malloc(BNQ_FRAME_CAP);
@@ -1022,6 +1122,98 @@ u64 break_net_quic_server_events_overflow(const BreakNetQuicServer *s) {
     return s != NULL ? s->events.overflow : 0u;
 }
 
+/* ---- RFC 9221 datagram channel ------------------------------------------ */
+
+void break_net_quic_server_set_datagram_handler(BreakNetQuicServer *s,
+                                                BreakNetQuicDatagramFn fn,
+                                                void *user) {
+    if (s == NULL) {
+        return;
+    }
+    s->datagram_fn = fn;
+    s->datagram_user = user;
+    /* Enable snow's datagram support in the listener template (affects all
+     * future accepted connections). The template is copied by value at accept
+     * time, so also update every already-accepted connection's adapter. */
+    s->listener.adapter.recv_datagram = fn != NULL ? bnq_recv_datagram_snow_server
+                                                   : NULL;
+    for (u32 i = 0u; i < s->max_connections; i++) {
+        BreakNetQuicConn *conn = s->conns[i];
+        if (conn != NULL && conn->adapter != NULL) {
+            SnowQuicNgtcp2SetDatagramCallback(conn->adapter,
+                fn != NULL ? bnq_recv_datagram_snow_server : NULL);
+        }
+    }
+}
+
+void break_net_quic_client_set_datagram_handler(BreakNetQuicClient *c,
+                                                BreakNetQuicDatagramFn fn,
+                                                void *user) {
+    if (c == NULL) {
+        return;
+    }
+    c->datagram_fn = fn;
+    c->datagram_user = user;
+    /* Enable snow's datagram support on the single connection. The adapter
+     * was created without a callback; if the app enables it now, we cannot
+     * retroactively advertise the transport parameter, so datagrams from the
+     * peer will only arrive if the peer also enabled them. This is a v1
+     * limitation: enable the handler before the first step for full
+     * negotiation. */
+    /* Note: the snow adapter's transport parameter is set at init time; a
+     * late handler registration does not renegotiate. Document this. */
+}
+
+/* Send one datagram: [type][u64be sequence][payload]. The sequence is
+ * module-assigned (per direction, from 1, monotonic). The snow send is
+ * single-packet and never queued: congestion or oversize fails the call and
+ * the payload is dropped. */
+static bool bnq_datagram_send(BreakNetQuicConn *conn, u8 type, const u8 *payload,
+                              u32 len) {
+    if (conn == NULL || conn->adapter == NULL || !conn->handshake_done ||
+        conn->close_reported) {
+            return false;
+    }
+    if (len > BREAK_NET_QUIC_MAX_DATAGRAM_PAYLOAD) {
+        return false; /* oversize: fail closed */
+    }
+    /* Unauthenticated connections may not send datagrams (the peer would
+     * drop them anyway; fail fast). */
+    if (conn->server != NULL && conn->server->auth_fn != NULL &&
+        conn->auth_state != 2u) {
+        return false;
+    }
+    u64 seq = conn->tx_datagram_seq++;
+    u8 packet[9u + BREAK_NET_QUIC_MAX_DATAGRAM_PAYLOAD];
+    packet[0] = type;
+    for (u32 i = 0u; i < 8u; i++) {
+        packet[1u + i] = (u8)(seq >> (56u - 8u * i));
+    }
+    if (len > 0u) {
+        memcpy(packet + 9u, payload, len);
+    }
+    SnowStatus st = SnowQuicNgtcp2SendDatagram(conn->adapter, packet,
+                                               9u + (size_t)len,
+                                               bnq_now_ns(NULL));
+    return st == SNOW_OK;
+}
+
+bool break_net_quic_datagram_send(BreakNetQuicServer *s, BreakNetQuicConn *conn,
+                                  u8 type, const u8 *payload, u32 len) {
+    if (s == NULL || conn == NULL || conn->server != s) {
+        return false;
+    }
+    return bnq_datagram_send(conn, type, payload, len);
+}
+
+bool break_net_quic_client_datagram_send(BreakNetQuicClient *c, u8 type,
+                                         const u8 *payload, u32 len) {
+    if (c == NULL || c->conn == NULL) {
+        return false;
+    }
+    return bnq_datagram_send(c->conn, type, payload, len);
+}
+
 void break_net_quic_server_destroy(BreakNetQuicServer **server) {
     if (server == NULL || *server == NULL) {
         return;
@@ -1092,10 +1284,13 @@ BreakNetQuicClient *break_net_quic_client_create(
     }
     c->fd = -1;
     c->conn = conn;
+    conn->client = c; /* back-pointer for the datagram callback */
     conn->fd = -1;
     conn->stream_id = -1;
     conn->conn_id = 1u;
     conn->tx_seq = 1u;
+    conn->tx_datagram_seq = 1u;
+    break_replay_window_init(&conn->rx_datagram_window);
     conn->rx = (u8 *)malloc(BNQ_FRAME_CAP);
     conn->tx = (u8 *)malloc(BNQ_FRAME_CAP);
     if (conn->rx == NULL || conn->tx == NULL) {

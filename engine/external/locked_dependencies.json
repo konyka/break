@@ -126,7 +126,7 @@
     },
     {
       "name": "snowflake",
-      "version": "a90215bf892ee564c03c5d794fa2ee02b49605f3 (snowflake main HEAD 2026-11-19)",
+      "version": "4ab761fc58a9d15970f295e231003c99a7d44df8 (snowflake main HEAD 2026-11-19)",
       "purpose": "runtime-optional (BREAK_ENABLE_SNOWFLAKE)",
       "source": "path reference via SNOWFLAKE_SOURCE_DIR (external git checkout, not vendored; consumed via add_subdirectory, required target snow::net)",
       "sha256": "n/a-commit-pinned-via-configure-check",
