@@ -1,3 +1,9 @@
+## 闭环时钟漂移补偿器（2026-11-19）
+
+- **交付**：新增 `AudioDriftCompensator`（`src/audio/audio_drift_compensator.h/.c`，编入音频库），把 `audio_drift_estimator` 与 `audio_drift_resampler` 连成闭环。每次 update 把残余延迟斜率换算成新比率 `r·(1 - gain·slope)`，限幅到 `max_correction_ppm` 以内，然后清空估计窗口。设计与计划见 `docs/superpowers/specs/2026-11-19-audio-drift-compensator-design.md`、`docs/superpowers/plans/2026-11-19-audio-drift-compensator.md`。
+- **TDD**：新 ctest `test_audio_drift_compensator`（6 项），桩实现 0/6，正式实现 6/6。6 个定向变异全部判红：比率符号取反、去掉上限、去掉下限、修正后不清窗口、reset 不恢复比率、忽略 `min_samples`。其中去掉上限的变异起初存活，补了负漂移限幅的用例后判红。
+- **边界**：尚未接入 core_app 语音泵；只支持单声道与线性插值；没有真实设备验证。
+
 ## 对端语音混音器（2026-11-19）
 
 - **交付**：`break_online` 新增 `BreakVoiceMixer`（`src/network/break_voice_mixer.h/.c`）。每个来源会话一个 `BreakVoiceReceiver`（第一帧时创建），最多 16 个来源；满时淘汰空闲至少 `idle_timeout_ms` 且空闲最久的来源，否则 OVERLOAD 并计 `sources_refused`。pop 按插入顺序以 i32 累加各来源到期的帧并饱和到 i16（计 `clipped_samples`），只有全部参与帧都是补偿帧时输出标记 concealed。只允许创建线程调用。设计与计划见 `docs/superpowers/specs/2026-11-19-break-voice-mixer-design.md`、`docs/superpowers/plans/2026-11-19-break-voice-mixer.md`。

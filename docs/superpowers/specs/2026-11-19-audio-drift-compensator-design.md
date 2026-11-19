@@ -70,3 +70,8 @@ Errors: INVALID for NULL or out-of-range config, OVERLOAD when memory runs out;
 
 Wiring into the core_app voice pump (next slice), multichannel, sinc mode for
 the compensator, real device validation.
+
+## Result
+
+- RED (stub: 0/6) then GREEN (6/6) in `test_audio_drift_compensator`.
+- Mutations: ratio sign flipped; upper clamp removed (survived at first, killed after a negative-drift clamp case was added); lower clamp removed; window not cleared after a correction; reset keeping the ratio; `min_samples` ignored. Each fails a test.

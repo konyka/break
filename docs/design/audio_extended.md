@@ -384,3 +384,25 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 - 2026-11-19 补充：core_app 在运行中通过音频命令队列调用 `audio_system_switch_device`（scenario `audio-device [NAME]`），调用发生在音频 owner 线程上，满足“只能在 owner 线程调用”的约束。
 - 2026-11-19 补充：core_app 语音层在运行中通过单槽请求（`core_app_voice_request_capture_device`）调用 `audio_capture_reopen`，调用发生在语音泵线程上，满足“只能在泵线程调用”的约束；未知名称返回 REJECTED，旧设备保持运行。
 - 2026-11-19 补充：`BreakVoiceMixer`（`break_online`）把多个来源的 `BreakVoiceReceiver` 输出逐样本相加并饱和到 i16，`clipped_samples` 计饱和样本数；只有所有参与的帧都是补偿帧时输出才标记为 concealed。
+
+## 时钟漂移闭环补偿
+
+`engine/src/audio/audio_drift_compensator.{h,c}` 把估计器和重采样器连成闭环。单声道，只允许 owner 线程调用，只有 create 分配内存（分配发生在估计器内部）。设计见 `docs/superpowers/specs/2026-11-19-audio-drift-compensator-design.md`。
+
+- **模型**：采集中的回声满足 `capture[n] ≈ ref[n - d(n)]`，`d(n) = d0 + s·n`。参考信号按比率 `r` 重采样后，测得的残余斜率为 `s' = 1 - (1 - s)/r`，当 `r = 1 - s` 时为 0。
+- **配置**：`AudioDriftCompensatorConfig` 包含估计器配置；`min_samples` 取 2..window_size；`max_correction_ppm` 取 1..`max_abs_drift_ppm`；`gain` 取 (0, 1]；`robust` 为真时改用 repeated-median 估计斜率。非法值或 NaN 返回 `AUDIO_INVALID`，内存不足返回 `AUDIO_OVERLOAD`，只有成功才写 `*out`。
+- **observe 与 update**：`observe` 把测量转交估计器。`update` 在样本数达到 `min_samples` 且估计成功时，令 `r = r·(1 - gain·slope)`，把 `|r - 1|` 限制在 `max_correction_ppm` 以内（计 `clamped`），然后清空估计窗口。清空的原因是比率一变，旧测量的残余斜率就失效了。成功时计 `corrections` 并返回 true；否则返回 false，状态不变。
+- **reset**：比率回到 1，估计窗口与重采样位置清空，`corrections` 和 `clamped` 两个计数保留。
+- **查询与处理**：`correction_ppm` 返回 `(1 - r)·1e6`，即当前比率所补偿的漂移量。`output_capacity` 与 `process_i16` 以线性插值重采样参考信号，约定与 `audio_drift_resampler_process_i16` 相同。
+- **测试**：`test_audio_drift_compensator`（6 项）覆盖以下场景：
+  - 配置边界与 NULL；
+  - +100 ppm 在半增益下 24 轮收敛到 1e-7 以内；
+  - -150 ppm 用 robust 一步到位；
+  - ±500 ppm 被限幅到 ±300 ppm；
+  - 样本不足或低置信度时不更新，修正后窗口清空；
+  - 比率为 1 时输出恒等，修正后 10 万输入帧的输出数与 `n/r` 相差不超过 2；
+  - reset 后比率回到 1、计数保留。
+
+  定向变异共 6 个，全部判红：比率符号取反、去掉上限、去掉下限、修正后不清窗口、reset 不恢复比率、忽略 `min_samples`。
+- **未做**：接入 core_app 语音泵、多声道、sinc 模式、真实设备验证。
+- 2026-11-19 补充：闭环漂移补偿组件已交付，接入 core_app 语音泵是下一步。
