@@ -6,6 +6,7 @@
   - 资源浏览器点击 `*.wav` 时用 `break_editor_doc_audio_attach_wav` 打开并切到音频页；已有附件时只记日志不替换，因为历史里的音频快照命令属于旧缓冲。中英文字符串都已添加，设置文件的 `bottom_tab` 上限改为 5。
   - 设计与计划见 `docs/superpowers/specs/2026-11-19-editor-audio-waveform-design.md`、`docs/superpowers/plans/2026-11-19-editor-audio-waveform.md`。
 - **TDD**：核心 3 项新测试先在桩实现上失败再通过，`test_editor_audio` 共 11/11。shell 新用例先失败（页面无内容）再通过，`test_editor_shell` 共 207/207；标签数量与设置上限的旧断言同步改为 5。5 个变异全部判红：列区间差一、只看第一声道、撤销/重做不增修订号、分离不增修订号、tick 忽略修订号。
+- **评审**：独立评审 Ready。按意见补了帧数多于像素的用例，验证每像素一列和宽度变化后重算；打开 WAV 不再把干净的场景标为未保存；浅色主题下中线改用浅色；音频标签页索引改为命名常量。`test_editor_shell` 共 208/208，新增 3 个变异均判红。
 - **边界**：只读视图。没有播放、波形上的选区、在界面里编辑、缩放滚动，也不能替换已打开的附件。
 
 ## PCM16 WAV 导出（2026-11-19）

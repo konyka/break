@@ -10,7 +10,9 @@
  *
  * Opening: editor_shell_open_audio (asset browser .wav rows) attaches a file
  * only while the document has no attachment; replacing one would leave audio
- * snapshot commands in the history that belong to the old buffer.
+ * snapshot commands in the history that belong to the old buffer. Opening
+ * keeps the document's dirty flag as it was (a clean scene stays clean); the
+ * page itself refreshes on the next tick.
  *
  * Bounds: 2 x 4096 i16 columns + a 96-byte info line, no allocation after
  * create. Threading: shell thread only. */
@@ -28,6 +30,8 @@
 #include "myui/widgets/my_label.h"
 
 #define EDITOR_AUDIO_INFO_BYTES 96u
+#define EDITOR_BOTTOM_TAB_AUDIO 4u /* index in editor_panels.c k_tab_pages[0] */
+#define EDITOR_AUDIO_LIGHT_MID_LINE 0xD3D5DBFFu
 
 struct EditorPanelAudio {
     BreakEditorShell *shell;  /* borrowed */
@@ -99,7 +103,9 @@ static void audio_waveform_on_paint(my_widget_t *widget, my_vgcanvas_t *vg) {
     }
     mid = h * 0.5f;
     scale = (h * 0.5f) / 32768.0f;
-    my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(BREAK_EDITOR_THEME_BORDER));
+    my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(break_editor_theme_is_light()
+                                                             ? EDITOR_AUDIO_LIGHT_MID_LINE
+                                                             : BREAK_EDITOR_THEME_BORDER));
     (void)my_vgcanvas_fill_rect(vg, &(my_rectf_t){0.0f, mid, w, 1.0f});
     my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(BREAK_EDITOR_THEME_ACCENT));
     for (c = 0u; c < panel->columns; c++) {
@@ -235,12 +241,17 @@ bool editor_shell_open_audio(BreakEditorShell *shell, const char *path,
         editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_AUDIO_ALREADY_FMT), name);
         return false;
     }
+    /* opening is a view, not an edit: the scene's unsaved state is kept */
+    const bool was_dirty = break_editor_doc_is_dirty(doc);
     if (!break_editor_doc_audio_attach_wav(doc, path)) {
         editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_AUDIO_FAILED_FMT), name);
         return false;
     }
+    if (!was_dirty) {
+        break_editor_doc_clear_dirty(doc);
+    }
     editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_AUDIO_OPENED_FMT), name);
-    (void)break_editor_shell_select_tab(shell, 0u, 4u);
+    (void)break_editor_shell_select_tab(shell, 0u, EDITOR_BOTTOM_TAB_AUDIO);
     editor_shell_refresh_all(shell);
     return true;
 }

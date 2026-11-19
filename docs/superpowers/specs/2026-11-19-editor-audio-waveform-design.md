@@ -72,3 +72,4 @@ replacing an open attachment, VFS paths.
 
 - Core: three new `test_editor_audio` cases failed against stubs, then 11/11. Shell: the new `test_editor_shell` case failed against an empty page, then 207/207; the tab-count and settings-bound assertions moved from 4 to 5.
 - Mutations, each failing a test: column range off by one, only the first channel scanned, no revision bump on undo/redo, no revision bump on detach, the tick ignoring the revision.
+- Review (Ready). Fixed: a case with more frames than pixels pins one column per pixel and a refresh on width change (mutations ignoring the width or the width check both fail); opening keeps a clean document clean (mutation fails); the centre line uses a light colour in the light theme; the Audio tab index is a named constant; the accessors moved below the flow declarations in `editor_panels.h`. `test_editor_shell` 208/208.

@@ -424,6 +424,9 @@ bool break_editor_shell_image_preview_stats(const BreakEditorShell *shell,
 usize break_editor_shell_lua_history_count(const BreakEditorShell *shell);
 
 /* Flow Graph node rows, refreshed from the shared command-stack revision. */
+usize break_editor_shell_flow_row_count(const BreakEditorShell *shell);
+const char *break_editor_shell_flow_row_text(const BreakEditorShell *shell,
+                                             usize i);
 /* Audio page: the info line ("No audio..." or "<rate> Hz, <ch> ch, <s> s"),
  * the number of waveform columns of the last refresh (0 without audio) and
  * column i's min/max sample (false out of range). */
@@ -431,9 +434,6 @@ const char *break_editor_shell_audio_info_text(const BreakEditorShell *shell);
 u32 break_editor_shell_audio_column_count(const BreakEditorShell *shell);
 bool break_editor_shell_audio_column(const BreakEditorShell *shell, u32 i,
                                      i16 *out_min, i16 *out_max);
-usize break_editor_shell_flow_row_count(const BreakEditorShell *shell);
-const char *break_editor_shell_flow_row_text(const BreakEditorShell *shell,
-                                             usize i);
 
 /* Profiler panel snapshot rows (top-N by duration, N <= 16, refreshed from
  * profiler_last_frame at <= 4 Hz from break_editor_shell_tick; the panel is

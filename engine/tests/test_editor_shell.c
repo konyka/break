@@ -3017,6 +3017,61 @@ TEST(audio_page_opens_wav_assets_and_follows_edits)
     TEST_RMDIR(dir);
 }
 
+/* One waveform column per pixel when the clip has more frames than the
+ * widget is wide, re-computed when the width changes; opening a WAV keeps a
+ * clean document clean. */
+TEST(audio_page_uses_one_column_per_pixel_and_follows_the_width)
+{
+    static i16 pcm[2000u];
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    my_widget_t *wave, *list, *row;
+    my_rect_t rect;
+    char dir[512], wav[700];
+    i16 lo, hi;
+    u32 i;
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    for (i = 0u; i < 2000u; i++) {
+        pcm[i] = (i16)((i % 2u) ? 1000 : -1000);
+    }
+    test_tmp(dir, sizeof(dir), "editor_shell_audio_width");
+    TEST_MKDIR(dir);
+    snprintf(wav, sizeof(wav), "%s/long.wav", dir);
+    ASSERT_TRUE(write_wav_file(wav, 8000u, 1u, pcm, 2000u));
+    ASSERT_TRUE(break_editor_shell_set_assets_root(shell, dir));
+    shell_paint(shell);
+    ASSERT_FALSE(break_editor_doc_is_dirty(doc));
+    list = find(shell, "editor-assets-list");
+    row = list_row_by_text(list, "long.wav");
+    ASSERT_NOT_NULL(row);
+    emit_click(row);
+    ASSERT_TRUE(break_editor_doc_audio_attached(doc));
+    ASSERT_FALSE(break_editor_doc_is_dirty(doc));
+    shell_paint(shell);
+    break_editor_shell_tick(shell);
+    wave = find(shell, "editor-audio-waveform");
+    ASSERT_NOT_NULL(wave);
+    ASSERT_TRUE(wave->rect.w > 0 && wave->rect.w < 2000);
+    ASSERT_EQ(break_editor_shell_audio_column_count(shell), (u32)wave->rect.w);
+    /* every column spans at least two frames: both signs show */
+    ASSERT_TRUE(break_editor_shell_audio_column(shell, 0u, &lo, &hi));
+    ASSERT_EQ(lo, -1000);
+    ASSERT_EQ(hi, 1000);
+    rect = wave->rect;
+    rect.w = 37;
+    ASSERT_EQ(my_widget_set_rect(wave, &rect), MY_RET_OK);
+    break_editor_shell_tick(shell);
+    ASSERT_EQ(break_editor_shell_audio_column_count(shell), 37u);
+    /* the light theme paints too (centre line follows the theme) */
+    ASSERT_TRUE(break_editor_shell_set_theme(shell, true));
+    shell_paint(shell);
+    ASSERT_TRUE(break_editor_shell_set_theme(shell, false));
+    break_editor_shell_destroy(shell);
+    remove(wav);
+    TEST_RMDIR(dir);
+}
+
 /* The editor applies its JetBrains New UI dark sheet at shell create
  * (editor_theme.c): widgets resolve the palette through the real cascade. */
 TEST(shell_applies_the_new_ui_dark_theme)
@@ -12193,6 +12248,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(assets_panel_navigation_updates_rows);
     RUN_TEST(assets_panel_image_row_opens_the_preview);
     RUN_TEST(audio_page_opens_wav_assets_and_follows_edits);
+    RUN_TEST(audio_page_uses_one_column_per_pixel_and_follows_the_width);
     RUN_TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo);
     RUN_TEST(assets_panel_load_guards_unsaved_changes);
     RUN_TEST(palette_save_as_writes_the_typed_path);
