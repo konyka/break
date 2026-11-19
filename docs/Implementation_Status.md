@@ -1,3 +1,9 @@
+## 编辑器音频幅度自适应（2026-11-19）
+
+- **交付**：音频页新增 `break_editor_shell_audio_fit_gain`（面板侧 `editor_panel_audio_fit_gain`）与视图行的 `editor-audio-gain-fit`（"="）按钮：扫描当前视图已算好的各泳道列，取绝对值最大的采样作为峰值，选出使 `倍数 * 峰值 <= 32768` 成立的最大允许 2 的幂并经既有 setter 应用，返回生效倍数；没有附件返回 0，数字静音的视图保持原倍数不变。因为峰值取自视图的列，缩放或滚动后再点一次就按当前可见部分重新适配。设计与计划见 `docs/superpowers/specs/2026-11-19-editor-audio-autogain-design.md`、`docs/superpowers/plans/2026-11-19-editor-audio-autogain.md`。
+- **TDD**：新用例先链接失败再通过，`test_editor_shell` 223/223。4 个变异全部判红：去掉静音守卫、循环条件里丢掉 `倍数 * 峰值 <= 32768`、峰值扫描只保留第一列、去掉附件追平。后两个在用例第一版下存活，因此补了两段：响亮突发位于片尾（首列不是峰值），以及在页面尚未 tick 的编辑之后立即适配（证明追平的作用）。
+- **边界**：倍数仍限于 2 的幂，没有 dB 读数、没有分泳道各自适配，也不会在每次视图变化时自动重新适配。
+
 ## 编辑器音频分声道波形（2026-11-19）
 
 - **交付**：核心新增 `break_editor_doc_audio_waveform_channel(doc, channel, begin, end, columns, out_min, out_max)`，只统计单个声道；内部统一为 `audio_waveform_impl`，`channel == UINT32_MAX` 表示合并所有声道，原 `break_editor_doc_audio_waveform_range` 以该哨兵转发，行为不变；声道号超出片内声道数时返回 false 且不写出参。音频页按声道分泳道绘制（文档只接受单/双声道，故上限 2），立体声时上下各占一半高度、各有自己的中线，单声道仍是整幅一条。shell 新增 `break_editor_shell_audio_lane_count`、`break_editor_shell_audio_lane_column`，原 `break_editor_shell_audio_column` 读泳道 0。选区色带、播放光标和刻度条仍跨整幅高度。设计与计划见 `docs/superpowers/specs/2026-11-19-editor-audio-channels-design.md`、`docs/superpowers/plans/2026-11-19-editor-audio-channels.md`。

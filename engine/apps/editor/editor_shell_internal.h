@@ -141,6 +141,7 @@ u32 editor_panel_audio_set_gain(EditorPanelAudio *panel, u32 gain);
 u32 editor_panel_audio_gain(const EditorPanelAudio *panel);
 /* One lane per channel, stacked; lane 0 is what editor_panel_audio_column
  * reads. 0 lanes without an attachment. */
+u32 editor_panel_audio_fit_gain(EditorPanelAudio *panel);
 u32 editor_panel_audio_lane_count(const EditorPanelAudio *panel);
 bool editor_panel_audio_lane_column(const EditorPanelAudio *panel, u32 lane, u32 i,
                                     i16 *out_min, i16 *out_max);

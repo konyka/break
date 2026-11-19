@@ -488,6 +488,10 @@ u32 break_editor_shell_audio_gain(const BreakEditorShell *shell);
  * 2026-11-19-editor-audio-channels): one lane per channel, stacked, each
  * with its own columns. lane_count is 0 without an attachment;
  * audio_column reads lane 0. */
+/* Picks the largest allowed gain whose scaled peak still fits the lane,
+ * using the columns of the current view; 0 without an attachment, and a
+ * silent view leaves the gain alone. Returns the gain in effect. */
+u32 break_editor_shell_audio_fit_gain(BreakEditorShell *shell);
 u32 break_editor_shell_audio_lane_count(const BreakEditorShell *shell);
 bool break_editor_shell_audio_lane_column(const BreakEditorShell *shell, u32 lane, u32 i,
                                           i16 *out_min, i16 *out_max);

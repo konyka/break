@@ -3839,6 +3839,85 @@ static u32 waveform_painted_rows(BreakEditorShell *shell, my_widget_t *w) {
     return rows;
 }
 
+/* Fit the amplitude zoom to the peak (design 2026-11-19-editor-audio-autogain). */
+TEST(audio_page_fits_the_gain_to_the_visible_peak)
+{
+    static i16 pcm[4000u];
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    my_widget_t *fit;
+    u32 i, expected;
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    ASSERT_TRUE(break_editor_shell_select_tab(shell, 0u, 4u));
+    shell_paint(shell);
+    fit = find(shell, "editor-audio-gain-fit");
+    ASSERT_NOT_NULL(fit);
+    /* no attachment: nothing to fit */
+    ASSERT_EQ(break_editor_shell_audio_fit_gain(shell), 0u);
+    /* a quiet clip: the largest power of two whose peak still fits */
+    for (i = 0u; i < 4000u; i++) pcm[i] = (i16)(i % 2u == 0u ? 1000 : -1000);
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 4000u));
+    break_editor_shell_tick(shell);
+    expected = 1u;
+    while (expected * 2u <= 32u && (expected * 2u) * 1000u <= 32768u) expected *= 2u;
+    ASSERT_EQ(break_editor_shell_audio_fit_gain(shell), expected);
+    ASSERT_EQ(break_editor_shell_audio_gain(shell), expected);
+    /* a clip at full scale fits to 1x */
+    ASSERT_TRUE(break_editor_doc_reset(doc));
+    for (i = 0u; i < 4000u; i++) pcm[i] = (i16)(i % 2u == 0u ? 32000 : -32000);
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 4000u));
+    break_editor_shell_tick(shell);
+    ASSERT_EQ(break_editor_shell_audio_gain(shell), 1u); /* reset with the view */
+    ASSERT_EQ(break_editor_shell_audio_fit_gain(shell), 1u);
+    /* a silent clip leaves the gain alone */
+    ASSERT_TRUE(break_editor_doc_reset(doc));
+    memset(pcm, 0, sizeof(pcm));
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 4000u));
+    break_editor_shell_tick(shell);
+    ASSERT_EQ(break_editor_shell_audio_set_gain(shell, 4u), 4u);
+    ASSERT_EQ(break_editor_shell_audio_fit_gain(shell), 4u);
+    /* zoomed into a quiet part of a loud clip, the fit uses that part */
+    ASSERT_TRUE(break_editor_doc_reset(doc));
+    for (i = 0u; i < 4000u; i++) {
+        const i16 amp = (i16)(i < 2000u ? 32000 : 500);
+        pcm[i] = (i16)(i % 2u == 0u ? amp : -amp);
+    }
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 4000u));
+    break_editor_shell_tick(shell);
+    ASSERT_EQ(break_editor_shell_audio_fit_gain(shell), 1u); /* the loud half */
+    for (i = 0u; i < 2u; i++) (void)break_editor_shell_audio_zoom(shell, true);
+    for (i = 0u; i < 8u; i++) (void)break_editor_shell_audio_scroll(shell, true);
+    break_editor_shell_tick(shell);
+    expected = 1u;
+    while (expected * 2u <= 32u && (expected * 2u) * 500u <= 32768u) expected *= 2u;
+    ASSERT_EQ(break_editor_shell_audio_fit_gain(shell), expected);
+    ASSERT_TRUE(expected > 1u);
+    /* the button runs it */
+    ASSERT_EQ(break_editor_shell_audio_set_gain(shell, 1u), 1u);
+    emit_click(fit);
+    ASSERT_EQ(break_editor_shell_audio_gain(shell), expected);
+    /* the peak is the loudest column, not the first one: a quiet clip with
+     * one loud burst at its end fits to the burst */
+    ASSERT_TRUE(break_editor_doc_reset(doc));
+    for (i = 0u; i < 4000u; i++) {
+        const i16 amp = (i16)(i >= 3900u ? 8000 : 200);
+        pcm[i] = (i16)(i % 2u == 0u ? amp : -amp);
+    }
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 4000u));
+    break_editor_shell_tick(shell);
+    expected = 1u;
+    while (expected * 2u <= 32u && (expected * 2u) * 8000u <= 32768u) expected *= 2u;
+    ASSERT_EQ(break_editor_shell_audio_fit_gain(shell), expected);
+    /* a fit after an edit the page has not ticked yet still uses the new
+     * clip: trimming to the quiet part raises the gain */
+    ASSERT_TRUE(break_editor_doc_audio_trim(doc, 0u, 1000u));
+    expected = 1u;
+    while (expected * 2u <= 32u && (expected * 2u) * 200u <= 32768u) expected *= 2u;
+    ASSERT_EQ(break_editor_shell_audio_fit_gain(shell), expected);
+    break_editor_shell_destroy(shell);
+}
+
 /* Per-channel lanes (design 2026-11-19-editor-audio-channels). */
 TEST(audio_page_draws_one_lane_per_channel)
 {
@@ -13950,6 +14029,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(audio_page_scroll_bar_mirrors_and_moves_the_view);
     RUN_TEST(audio_page_amplitude_zoom_scales_the_drawn_columns);
     RUN_TEST(audio_page_draws_one_lane_per_channel);
+    RUN_TEST(audio_page_fits_the_gain_to_the_visible_peak);
     RUN_TEST(audio_page_zooms_and_scrolls_the_view);
     RUN_TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo);
     RUN_TEST(assets_panel_load_guards_unsaved_changes);

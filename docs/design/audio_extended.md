@@ -427,4 +427,5 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 - 2026-11-19 补充：音频页键盘缩放与滚动。波形可获得键盘焦点，持有焦点时 `+`/`=` 放大、`-` 缩小、左右方向键平移、`Home` 回到整段，命中的键被消费因而不触发 shell 全局快捷键。设计见 `docs/superpowers/specs/2026-11-19-editor-audio-keys-design.md`。上一条中的“键盘缩放快捷键”由此交付。仍缺：滚动条控件、逐帧平滑滚动、可重绑定按键和真实听测。
 - 2026-11-19 补充：音频页视图滚动条。波形下方 12 像素的水平 `my_scroll_bar` 映射视图位置与占比，可拖动跳转，覆盖整段时为满宽滑块。设计见 `docs/superpowers/specs/2026-11-19-editor-audio-scrollbar-design.md`。上一条中的“滚动条控件”由此交付。仍缺：逐帧平滑滚动、可重绑定按键、覆盖整段时自动隐藏和真实听测。
 - 2026-11-19 补充：音频页幅度缩放。视图行的 "v"/"^" 按钮以 2 倍步进调整只作用于显示的幅度倍数（1~32），安静素材也能看清包络；不改文档、不进撤销，附件变化时重置。设计见 `docs/superpowers/specs/2026-11-19-editor-audio-gain-design.md`。仍缺：dB/对数刻度、按峰值自动增益和真实听测。
-- 2026-11-19 补充：分声道波形。核心新增 `break_editor_doc_audio_waveform_channel`（只统计单声道），音频页按声道分泳道绘制，立体声上下各半、各有中线，单声道不变。设计见 `docs/superpowers/specs/2026-11-19-editor-audio-channels-design.md`。上一条中的“分声道显示”由此交付。仍缺：分声道静音/独奏、各泳道独立幅度缩放、dB/对数刻度、按峰值自动增益和真实听测。
+- 2026-11-19 补充：分声道波形。核心新增 `break_editor_doc_audio_waveform_channel`（只统计单声道），音频页按声道分泳道绘制，立体声上下各半、各有中线，单声道不变。设计见 `docs/superpowers/specs/2026-11-19-editor-audio-channels-design.md`。上一条中的“分声道显示”由此交付。仍缺：分声道静音/独奏、各泳道独立幅度缩放、dB/对数刻度和真实听测。
+- 2026-11-19 补充：幅度自适应。视图行的 "=" 按钮按当前视图的峰值选出合适的显示倍数（`break_editor_shell_audio_fit_gain`），静音视图不变。设计见 `docs/superpowers/specs/2026-11-19-editor-audio-autogain-design.md`。上一条中的“按峰值自动增益”由此交付。

@@ -813,6 +813,41 @@ u32 editor_panel_audio_gain(const EditorPanelAudio *panel) {
     return panel != NULL ? panel->gain : 0u;
 }
 
+u32 editor_panel_audio_fit_gain(EditorPanelAudio *panel) {
+    u32 peak = 0u, fitted = 1u;
+    if (panel == NULL) {
+        return 0u;
+    }
+    audio_panel_catch_up(panel); /* the columns must match the view */
+    if (panel->lanes == 0u || panel->columns == 0u) {
+        return 0u;
+    }
+    /* the loudest sample of the visible columns, across every lane */
+    for (u32 lane = 0u; lane < panel->lanes; ++lane) {
+        for (u32 c = 0u; c < panel->columns; ++c) {
+            const i32 lo = panel->min[lane][c] < 0 ? -(i32)panel->min[lane][c]
+                                                   : (i32)panel->min[lane][c];
+            const i32 hi = panel->max[lane][c] < 0 ? -(i32)panel->max[lane][c]
+                                                   : (i32)panel->max[lane][c];
+            const u32 mag = (u32)(lo > hi ? lo : hi);
+            if (mag > peak) peak = mag;
+        }
+    }
+    if (peak == 0u) {
+        return panel->gain; /* a silent view: nothing to fit */
+    }
+    while (fitted * 2u <= EDITOR_AUDIO_GAIN_MAX && (fitted * 2u) * peak <= 32768u) {
+        fitted *= 2u;
+    }
+    return editor_panel_audio_set_gain(panel, fitted);
+}
+
+static void on_audio_gain_fit_click(void *ctx, const char *event, void *data) {
+    (void)event;
+    (void)data;
+    (void)editor_panel_audio_fit_gain((EditorPanelAudio *)ctx);
+}
+
 static void on_audio_gain_up_click(void *ctx, const char *event, void *data) {
     EditorPanelAudio *panel = (EditorPanelAudio *)ctx;
     (void)event;
@@ -1119,7 +1154,7 @@ static bool audio_panel_add(my_widget_t *parent, my_widget_t *child, const char 
 bool editor_panel_audio_build(EditorPanelAudio *panel, my_widget_t *parent) {
     my_widget_t *section, *bar, *info, *play, *trim, *cut, *fade, *normalize, *loop, *ruler,
         *waveform, *view_bar, *zoom_in, *zoom_out, *scroll_left, *scroll_right,
-        *follow_box, *scrollbar, *gain_up, *gain_down;
+        *follow_box, *scrollbar, *gain_up, *gain_down, *gain_fit;
     if (panel == NULL || parent == NULL) {
         return false;
     }
@@ -1267,8 +1302,18 @@ bool editor_panel_audio_build(EditorPanelAudio *panel, my_widget_t *parent) {
     (void)my_widget_set_name(gain_up, "editor-audio-gain-up");
     (void)my_widget_on(gain_down, "click", on_audio_gain_down_click, panel);
     (void)my_widget_on(gain_up, "click", on_audio_gain_up_click, panel);
+    gain_fit = my_button_create(NULL, "=");
+    if (gain_fit == NULL) {
+        my_widget_unref(gain_down);
+        my_widget_unref(gain_up);
+        my_widget_unref(section);
+        return false;
+    }
+    (void)my_widget_set_name(gain_fit, "editor-audio-gain-fit");
+    (void)my_widget_on(gain_fit, "click", on_audio_gain_fit_click, panel);
     if (!audio_panel_add(view_bar, gain_down, "w:26 h:100%") ||
-        !audio_panel_add(view_bar, gain_up, "w:26 h:100%")) {
+        !audio_panel_add(view_bar, gain_up, "w:26 h:100%") ||
+        !audio_panel_add(view_bar, gain_fit, "w:26 h:100%")) {
         my_widget_unref(section);
         return false;
     }
