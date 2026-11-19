@@ -147,6 +147,10 @@ u32 editor_panel_audio_set_solo(EditorPanelAudio *panel, u32 channel);
 u32 editor_panel_audio_solo(const EditorPanelAudio *panel);
 /* Preview mute; BREAK_EDITOR_AUDIO_MUTE_NONE mutes nothing. */
 /* Peak/RMS of the view in dBFS, floored at -120. */
+/* The dB grid of the last paint, in lane 0's coordinates. */
+u32 editor_panel_audio_grid_count(const EditorPanelAudio *panel);
+bool editor_panel_audio_grid(const EditorPanelAudio *panel, u32 i, double *out_db,
+                             i32 *out_y);
 double editor_panel_audio_peak_db(const EditorPanelAudio *panel);
 double editor_panel_audio_rms_db(const EditorPanelAudio *panel);
 u32 editor_panel_audio_set_mute(EditorPanelAudio *panel, u32 channel);

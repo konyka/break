@@ -504,6 +504,12 @@ u32 break_editor_shell_audio_solo(const BreakEditorShell *shell);
  * 2026-11-19-editor-audio-db); digital silence and no attachment both
  * report this floor. */
 #define BREAK_EDITOR_AUDIO_DB_FLOOR (-120.0)
+/* The dB grid the last paint used (design 2026-11-20-editor-audio-db-grid):
+ * one entry per drawn line, both halves, in lane 0's coordinates. 0 without
+ * an attachment. */
+u32 break_editor_shell_audio_grid_count(const BreakEditorShell *shell);
+bool break_editor_shell_audio_grid(const BreakEditorShell *shell, u32 i, double *out_db,
+                                   i32 *out_y);
 double break_editor_shell_audio_peak_db(const BreakEditorShell *shell);
 double break_editor_shell_audio_rms_db(const BreakEditorShell *shell);
 u32 break_editor_shell_audio_set_mute(BreakEditorShell *shell, u32 channel);

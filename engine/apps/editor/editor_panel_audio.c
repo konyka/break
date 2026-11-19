@@ -54,6 +54,12 @@
 
 #define EDITOR_AUDIO_INFO_BYTES 128u
 #define EDITOR_AUDIO_LANES_MAX 2u /* the document accepts mono and stereo */
+/* dB grid: these levels, mirrored around each lane's centre. A line closer
+ * than EDITOR_AUDIO_GRID_MIN_PX to the centre, or outside the lane, is
+ * dropped so a short lane or a high gain is not a solid block. */
+#define EDITOR_AUDIO_GRID_MIN_PX 4.0f
+#define EDITOR_AUDIO_GRID_MAX 8u /* 4 levels x 2 halves */
+static const double k_audio_grid_db[] = {-6.0, -12.0, -18.0, -24.0};
 #define EDITOR_BOTTOM_TAB_AUDIO 4u /* index in editor_panels.c k_tab_pages[0] */
 #define EDITOR_AUDIO_LIGHT_MID_LINE 0xD3D5DBFFu
 #define EDITOR_AUDIO_LIGHT_CURSOR 0x1F1F1FFFu
@@ -96,6 +102,9 @@ struct EditorPanelAudio {
     u32 seen_view_begin, seen_view_end;
     char info_text[EDITOR_AUDIO_INFO_BYTES];
     u32 lanes; /* one per channel, 0 without an attachment */
+    u32 grid_count;                      /* lines the last paint drew (lane 0) */
+    double grid_db[EDITOR_AUDIO_GRID_MAX];
+    i32 grid_y[EDITOR_AUDIO_GRID_MAX];
     i16 min[EDITOR_AUDIO_LANES_MAX][BREAK_EDITOR_AUDIO_WAVEFORM_MAX_COLUMNS];
     i16 max[EDITOR_AUDIO_LANES_MAX][BREAK_EDITOR_AUDIO_WAVEFORM_MAX_COLUMNS];
 };
@@ -294,6 +303,7 @@ static void audio_panel_catch_up(EditorPanelAudio *panel) {
 
 static void audio_waveform_on_paint(my_widget_t *widget, my_vgcanvas_t *vg) {
     const EditorPanelAudio *panel;
+    EditorPanelAudio *grid;
     float w, h, mid, scale, lane_h;
     u32 c;
     if (widget == NULL || vg == NULL) {
@@ -309,6 +319,10 @@ static void audio_waveform_on_paint(my_widget_t *widget, my_vgcanvas_t *vg) {
     }
     /* one lane per channel, stacked: a stereo clip gets half the height each */
     lane_h = h / (float)(panel->lanes != 0u ? panel->lanes : 1u);
+    /* the grid model is paint output, so the const view writes it through
+     * one alias rather than taking the panel non-const everywhere */
+    grid = (EditorPanelAudio *)panel;
+    grid->grid_count = 0u;
     mid = lane_h * 0.5f;
     /* the amplitude zoom is display only: a quiet clip fills more height */
     scale = (lane_h * 0.5f) * (float)(panel->gain != 0u ? panel->gain : 1u) / 32768.0f;
@@ -335,6 +349,24 @@ static void audio_waveform_on_paint(my_widget_t *widget, my_vgcanvas_t *vg) {
                                                                  ? EDITOR_AUDIO_LIGHT_MID_LINE
                                                                  : BREAK_EDITOR_THEME_BORDER));
         (void)my_vgcanvas_fill_rect(vg, &(my_rectf_t){0.0f, lane_mid, w, 1.0f});
+        /* the dB grid, under the trace: the same scale the columns use, so
+         * it follows the amplitude zoom */
+        for (usize g = 0u; g < sizeof(k_audio_grid_db) / sizeof(k_audio_grid_db[0]); ++g) {
+            const float offset =
+                (float)pow(10.0, k_audio_grid_db[g] / 20.0) * 32768.0f * scale;
+            if (offset < EDITOR_AUDIO_GRID_MIN_PX || offset > lane_h * 0.5f) {
+                continue; /* too close to the centre, or off the lane */
+            }
+            (void)my_vgcanvas_fill_rect(vg, &(my_rectf_t){0.0f, lane_mid - offset, w, 1.0f});
+            (void)my_vgcanvas_fill_rect(vg, &(my_rectf_t){0.0f, lane_mid + offset, w, 1.0f});
+            if (lane == 0u && grid->grid_count + 2u <= EDITOR_AUDIO_GRID_MAX) {
+                /* the model the test reads: lane 0's two halves */
+                grid->grid_db[grid->grid_count] = k_audio_grid_db[g];
+                grid->grid_y[grid->grid_count++] = (i32)(lane_mid - offset);
+                grid->grid_db[grid->grid_count] = k_audio_grid_db[g];
+                grid->grid_y[grid->grid_count++] = (i32)(lane_mid + offset);
+            }
+        }
         my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(BREAK_EDITOR_THEME_ACCENT));
         for (c = 0u; c < panel->columns; c++) {
             const float x0 = (float)c * w / (float)panel->columns;
@@ -572,6 +604,20 @@ static void audio_ruler_on_paint(my_widget_t *widget, my_vgcanvas_t *vg) {
         (void)my_vgcanvas_fill_rect(vg, &(my_rectf_t){(float)ticks.x[i], h * 0.5f, 1.0f, h * 0.5f});
         (void)my_vgcanvas_draw_text(vg, ticks.label[i], (float)ticks.x[i] + 3.0f, h * 0.5f);
     }
+}
+
+u32 editor_panel_audio_grid_count(const EditorPanelAudio *panel) {
+    return panel != NULL ? panel->grid_count : 0u;
+}
+
+bool editor_panel_audio_grid(const EditorPanelAudio *panel, u32 i, double *out_db,
+                             i32 *out_y) {
+    if (panel == NULL || i >= panel->grid_count) {
+        return false;
+    }
+    if (out_db != NULL) *out_db = panel->grid_db[i];
+    if (out_y != NULL) *out_y = panel->grid_y[i];
+    return true;
 }
 
 static const my_widget_vtable_t k_audio_ruler_vtable = {audio_ruler_on_paint, NULL, NULL, NULL};

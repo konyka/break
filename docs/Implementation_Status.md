@@ -1,3 +1,10 @@
+## 编辑器音频波形 dB 网格（2026-11-20）
+
+- **交付**：每条泳道在中线上下对称画出 -6/-12/-18/-24 dBFS 的水平网格线，用主题边框色、画在波形之前；距中线不足 4 像素或超出泳道的那一级跳过，避免短泳道或高倍数下糊成一片。网格用的是波形同一套采样到像素的映射，因此随幅度缩放一起移动（4 倍时 -18 dB 落在 1 倍时 -6 dB 的位置）。shell 新增 `break_editor_shell_audio_grid_count`、`break_editor_shell_audio_grid`（上一次绘制实际画出的线，泳道 0 坐标、含上下两半），便于不读像素就验证映射。设计与计划见 `docs/superpowers/specs/2026-11-20-editor-audio-db-grid-design.md`、`docs/superpowers/plans/2026-11-20-editor-audio-db-grid.md`。
+- **TDD**：新用例先链接失败再通过，逐条核对 `10^(db/20) * 半泳道高`，`test_editor_shell` 227/227。5 个变异全部判红：dB 指数除以 10 而非 20、去掉“距中线 4 像素”条件、去掉“不超出泳道”条件、绘制开始不清空模型、下半边的 y 用上半边的偏移。
+- **两点说明**：默认 54 像素泳道在 1 倍下只有 -6 与 -12 能通过 4 像素间距，所以增益断言核对的是 -6→-18（一次 4 倍），而不是设计里假设的 -12→-24；网格模型属于绘制输出，而 `audio_waveform_on_paint` 持有的是 const 面板指针，因此通过一个具名别名写入并在注释中说明原因，而不是把整条绘制路径改成非 const。
+- **边界**：线上没有标注文字、级别不可由用户选择、纵轴本身仍是线性（只有网格按 dB），刻度条上没有网格。
+
 ## 编辑器音频电平读数（dBFS）（2026-11-19）
 
 - **交付**：核心新增 `break_editor_doc_audio_peak_range(doc, begin, end, out_peak, out_rms)`，一次遍历给出 `[begin, end)` 内所有声道的最大绝对值与 RMS（均为 [0, 32768] 的 double，全程 double 累加）；非法范围返回 false 且不写出参。音频页视图行新增 `editor-audio-levels` 标签，显示当前视图的 "peak x.x dB  rms y.y dB"，随信息行一起刷新，因此缩放到安静段落后读数随之变化；数字静音与无附件都按 -120 dB 地板处理。shell 新增 `break_editor_shell_audio_peak_db`、`break_editor_shell_audio_rms_db`。设计与计划见 `docs/superpowers/specs/2026-11-19-editor-audio-db-design.md`、`docs/superpowers/plans/2026-11-19-editor-audio-db.md`。

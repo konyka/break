@@ -3839,6 +3839,117 @@ static u32 waveform_painted_rows(BreakEditorShell *shell, my_widget_t *w) {
     return rows;
 }
 
+/* dB grid (design 2026-11-20-editor-audio-db-grid). */
+TEST(audio_page_draws_a_db_grid_on_each_lane)
+{
+    static i16 pcm[2000u];
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    my_widget_t *wave;
+    u32 i, n;
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    for (i = 0u; i < 2000u; i++) pcm[i] = (i16)(i % 2u == 0u ? 8000 : -8000);
+    ASSERT_TRUE(break_editor_shell_select_tab(shell, 0u, 4u));
+    shell_paint(shell);
+    wave = find(shell, "editor-audio-waveform");
+    ASSERT_NOT_NULL(wave);
+    /* no attachment: no grid */
+    ASSERT_EQ(break_editor_shell_audio_grid_count(shell), 0u);
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 2000u));
+    break_editor_shell_tick(shell);
+    shell_paint(shell);
+    n = break_editor_shell_audio_grid_count(shell);
+    ASSERT_TRUE(n > 0u);
+    /* every entry matches the linear mapping the trace uses, stays inside
+     * the lane and keeps away from the centre line */
+    {
+        const double half = (double)wave->rect.h / 2.0;
+        u32 above = 0u, below = 0u;
+        for (i = 0u; i < n; i++) {
+            double db = 0.0;
+            i32 y = -1;
+            double expect;
+            ASSERT_TRUE(break_editor_shell_audio_grid(shell, i, &db, &y));
+            ASSERT_TRUE(db <= -6.0 && db >= -24.0);
+            expect = pow(10.0, db / 20.0) * half;
+            ASSERT_TRUE((double)y >= half - expect - 1.5 &&
+                        (double)y <= half + expect + 1.5);
+            ASSERT_TRUE(y >= 0 && y < wave->rect.h);
+            ASSERT_TRUE((double)y <= half - 4.0 || (double)y >= half + 4.0);
+            if ((double)y < half) {
+                above++;
+            } else {
+                below++;
+            }
+        }
+        ASSERT_EQ(above, below); /* mirrored */
+    }
+    ASSERT_FALSE(break_editor_shell_audio_grid(shell, n, NULL, NULL));
+    /* the gain moves the grid: at 4x, -18 dB sits where -6 dB was at 1x.
+     * On a 54 px lane only -6 and -12 clear the 4 px gap at 1x, which is
+     * why the pair checked here is -6/-18 rather than -12/-24. */
+    {
+        i32 y6_at_1x = 0;
+        bool found = false;
+        for (i = 0u; i < n; i++) {
+            double db = 0.0;
+            i32 y = 0;
+            ASSERT_TRUE(break_editor_shell_audio_grid(shell, i, &db, &y));
+            if (db < -5.0 && db > -7.0 && y < wave->rect.h / 2) {
+                y6_at_1x = y;
+                found = true;
+            }
+        }
+        ASSERT_TRUE(found);
+        ASSERT_EQ(break_editor_shell_audio_set_gain(shell, 4u), 4u);
+        shell_paint(shell);
+        n = break_editor_shell_audio_grid_count(shell);
+        ASSERT_TRUE(n > 0u);
+        found = false;
+        for (i = 0u; i < n; i++) {
+            double db = 0.0;
+            i32 y = 0;
+            ASSERT_TRUE(break_editor_shell_audio_grid(shell, i, &db, &y));
+            if (db < -17.0 && db > -19.0 && y < wave->rect.h / 2) {
+                ASSERT_TRUE(y >= y6_at_1x - 1 && y <= y6_at_1x + 1);
+                found = true;
+            }
+            /* -6 dB no longer fits: 4x puts it past the lane's edge */
+            ASSERT_TRUE(db <= -12.0);
+        }
+        ASSERT_TRUE(found);
+        ASSERT_EQ(break_editor_shell_audio_set_gain(shell, 1u), 1u);
+        shell_paint(shell);
+        n = break_editor_shell_audio_grid_count(shell);
+    }
+    /* a stereo clip reports the same lane-0 entries */
+    {
+        static i16 st[400u];
+        u32 mono_n;
+        shell_paint(shell);
+        mono_n = break_editor_shell_audio_grid_count(shell);
+        for (i = 0u; i < 200u; i++) {
+            st[i * 2u] = 8000;
+            st[i * 2u + 1u] = -8000;
+        }
+        ASSERT_TRUE(break_editor_doc_reset(doc));
+        ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 2u, st, 200u));
+        break_editor_shell_tick(shell);
+        shell_paint(shell);
+        ASSERT_EQ(break_editor_shell_audio_lane_count(shell), 2u);
+        /* half the lane height, so fewer levels clear the 4 px gap */
+        ASSERT_TRUE(break_editor_shell_audio_grid_count(shell) <= mono_n);
+        for (i = 0u; i < break_editor_shell_audio_grid_count(shell); i++) {
+            double db = 0.0;
+            i32 y = 0;
+            ASSERT_TRUE(break_editor_shell_audio_grid(shell, i, &db, &y));
+            ASSERT_TRUE(y >= 0 && y < wave->rect.h / 2);
+        }
+    }
+    break_editor_shell_destroy(shell);
+}
+
 /* dB readout (design 2026-11-19-editor-audio-db). */
 TEST(audio_page_reports_peak_and_rms_in_db)
 {
@@ -14296,6 +14407,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(audio_page_solos_one_channel_in_the_preview);
     RUN_TEST(audio_page_mutes_one_channel_in_the_preview);
     RUN_TEST(audio_page_reports_peak_and_rms_in_db);
+    RUN_TEST(audio_page_draws_a_db_grid_on_each_lane);
     RUN_TEST(audio_page_zooms_and_scrolls_the_view);
     RUN_TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo);
     RUN_TEST(assets_panel_load_guards_unsaved_changes);
