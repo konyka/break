@@ -1239,6 +1239,39 @@ bool editor_panel_audio_limit_true_peak(EditorPanelAudio *panel, double ceiling)
     return true;
 }
 
+/* the dynamic limiter's defaults: a delivery ceiling with a short
+ * look-ahead and a musical release */
+#define EDITOR_AUDIO_DYN_CEILING (-1.0)
+#define EDITOR_AUDIO_DYN_LOOKAHEAD_MS 5.0
+#define EDITOR_AUDIO_DYN_RELEASE_MS 50.0
+
+bool editor_panel_audio_limit_dynamic(EditorPanelAudio *panel, double ceiling,
+                                      double lookahead_ms, double release_ms) {
+    if (panel == NULL) {
+        return false;
+    }
+    audio_panel_catch_up(panel);
+    if (!break_editor_doc_audio_limit_dynamic(break_editor_shell_doc(panel->shell), ceiling,
+                                              lookahead_ms, release_ms)) {
+        editor_shell_log(panel->shell, "%s",
+                         break_editor_tr(BREAK_EDITOR_TR_LOG_AUDIO_EDIT_FAILED));
+        return false;
+    }
+    break_editor_audio_preview_stop(panel->preview);
+    audio_panel_refresh(panel);
+    editor_shell_refresh_all(panel->shell);
+    return true;
+}
+
+static void on_audio_dyn_limit_click(void *ctx, const char *event, void *data) {
+    (void)event;
+    (void)data;
+    (void)editor_panel_audio_limit_dynamic((EditorPanelAudio *)ctx,
+                                           EDITOR_AUDIO_DYN_CEILING,
+                                           EDITOR_AUDIO_DYN_LOOKAHEAD_MS,
+                                           EDITOR_AUDIO_DYN_RELEASE_MS);
+}
+
 static void on_audio_tp_limit_click(void *ctx, const char *event, void *data) {
     (void)event;
     (void)data;
@@ -1649,7 +1682,7 @@ static bool audio_panel_add(my_widget_t *parent, my_widget_t *child, const char 
 bool editor_panel_audio_build(EditorPanelAudio *panel, my_widget_t *parent) {
     my_widget_t *section, *bar, *info, *play, *trim, *cut, *fade, *normalize, *loop, *ruler,
         *waveform, *view_bar, *zoom_in, *zoom_out, *scroll_left, *scroll_right,
-        *follow_box, *scrollbar, *gain_up, *gain_down, *gain_fit, *solo_btn, *mute_btn, *levels_label, *lufs_btn, *tp_btn;
+        *follow_box, *scrollbar, *gain_up, *gain_down, *gain_fit, *solo_btn, *mute_btn, *levels_label, *lufs_btn, *tp_btn, *dyn_btn;
     if (panel == NULL || parent == NULL) {
         return false;
     }
@@ -1864,7 +1897,22 @@ bool editor_panel_audio_build(EditorPanelAudio *panel, my_widget_t *parent) {
     }
     (void)my_widget_set_name(tp_btn, "editor-audio-tp-limit");
     (void)my_widget_on(tp_btn, "click", on_audio_tp_limit_click, panel);
-    if (!audio_panel_add(view_bar, tp_btn, "w:76 h:100%") ||
+    dyn_btn = my_button_create(NULL, break_editor_tr(BREAK_EDITOR_TR_AUDIO_DYN_LIMIT));
+    if (dyn_btn == NULL) {
+        my_widget_unref(gain_down);
+        my_widget_unref(gain_up);
+        my_widget_unref(gain_fit);
+        my_widget_unref(solo_btn);
+        my_widget_unref(mute_btn);
+        my_widget_unref(lufs_btn);
+        my_widget_unref(tp_btn);
+        my_widget_unref(section);
+        return false;
+    }
+    (void)my_widget_set_name(dyn_btn, "editor-audio-dyn-limit");
+    (void)my_widget_on(dyn_btn, "click", on_audio_dyn_limit_click, panel);
+    if (!audio_panel_add(view_bar, dyn_btn, "w:70 h:100%") ||
+        !audio_panel_add(view_bar, tp_btn, "w:76 h:100%") ||
         !audio_panel_add(view_bar, lufs_btn, "w:80 h:100%") ||
         !audio_panel_add(view_bar, gain_down, "w:26 h:100%") ||
         !audio_panel_add(view_bar, gain_up, "w:26 h:100%") ||

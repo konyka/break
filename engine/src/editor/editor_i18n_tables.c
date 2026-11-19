@@ -207,6 +207,7 @@ const char *const g_break_editor_tr_tables[BREAK_EDITOR_LANG_COUNT]
         T(AUDIO_MUTE_FMT, "Mute %u"),
         T(AUDIO_LUFS_NORM, "-23 LUFS"),
         T(AUDIO_TP_LIMIT, "-1 dBTP"),
+        T(AUDIO_DYN_LIMIT, "Limit"),
     },
     [BREAK_EDITOR_LANG_ZH_CN] = {
         T(ADD, "添加"),
@@ -404,5 +405,6 @@ const char *const g_break_editor_tr_tables[BREAK_EDITOR_LANG_COUNT]
         T(AUDIO_MUTE_FMT, "静音 %u"),
         T(AUDIO_LUFS_NORM, "归一 -23"),
         T(AUDIO_TP_LIMIT, "限峰 -1"),
+        T(AUDIO_DYN_LIMIT, "动态限峰"),
     },
 };

@@ -177,6 +177,9 @@ double editor_panel_audio_lra(const EditorPanelAudio *panel);
 bool editor_panel_audio_normalize_lufs(EditorPanelAudio *panel, double target);
 /* Brings the document's audio under `ceiling` dBTP and refreshes. */
 bool editor_panel_audio_limit_true_peak(EditorPanelAudio *panel, double ceiling);
+/* Look-ahead dynamic limiter on the document, then refresh. */
+bool editor_panel_audio_limit_dynamic(EditorPanelAudio *panel, double ceiling,
+                                      double lookahead_ms, double release_ms);
 double editor_panel_audio_rms_db(const EditorPanelAudio *panel);
 u32 editor_panel_audio_set_mute(EditorPanelAudio *panel, u32 channel);
 u32 editor_panel_audio_mute(const EditorPanelAudio *panel);

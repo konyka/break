@@ -4309,6 +4309,12 @@ double break_editor_shell_audio_short_term_lufs(const BreakEditorShell *shell) {
                          : BREAK_EDITOR_AUDIO_LUFS_FLOOR;
 }
 
+bool break_editor_shell_audio_limit_dynamic(BreakEditorShell *shell, double ceiling,
+                                            double lookahead_ms, double release_ms) {
+    return shell != NULL && editor_panel_audio_limit_dynamic(shell->audio_panel, ceiling,
+                                                             lookahead_ms, release_ms);
+}
+
 bool break_editor_shell_audio_limit_true_peak(BreakEditorShell *shell, double ceiling) {
     return shell != NULL && editor_panel_audio_limit_true_peak(shell->audio_panel, ceiling);
 }

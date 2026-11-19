@@ -112,6 +112,15 @@ bool break_editor_doc_audio_normalize_loudness(BreakEditorDoc *doc, double targe
  * returns true, adding no history entry. False and no change without an
  * attachment, for a ceiling out of range, or for a silent clip. */
 bool break_editor_doc_audio_limit_true_peak(BreakEditorDoc *doc, double ceiling_dbtp);
+/* Look-ahead dynamic limiter: a per-sample gain that keeps the sample peak
+ * at or below `ceiling_dbfs` ([-20, 0]), pulled down `lookahead_ms`
+ * ((0, 50]) before a transient and recovering with a one-pole
+ * `release_ms` ((0, 1000]). One undoable snapshot; a clip already under the
+ * ceiling is left alone and still returns true. The ceiling is a per-sample
+ * dBFS bound, not dBTP. False and no change without an attachment, for an
+ * argument out of range, or for a silent clip. */
+bool break_editor_doc_audio_limit_dynamic(BreakEditorDoc *doc, double ceiling_dbfs,
+                                          double lookahead_ms, double release_ms);
 /* fade / normalize applied to frames [begin, end) only (the normalize peak
  * is measured there); frames outside are unchanged. One undoable snapshot
  * command each; false and no change for an empty or out-of-clip range or the

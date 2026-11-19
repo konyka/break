@@ -550,6 +550,13 @@ bool break_editor_shell_audio_normalize_lufs(BreakEditorShell *shell, double tar
  * 2026-11-20-editor-audio-tp-limit) by scaling the clip, as one undoable
  * edit; false logs the edit-failed line and changes nothing. */
 bool break_editor_shell_audio_limit_true_peak(BreakEditorShell *shell, double ceiling);
+/* Look-ahead dynamic limiter (design
+ * 2026-11-20-editor-audio-lookahead-limiter): keeps the sample peak under
+ * `ceiling` dBFS with a per-sample gain, so a single transient does not
+ * cost the whole clip its level. One undoable edit; false logs the
+ * edit-failed line. */
+bool break_editor_shell_audio_limit_dynamic(BreakEditorShell *shell, double ceiling,
+                                            double lookahead_ms, double release_ms);
 double break_editor_shell_audio_rms_db(const BreakEditorShell *shell);
 u32 break_editor_shell_audio_set_mute(BreakEditorShell *shell, u32 channel);
 u32 break_editor_shell_audio_mute(const BreakEditorShell *shell);

@@ -684,6 +684,77 @@ bool break_editor_doc_audio_loudness_curve(const BreakEditorDoc *doc, u32 begin,
     return true;
 }
 
+bool break_editor_doc_audio_limit_dynamic(BreakEditorDoc *doc, double ceiling_dbfs,
+                                          double lookahead_ms, double release_ms) {
+    if (!doc || !doc->audio || !isfinite(ceiling_dbfs) || ceiling_dbfs < -20.0 ||
+        ceiling_dbfs > 0.0 || !isfinite(lookahead_ms) || lookahead_ms <= 0.0 ||
+        lookahead_ms > 50.0 || !isfinite(release_ms) || release_ms <= 0.0 ||
+        release_ms > 1000.0) {
+        return false;
+    }
+    const u32 frames = doc->audio->frames;
+    const u32 channels = doc->audio->channels;
+    const u32 rate = doc->audio->sample_rate;
+    if (frames == 0u || rate == 0u) {
+        return false;
+    }
+    const double ceiling = pow(10.0, ceiling_dbfs / 20.0) * 32768.0;
+    /* the loudest sample anywhere decides whether there is work to do */
+    {
+        double peak = 0.0, rms = 0.0;
+        if (!break_editor_doc_audio_peak_range(doc, 0u, frames, &peak, &rms) ||
+            peak <= 0.0) {
+            return false; /* silent: no gain can help */
+        }
+        if (peak <= ceiling) {
+            return true; /* already under it */
+        }
+    }
+    u32 lookahead = (u32)(lookahead_ms * (double)rate / 1000.0 + 0.5);
+    if (lookahead == 0u) lookahead = 1u;
+    if (lookahead > frames) lookahead = frames;
+    BreakEditorAudioSnapshotCmd *snapshot = audio_snapshot_create(doc, "limit_dynamic");
+    if (!snapshot) return false;
+    {
+        /* the release as a one-pole coefficient: the gain recovers towards
+         * 1.0 by this factor per frame */
+        const double release_coeff =
+            exp(-1.0 / (release_ms * (double)rate / 1000.0));
+        double gain = 1.0;
+        for (u32 f = 0u; f < frames; ++f) {
+            /* the gain the look-ahead window needs: already down by the
+             * time its loudest sample arrives */
+            double needed = 1.0;
+            const u32 stop = f + lookahead < frames ? f + lookahead : frames;
+            for (u32 w = f; w < stop; ++w) {
+                for (u32 c = 0u; c < channels; ++c) {
+                    const i16 sample = snapshot->after[(usize)w * channels + c];
+                    const double magnitude = sample < 0 ? -(double)sample : (double)sample;
+                    if (magnitude > ceiling) {
+                        const double g = ceiling / magnitude;
+                        if (g < needed) needed = g;
+                    }
+                }
+            }
+            if (needed < gain) {
+                gain = needed; /* attack is immediate: the look-ahead is the delay */
+            } else {
+                gain = needed - (needed - gain) * release_coeff;
+            }
+            for (u32 c = 0u; c < channels; ++c) {
+                const usize index = (usize)f * channels + c;
+                const double scaled = (double)snapshot->after[index] * gain;
+                const double rounded = scaled >= 0.0 ? scaled + 0.5 : scaled - 0.5;
+                snapshot->after[index] = rounded > 32767.0
+                                             ? (i16)32767
+                                             : (rounded < -32768.0 ? (i16)-32768
+                                                                   : (i16)rounded);
+            }
+        }
+    }
+    return audio_snapshot_commit(snapshot, doc, snapshot->before_frames);
+}
+
 bool break_editor_doc_audio_limit_true_peak(BreakEditorDoc *doc, double ceiling_dbtp) {
     double tp = 0.0;
     if (!doc || !doc->audio || !isfinite(ceiling_dbtp) || ceiling_dbtp < -20.0 ||

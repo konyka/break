@@ -1,3 +1,11 @@
+## 编辑器音频前瞻式动态限幅（2026-11-20）
+
+- **交付**：核心新增 `break_editor_doc_audio_limit_dynamic(doc, ceiling_dbfs, lookahead_ms, release_ms)`：逐样本增益把采样峰值压到上限（[-20, 0] dBFS）以下，一条可撤销快照。增益包络为——每帧取其前瞻窗（(0, 50] ms）内所需增益的最小值，因此瞬态到来前增益已经降下；之后以给定时间常数（(0, 1000] ms）的一阶释放回到 1.0。上限是逐样本 dBFS 界而非 dBTP（要声称 dBTP 得在过采样信号上限幅）。已低于上限时不改动且不进历史，仍返回 true；无附件、参数越界、数字静音返回 false。音频页视图行新增 `editor-audio-dyn-limit` 按钮（-1 dBFS / 5 ms / 50 ms，中文标签"动态限峰"），失败记编辑失败日志；shell 新增 `break_editor_shell_audio_limit_dynamic`。设计与计划见 `docs/superpowers/specs/2026-11-20-editor-audio-lookahead-limiter-design.md`、`docs/superpowers/plans/2026-11-20-editor-audio-lookahead-limiter.md`。
+- **与整段缩放的区别**：核心用例对同一素材分别跑动态限幅和静态峰值归一化，断言安静部分在动态限幅后仍保持原电平、而静态缩放会把它一起压下去——这正是"一声门响不该让整段降 10 dB"的那个差别。
+- **TDD**：核心与 shell 各一个新用例，先链接失败再通过，`test_editor_audio` 22/22、`test_editor_shell` 232/232。6 个变异判红：前瞻窗缩成一帧、释放改成瞬时跳到目标增益、去掉"已低于上限"的提前返回、按钮上限从 -1 改成 -12、失败路径不记日志。
+- **两处按实测写的断言**：释放用例原本断言突发之后几帧增益仍"压得很低"（小于 1500），实际不是——突发 32000 对 29204 上限，增益只降到 0.91，其下的安静部分读约 2740；改为上界 2800 并要求回升至少 150，这才是一阶释放与瞬时跳变的分界。shell 用例原本只断言突发"低于"上限，-12 dBFS 上限同样满足，按钮常量因此没被钉住；改为断言突发正好落在上限（29000~29300）。
+- **边界**：不做真峰值（过采样）限幅、没有独立的攻击时间、不分声道（共用包络以免立体声像移动）、上限以下没有软膝压缩。
+
 ## 编辑器音频真峰值限制（2026-11-20）
 
 - **交付**：核心新增 `break_editor_doc_audio_limit_true_peak(doc, ceiling_dbtp)`：测出整段真峰值，高于上限（[-20, 0] dBTP）时按 `上限 / 真峰值` 整段缩放，记一条可撤销快照；已经低于上限时不改动也不进历史，仍返回 true（后置条件两种情况都成立）。这是增益压低而不是逐样本限幅——波形形状与响度范围不变，文档注释已明说。没有附件、上限越界、数字静音时返回 false。音频页视图行新增 `editor-audio-tp-limit` 按钮（-1 dBTP，中文标签"限峰 -1"），失败记已有的编辑失败日志；shell 新增 `break_editor_shell_audio_limit_true_peak`。设计与计划见 `docs/superpowers/specs/2026-11-20-editor-audio-tp-limit-design.md`、`docs/superpowers/plans/2026-11-20-editor-audio-tp-limit.md`。

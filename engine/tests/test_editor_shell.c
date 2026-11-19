@@ -3936,6 +3936,67 @@ TEST(audio_page_scales_each_lane_independently)
     break_editor_shell_destroy(shell);
 }
 
+/* Look-ahead dynamic limiter (design
+ * 2026-11-20-editor-audio-lookahead-limiter). */
+TEST(audio_page_limits_dynamically_without_costing_the_quiet_part)
+{
+    static i16 pcm[24000u];
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    my_widget_t *button;
+    u32 i;
+    i16 dyn_quiet = 0;
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    /* quiet with one loud burst, as in the core case */
+    for (i = 0u; i < 24000u; i++) {
+        const i16 amp = (i >= 12000u && i < 12200u) ? 32000 : 3000;
+        pcm[i] = (i16)(i % 2u == 0u ? amp : -amp);
+    }
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 24000u));
+    ASSERT_TRUE(break_editor_shell_select_tab(shell, 0u, 4u));
+    shell_paint(shell);
+    break_editor_shell_tick(shell);
+    button = find(shell, "editor-audio-dyn-limit");
+    ASSERT_NOT_NULL(button);
+    ASSERT_STR_EQ(((const my_button_t *)button)->text, "Limit");
+    /* the button brings the burst under the ceiling */
+    emit_click(button);
+    break_editor_shell_tick(shell);
+    {
+        const i16 *now = break_editor_doc_audio_samples(doc);
+        /* at the ceiling, not merely under it: -1 dBFS is 29204, so a
+         * lower ceiling would leave the burst visibly quieter */
+        for (i = 12000u; i < 12200u; i++) {
+            const i32 magnitude = now[i] < 0 ? -(i32)now[i] : (i32)now[i];
+            ASSERT_TRUE(magnitude <= 29300);
+            ASSERT_TRUE(magnitude >= 29000);
+        }
+        dyn_quiet = now[0] < 0 ? (i16)-now[0] : now[0];
+        ASSERT_EQ(dyn_quiet, 3000); /* the clip's start keeps its level */
+    }
+    /* the static peak normalize to the same ceiling costs that level */
+    ASSERT_TRUE(break_editor_undo(doc));
+    break_editor_shell_tick(shell);
+    ASSERT_TRUE(break_editor_shell_audio_normalize(shell));
+    {
+        const i16 *now = break_editor_doc_audio_samples(doc);
+        const i32 static_quiet = now[0] < 0 ? -(i32)now[0] : (i32)now[0];
+        ASSERT_TRUE(static_quiet < dyn_quiet - 100);
+    }
+    ASSERT_TRUE(break_editor_undo(doc));
+    break_editor_shell_tick(shell);
+    /* a silent clip logs the edit-failed line */
+    ASSERT_TRUE(break_editor_doc_reset(doc));
+    memset(pcm, 0, sizeof(pcm));
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 24000u));
+    break_editor_shell_tick(shell);
+    ASSERT_FALSE(break_editor_shell_audio_limit_dynamic(shell, -1.0, 5.0, 50.0));
+    ASSERT_STR_EQ(last_console_line(break_editor_shell_console_text(shell)),
+                  "audio edit failed\n");
+    break_editor_shell_destroy(shell);
+}
+
 /* True-peak ceiling (design 2026-11-20-editor-audio-tp-limit). */
 TEST(audio_page_limits_the_true_peak)
 {
@@ -14780,6 +14841,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(audio_page_normalizes_to_the_loudness_target);
     RUN_TEST(audio_page_draws_the_loudness_curve);
     RUN_TEST(audio_page_limits_the_true_peak);
+    RUN_TEST(audio_page_limits_dynamically_without_costing_the_quiet_part);
     RUN_TEST(audio_page_scales_each_lane_independently);
     RUN_TEST(audio_page_zooms_and_scrolls_the_view);
     RUN_TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo);

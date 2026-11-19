@@ -1219,7 +1219,114 @@ TEST(limit_true_peak_brings_a_hot_clip_under_the_ceiling)
     break_editor_doc_destroy(doc);
 }
 
+/* Look-ahead dynamic limiter (design 2026-11-20-editor-audio-lookahead-limiter). */
+TEST(limit_dynamic_spares_the_quiet_part_a_static_scale_would_cost)
+{
+    static i16 pcm[24000u];
+    static i16 original[24000u];
+    static i16 dynamic_result[24000u];
+    BreakEditorDoc *doc = break_editor_doc_create();
+    const u32 burst_at = 12000u;
+    ASSERT_NOT_NULL(doc);
+    /* quiet throughout, with one loud burst of 200 frames in the middle */
+    for (u32 i = 0u; i < 24000u; ++i) {
+        const i16 amp = (i >= burst_at && i < burst_at + 200u) ? 32000 : 3000;
+        pcm[i] = (i16)(i % 2u == 0u ? amp : -amp);
+        original[i] = pcm[i];
+    }
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 24000u));
+    /* -1 dBFS is 29204; the burst is well above it and the quiet part is
+     * well below */
+    ASSERT_TRUE(break_editor_doc_audio_limit_dynamic(doc, -1.0, 5.0, 50.0));
+    {
+        const i16 *now = break_editor_doc_audio_samples(doc);
+        memcpy(dynamic_result, now, sizeof(dynamic_result));
+        /* the burst is under the ceiling */
+        for (u32 i = burst_at; i < burst_at + 200u; ++i) {
+            const i32 magnitude = now[i] < 0 ? -(i32)now[i] : (i32)now[i];
+            ASSERT_TRUE(magnitude <= 29300);
+        }
+        /* the gain is already down at the sample before the burst: that is
+         * the look-ahead, 5 ms = 40 frames at 8 kHz */
+        {
+            const i32 before = now[burst_at - 1] < 0 ? -(i32)now[burst_at - 1]
+                                                     : (i32)now[burst_at - 1];
+            ASSERT_TRUE(before < 2900); /* pulled below the quiet 3000 */
+        }
+        /* 40 frames earlier still, the gain has not started moving */
+        {
+            const u32 at = burst_at - 60u;
+            const i32 early = now[at] < 0 ? -(i32)now[at] : (i32)now[at];
+            ASSERT_TRUE(early > 2950);
+        }
+        /* the release is gradual, not a snap back: a few frames after the
+         * burst the gain is still well down, and only later does it
+         * recover. A limiter that jumped straight to the needed gain would
+         * be back at 3000 immediately. */
+        {
+            const u32 just_after = burst_at + 200u + 4u;
+            const u32 much_later = burst_at + 200u + 1200u;
+            const i32 soon = now[just_after] < 0 ? -(i32)now[just_after]
+                                                 : (i32)now[just_after];
+            const i32 later = now[much_later] < 0 ? -(i32)now[much_later]
+                                                  : (i32)now[much_later];
+            /* the burst is 32000 against a 29204 ceiling, so the gain only
+             * falls to 0.91 and the quiet part under it reads about 2740
+             * rather than 3000. A limiter that jumped straight to the
+             * needed gain would already be back at 3000 four frames later. */
+            ASSERT_TRUE(soon < 2800);  /* still attenuated */
+            ASSERT_TRUE(later > 2950); /* recovered */
+            ASSERT_TRUE(later > soon + 150);
+        }
+        /* the start of the clip keeps its level */
+        ASSERT_EQ(now[0] < 0 ? -now[0] : now[0], 3000);
+    }
+    /* the undo restores the samples, and a static scale to the same ceiling
+     * costs the quiet part what the dynamic one spared it */
+    ASSERT_TRUE(break_editor_undo(doc));
+    ASSERT_EQ(memcmp(break_editor_doc_audio_samples(doc), original, sizeof(original)), 0);
+    ASSERT_TRUE(break_editor_doc_audio_normalize(doc, -1.0));
+    {
+        const i16 *statics = break_editor_doc_audio_samples(doc);
+        const i32 static_quiet = statics[0] < 0 ? -(i32)statics[0] : (i32)statics[0];
+        const i32 dyn_quiet = dynamic_result[0] < 0 ? -(i32)dynamic_result[0]
+                                                    : (i32)dynamic_result[0];
+        ASSERT_TRUE(static_quiet < dyn_quiet);
+        ASSERT_TRUE(dyn_quiet > static_quiet + 100);
+    }
+    ASSERT_TRUE(break_editor_undo(doc));
+    /* a clip already under the ceiling is untouched and adds no history */
+    for (u32 i = 0u; i < 24000u; ++i) pcm[i] = (i16)(i % 2u == 0u ? 1000 : -1000);
+    break_editor_doc_reset(doc);
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 24000u));
+    {
+        const u64 revision = break_editor_doc_audio_revision(doc);
+        ASSERT_TRUE(break_editor_doc_audio_limit_dynamic(doc, -1.0, 5.0, 50.0));
+        ASSERT_EQ(break_editor_doc_audio_revision(doc), revision);
+        ASSERT_EQ(break_editor_doc_audio_samples(doc)[0], 1000);
+    }
+    /* the rejected arguments change nothing */
+    {
+        const u64 revision = break_editor_doc_audio_revision(doc);
+        ASSERT_TRUE(!break_editor_doc_audio_limit_dynamic(doc, -20.1, 5.0, 50.0));
+        ASSERT_TRUE(!break_editor_doc_audio_limit_dynamic(doc, 0.1, 5.0, 50.0));
+        ASSERT_TRUE(!break_editor_doc_audio_limit_dynamic(doc, -1.0, 0.0, 50.0));
+        ASSERT_TRUE(!break_editor_doc_audio_limit_dynamic(doc, -1.0, 50.1, 50.0));
+        ASSERT_TRUE(!break_editor_doc_audio_limit_dynamic(doc, -1.0, 5.0, 0.0));
+        ASSERT_TRUE(!break_editor_doc_audio_limit_dynamic(doc, -1.0, 5.0, 1000.1));
+        ASSERT_TRUE(!break_editor_doc_audio_limit_dynamic(NULL, -1.0, 5.0, 50.0));
+        ASSERT_EQ(break_editor_doc_audio_revision(doc), revision);
+    }
+    /* a silent clip has nothing to limit */
+    break_editor_doc_reset(doc);
+    memset(pcm, 0, sizeof(pcm));
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 24000u));
+    ASSERT_TRUE(!break_editor_doc_audio_limit_dynamic(doc, -1.0, 5.0, 50.0));
+    break_editor_doc_destroy(doc);
+}
+
 TEST_MAIN_BEGIN()
+    RUN_TEST(limit_dynamic_spares_the_quiet_part_a_static_scale_would_cost);
     RUN_TEST(limit_true_peak_brings_a_hot_clip_under_the_ceiling);
     RUN_TEST(loudness_curve_follows_the_level_over_time);
     RUN_TEST(normalize_loudness_reaches_the_target_without_clipping);
