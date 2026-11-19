@@ -138,6 +138,7 @@ struct BreakEditorDoc {
     u32 kept_chunk_count;
     u32 kept_version; /* BSCN header version the kept chunks were read from (0 = none) */
     struct BreakEditorAudioState *audio; /* owned optional PCM attachment */
+    u64 audio_revision; /* +1 per attachment change; outlives the attachment */
 };
 
 struct BreakEditorCmdStack {

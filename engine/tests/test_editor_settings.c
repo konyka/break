@@ -197,23 +197,23 @@ TEST(save_then_load_through_the_file_system)
     ASSERT_FALSE(break_editor_settings_load(&b, NULL));
 }
 
-/* bottom_tab has four pages (Console, Lua, Flow, Plugins); diag_tab three */
+/* bottom_tab has five pages (Console, Lua, Flow, Plugins, Audio); diag_tab three */
 TEST(tab_bounds_follow_the_page_counts)
 {
     BreakEditorSettings s;
     BreakEditorSettings back;
     char buf[2048];
-    const char *ok = "bottom_tab=3\ndiag_tab=2\n";
-    const char *bad = "bottom_tab=4\ndiag_tab=3\n";
+    const char *ok = "bottom_tab=4\ndiag_tab=2\n";
+    const char *bad = "bottom_tab=5\ndiag_tab=3\n";
     break_editor_settings_defaults(&s);
     ASSERT_TRUE(break_editor_settings_parse(&s, ok, strlen(ok)));
-    ASSERT_EQ(s.bottom_tab, 3u);
+    ASSERT_EQ(s.bottom_tab, 4u);
     ASSERT_EQ(s.diag_tab, 2u);
     usize n = break_editor_settings_serialize(&s, buf, sizeof(buf));
     ASSERT_TRUE(n > 0u);
     break_editor_settings_defaults(&back);
     ASSERT_TRUE(break_editor_settings_parse(&back, buf, n));
-    ASSERT_EQ(back.bottom_tab, 3u);
+    ASSERT_EQ(back.bottom_tab, 4u);
     break_editor_settings_defaults(&s);
     ASSERT_TRUE(break_editor_settings_parse(&s, bad, strlen(bad)));
     ASSERT_EQ(s.bottom_tab, 0u);

@@ -52,6 +52,7 @@ bool break_editor_doc_audio_attach(BreakEditorDoc *doc, u32 sample_rate, u32 cha
     audio->frames = frames;
     if (frames != 0u) memcpy(audio->samples, samples, (usize)frames * channels * sizeof(i16));
     doc->audio = audio;
+    doc->audio_revision++;
     doc->dirty = true;
     return true;
 }
@@ -76,11 +77,41 @@ const i16 *break_editor_doc_audio_samples(const BreakEditorDoc *doc) {
     return doc && doc->audio ? doc->audio->samples : NULL;
 }
 
+u64 break_editor_doc_audio_revision(const BreakEditorDoc *doc) {
+    return doc ? doc->audio_revision : 0u;
+}
+
+bool break_editor_doc_audio_waveform(const BreakEditorDoc *doc, u32 columns,
+                                     i16 *out_min, i16 *out_max) {
+    if (!doc || !doc->audio || !out_min || !out_max || columns == 0u ||
+        columns > BREAK_EDITOR_AUDIO_WAVEFORM_MAX_COLUMNS || doc->audio->frames == 0u) {
+        return false;
+    }
+    const BreakEditorAudioState *audio = doc->audio;
+    const u64 frames = audio->frames;
+    for (u32 c = 0u; c < columns; ++c) {
+        const u64 begin = (u64)c * frames / columns;
+        u64 end = (u64)(c + 1u) * frames / columns;
+        if (end <= begin) end = begin + 1u;
+        const i16 *sample = audio->samples + begin * audio->channels;
+        const i16 *last = audio->samples + end * audio->channels;
+        i16 lo = *sample, hi = *sample;
+        for (; sample < last; ++sample) {
+            if (*sample < lo) lo = *sample;
+            if (*sample > hi) hi = *sample;
+        }
+        out_min[c] = lo;
+        out_max[c] = hi;
+    }
+    return true;
+}
+
 void break_editor_audio_detach(BreakEditorDoc *doc) {
     if (!doc || !doc->audio) return;
     free(doc->audio->samples);
     free(doc->audio);
     doc->audio = NULL;
+    doc->audio_revision++;
 }
 
 static void audio_snapshot_destroy(BreakEditorCmd *command) {
@@ -95,6 +126,7 @@ static bool audio_snapshot_restore(BreakEditorDoc *doc, u32 frames, const i16 *s
     if (!doc || !doc->audio || (bytes != 0u && !samples)) return false;
     if (bytes != 0u) memcpy(doc->audio->samples, samples, bytes);
     doc->audio->frames = frames;
+    doc->audio_revision++;
     return true;
 }
 

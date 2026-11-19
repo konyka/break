@@ -195,6 +195,13 @@ typedef enum {
     BREAK_EDITOR_TR_PLUGINS_EMPTY,
     BREAK_EDITOR_TR_LOG_PLUGIN_BUTTON_FAILED_FMT, /* %s panel id, %s button id */
     BREAK_EDITOR_TR_LOG_PLUGIN_INPUT_FAILED_FMT,  /* %s panel id, %s input id */
+    /* audio page (bottom tool window) */
+    BREAK_EDITOR_TR_TAB_AUDIO,
+    BREAK_EDITOR_TR_AUDIO_EMPTY,
+    BREAK_EDITOR_TR_AUDIO_INFO_FMT,          /* %u Hz, %u channels, %.3f seconds */
+    BREAK_EDITOR_TR_LOG_AUDIO_OPENED_FMT,    /* %s file name */
+    BREAK_EDITOR_TR_LOG_AUDIO_FAILED_FMT,    /* %s file name */
+    BREAK_EDITOR_TR_LOG_AUDIO_ALREADY_FMT,   /* %s file name */
     BREAK_EDITOR_TR_COUNT
 } BreakEditorTr;
 

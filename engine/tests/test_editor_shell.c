@@ -43,6 +43,8 @@
 
 #include <core/profiler.h>
 #include <platform/time.h>
+#include <audio/audio_wav.h>
+#include <editor/editor_audio.h>
 #include <editor/editor_cmd.h>
 #include <editor/editor_components.h>
 #include <editor/editor_gizmo.h>
@@ -2870,6 +2872,151 @@ TEST(assets_panel_image_row_opens_the_preview)
     TEST_RMDIR(dir);
 }
 
+static bool write_wav_file(const char *path, u32 rate, u32 channels,
+                           const i16 *samples, u32 frames) {
+    static u8 bytes[AUDIO_WAV_HEADER_SIZE + 4096u];
+    usize size = 0u;
+    const AudioWavInfo info = {rate, channels, frames};
+    FILE *f;
+    bool ok;
+    if (audio_wav_encode_i16(&info, samples, bytes, sizeof(bytes), &size) != AUDIO_OK) {
+        return false;
+    }
+    f = fopen(path, "wb");
+    if (f == NULL) {
+        return false;
+    }
+    ok = fwrite(bytes, 1u, size, f) == size;
+    return fclose(f) == 0 && ok;
+}
+
+/* Audio page (design 2026-11-19-editor-audio-waveform): a .wav row opens the
+ * file into the document's attachment, the page shows its format and a
+ * min/max waveform that follows edits, undo and reset. */
+TEST(audio_page_opens_wav_assets_and_follows_edits)
+{
+    static i16 pcm[2u * 400u];
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    char dir[512], wav[700], wav2[700], bad[700];
+    my_widget_t *list, *row, *page;
+    i16 lo, hi;
+    u32 i, columns;
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    test_tmp(dir, sizeof(dir), "editor_shell_audio");
+    TEST_MKDIR(dir);
+    snprintf(wav, sizeof(wav), "%s/tone.wav", dir);
+    snprintf(wav2, sizeof(wav2), "%s/two.wav", dir);
+    snprintf(bad, sizeof(bad), "%s/bad.wav", dir);
+    /* stereo, 400 frames: left ramps 0..3990, right is -left */
+    for (i = 0u; i < 400u; i++) {
+        pcm[2u * i] = (i16)(i * 10u);
+        pcm[2u * i + 1u] = (i16)-(i16)(i * 10u);
+    }
+    ASSERT_TRUE(write_wav_file(wav, 8000u, 2u, pcm, 400u));
+    ASSERT_TRUE(write_wav_file(wav2, 8000u, 1u, pcm, 10u));
+    ASSERT_TRUE(write_text_file(bad, "RIFF? not really"));
+    break_editor_shell_tick(shell);
+    shell_paint(shell);
+    page = find(shell, "editor-audio-panel");
+    ASSERT_NOT_NULL(page);
+    ASSERT_NOT_NULL(find(shell, "editor-audio-info"));
+    ASSERT_NOT_NULL(find(shell, "editor-audio-waveform"));
+    ASSERT_FALSE(page->visible);
+    ASSERT_STR_EQ(break_editor_shell_audio_info_text(shell),
+                  "No audio: click a .wav asset to open it");
+    ASSERT_EQ(break_editor_shell_audio_column_count(shell), 0u);
+
+    ASSERT_TRUE(break_editor_shell_set_assets_root(shell, dir));
+    shell_paint(shell);
+    list = find(shell, "editor-assets-list");
+    ASSERT_NOT_NULL(list);
+    /* a corrupt file attaches nothing */
+    row = list_row_by_text(list, "bad.wav");
+    ASSERT_NOT_NULL(row);
+    emit_click(row);
+    ASSERT_FALSE(break_editor_doc_audio_attached(doc));
+    ASSERT_TRUE(strstr(last_console_line(break_editor_shell_console_text(shell)),
+                       "bad.wav") != NULL);
+    ASSERT_EQ(break_editor_shell_active_tab(shell, 0u), 0u);
+
+    row = list_row_by_text(list, "tone.wav");
+    ASSERT_NOT_NULL(row);
+    emit_click(row);
+    ASSERT_TRUE(break_editor_doc_audio_attached(doc));
+    ASSERT_EQ(break_editor_doc_audio_frames(doc), 400u);
+    ASSERT_STR_EQ(last_console_line(break_editor_shell_console_text(shell)),
+                  "audio opened: tone.wav\n");
+    ASSERT_EQ(break_editor_shell_active_tab(shell, 0u), 4u);
+    shell_paint(shell);
+    ASSERT_TRUE(page->visible);
+    break_editor_shell_tick(shell);
+    ASSERT_STR_EQ(break_editor_shell_audio_info_text(shell), "8000 Hz, 2 ch, 0.050 s");
+    columns = break_editor_shell_audio_column_count(shell);
+    ASSERT_TRUE(columns > 0u && columns <= 400u);
+    {
+        i16 emin[BREAK_EDITOR_AUDIO_WAVEFORM_MAX_COLUMNS];
+        i16 emax[BREAK_EDITOR_AUDIO_WAVEFORM_MAX_COLUMNS];
+        ASSERT_TRUE(break_editor_doc_audio_waveform(doc, columns, emin, emax));
+        for (i = 0u; i < columns; i++) {
+            ASSERT_TRUE(break_editor_shell_audio_column(shell, i, &lo, &hi));
+            ASSERT_EQ(lo, emin[i]);
+            ASSERT_EQ(hi, emax[i]);
+            ASSERT_EQ(lo, (i16)-hi);
+        }
+    }
+    ASSERT_FALSE(break_editor_shell_audio_column(shell, columns, &lo, &hi));
+    ASSERT_TRUE(break_editor_shell_audio_column(shell, columns - 1u, &lo, &hi));
+    ASSERT_EQ(hi, 3990);
+
+    /* an undoable edit shows up on the next tick; undo restores it */
+    ASSERT_TRUE(break_editor_doc_audio_trim(doc, 0u, 100u));
+    break_editor_shell_tick(shell);
+    ASSERT_STR_EQ(break_editor_shell_audio_info_text(shell), "8000 Hz, 2 ch, 0.013 s");
+    columns = break_editor_shell_audio_column_count(shell);
+    ASSERT_TRUE(columns > 0u && columns <= 100u);
+    ASSERT_TRUE(break_editor_shell_audio_column(shell, columns - 1u, &lo, &hi));
+    ASSERT_EQ(hi, 990);
+    ASSERT_TRUE(break_editor_undo(doc));
+    break_editor_shell_tick(shell);
+    ASSERT_STR_EQ(break_editor_shell_audio_info_text(shell), "8000 Hz, 2 ch, 0.050 s");
+    columns = break_editor_shell_audio_column_count(shell);
+    ASSERT_TRUE(break_editor_shell_audio_column(shell, columns - 1u, &lo, &hi));
+    ASSERT_EQ(hi, 3990);
+
+    /* a second file is refused while one is attached */
+    row = list_row_by_text(list, "two.wav");
+    ASSERT_NOT_NULL(row);
+    emit_click(row);
+    ASSERT_EQ(break_editor_doc_audio_frames(doc), 400u);
+    ASSERT_STR_EQ(last_console_line(break_editor_shell_console_text(shell)),
+                  "audio already open, not opening two.wav\n");
+
+    /* the page follows the language */
+    ASSERT_TRUE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_ZH_CN));
+    break_editor_shell_tick(shell);
+    ASSERT_STR_EQ(break_editor_shell_audio_info_text(shell),
+                  "8000 Hz\xEF\xBC\x8C" "2 \xE5\xA3\xB0\xE9\x81\x93\xEF\xBC\x8C"
+                  "0.050 \xE7\xA7\x92"); /* 8000 Hz，2 声道，0.050 秒 */
+    /* reset detaches: back to the empty text */
+    ASSERT_TRUE(break_editor_doc_reset(doc));
+    break_editor_shell_tick(shell);
+    ASSERT_STR_EQ(break_editor_shell_audio_info_text(shell),
+                  "\xE6\xB2\xA1\xE6\x9C\x89\xE9\x9F\xB3\xE9\xA2\x91\xEF\xBC\x9A"
+                  "\xE7\x82\xB9\xE5\x87\xBB .wav \xE8\xB5\x84\xE6\xBA\x90"
+                  "\xE6\x89\x93\xE5\xBC\x80"); /* 没有音频：点击 .wav 资源打开 */
+    ASSERT_EQ(break_editor_shell_audio_column_count(shell), 0u);
+    ASSERT_TRUE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_EN_US));
+    ASSERT_STR_EQ(break_editor_shell_audio_info_text(shell),
+                  "No audio: click a .wav asset to open it");
+    break_editor_shell_destroy(shell);
+    remove(wav);
+    remove(wav2);
+    remove(bad);
+    TEST_RMDIR(dir);
+}
+
 /* The editor applies its JetBrains New UI dark sheet at shell create
  * (editor_theme.c): widgets resolve the palette through the real cascade. */
 TEST(shell_applies_the_new_ui_dark_theme)
@@ -3092,12 +3239,13 @@ TEST(tool_window_tabs_show_one_page_per_area)
     diag_tabs = find(shell, "editor-diag-tabs");
     ASSERT_NOT_NULL(bottom_tabs);
     ASSERT_NOT_NULL(diag_tabs);
-    ASSERT_EQ(my_widget_child_count(bottom_tabs), 4u);
+    ASSERT_EQ(my_widget_child_count(bottom_tabs), 5u);
     ASSERT_EQ(my_widget_child_count(diag_tabs), 3u);
     ASSERT_STR_EQ(((const my_button_t *)tab_at(bottom_tabs, 0u))->text, "Console");
     ASSERT_STR_EQ(((const my_button_t *)tab_at(bottom_tabs, 1u))->text, "Lua");
     ASSERT_STR_EQ(((const my_button_t *)tab_at(bottom_tabs, 2u))->text, "Flow");
     ASSERT_STR_EQ(((const my_button_t *)tab_at(bottom_tabs, 3u))->text, "Plugins");
+    ASSERT_STR_EQ(((const my_button_t *)tab_at(bottom_tabs, 4u))->text, "Audio");
     ASSERT_STR_EQ(((const my_button_t *)tab_at(diag_tabs, 0u))->text, "Profiler");
     ASSERT_STR_EQ(((const my_button_t *)tab_at(diag_tabs, 1u))->text, "Network");
     ASSERT_STR_EQ(((const my_button_t *)tab_at(diag_tabs, 2u))->text, "Render");
@@ -3145,7 +3293,7 @@ TEST(tool_window_tabs_show_one_page_per_area)
     ASSERT_TRUE(break_editor_shell_select_tab(shell, 1u, 1u));
     ASSERT_TRUE(network->visible && !render->visible);
     ASSERT_FALSE(break_editor_shell_select_tab(shell, 1u, 3u));
-    ASSERT_FALSE(break_editor_shell_select_tab(shell, 0u, 4u));
+    ASSERT_FALSE(break_editor_shell_select_tab(shell, 0u, 5u));
     ASSERT_FALSE(break_editor_shell_select_tab(shell, 2u, 0u));
     ASSERT_FALSE(break_editor_shell_select_tab(NULL, 0u, 0u));
     ASSERT_EQ(break_editor_shell_active_tab(shell, 1u), 1u);
@@ -12044,6 +12192,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(assets_panel_filter_box_narrows_the_listing);
     RUN_TEST(assets_panel_navigation_updates_rows);
     RUN_TEST(assets_panel_image_row_opens_the_preview);
+    RUN_TEST(audio_page_opens_wav_assets_and_follows_edits);
     RUN_TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo);
     RUN_TEST(assets_panel_load_guards_unsaved_changes);
     RUN_TEST(palette_save_as_writes_the_typed_path);

@@ -416,3 +416,6 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
     - `test_audio_wav` 共 7 项，新增 3 项：已知单声道头的逐字节比对与立体声字段、单/双声道在 8000/44100/192000 Hz 下 0/16/32 帧经解码器往返一致、所有失败不写输出且大小溢出被拒。
     - `test_editor_audio` 共 7 项，新增 1 项：剪切后保存，再导入新文档时样本一致；空路径、目录不存在、分配失败、目标是目录导致重命名失败，都不留下文件或临时文件；第二次保存整体替换旧文件。
     - 变异 5 个，都判红：RIFF 大小写错、跳过容量检查、跳过溢出检查、直接写目标文件、失败时不删临时文件。
+- 2026-11-19 补充：编辑器音频波形页。设计见 `docs/superpowers/specs/2026-11-19-editor-audio-waveform-design.md`。
+  - `break_editor_doc_audio_revision(doc)` 在附件、编辑、撤销/重做、分离时变化；`break_editor_doc_audio_waveform(doc, columns, min, max)` 按 `[c·frames/columns, (c+1)·frames/columns)` 取每列所有声道的最小/最大样本，参数无效、无附件或零帧时返回 false 且不写输出。
+  - 编辑器底部工具窗“音频”页显示格式和波形；资源浏览器点击 `.wav` 打开附件（已有附件时拒绝）。上文“未做”中的“编辑器 UI”由此部分交付（只读波形）。仍缺：播放、选区编辑、时间线、缩放和真实听测。

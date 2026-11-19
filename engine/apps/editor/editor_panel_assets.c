@@ -13,6 +13,8 @@
  *   dir       => break_editor_assets_enter (single validated segment)
  *   *.bscn    => confirm-free break_editor_doc_load (Phase 2 documents the
  *                world swap + undo-stack clear; the console logs the load)
+ *   *.wav     => opens the PCM16 file into the document's audio attachment
+ *                (Audio tab; refused while one is attached)
  *   image     => (.png .jpg .jpeg .bmp .tga) the preview below the list
  *                loads it and hot-reloads it on external edits
  *                (editor_image_preview.h; the panel owns the preview)
@@ -345,6 +347,12 @@ static void on_assets_row_click(void *ctx, const char *event, void *data) {
                 if (break_editor_assets_abs_path(panel->assets, ei, path,
                                                  sizeof(path))) {
                     assets_list_pak(shell, path, name);
+                }
+            } else if (len >= 4u && strcmp(name + len - 4u, ".wav") == 0) {
+                char path[BREAK_EDITOR_ASSETS_PATH_CAPACITY];
+                if (break_editor_assets_abs_path(panel->assets, ei, path,
+                                                 sizeof(path))) {
+                    (void)editor_shell_open_audio(shell, path, name);
                 }
             } else if (break_editor_image_is_supported_name(name)) {
                 char path[BREAK_EDITOR_ASSETS_PATH_CAPACITY];

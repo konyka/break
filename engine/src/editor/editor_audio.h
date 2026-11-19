@@ -27,6 +27,19 @@ u32 break_editor_doc_audio_channels(const BreakEditorDoc *doc);
 /* Borrowed until an audio edit, reset/load or document destruction. */
 const i16 *break_editor_doc_audio_samples(const BreakEditorDoc *doc);
 
+#define BREAK_EDITOR_AUDIO_WAVEFORM_MAX_COLUMNS 4096u
+/* Changes whenever the attachment changes: attach, each committed edit, undo
+ * and redo of an audio command, detach (reset/load). Stored in the document,
+ * so it never repeats across attachments. 0 for NULL. */
+u64 break_editor_doc_audio_revision(const BreakEditorDoc *doc);
+/* Min/max over all channels for `columns` contiguous frame ranges: column c
+ * covers [c*frames/columns, (c+1)*frames/columns); an empty range (columns >
+ * frames) uses the frame at c*frames/columns. False, writing nothing, for
+ * NULL arguments, no attachment, zero frames or columns outside
+ * 1..BREAK_EDITOR_AUDIO_WAVEFORM_MAX_COLUMNS. Read-only. */
+bool break_editor_doc_audio_waveform(const BreakEditorDoc *doc, u32 columns,
+                                     i16 *out_min, i16 *out_max);
+
 /* One snapshot command per successful edit; false leaves PCM/history unchanged. */
 bool break_editor_doc_audio_trim(BreakEditorDoc *doc, u32 begin, u32 end);
 bool break_editor_doc_audio_cut(BreakEditorDoc *doc, u32 begin, u32 end);

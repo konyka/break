@@ -234,7 +234,7 @@ const char *break_editor_shell_tool_text(const BreakEditorShell *shell);
  * current look and returns false. Also in the command palette
  * ("Theme: Light" / "Theme: Dark"). */
 bool break_editor_shell_set_theme(BreakEditorShell *shell, bool light);
-/* Tool-window tab areas: 0 = bottom (Console, Lua, Flow, Plugins), 1 = right
+/* Tool-window tab areas: 0 = bottom (Console, Lua, Flow, Plugins, Audio), 1 = right
  * diagnostics (Profiler, Network, Render). select_tab shows that page and hides the
  * others (false for an unknown area/index); active_tab returns the shown
  * index (0 for an unknown area). */
@@ -424,6 +424,13 @@ bool break_editor_shell_image_preview_stats(const BreakEditorShell *shell,
 usize break_editor_shell_lua_history_count(const BreakEditorShell *shell);
 
 /* Flow Graph node rows, refreshed from the shared command-stack revision. */
+/* Audio page: the info line ("No audio..." or "<rate> Hz, <ch> ch, <s> s"),
+ * the number of waveform columns of the last refresh (0 without audio) and
+ * column i's min/max sample (false out of range). */
+const char *break_editor_shell_audio_info_text(const BreakEditorShell *shell);
+u32 break_editor_shell_audio_column_count(const BreakEditorShell *shell);
+bool break_editor_shell_audio_column(const BreakEditorShell *shell, u32 i,
+                                     i16 *out_min, i16 *out_max);
 usize break_editor_shell_flow_row_count(const BreakEditorShell *shell);
 const char *break_editor_shell_flow_row_text(const BreakEditorShell *shell,
                                              usize i);

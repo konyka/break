@@ -405,7 +405,124 @@ TEST(wav_export_handles_mono_a_stale_temporary_and_long_paths)
     remove(path);
 }
 
+static void assert_columns(const i16 *min, const i16 *max, const i16 *emin,
+                           const i16 *emax, u32 columns) {
+    ASSERT_EQ(memcmp(min, emin, sizeof(i16) * columns), 0);
+    ASSERT_EQ(memcmp(max, emax, sizeof(i16) * columns), 0);
+}
+
+TEST(waveform_reports_min_max_per_column)
+{
+    i16 min[16], max[16];
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    ASSERT_TRUE(!break_editor_doc_audio_waveform(doc, 4u, min, max));
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 16000u, 1u, kSamples, 8u));
+    /* 8 frames / 3 columns: [0,2) [2,5) [5,8) */
+    ASSERT_TRUE(break_editor_doc_audio_waveform(doc, 3u, min, max));
+    {
+        const i16 emin[] = {0, 200, 500}, emax[] = {100, 400, 700};
+        assert_columns(min, max, emin, emax, 3u);
+    }
+    ASSERT_TRUE(break_editor_doc_audio_waveform(doc, 8u, min, max));
+    assert_columns(min, max, kSamples, kSamples, 8u);
+    /* 16 columns over 8 frames: column c shows frame c/2 */
+    ASSERT_TRUE(break_editor_doc_audio_waveform(doc, 16u, min, max));
+    for (u32 c = 0u; c < 16u; ++c) {
+        ASSERT_EQ(min[c], kSamples[c / 2u]);
+        ASSERT_EQ(max[c], kSamples[c / 2u]);
+    }
+    ASSERT_TRUE(break_editor_doc_audio_waveform(doc, 1u, min, max));
+    ASSERT_EQ(min[0], 0);
+    ASSERT_EQ(max[0], 700);
+    break_editor_doc_destroy(doc);
+
+    /* stereo: both channels count; frames {(-5,9) (3,-7) (1,2) (-20,4)} */
+    const i16 stereo[] = {-5, 9, 3, -7, 1, 2, -20, 4};
+    doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 48000u, 2u, stereo, 4u));
+    ASSERT_TRUE(break_editor_doc_audio_waveform(doc, 2u, min, max));
+    {
+        const i16 emin[] = {-7, -20}, emax[] = {9, 4};
+        assert_columns(min, max, emin, emax, 2u);
+    }
+    break_editor_doc_destroy(doc);
+}
+
+TEST(waveform_rejects_invalid_arguments_without_writing)
+{
+    i16 min[4] = {11, 11, 11, 11}, max[4] = {22, 22, 22, 22};
+    static i16 big_min[BREAK_EDITOR_AUDIO_WAVEFORM_MAX_COLUMNS + 1u];
+    static i16 big_max[BREAK_EDITOR_AUDIO_WAVEFORM_MAX_COLUMNS + 1u];
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    ASSERT_TRUE(!break_editor_doc_audio_waveform(NULL, 4u, min, max));
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 16000u, 1u, kSamples, 8u));
+    ASSERT_TRUE(!break_editor_doc_audio_waveform(doc, 0u, min, max));
+    ASSERT_TRUE(!break_editor_doc_audio_waveform(doc, 4u, NULL, max));
+    ASSERT_TRUE(!break_editor_doc_audio_waveform(doc, 4u, min, NULL));
+    ASSERT_TRUE(!break_editor_doc_audio_waveform(
+        doc, BREAK_EDITOR_AUDIO_WAVEFORM_MAX_COLUMNS + 1u, big_min, big_max));
+    ASSERT_TRUE(break_editor_doc_audio_waveform(
+        doc, BREAK_EDITOR_AUDIO_WAVEFORM_MAX_COLUMNS, big_min, big_max));
+    ASSERT_EQ(big_max[BREAK_EDITOR_AUDIO_WAVEFORM_MAX_COLUMNS - 1u], 700);
+    /* trimmed to zero frames */
+    ASSERT_TRUE(break_editor_doc_audio_cut(doc, 0u, 8u));
+    ASSERT_EQ(break_editor_doc_audio_frames(doc), 0u);
+    ASSERT_TRUE(!break_editor_doc_audio_waveform(doc, 4u, min, max));
+    for (u32 i = 0u; i < 4u; ++i) {
+        ASSERT_EQ(min[i], 11);
+        ASSERT_EQ(max[i], 22);
+    }
+    break_editor_doc_destroy(doc);
+}
+
+TEST(audio_revision_tracks_every_attachment_change)
+{
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    ASSERT_EQ(break_editor_doc_audio_revision(NULL), 0u);
+    u64 last = break_editor_doc_audio_revision(doc);
+#define EXPECT_CHANGED()                                          \
+    do {                                                          \
+        const u64 now_ = break_editor_doc_audio_revision(doc);    \
+        ASSERT_TRUE(now_ != last);                                \
+        last = now_;                                              \
+    } while (0)
+#define EXPECT_SAME() ASSERT_EQ(break_editor_doc_audio_revision(doc), last)
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 16000u, 1u, kSamples, 8u));
+    EXPECT_CHANGED();
+    ASSERT_TRUE(!break_editor_doc_audio_trim(doc, 6u, 2u));
+    EXPECT_SAME();
+    ASSERT_TRUE(break_editor_doc_audio_trim(doc, 1u, 7u));
+    EXPECT_CHANGED();
+    ASSERT_TRUE(break_editor_doc_audio_fade(doc, 0.1, 0.1));
+    EXPECT_CHANGED();
+    ASSERT_TRUE(break_editor_undo(doc));
+    EXPECT_CHANGED();
+    ASSERT_TRUE(break_editor_redo(doc));
+    EXPECT_CHANGED();
+    char path[512];
+    test_tmp(path, sizeof(path), "editor_audio_revision.wav");
+    ASSERT_TRUE(break_editor_doc_audio_save_wav(doc, path));
+    EXPECT_SAME();
+    ASSERT_TRUE(break_editor_doc_reset(doc));
+    EXPECT_CHANGED();
+    /* a fresh attachment never repeats an earlier revision */
+    ASSERT_TRUE(break_editor_doc_audio_attach_wav(doc, path));
+    EXPECT_CHANGED();
+    ASSERT_TRUE(last > 2u);
+#undef EXPECT_CHANGED
+#undef EXPECT_SAME
+    remove(path);
+    break_editor_doc_destroy(doc);
+}
+
 TEST_MAIN_BEGIN()
+    RUN_TEST(waveform_reports_min_max_per_column);
+    RUN_TEST(waveform_rejects_invalid_arguments_without_writing);
+    RUN_TEST(audio_revision_tracks_every_attachment_change);
     RUN_TEST(attach_validation_and_reset_or_load_detach);
     RUN_TEST(trim_and_cut_are_byte_exact_undoable_commands);
     RUN_TEST(fade_normalize_and_mix_use_real_primitives);

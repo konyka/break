@@ -2200,7 +2200,7 @@ engine_link_rhi_backend(dxx_break)
 add_executable(editor apps/editor/editor_main.c apps/editor/editor_panels.c
     apps/editor/editor_viewport3d.c apps/editor/editor_shader_source.c apps/editor/editor_shader_reload.c apps/editor/editor_image_preview.c apps/editor/editor_scene_textures.c apps/editor/editor_theme.c apps/editor/editor_settings.c
     apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c
-    apps/editor/editor_panel_flow.c apps/editor/editor_panel_profiler.c
+    apps/editor/editor_panel_flow.c apps/editor/editor_panel_profiler.c apps/editor/editor_panel_audio.c
     apps/editor/editor_remote.c apps/editor/editor_panel_network.c
         apps/editor/editor_panel_render.c apps/editor/editor_hot_reload.c
     apps/editor/editor_fonts.c
@@ -6333,7 +6333,7 @@ endif()
     add_executable(test_editor_shell tests/test_editor_shell.c
         apps/editor/editor_panels.c apps/editor/editor_viewport3d.c apps/editor/editor_shader_source.c apps/editor/editor_shader_reload.c apps/editor/editor_image_preview.c apps/editor/editor_scene_textures.c apps/editor/editor_theme.c apps/editor/editor_settings.c
         apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c
-        apps/editor/editor_panel_flow.c apps/editor/editor_panel_profiler.c
+        apps/editor/editor_panel_flow.c apps/editor/editor_panel_profiler.c apps/editor/editor_panel_audio.c
         apps/editor/editor_remote.c apps/editor/editor_panel_network.c
         apps/editor/editor_panel_render.c apps/editor/editor_hot_reload.c
         src/platform/platform_fs.c src/core/profiler.c src/platform/time.c
@@ -7748,7 +7748,7 @@ endif()
         add_executable(fuzz_editor_remote EXCLUDE_FROM_ALL tests/fuzz_editor_remote.c
             apps/editor/editor_panels.c apps/editor/editor_viewport3d.c apps/editor/editor_shader_source.c apps/editor/editor_shader_reload.c apps/editor/editor_image_preview.c apps/editor/editor_scene_textures.c apps/editor/editor_theme.c apps/editor/editor_settings.c
             apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c
-            apps/editor/editor_panel_flow.c apps/editor/editor_panel_profiler.c
+            apps/editor/editor_panel_flow.c apps/editor/editor_panel_profiler.c apps/editor/editor_panel_audio.c
             apps/editor/editor_remote.c apps/editor/editor_panel_network.c
             apps/editor/editor_panel_render.c apps/editor/editor_hot_reload.c
             src/platform/platform_fs.c src/core/profiler.c src/platform/time.c

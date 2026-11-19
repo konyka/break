@@ -41,6 +41,8 @@ root（vertical）
 
 > **2026-10-29 更新（工具窗标签页）**：上面的平铺布局已改为标签页。右栏 inspector 之下是 `editor-diag-row`（h:45%，纵向）：标签条 `editor-diag-tabs`（Profiler / Network / Render）+ 三个页面 `editor-profiler-panel`、`editor-network-panel`、`editor-render-panel`，一次只显示一个，页面 `w:100% h:1f`。底部 `editor-bottom` 改为 h:160 纵向：标签条 `editor-bottom-tabs`（Console / Lua）+ 页面 `editor-console`、`editor-lua-panel`。设计见 `docs/superpowers/specs/2026-10-29-editor-tool-window-tabs-design.md`。
 
+> **2026-11-19 更新（音频页）**：底部标签条现为 Console / Lua / Flow / Plugins / Audio 五页。`editor-audio-panel`（`editor_panel_audio.c`）含 `editor-audio-info` 标签和自绘的 `editor-audio-waveform`，显示文档音频附件的格式与最小/最大波形；资源浏览器点击 `.wav` 打开附件并切到该页。设计见 `docs/superpowers/specs/2026-11-19-editor-audio-waveform-design.md`。
+
 
 坐标注意：myui `widget->rect` 在**父坐标系**（my_widget.h）。inspector
 嵌套进 `editor-right-panel` 后，`inspector->rect.x` 不再与 viewport 同一

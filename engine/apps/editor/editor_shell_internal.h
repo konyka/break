@@ -31,6 +31,7 @@ typedef struct EditorPanelAssets EditorPanelAssets;
 typedef struct EditorPanelLua EditorPanelLua;
 typedef struct EditorPanelProfiler EditorPanelProfiler;
 typedef struct EditorPanelFlow EditorPanelFlow;
+typedef struct EditorPanelAudio EditorPanelAudio;
 
 /* Shared shell services implemented in editor_panels.c. editor_shell_log
  * appends one bounded (<=127 visible bytes) line to the shared console ring;
@@ -99,6 +100,23 @@ void editor_panel_flow_tick(EditorPanelFlow *panel);
 usize editor_panel_flow_row_count(const EditorPanelFlow *panel);
 const char *editor_panel_flow_row_text(const EditorPanelFlow *panel, usize i);
 void editor_panel_flow_retranslate(EditorPanelFlow *panel);
+
+/* Audio page (editor_panel_audio.c): read-only view of the document's PCM
+ * attachment (info line + min/max waveform). The tick recomputes the columns
+ * when the attachment revision or the widget width changed. */
+EditorPanelAudio *editor_panel_audio_create(BreakEditorShell *shell);
+void editor_panel_audio_destroy(EditorPanelAudio *panel);
+bool editor_panel_audio_build(EditorPanelAudio *panel, my_widget_t *parent);
+void editor_panel_audio_tick(EditorPanelAudio *panel);
+void editor_panel_audio_retranslate(EditorPanelAudio *panel);
+const char *editor_panel_audio_info_text(const EditorPanelAudio *panel);
+u32 editor_panel_audio_column_count(const EditorPanelAudio *panel);
+bool editor_panel_audio_column(const EditorPanelAudio *panel, u32 i,
+                               i16 *out_min, i16 *out_max);
+/* Asset browser: opens a .wav file into the document's attachment (only when
+ * none is attached), logs the outcome, selects the Audio tab on success. */
+bool editor_shell_open_audio(BreakEditorShell *shell, const char *path,
+                             const char *name);
 
 /* Profiler panel — PURE VIEW over profiler_last_frame(); never mutates
  * profiler state (no enable/begin/push/pop calls). */
