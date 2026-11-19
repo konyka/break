@@ -2777,6 +2777,9 @@ set_property(TARGET rule_engine_c99_consumer PROPERTY C_STANDARD 99)
 target_include_directories(rule_engine_c99_consumer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 # Merges break.trace documents from several processes into one timeline.
+add_executable(trace_convert tools/trace_convert.c src/core/trace_core_app.c)
+target_include_directories(trace_convert PRIVATE src)
+
 add_executable(trace_merge tools/trace_merge.c src/core/trace_merge.c
     src/core/trace_core_app.c src/core/clock_offset.c)
 target_include_directories(trace_merge PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -5406,6 +5409,23 @@ endif()
                 -DTLS_KEY=${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl/snow_test_key.pem
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_network.cmake)
         set_tests_properties(test_core_app_network_loopback PROPERTIES
+            LABELS "network;snowflake;core_app" TIMEOUT 180)
+        # one connection, one session: the peer document names exactly one,
+        # so trace_merge aligns the two traces with no --session
+        add_test(NAME test_core_app_network_single_session
+            COMMAND ${CMAKE_COMMAND}
+                -DMODE=single
+                -DCORE_APP=$<TARGET_FILE:core_app>
+                -DNET_CLIENT=$<TARGET_FILE:test_core_app_net_client>
+                -DTRACE_CONVERT=$<TARGET_FILE:trace_convert>
+                -DTRACE_MERGE=$<TARGET_FILE:trace_merge>
+                -DASSET_DIR=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app
+                -DSCENARIO=${CMAKE_CURRENT_SOURCE_DIR}/tests/data/core_app_network_loopback.scenario
+                -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/core_app_network_single
+                -DTLS_CERT=${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl/snow_test_cert.pem
+                -DTLS_KEY=${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl/snow_test_key.pem
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_network.cmake)
+        set_tests_properties(test_core_app_network_single_session PROPERTIES
             LABELS "network;snowflake;core_app" TIMEOUT 180)
         add_test(NAME test_core_app_network_late_auth
             COMMAND ${CMAKE_COMMAND}

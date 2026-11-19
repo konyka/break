@@ -5,12 +5,14 @@
  * which hostile inputs close a connection. Whether hostile input changed
  * the simulation is checked by the CMake driver, which compares the
  * networked trace with an offline run of the same scenario. "late-auth"
- * runs only the delayed-AUTH peer; "voice" runs only the voice peer;
+ * runs only the delayed-AUTH peer; "single" runs one connection only, so a
+ * --trace document names exactly one session; "voice" runs only the voice
+ * peer;
  * "voice-relay" runs the two relay peers; "voice-mute" runs the two mute
  * peers; "voice-flood" runs the two rate-limit peers.
  *
  * Usage: test_core_app_net_client PORT_FILE REPORT_FILE
- *        [late-auth|voice|voice-relay|voice-mute|voice-flood]
+ *        [late-auth|voice|voice-relay|voice-mute|voice-flood|single]
  *        [--trace PATH]
  * The PSK is read from CORE_APP_TEST_PSK (64 hex digits). With --trace the
  * peer writes its own core_app-format trace: one
@@ -955,6 +957,23 @@ static void scenario_late_auth(void) {
     client_close(&g);
 }
 
+/* S: one connection, one session, nothing else. With --trace this produces
+ * a document naming exactly one session, which is what trace_merge's
+ * self-naming path expects (design 2026-11-20-single-session-peer). */
+static void scenario_single(void) {
+    NetClient s;
+    CoreAppSnapshot snapshot;
+    check(client_open(&s), "s_tls_challenge");
+    check(client_auth(&s, g_psk), "s_auth_sent");
+    check(client_next_snapshot(&s, &snapshot, 15000u) == 1, "s_received_snapshot");
+    check_welcome(&s, "s");
+    /* the server traces an offset only after enough accepted samples, so
+     * answer its probes until it has them */
+    check(client_answer_server_probes(&s, 4u, 4u, 20000u), "s_answered_server_probes");
+    fprintf(g_report, "single probes_answered=%u\n", g_server_probes_answered);
+    client_close(&s);
+}
+
 /* V: authenticates, then decodes the server's voice messages through a
  * real BreakVoiceReceiver. Every message must be version 1, BRV2 mono
  * 48 kHz with 480 samples at the exact ADPCM size, in consecutive
@@ -1385,6 +1404,7 @@ int main(int argc, char **argv) {
     bool voice_relay = argc == 4 && strcmp(argv[3], "voice-relay") == 0;
     bool voice_mute = argc == 4 && strcmp(argv[3], "voice-mute") == 0;
     bool voice_flood = argc == 4 && strcmp(argv[3], "voice-flood") == 0;
+    bool single = argc == 4 && strcmp(argv[3], "single") == 0;
     const char *trace_path = NULL;
     /* --trace PATH may follow the arguments above */
     for (int i = 3; i + 1 < argc; ++i) {
@@ -1400,10 +1420,11 @@ int main(int argc, char **argv) {
         voice_relay = argc > 4 && strcmp(argv[3], "voice-relay") == 0;
         voice_mute = argc > 4 && strcmp(argv[3], "voice-mute") == 0;
         voice_flood = argc > 4 && strcmp(argv[3], "voice-flood") == 0;
+        single = argc > 4 && strcmp(argv[3], "single") == 0;
     } else if (argc != 3 && !late_auth && !voice && !voice_relay && !voice_mute &&
-               !voice_flood) {
+               !voice_flood && !single) {
         fprintf(stderr, "usage: test_core_app_net_client PORT_FILE REPORT_FILE"
-                        " [late-auth|voice|voice-relay|voice-mute|voice-flood]"
+                        " [late-auth|voice|voice-relay|voice-mute|voice-flood|single]"
                         " [--trace PATH]\n");
         return 2;
     }
@@ -1428,6 +1449,8 @@ int main(int argc, char **argv) {
         scenario_voice_mute();
     } else if (g_failures == 0 && voice_flood) {
         scenario_voice_flood();
+    } else if (g_failures == 0 && single) {
+        scenario_single();
     } else if (g_failures == 0) {
         scenario_authenticated();
         scenario_unauthenticated();

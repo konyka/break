@@ -185,7 +185,8 @@ endif()
 
 if(NOT MODE STREQUAL "loopback" AND NOT MODE STREQUAL "late_auth" AND NOT MODE STREQUAL "voice"
    AND NOT MODE STREQUAL "voice_relay" AND NOT MODE STREQUAL "voice_relay_off"
-   AND NOT MODE STREQUAL "voice_mute" AND NOT MODE STREQUAL "voice_flood")
+   AND NOT MODE STREQUAL "voice_mute" AND NOT MODE STREQUAL "voice_flood"
+   AND NOT MODE STREQUAL "single")
     message(FATAL_ERROR "unknown MODE=${MODE}")
 endif()
 foreach(var NET_CLIENT TLS_CERT TLS_KEY)
@@ -210,6 +211,8 @@ elseif(MODE STREQUAL "voice_mute")
     set(client_mode voice-mute)
 elseif(MODE STREQUAL "voice_flood")
     set(client_mode voice-flood)
+elseif(MODE STREQUAL "single")
+    set(client_mode single)
 endif()
 set(relay_args "")
 if(MODE STREQUAL "voice_relay" OR MODE STREQUAL "voice_mute" OR MODE STREQUAL "voice_flood")
@@ -272,6 +275,42 @@ list(LENGTH server_auths server_auth_count)
 if(NOT peer_welcome_count EQUAL server_auth_count)
     message(FATAL_ERROR
         "the peer named ${peer_welcome_count} sessions, the server authenticated ${server_auth_count}")
+endif()
+# One session, so the peer document names exactly one: trace_merge can read
+# it and align the two traces with no --session (design
+# 2026-11-20-single-session-peer).
+if(MODE STREQUAL "single")
+    if(NOT peer_welcome_count EQUAL 1)
+        message(FATAL_ERROR "the single-session peer named ${peer_welcome_count} sessions")
+    endif()
+    if(NOT DEFINED TRACE_MERGE OR "${TRACE_MERGE}" STREQUAL "")
+        message(FATAL_ERROR "TRACE_MERGE is required for MODE=single")
+    endif()
+    # the merge takes converted documents; build them from the two traces
+    execute_process(COMMAND "${TRACE_CONVERT}" "${WORK_DIR}/network.trace"
+            "${WORK_DIR}/server.json"
+        COMMAND_ERROR_IS_FATAL ANY)
+    execute_process(COMMAND "${TRACE_CONVERT}" "${WORK_DIR}/peer.trace"
+            "${WORK_DIR}/peer.json"
+        COMMAND_ERROR_IS_FATAL ANY)
+    execute_process(COMMAND "${TRACE_MERGE}" --out "${WORK_DIR}/merged.json"
+            --clock-offset "${WORK_DIR}/network.trace"
+            "${WORK_DIR}/server.json" "${WORK_DIR}/peer.json"
+        RESULT_VARIABLE merge_rc OUTPUT_VARIABLE merge_out ERROR_VARIABLE merge_err
+        TIMEOUT 60)
+    if(NOT merge_rc EQUAL 0)
+        message(FATAL_ERROR "trace_merge failed without --session: ${merge_err}")
+    endif()
+    if(NOT merge_out MATCHES "names session=")
+        message(FATAL_ERROR "trace_merge did not read the peer's own session:\n${merge_out}")
+    endif()
+    if(NOT merge_out MATCHES "clock offset session=")
+        message(FATAL_ERROR "trace_merge found no offset for that session:\n${merge_out}")
+    endif()
+    file(READ "${WORK_DIR}/merged.json" merged)
+    if(NOT merged MATCHES "\"pid\":1," OR NOT merged MATCHES "\"pid\":2,")
+        message(FATAL_ERROR "the merge dropped an input:\n${merged}")
+    endif()
 endif()
 if(NOT report MATCHES "client trace_lines=[1-9]")
     message(FATAL_ERROR "the peer reported no trace lines:\n${report}")
@@ -488,6 +527,14 @@ if(MODE STREQUAL "voice_relay" OR MODE STREQUAL "voice_relay_off")
     return()
 endif()
 stat_value("${stats}" authenticated authenticated)
+if(MODE STREQUAL "single")
+    # one connection only; the counts below belong to the loopback suite
+    if(NOT authenticated EQUAL 1)
+        message(FATAL_ERROR "the single-session peer authenticated ${authenticated} times")
+    endif()
+    message(STATUS "core_app single-session contract passed")
+    return()
+endif()
 if(NOT authenticated EQUAL 3)
     message(FATAL_ERROR "peers A, A2 and F hold the PSK; authenticated=${authenticated}")
 endif()

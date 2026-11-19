@@ -176,9 +176,12 @@ static int apply_clock_offset(const char *path, ToolInput *inputs, u32 count)
     static u64 errors[TRACE_MERGE_MAX_INPUTS];
     for (u32 i = 1u; i < count; ++i) {
         ToolInput *peer = &inputs[i];
-        /* a peer trace that names its own session needs no --session: read
-         * it from the peer's own text before falling back */
-        if (!peer->has_session && count > 2u) {
+        /* a peer document that names its own session needs no --session:
+         * read it from the peer's own bytes before falling back. This runs
+         * for a single peer too, so a server trace whose only clock line
+         * carries session= is matched by session rather than by being the
+         * only one. */
+        if (!peer->has_session) {
             char *peer_text = NULL;
             usize peer_size = 0u;
             if (read_file(peer->path, &peer_text, &peer_size)) {
