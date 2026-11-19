@@ -546,6 +546,10 @@ double break_editor_shell_audio_lra(const BreakEditorShell *shell);
  * 2026-11-20-editor-audio-lufs-normalize), as one undoable edit; false logs
  * the edit-failed line and changes nothing. */
 bool break_editor_shell_audio_normalize_lufs(BreakEditorShell *shell, double target);
+/* Brings the document's audio under `ceiling` dBTP (design
+ * 2026-11-20-editor-audio-tp-limit) by scaling the clip, as one undoable
+ * edit; false logs the edit-failed line and changes nothing. */
+bool break_editor_shell_audio_limit_true_peak(BreakEditorShell *shell, double ceiling);
 double break_editor_shell_audio_rms_db(const BreakEditorShell *shell);
 u32 break_editor_shell_audio_set_mute(BreakEditorShell *shell, u32 channel);
 u32 break_editor_shell_audio_mute(const BreakEditorShell *shell);

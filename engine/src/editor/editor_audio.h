@@ -105,6 +105,13 @@ bool break_editor_doc_audio_normalize(BreakEditorDoc *doc, double target_dbfs);
  * and no change without an attachment, for a target out of range, a clip
  * too short to measure, or a digitally silent clip. */
 bool break_editor_doc_audio_normalize_loudness(BreakEditorDoc *doc, double target_lufs);
+/* Brings the clip's true peak to at most `ceiling_dbtp` ([-20, 0]) by
+ * scaling the whole clip, as one undoable snapshot. This is gain reduction,
+ * not a per-sample limiter: the waveform's shape and its loudness range are
+ * unchanged. A clip already under the ceiling is left alone and still
+ * returns true, adding no history entry. False and no change without an
+ * attachment, for a ceiling out of range, or for a silent clip. */
+bool break_editor_doc_audio_limit_true_peak(BreakEditorDoc *doc, double ceiling_dbtp);
 /* fade / normalize applied to frames [begin, end) only (the normalize peak
  * is measured there); frames outside are unchanged. One undoable snapshot
  * command each; false and no change for an empty or out-of-clip range or the

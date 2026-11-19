@@ -1160,7 +1160,67 @@ TEST(loudness_curve_follows_the_level_over_time)
     break_editor_doc_destroy(doc);
 }
 
+/* True-peak ceiling (design 2026-11-20-editor-audio-tp-limit). */
+TEST(limit_true_peak_brings_a_hot_clip_under_the_ceiling)
+{
+    static i16 pcm[40000u];
+    static i16 original[40000u];
+    double tp = 0.0, before_lufs = 0.0, after_lufs = 0.0, before_tp = 0.0;
+    BreakEditorDoc *doc = break_editor_doc_create();
+    const double two_pi = 2.0 * 3.14159265358979323846;
+    ASSERT_NOT_NULL(doc);
+    /* a hot sine whose crests fall between samples, so its true peak is
+     * above its sample peak and above the ceiling */
+    for (u32 i = 0u; i < 40000u; ++i) {
+        const double phase = two_pi * ((double)i / 4.0 + 0.125);
+        pcm[i] = (i16)(sin(phase) * 23000.0);
+        original[i] = pcm[i];
+    }
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 40000u));
+    ASSERT_TRUE(break_editor_doc_audio_true_peak_range(doc, 0u, 40000u, &before_tp));
+    ASSERT_TRUE(break_editor_doc_audio_loudness_range(doc, 0u, 40000u, &before_lufs));
+    /* 32768 * 10^(-6/20) = 16422: the clip is well above a -6 dBTP ceiling */
+    ASSERT_TRUE(before_tp > 20000.0);
+    ASSERT_TRUE(break_editor_doc_audio_limit_true_peak(doc, -6.0));
+    ASSERT_TRUE(break_editor_doc_audio_true_peak_range(doc, 0u, 40000u, &tp));
+    ASSERT_TRUE(tp < 16500.0 && tp > 16000.0);
+    /* a constant gain: the loudness fell by what the peak fell by */
+    ASSERT_TRUE(break_editor_doc_audio_loudness_range(doc, 0u, 40000u, &after_lufs));
+    {
+        const double peak_drop = 20.0 * log10(tp / before_tp);
+        const double loud_drop = after_lufs - before_lufs;
+        ASSERT_TRUE(loud_drop > peak_drop - 0.6 && loud_drop < peak_drop + 0.6);
+    }
+    /* the undo restores the samples byte for byte */
+    ASSERT_TRUE(break_editor_undo(doc));
+    ASSERT_EQ(memcmp(break_editor_doc_audio_samples(doc), original, sizeof(original)), 0);
+    /* a clip already under the ceiling is left alone and adds no history */
+    ASSERT_TRUE(break_editor_doc_audio_limit_true_peak(doc, -1.0));
+    {
+        const u64 revision = break_editor_doc_audio_revision(doc);
+        ASSERT_TRUE(break_editor_doc_audio_limit_true_peak(doc, 0.0));
+        ASSERT_EQ(break_editor_doc_audio_revision(doc), revision);
+        ASSERT_TRUE(break_editor_doc_audio_true_peak_range(doc, 0u, 40000u, &tp));
+        ASSERT_TRUE(tp <= 32768.0 * 1.0001);
+    }
+    /* the rejected cases change nothing */
+    {
+        const u64 revision = break_editor_doc_audio_revision(doc);
+        ASSERT_TRUE(!break_editor_doc_audio_limit_true_peak(doc, -20.1));
+        ASSERT_TRUE(!break_editor_doc_audio_limit_true_peak(doc, 0.1));
+        ASSERT_TRUE(!break_editor_doc_audio_limit_true_peak(NULL, -1.0));
+        ASSERT_EQ(break_editor_doc_audio_revision(doc), revision);
+    }
+    /* a silent clip has no peak to bring down */
+    break_editor_doc_reset(doc);
+    memset(pcm, 0, sizeof(pcm));
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 40000u));
+    ASSERT_TRUE(!break_editor_doc_audio_limit_true_peak(doc, -1.0));
+    break_editor_doc_destroy(doc);
+}
+
 TEST_MAIN_BEGIN()
+    RUN_TEST(limit_true_peak_brings_a_hot_clip_under_the_ceiling);
     RUN_TEST(loudness_curve_follows_the_level_over_time);
     RUN_TEST(normalize_loudness_reaches_the_target_without_clipping);
     RUN_TEST(short_term_and_lra_describe_level_variation);

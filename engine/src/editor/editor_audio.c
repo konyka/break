@@ -684,6 +684,38 @@ bool break_editor_doc_audio_loudness_curve(const BreakEditorDoc *doc, u32 begin,
     return true;
 }
 
+bool break_editor_doc_audio_limit_true_peak(BreakEditorDoc *doc, double ceiling_dbtp) {
+    double tp = 0.0;
+    if (!doc || !doc->audio || !isfinite(ceiling_dbtp) || ceiling_dbtp < -20.0 ||
+        ceiling_dbtp > 0.0) {
+        return false;
+    }
+    const u32 frames = doc->audio->frames;
+    if (!break_editor_doc_audio_true_peak_range(doc, 0u, frames, &tp) || tp <= 0.0) {
+        return false; /* no attachment, or digitally silent */
+    }
+    {
+        const double ceiling = pow(10.0, ceiling_dbtp / 20.0) * 32768.0;
+        if (tp <= ceiling) {
+            return true; /* already under it: the postcondition holds */
+        }
+        const double gain = ceiling / tp;
+        BreakEditorAudioSnapshotCmd *snapshot = audio_snapshot_create(doc, "limit_tp");
+        if (!snapshot) return false;
+        {
+            const usize count = (usize)snapshot->before_frames * doc->audio->channels;
+            for (usize i = 0u; i < count; ++i) {
+                const double scaled = (double)snapshot->after[i] * gain;
+                const double rounded = scaled >= 0.0 ? scaled + 0.5 : scaled - 0.5;
+                snapshot->after[i] = rounded > 32767.0
+                                         ? (i16)32767
+                                         : (rounded < -32768.0 ? (i16)-32768 : (i16)rounded);
+            }
+        }
+        return audio_snapshot_commit(snapshot, doc, snapshot->before_frames);
+    }
+}
+
 bool break_editor_doc_audio_normalize_loudness(BreakEditorDoc *doc, double target_lufs) {
     double current = 0.0, peak = 0.0, rms = 0.0;
     if (!doc || !doc->audio || !isfinite(target_lufs) ||

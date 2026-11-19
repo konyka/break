@@ -175,6 +175,8 @@ double editor_panel_audio_short_term_lufs(const EditorPanelAudio *panel);
 double editor_panel_audio_lra(const EditorPanelAudio *panel);
 /* Normalizes the document to `target` LUFS and refreshes the page. */
 bool editor_panel_audio_normalize_lufs(EditorPanelAudio *panel, double target);
+/* Brings the document's audio under `ceiling` dBTP and refreshes. */
+bool editor_panel_audio_limit_true_peak(EditorPanelAudio *panel, double ceiling);
 double editor_panel_audio_rms_db(const EditorPanelAudio *panel);
 u32 editor_panel_audio_set_mute(EditorPanelAudio *panel, u32 channel);
 u32 editor_panel_audio_mute(const EditorPanelAudio *panel);
