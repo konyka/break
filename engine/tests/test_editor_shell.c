@@ -3615,6 +3615,153 @@ TEST(audio_page_selects_and_trims_or_cuts)
     break_editor_shell_destroy(shell);
 }
 
+/* Drag on the waveform selects (design 2026-11-19-editor-audio-drag). */
+static void pointer_drag(BreakEditorShell *shell, my_widget_t *w, int32_t from_x,
+                         int32_t to_x, bool release) {
+    my_window_t *win = break_editor_shell_window(shell);
+    int32_t gx = 0, gy = 0;
+    my_event_t ev;
+    my_widget_local_to_global(w, &gx, &gy);
+    ev = my_event_init(MY_EVENT_POINTER_DOWN);
+    ev.u.pointer.x = gx + from_x;
+    ev.u.pointer.y = gy + w->rect.h / 2;
+    ev.u.pointer.button = 1u;
+    (void)my_event_dispatch(&win->dispatcher, &ev);
+    ev = my_event_init(MY_EVENT_POINTER_MOVE);
+    ev.u.pointer.x = gx + (from_x + to_x) / 2;
+    ev.u.pointer.y = gy + w->rect.h / 2;
+    (void)my_event_dispatch(&win->dispatcher, &ev);
+    ev = my_event_init(MY_EVENT_POINTER_MOVE);
+    ev.u.pointer.x = gx + to_x;
+    ev.u.pointer.y = gy + w->rect.h / 2;
+    (void)my_event_dispatch(&win->dispatcher, &ev);
+    if (release) {
+        ev = my_event_init(MY_EVENT_POINTER_UP);
+        ev.u.pointer.x = gx + to_x;
+        ev.u.pointer.y = gy + w->rect.h / 2;
+        ev.u.pointer.button = 1u;
+        (void)my_event_dispatch(&win->dispatcher, &ev);
+    }
+}
+
+TEST(audio_page_selects_by_dragging_the_waveform)
+{
+    static i16 pcm[1000u];
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    my_widget_t *wave;
+    u32 b = 0u, e = 0u, i, w;
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    for (i = 0u; i < 1000u; i++) pcm[i] = (i16)i;
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 1000u));
+    ASSERT_TRUE(break_editor_shell_select_tab(shell, 0u, 4u));
+    shell_paint(shell);
+    break_editor_shell_tick(shell);
+    wave = find(shell, "editor-audio-waveform");
+    ASSERT_NOT_NULL(wave);
+    w = (u32)wave->rect.w;
+    /* drag right: [press, release] with the release frame included */
+    {
+        const u32 from = (u32)((u64)(w / 4u) * 1000u / w);
+        const u32 to = (u32)((u64)(w / 2u) * 1000u / w);
+        pointer_drag(shell, wave, (int32_t)(w / 4u), (int32_t)(w / 2u), true);
+        ASSERT_TRUE(break_editor_shell_audio_selection(shell, &b, &e));
+        ASSERT_EQ(b, from);
+        ASSERT_EQ(e, to + 1u);
+    }
+    /* the cursor stays at the press, so Play plays the selection */
+    ASSERT_EQ(break_editor_shell_audio_cursor_frames(shell), b);
+    /* drag left: the same range, whichever way it is dragged */
+    {
+        u32 b2 = 0u, e2 = 0u;
+        pointer_drag(shell, wave, (int32_t)(w / 2u), (int32_t)(w / 4u), true);
+        ASSERT_TRUE(break_editor_shell_audio_selection(shell, &b2, &e2));
+        ASSERT_EQ(b2, b);
+        ASSERT_EQ(e2, e);
+    }
+    /* the selection updates while the button is still down */
+    pointer_drag(shell, wave, 0, (int32_t)(w / 8u), false);
+    ASSERT_TRUE(break_editor_shell_audio_selection(shell, &b, &e));
+    ASSERT_EQ(b, 0u);
+    ASSERT_EQ(e, (u32)((u64)(w / 8u) * 1000u / w) + 1u);
+    /* a release without moving is a plain click: seek, no selection */
+    pointer_drag(shell, wave, (int32_t)(w / 2u), (int32_t)(w / 2u), true);
+    ASSERT_FALSE(break_editor_shell_audio_selection(shell, &b, &e));
+    ASSERT_TRUE(break_editor_shell_audio_cursor_frames(shell) >= 490u);
+    /* switching the tab mid-drag ends it: later moves select nothing */
+    {
+        my_window_t *win = break_editor_shell_window(shell);
+        int32_t gx = 0, gy = 0;
+        my_event_t ev;
+        u32 b2 = 0u, e2 = 0u;
+        pointer_drag(shell, wave, 0, (int32_t)(w / 8u), false);
+        ASSERT_TRUE(break_editor_shell_audio_selection(shell, &b, &e));
+        ASSERT_TRUE(break_editor_shell_select_tab(shell, 0u, 0u));
+        shell_paint(shell);
+        my_widget_local_to_global(wave, &gx, &gy);
+        ev = my_event_init(MY_EVENT_POINTER_MOVE);
+        ev.u.pointer.x = gx + (int32_t)(w / 2u);
+        ev.u.pointer.y = gy + wave->rect.h / 2;
+        (void)my_event_dispatch(&win->dispatcher, &ev);
+        ASSERT_TRUE(break_editor_shell_audio_selection(shell, &b2, &e2));
+        ASSERT_EQ(b2, b);
+        ASSERT_EQ(e2, e);
+        ASSERT_TRUE(break_editor_shell_select_tab(shell, 0u, 4u));
+        shell_paint(shell);
+        ASSERT_FALSE(break_editor_shell_audio_seek(shell, 0u)); /* clears nothing */
+        pointer_drag(shell, wave, (int32_t)(w / 2u), (int32_t)(w / 2u), true);
+        ASSERT_FALSE(break_editor_shell_audio_selection(shell, &b2, &e2));
+    }
+    /* a second press without a release re-anchors instead of extending */
+    {
+        u32 b2 = 0u, e2 = 0u;
+        pointer_drag(shell, wave, 0, (int32_t)(w / 4u), false);
+        pointer_drag(shell, wave, (int32_t)(w / 2u), (int32_t)((w * 3u) / 4u), true);
+        ASSERT_TRUE(break_editor_shell_audio_selection(shell, &b2, &e2));
+        ASSERT_EQ(b2, (u32)((u64)(w / 2u) * 1000u / w));
+        ASSERT_EQ(e2, (u32)((u64)((w * 3u) / 4u) * 1000u / w) + 1u);
+        pointer_drag(shell, wave, 1, 1, true); /* back to no selection */
+        ASSERT_FALSE(break_editor_shell_audio_selection(shell, &b2, &e2));
+    }
+    /* a reset mid-drag ends it: the next move selects nothing */
+    {
+        my_window_t *win = break_editor_shell_window(shell);
+        int32_t gx = 0, gy = 0;
+        my_event_t ev;
+        u32 b2 = 0u, e2 = 0u;
+        pointer_drag(shell, wave, 0, (int32_t)(w / 4u), false);
+        ASSERT_TRUE(break_editor_shell_audio_selection(shell, &b2, &e2));
+        ASSERT_TRUE(break_editor_doc_reset(doc));
+        break_editor_shell_tick(shell);
+        ASSERT_FALSE(break_editor_shell_audio_selection(shell, &b2, &e2));
+        my_widget_local_to_global(wave, &gx, &gy);
+        ev = my_event_init(MY_EVENT_POINTER_MOVE);
+        ev.u.pointer.x = gx + (int32_t)(w / 2u);
+        ev.u.pointer.y = gy + wave->rect.h / 2;
+        (void)my_event_dispatch(&win->dispatcher, &ev);
+        ASSERT_FALSE(break_editor_shell_audio_selection(shell, &b2, &e2));
+        ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 1000u));
+        break_editor_shell_tick(shell);
+    }
+    /* a move without a press does not select */
+    {
+        my_window_t *win = break_editor_shell_window(shell);
+        int32_t gx = 0, gy = 0;
+        my_event_t ev;
+        my_widget_local_to_global(wave, &gx, &gy);
+        ev = my_event_init(MY_EVENT_POINTER_MOVE);
+        ev.u.pointer.x = gx + 10;
+        ev.u.pointer.y = gy + wave->rect.h / 2;
+        (void)my_event_dispatch(&win->dispatcher, &ev);
+        ASSERT_FALSE(break_editor_shell_audio_selection(shell, &b, &e));
+    }
+    shell_paint(shell);
+    /* destroying the shell mid-drag must not touch freed panel state */
+    pointer_drag(shell, wave, 0, (int32_t)(w / 4u), false);
+    break_editor_shell_destroy(shell);
+}
+
 /* Fade / Normalize on the selection or the whole clip (design
  * 2026-11-19-editor-audio-range-effects). */
 TEST(audio_page_fades_and_normalizes_the_selection_or_clip)
@@ -12850,6 +12997,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(audio_page_seeks_from_the_waveform);
     RUN_TEST(audio_page_selects_and_trims_or_cuts);
     RUN_TEST(audio_page_fades_and_normalizes_the_selection_or_clip);
+    RUN_TEST(audio_page_selects_by_dragging_the_waveform);
     RUN_TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo);
     RUN_TEST(assets_panel_load_guards_unsaved_changes);
     RUN_TEST(palette_save_as_writes_the_typed_path);
