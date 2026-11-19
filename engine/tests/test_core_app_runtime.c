@@ -965,6 +965,48 @@ TEST(audio_device_mode_rejects_a_system_without_a_device) {
     fclose(trace);
 }
 
+TEST(audio_device_mode_rejects_an_unknown_device_name) {
+    CoreAppAudio audio;
+    FILE *trace = audio_trace_open();
+    char text[4096];
+    ASSERT_NOT_NULL(trace);
+    /* the rejection does not depend on hardware and is never degraded */
+    ASSERT_EQ(core_app_audio_start_device_named(&audio, trace, false, CORE_APP_SOURCE_ASSET_DIR,
+                                                AUDIO_BACKEND_NULL, "no such speaker"),
+              BREAK_RUNTIME_REJECTED);
+    ASSERT_TRUE(audio.system == NULL);
+    ASSERT_EQ(audio.device_fallbacks, 0u);
+    audio_trace_read(trace, text, sizeof(text));
+    ASSERT_NOT_NULL(strstr(text,
+        "COREAPPTRACE version=1 event=audio mode=device result=rejected reason=device_name\n"));
+    ASSERT_TRUE(strstr(text, "result=unavailable") == NULL);
+    fclose(trace);
+
+    trace = audio_trace_open();
+    ASSERT_NOT_NULL(trace);
+    ASSERT_EQ(core_app_audio_start_device_named(&audio, trace, true, CORE_APP_SOURCE_ASSET_DIR,
+                                                AUDIO_BACKEND_FAKE, "fake"),
+              BREAK_RUNTIME_REJECTED);
+    ASSERT_TRUE(audio.system == NULL);
+    fclose(trace);
+}
+
+/* The named Null device opens, but it is still not a playback device. */
+TEST(audio_device_mode_named_null_device_is_unavailable) {
+    CoreAppAudio audio;
+    FILE *trace = audio_trace_open();
+    char text[4096];
+    ASSERT_NOT_NULL(trace);
+    ASSERT_EQ(core_app_audio_start_device_named(&audio, trace, true, CORE_APP_SOURCE_ASSET_DIR,
+                                                AUDIO_BACKEND_NULL, "NULL Playback Device"),
+              BREAK_RUNTIME_UNAVAILABLE);
+    ASSERT_TRUE(audio.system == NULL);
+    audio_trace_read(trace, text, sizeof(text));
+    ASSERT_NOT_NULL(strstr(text,
+        "event=audio mode=device result=unavailable backend=Null fallback=none\n"));
+    fclose(trace);
+}
+
 static void audio_shutdown(CoreAppAudio *audio) {
     ASSERT_EQ(core_app_audio_stop_admission(audio), BREAK_RUNTIME_OK);
     ASSERT_EQ(core_app_audio_stop_producers(audio), BREAK_RUNTIME_OK);
@@ -1598,6 +1640,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(audio_device_mode_reports_unavailable_and_degrades_to_null);
     RUN_TEST(audio_device_required_mode_fails_when_no_device_exists);
     RUN_TEST(audio_device_mode_rejects_a_system_without_a_device);
+    RUN_TEST(audio_device_mode_rejects_an_unknown_device_name);
+    RUN_TEST(audio_device_mode_named_null_device_is_unavailable);
     RUN_TEST(audio_device_drain_drives_the_audio_system);
     RUN_TEST(audio_device_slot_reuse_stops_the_displaced_source);
     RUN_TEST(audio_device_stale_stop_never_reaches_a_reclaimed_slot);

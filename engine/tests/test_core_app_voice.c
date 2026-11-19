@@ -670,6 +670,55 @@ TEST(the_worker_recovers_a_lost_capture_and_keeps_running)
     audio_system_destroy(playback);
 }
 
+TEST(a_named_capture_device_opens_and_an_unknown_name_is_rejected)
+{
+    AudioSystem *playback = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(playback);
+    CoreAppVoiceConfig config = recovery_config(playback, 0u, 3u);
+    config.capture_backend = AUDIO_BACKEND_NULL;
+    char name[64] = "NULL Capture Device";
+    config.capture_device_name = name;
+    CoreAppVoice *voice = NULL;
+    ASSERT_EQ(core_app_voice_create(&config, &voice), BREAK_RUNTIME_OK);
+    ASSERT_NOT_NULL(voice);
+    /* the voice keeps its own copy of the name */
+    memset(name, 0, sizeof(name));
+    char opened[128] = {0};
+    ASSERT_TRUE(core_app_voice_capture_name(voice, opened, sizeof(opened)));
+    ASSERT_STR_EQ(opened, "NULL Capture Device");
+    ASSERT_EQ(core_app_voice_start(voice), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_voice_simulate_capture_event(voice, AUDIO_CAPTURE_EVENT_DEVICE_LOST),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_voice_pump(voice, 1u), BREAK_RUNTIME_OK);
+    CoreAppVoiceStats stats;
+    voice_stats(voice, &stats);
+    ASSERT_EQ(stats.capture_recoveries, 1u);
+    ASSERT_TRUE(core_app_voice_capture_name(voice, opened, sizeof(opened)));
+    ASSERT_STR_EQ(opened, "NULL Capture Device");
+    ASSERT_EQ(core_app_voice_stop(voice), BREAK_RUNTIME_OK);
+    core_app_voice_destroy(voice);
+
+    voice = NULL;
+    config.capture_device_name = "no such microphone";
+    ASSERT_EQ(core_app_voice_create(&config, &voice), BREAK_RUNTIME_REJECTED);
+    ASSERT_TRUE(voice == NULL);
+    config.capture_backend = AUDIO_BACKEND_FAKE;
+    config.capture_device_name = "fake";
+    ASSERT_EQ(core_app_voice_create(&config, &voice), BREAK_RUNTIME_REJECTED);
+    ASSERT_TRUE(voice == NULL);
+    char long_name[200];
+    memset(long_name, 'a', sizeof(long_name) - 1u);
+    long_name[sizeof(long_name) - 1u] = '\0';
+    config.capture_backend = AUDIO_BACKEND_NULL;
+    config.capture_device_name = long_name;
+    ASSERT_EQ(core_app_voice_create(&config, &voice), BREAK_RUNTIME_REJECTED);
+    ASSERT_TRUE(voice == NULL);
+    config.capture_device_name = "";
+    ASSERT_EQ(core_app_voice_create(&config, &voice), BREAK_RUNTIME_OK);
+    core_app_voice_destroy(voice);
+    audio_system_destroy(playback);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(create_validates_config_and_lifecycle);
     RUN_TEST(manual_packet_matches_independent_pipeline);
@@ -684,4 +733,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(refused_reopens_are_retried_until_the_limit_of_consecutive_failures);
     RUN_TEST(reopen_attempts_wait_for_the_interval);
     RUN_TEST(the_worker_recovers_a_lost_capture_and_keeps_running);
+    RUN_TEST(a_named_capture_device_opens_and_an_unknown_name_is_rejected);
 TEST_MAIN_END()

@@ -5498,6 +5498,15 @@ endif()
     set_tests_properties(test_core_app_audio_device PROPERTIES
         LABELS "audio_device;core_app" TIMEOUT 180 RUN_SERIAL TRUE SKIP_RETURN_CODE 77
         SKIP_REGULAR_EXPRESSION "CORE_APP_AUDIO_DEVICE_UNAVAILABLE")
+    add_test(NAME test_core_app_named_device
+        COMMAND ${CMAKE_COMMAND}
+            -DCORE_APP=$<TARGET_FILE:core_app>
+            -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_named_device
+            -DASSET_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_named_device.cmake)
+    set_tests_properties(test_core_app_named_device PROPERTIES
+        LABELS "audio_device;core_app" TIMEOUT 300 RUN_SERIAL TRUE SKIP_RETURN_CODE 77
+        SKIP_REGULAR_EXPRESSION "CORE_APP_NAMED_DEVICE_UNAVAILABLE")
     add_test(NAME test_core_app_voice_device
         COMMAND ${CMAKE_COMMAND}
             -DCORE_APP=$<TARGET_FILE:core_app>
@@ -5535,7 +5544,7 @@ endif()
     # inside libpulse like the two device tests.
     if(ENGINE_USE_TSAN AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
         set_property(TEST test_core_app_audio_device test_core_app_voice_device
-            test_core_app_voice_null APPEND
+            test_core_app_voice_null test_core_app_named_device APPEND
             PROPERTY ENVIRONMENT
             "TSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/tests/core_app_audio_device_tsan.supp")
     endif()
@@ -7110,6 +7119,8 @@ endif()
     target_include_directories(test_audio PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_audio PRIVATE m Threads::Threads)
     target_compile_definitions(test_audio PRIVATE AUDIO_REFERENCE_TEST_HOOK=reference_test_hook)
+    target_compile_definitions(test_audio PRIVATE
+        AUDIO_SWITCH_START_TEST_HOOK=switch_start_test_hook)
     add_test(NAME test_audio COMMAND test_audio)
     # default_playback_reopen_keeps_rendering opens and reopens the real
     # default output, which races inside libpulse like the core_app device

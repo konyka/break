@@ -12,11 +12,17 @@
 typedef struct {
     AudioSystem *playback; /* borrowed until destroy */
     AudioBackend capture_backend;
+    /* The input device to open (as audio_capture_list_devices reports it);
+     * NULL or "" opens the default. Copied at create; a reopen after a loss
+     * opens it again and falls back to the default only when it is gone.
+     * create returns REJECTED for a name of 128 bytes or more, a name no
+     * device has, or any name with a FAKE backend. */
+    const char *capture_device_name;
     AudioVoiceAlignerConfig aligner;
     AudioVoiceProcessorConfig processor;
     bool use_gcc;
     /* Capture recovery. 0 max_reopen_failures: a lost capture device makes
-     * pump return UNAVAILABLE at once. Otherwise pump reopens the default
+     * pump return UNAVAILABLE at once. Otherwise pump reopens the selected
      * input, at most once per call and reopen_interval_ms apart (monotonic
      * clock, 0 = every call), and returns UNAVAILABLE only after that many
      * consecutive refused reopens. */

@@ -1,3 +1,9 @@
+## Core App 按名称选择音频设备（2026-11-18）
+
+- **交付**：`audio_system_list_devices`、`audio_system_create_named`、`audio_system_switch_device`、`audio_system_selected_device`；`audio_system_reopen` 打开已选设备，名称消失时退回默认并保留选择。切换先打开新设备，失败时旧设备继续播放；声源、总线、听者和播放参考环保留。`CoreAppVoiceConfig.capture_device_name`（create 时复制，恢复时重开同名输入，名称消失退回默认）。`core_app_audio_start_device_named`。CLI 新增 `--audio-device NAME`（需 `--audio=device`）、`--voice-capture-device NAME`（需 `--voice=device`，与 `--voice-null-capture` 冲突）。未知名称写 `result=rejected reason=device_name`，exit 2，不降级。设计与计划见 `docs/superpowers/specs/2026-11-18-named-audio-devices-design.md`、`docs/superpowers/plans/2026-11-18-named-audio-devices.md`。
+- **TDD**：`test_audio` 47 项（新增 11 项）、`test_core_app_voice` 14 项（新增 1 项）、`test_core_app_runtime` 55 项（新增 2 项）、新 ctest `test_core_app_named_device` 均先 RED 后 GREEN。变异（切换先关旧设备、reopen 忽略选择、voice 忽略名称、core_app_audio 不拒绝、core_app voice 不拒绝、切换启动失败不恢复、名称长度不一致）都判红；独立评审的 Critical/Important（启动失败残留设备、未初始化 context、长度策略、trace 写失败）已修复并补测试。本机 PulseAudio 默认设备按名称重开，ready 行设备一致。
+- **边界**：运行中的 core_app 没有命令或 UI 驱动 `audio_system_switch_device`；名称精确匹配；无漂移补偿或真实声学验证。
+
 ## Core App 播放设备自动恢复（2026-11-18）
 
 - **交付**：`audio_system_lost` / `audio_system_reopen` / `audio_system_simulate_event`；播放设备丢失后，core_app 音频 owner 每 100 ms 重开默认输出，最多 50 次，声源、总线、听者和播放参考环保持不变。device 模式 `result=stopped` 行追加 `device_recoveries`、`device_reopen_failures`。所有设备后端的 miniaudio context 改由 `AudioSystem` 持有，并按 miniaudio 后端顺序逐个回退。丢失按设备状态判定（非 started 超过 250 ms），后端自行重启的设备不重开。语音 pump 通过 `audio_system_recoveries` 跟随播放重开，丢弃无参考的采集并重置 processor；voice `result=stopped` 行追加 `playback_recoveries`。设计与计划见 `docs/superpowers/specs/2026-11-18-core-app-playback-recovery-design.md`、`docs/superpowers/plans/2026-11-18-core-app-playback-recovery.md`。

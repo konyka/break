@@ -17,7 +17,9 @@ static void print_help(void) {
     puts("Usage: core_app [OPTIONS]\n"
          "  --render record|auto|vulkan|opengl\n"
          "  --audio record|null|device\n"
+         "  --audio-device NAME\n"
          "  --voice off|fake|device\n"
+         "  --voice-capture-device NAME\n"
          "  --voice-null-capture\n"
          "  --assets DIR\n"
          "  --scenario PATH\n"
@@ -178,6 +180,13 @@ int main(int argc, char **argv) {
         } else if ((matched = take_value(argc, argv, &i, "--audio", &value)) != 0) {
             if (matched < 0 || !parse_audio(value, &config.audio_mode))
                 return cli_error("invalid --audio value");
+        } else if ((matched = take_value(argc, argv, &i, "--audio-device", &value)) != 0) {
+            if (matched < 0) return cli_error("--audio-device requires a nonempty name");
+            config.audio_device_name = value;
+        } else if ((matched = take_value(argc, argv, &i, "--voice-capture-device", &value)) !=
+                   0) {
+            if (matched < 0) return cli_error("--voice-capture-device requires a nonempty name");
+            config.voice_capture_device_name = value;
         } else if (strcmp(argv[i], "--voice-null-capture") == 0) {
             config.voice_null_capture = true;
         } else if ((matched = take_value(argc, argv, &i, "--voice", &value)) != 0) {
@@ -252,6 +261,12 @@ int main(int argc, char **argv) {
         return cli_error("--voice=device requires --audio=device");
     if (config.voice_null_capture && config.voice_mode != CORE_APP_VOICE_DEVICE)
         return cli_error("--voice-null-capture requires --voice=device");
+    if (config.audio_device_name && config.audio_mode != CORE_APP_AUDIO_DEVICE)
+        return cli_error("--audio-device requires --audio=device");
+    if (config.voice_capture_device_name && config.voice_mode != CORE_APP_VOICE_DEVICE)
+        return cli_error("--voice-capture-device requires --voice=device");
+    if (config.voice_capture_device_name && config.voice_null_capture)
+        return cli_error("--voice-capture-device conflicts with --voice-null-capture");
     if (trace_json_path && !config.trace_path)
         return cli_error("--trace-json requires --trace");
     if (trace_timestamps && !config.trace_path)

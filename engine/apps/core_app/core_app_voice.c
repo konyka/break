@@ -18,6 +18,7 @@ struct CoreAppVoice {
     atomic_uint_least64_t produced;
     atomic_uint_least64_t dropped;
     u32 next_sequence;
+    char capture_device_name[128];
     u32 reopen_interval_ms;
     u32 max_reopen_failures;
     u32 consecutive_reopen_failures;
@@ -64,15 +65,22 @@ BreakRuntimeError core_app_voice_create(const CoreAppVoiceConfig *config,
         config->processor.echo.sample_rate != 48000u) {
         return BREAK_RUNTIME_INVALID;
     }
+    const char *name = config->capture_device_name ? config->capture_device_name : "";
+    const usize name_length = strlen(name);
+    if (name_length >= sizeof(((CoreAppVoice *)0)->capture_device_name)) {
+        return BREAK_RUNTIME_REJECTED;
+    }
     CoreAppVoice *voice = (CoreAppVoice *)calloc(1u, sizeof(*voice));
     if (!voice) return BREAK_RUNTIME_OOM;
+    memcpy(voice->capture_device_name, name, name_length + 1u);
     voice->playback = config->playback;
     voice->reopen_interval_ms = config->reopen_interval_ms;
     voice->max_reopen_failures = config->max_reopen_failures;
     voice->seen_playback_recoveries = audio_system_recoveries(config->playback);
     const AudioCaptureConfig capture_config = {
         config->capture_backend, 48000u, 1u, 4096u};
-    AudioResult result = audio_capture_create(&capture_config, &voice->capture);
+    AudioResult result = audio_capture_create_named(&capture_config, voice->capture_device_name,
+                                                    &voice->capture);
     if (result != AUDIO_OK) {
         free(voice);
         return voice_capture_error(result);
@@ -196,7 +204,12 @@ static BreakRuntimeError voice_recover_capture(CoreAppVoice *voice) {
     }
     voice->reopen_attempted = true;
     voice->last_reopen_us = now;
-    if (audio_capture_reopen(voice->capture, NULL) != AUDIO_OK) {
+    AudioResult reopened = audio_capture_reopen(voice->capture, voice->capture_device_name);
+    if (reopened == AUDIO_REJECTED && voice->capture_device_name[0] != '\0') {
+        /* the selected input is gone: the default keeps voice running */
+        reopened = audio_capture_reopen(voice->capture, NULL);
+    }
+    if (reopened != AUDIO_OK) {
         voice->consecutive_reopen_failures++;
         atomic_fetch_add_explicit(&voice->capture_reopen_failures, 1u, memory_order_relaxed);
         return voice->consecutive_reopen_failures >= voice->max_reopen_failures

@@ -1651,3 +1651,22 @@ loopback 测试：对端 A、A2、F（late_auth 模式下为 G）各自恰好收
 
 仍缺：按名称切换输出或输入设备、漂移补偿、真实声学验证、对端语音混音与转发、Opus。
 
+
+## 补充（2026-11-18）：按名称选择音频设备
+
+设计与计划见 `docs/superpowers/specs/2026-11-18-named-audio-devices-design.md`、`docs/superpowers/plans/2026-11-18-named-audio-devices.md`。上一节「仍缺」里的“按名称切换输出或输入设备”由此交付。
+
+- **AudioSystem**：`audio_system_list_devices(backend, out, capacity)` 与采集列表同一约定（NULL 后端为 "NULL Playback Device"，FAKE 为 0）。`audio_system_create_named` 空串等同 NULL；FAKE 带名称、名称不存在为 REJECTED，打开失败为 FAILED，`*out` 只在成功时写入。`audio_system_switch_device` 先分配并初始化新设备（停止状态），失败或模拟拒绝时释放新设备、旧设备继续播放并返回 FAILED；成功后关闭旧设备、替换、启动并计一次恢复。名称 ≥ 128 字节为 REJECTED。`audio_system_reopen` 打开已选名称，名称消失时打开默认并保留选择。
+- **语音**：`CoreAppVoiceConfig.capture_device_name` 在 create 时复制。采集恢复时先重开该名称；返回 REJECTED（设备已移除）时同一次尝试改开默认输入，不计拒绝。
+- **core_app**：`core_app_audio_start_device_named`，原有 start 函数传 NULL。`CoreAppConfig.audio_device_name`、`voice_capture_device_name`；CLI `--audio-device NAME`（需 `--audio=device`）、`--voice-capture-device NAME`（需 `--voice=device`，与 `--voice-null-capture` 冲突）。未知名称写 `COREAPPTRACE version=1 event=audio mode=device result=rejected reason=device_name`（或 `event=voice ...`），返回 REJECTED，即使没有 `--require-device` 也不降级为 null，最终 exit 2（不是 77）。
+- **合同**：`test_core_app_named_device.cmake` 在任何主机上检查未知播放名称（两种 require 组合）exit 2 与 rejected 行、两个 CLI 依赖错误；有播放设备时再检查未知采集名称，并从默认 ready 行解析设备名、按名称重开，要求 ready 行为同一设备；无设备时报告跳过。
+
+验证：`test_audio` 47 项（含名称长度一致拒绝、切换启动失败恢复旧设备、旧设备也启动失败时由 reopen 修复、无 context 的 reopen、按选择重开）、`test_core_app_voice` 14 项、`test_core_app_runtime` 55 项，新增项均先 RED。变异判红（见 spec Result）。本机 PulseAudio "内置音频 模拟立体声" 按名称重开成功。
+
+补充：
+- `audio_system_switch_device` 的启动失败不再留下未播放的设备：关闭新设备、还原选择，在同一块内存重开旧设备（名称或默认）后返回 FAILED，旧输出继续播放，不计恢复。旧设备也打不开或启动不了时，设备块仍留在 engine 上（清零或已打开未启动），之后的 `audio_system_reopen` 能修复，`engine->pDevice` 不会变成 NULL。
+- `create_named` 与 `switch_device` 对 ≥128 字节的名称给出同样的 REJECTED，不再静默截断。
+- `audio_reopen_device` 在 `context_initialized` 为假时不查名称，直接开默认设备。
+- rejected trace 行写入失败时返回 FAILED（与 ready 行一致），不再 exit 2 却没有原因行。
+
+仍缺：运行中通过命令或 UI 切换设备、漂移补偿、对端语音混音与转发、按对端静音、Opus、真实声学验证。

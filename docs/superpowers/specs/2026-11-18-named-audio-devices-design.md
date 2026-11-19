@@ -42,3 +42,21 @@ Out of scope: switching devices from a running core_app (no command or UI drives
 cmake contracts: `core_app --audio=device --audio-device "no such output"` exits 2 with the rejected line; `--audio-device` without `--audio=device` and `--voice-capture-device` without `--voice=device` are CLI errors; on a host with a real device, `--audio-device` with the default device's listed name reaches `result=ready` with that device (skipped without a device).
 
 Mutations: switch that uninitialises the old device before the new one opens (the FAILED-keeps-playing test must fail), reopen that ignores the selection, voice recovery that ignores the capture name.
+
+## Revisions
+
+- `CoreAppVoiceConfig.capture_device_name` is copied into the voice (`char[128]`) at create instead of being borrowed, so callers may pass a temporary. A name of 128 bytes or more is REJECTED before anything opens.
+- Voice capture recovery reopens the named input; when that reopen is REJECTED (the name is gone) it retries the default input in the same attempt instead of counting a refusal, so a removed headset falls back to the system input.
+- `--voice-capture-device` conflicts with `--voice-null-capture` (CLI error, exit 2).
+- The cmake contract `test_core_app_named_device` checks the unknown capture name only on a host with a playback device, because voice needs the playback device before it looks up the capture.
+- `audio_system_switch_device` closes a replacement that does not start, restores the previous selection and reopens the previous device (named or default) in the same block: a refused switch changes neither the selection nor playback and counts no recovery. When the previous device does not open or start either, the block stays installed (zeroed, or opened and stopped) so a later `audio_system_reopen` repairs it; `engine->pDevice` never becomes NULL. A test hook (`AUDIO_SWITCH_START_TEST_HOOK`) refuses a counted number of starts in `test_audio`.
+- `audio_system_create_named` and `audio_system_switch_device` both reject names of 128 bytes or more instead of truncating.
+- `audio_reopen_device` looks the selection up only when the context is initialised.
+- The rejected trace line is not best-effort: an unwritable trace returns FAILED rather than exit 2 without the reason.
+- Known limit: with the NULL capture backend the default device has the same name as the named one, so a mutation that drops the name on recovery is not detectable there; the create-time name is covered.
+
+## Result
+
+- `test_audio` 47/47 (11 new), `test_core_app_voice` 14/14 (1 new), `test_core_app_runtime` 55/55 (2 new), new ctest `test_core_app_named_device`; each first RED (missing API or field).
+- Mutations, all red: switch that closes the old device first (`a_refused_switch_keeps_the_old_device_playing`), reopen that ignores the selection (`reopen_keeps_the_selected_device`), voice create that ignores the capture name, core_app_audio that does not reject an unknown name, core_app voice that does not reject an unknown name (`test_core_app_named_device`).
+- Real PulseAudio: the default device's listed name ("内置音频 模拟立体声") reopens by name and the ready line names the same device.

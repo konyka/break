@@ -2086,8 +2086,16 @@ static BreakRuntimeError app_voice_start(CoreApp *app) {
     if (mode == CORE_APP_VOICE_DEVICE) {
         config.reopen_interval_ms = CORE_APP_VOICE_REOPEN_INTERVAL_MS;
         config.max_reopen_failures = CORE_APP_VOICE_MAX_REOPEN_FAILURES;
+        config.capture_device_name = app->config.voice_capture_device_name;
     }
     BreakRuntimeError result = core_app_voice_create(&config, &lane->voice);
+    if (result == BREAK_RUNTIME_REJECTED && mode == CORE_APP_VOICE_DEVICE) {
+        if (lane->fake_playback) audio_system_destroy(lane->fake_playback);
+        lane->fake_playback = NULL;
+        (void)app_trace(app, "COREAPPTRACE version=1 event=voice mode=device result=rejected"
+                             " reason=device_name\n");
+        return BREAK_RUNTIME_REJECTED;
+    }
     /* miniaudio falls back to its Null backend when no real capture backend
      * initializes; that device delivers silence forever, so it counts as no
      * microphone rather than as a working one. */
@@ -2804,8 +2812,10 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
     if (config->audio_mode == CORE_APP_AUDIO_NULL) {
         result = core_app_audio_start_null(&app->audio);
     } else if (config->audio_mode == CORE_APP_AUDIO_DEVICE) {
-        result = core_app_audio_start_device(&app->audio, app->trace, config->require_device,
-                                             config->asset_root);
+        result = core_app_audio_start_device_named(&app->audio, app->trace,
+                                                   config->require_device, config->asset_root,
+                                                   AUDIO_BACKEND_DEFAULT,
+                                                   config->audio_device_name);
         if (result == BREAK_RUNTIME_UNAVAILABLE && !config->require_device) {
             result = BREAK_RUNTIME_OK;
         }

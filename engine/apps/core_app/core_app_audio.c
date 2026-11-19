@@ -215,10 +215,34 @@ BreakRuntimeError core_app_audio_start_device_backend(CoreAppAudio *audio, FILE 
                                                       bool require_device,
                                                       const char *asset_root,
                                                       AudioBackend backend) {
+    return core_app_audio_start_device_named(audio, trace, require_device, asset_root, backend,
+                                             NULL);
+}
+
+BreakRuntimeError core_app_audio_start_device_named(CoreAppAudio *audio, FILE *trace,
+                                                    bool require_device,
+                                                    const char *asset_root,
+                                                    AudioBackend backend,
+                                                    const char *device_name) {
     if (!audio || !trace) return BREAK_RUNTIME_INVALID;
     sound_reset(audio, CORE_APP_AUDIO_BACKEND_DEVICE);
     audio->trace = trace;
-    AudioSystem *system = audio_system_create_ex(backend);
+    AudioSystem *system = NULL;
+    const AudioResult created = audio_system_create_named(backend, device_name, &system);
+    if (created == AUDIO_REJECTED) {
+        /* exit 2 only with the line that says why: an unwritable trace is a
+         * failure like any other */
+        const int written = break_trace_core_app_fprintf(
+            trace, "COREAPPTRACE version=1 event=audio mode=device "
+                   "result=rejected reason=device_name\n");
+        audio->trace = NULL;
+        return written < 0 || fflush(trace) != 0 ? BREAK_RUNTIME_FAILED
+                                                 : BREAK_RUNTIME_REJECTED;
+    }
+    if (created == AUDIO_INVALID) {
+        audio->trace = NULL;
+        return BREAK_RUNTIME_INVALID;
+    }
     const char *backend_name = audio_system_backend_name(system);
     if (system && sound_backend_is_device(backend_name)) {
         u32 probe = 0u;

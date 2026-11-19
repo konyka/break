@@ -122,6 +122,17 @@ BreakRuntimeError core_app_audio_start_device_backend(CoreAppAudio *audio, FILE 
                                                       bool require_device,
                                                       const char *asset_root,
                                                       AudioBackend backend);
+/* Same contract, opening the playback device with the given name (as
+ * audio_system_list_devices reports it); NULL or "" opens the default. A
+ * name no device has, or any name with a FAKE backend, writes
+ * "event=audio mode=device result=rejected reason=device_name" and returns
+ * REJECTED whether or not the device is required: it is a caller error, not
+ * a missing device, so it never degrades to the null pump. */
+BreakRuntimeError core_app_audio_start_device_named(CoreAppAudio *audio, FILE *trace,
+                                                    bool require_device,
+                                                    const char *asset_root,
+                                                    AudioBackend backend,
+                                                    const char *device_name);
 /* Takes ownership of an already created system and drives it from the
  * command queue; no probe tone is played. Returns INVALID (system not taken)
  * for a missing argument or an asset path that does not fit; on any later

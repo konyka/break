@@ -79,6 +79,11 @@ struct CoreAppConfig {
     /* Forces AUDIO_BACKEND_NULL for the voice capture device, so the
      * "no microphone" path is reachable on a host that has one. */
     bool voice_null_capture;
+    /* Device names as the audio device lists report them; NULL or "" opens
+     * the default. A name no device has ends the run with REJECTED (exit 2),
+     * never with the "no device" result, even without require_device. */
+    const char *audio_device_name;
+    const char *voice_capture_device_name;
     bool fixed_step;
     bool require_device;
     bool network;
