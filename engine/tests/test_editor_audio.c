@@ -586,7 +586,65 @@ TEST(fade_and_normalize_ranges_change_only_the_range)
     break_editor_doc_destroy(doc);
 }
 
+TEST(waveform_range_matches_a_manual_min_max)
+{
+    static i16 ramp[500u];
+    i16 min[64], max[64], wmin[64], wmax[64];
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    for (u32 i = 0u; i < 500u; ++i) ramp[i] = (i16)((i % 7u) * 1000u) - 3000;
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, ramp, 500u));
+    /* the full range equals the whole-clip function */
+    ASSERT_TRUE(break_editor_doc_audio_waveform(doc, 17u, wmin, wmax));
+    ASSERT_TRUE(break_editor_doc_audio_waveform_range(doc, 0u, 500u, 17u, min, max));
+    ASSERT_EQ(memcmp(min, wmin, sizeof(i16) * 17u), 0);
+    ASSERT_EQ(memcmp(max, wmax, sizeof(i16) * 17u), 0);
+    /* a sub-range: column c covers [100 + c*200/8, 100 + (c+1)*200/8) */
+    ASSERT_TRUE(break_editor_doc_audio_waveform_range(doc, 100u, 300u, 8u, min, max));
+    for (u32 c = 0u; c < 8u; ++c) {
+        const u32 first = 100u + c * 200u / 8u;
+        const u32 last = 100u + (c + 1u) * 200u / 8u;
+        i16 lo = ramp[first], hi = ramp[first];
+        for (u32 f = first; f < last; ++f) {
+            if (ramp[f] < lo) lo = ramp[f];
+            if (ramp[f] > hi) hi = ramp[f];
+        }
+        ASSERT_EQ(min[c], lo);
+        ASSERT_EQ(max[c], hi);
+    }
+    /* more columns than frames: one frame each */
+    ASSERT_TRUE(break_editor_doc_audio_waveform_range(doc, 10u, 14u, 8u, min, max));
+    for (u32 c = 0u; c < 8u; ++c) ASSERT_EQ(min[c], ramp[10u + c / 2u]);
+    /* a narrow column still covers the whole frame, both channels */
+    {
+        static i16 stereo[40u];
+        for (u32 i = 0u; i < 20u; ++i) {
+            stereo[i * 2u] = 1000;
+            stereo[i * 2u + 1u] = -2000;
+        }
+        break_editor_doc_reset(doc);
+        ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 2u, stereo, 20u));
+        ASSERT_TRUE(break_editor_doc_audio_waveform_range(doc, 4u, 8u, 8u, min, max));
+        for (u32 c = 0u; c < 8u; ++c) {
+            ASSERT_EQ(min[c], -2000);
+            ASSERT_EQ(max[c], 1000);
+        }
+        break_editor_doc_reset(doc);
+        ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, ramp, 500u));
+    }
+    /* invalid ranges write nothing */
+    min[0] = 42;
+    ASSERT_TRUE(!break_editor_doc_audio_waveform_range(doc, 10u, 10u, 4u, min, max));
+    ASSERT_TRUE(!break_editor_doc_audio_waveform_range(doc, 20u, 10u, 4u, min, max));
+    ASSERT_TRUE(!break_editor_doc_audio_waveform_range(doc, 0u, 501u, 4u, min, max));
+    ASSERT_TRUE(!break_editor_doc_audio_waveform_range(doc, 0u, 10u, 0u, min, max));
+    ASSERT_TRUE(!break_editor_doc_audio_waveform_range(NULL, 0u, 10u, 4u, min, max));
+    ASSERT_EQ(min[0], 42);
+    break_editor_doc_destroy(doc);
+}
+
 TEST_MAIN_BEGIN()
+    RUN_TEST(waveform_range_matches_a_manual_min_max);
     RUN_TEST(fade_and_normalize_ranges_change_only_the_range);
     RUN_TEST(waveform_reports_min_max_per_column);
     RUN_TEST(waveform_rejects_invalid_arguments_without_writing);

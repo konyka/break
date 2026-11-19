@@ -1,3 +1,10 @@
+## 编辑器音频波形缩放与滚动（2026-11-19）
+
+- **交付**：核心新增 `break_editor_doc_audio_waveform_range(doc, begin, end, columns, out_min, out_max)`，按 `[begin, end)` 计算每列最小/最大值；`break_editor_doc_audio_waveform` 转发为整段调用，非法范围返回 false 且不写出参。面板保存可见范围 `[view_begin, view_end)`（默认整段，附件变化时重置）。`editor-audio-view-bar` 行上的四个符号按钮：`editor-audio-zoom-out`、`editor-audio-zoom-in`（以视图中心折半或加倍，下限 16 帧，上限整段）、`editor-audio-scroll-left`、`editor-audio-scroll-right`（移动视图长度的四分之一，两端钳住）。波形列、刻度步长与首刻度、选区色带（裁剪到视图）、播放光标（只在视图内画）和指针映射（`view_begin + x * view_len / width`）全部按视图计算，刻度标签仍是绝对时间。shell 新增 `break_editor_shell_audio_zoom`、`_scroll`、`_view`。设计与计划见 `docs/superpowers/specs/2026-11-19-editor-audio-zoom-design.md`、`docs/superpowers/plans/2026-11-19-editor-audio-zoom.md`。
+- **TDD**：核心与 shell 各一个新用例，先在桩实现（无按钮、无 range 函数）上失败再通过，`test_editor_audio` 13/13，`test_editor_shell` 216/216。7 个变异全部判红：range 波形丢掉 `begin` 偏移、窄列不覆盖任何帧（补立体声断言后判红）、缩放不以视图中心为基准、去掉 16 帧下限、滚动步长改为二分之一、指针映射不加 `view_begin`、刻度 x 不减 `view_begin`、附件变化不重置视图。
+- **已核对**：四个按钮另起一行，顶部工具栏的信息标签在默认窗口下仍有 200 像素以上（原回归断言保持绿）；视图变化后 tick 通过 `seen_view_*` 触发列重算。
+- **边界**：没有滚轮与键盘缩放、滚动条控件、播放时自动滚动。
+
 ## 编辑器音频循环播放（2026-11-19）
 
 - **交付**：预览新增 `break_editor_audio_preview_set_loop`/`_loop`，默认关闭。播放范围写完并排空后，若开启循环则回到范围起始帧重新写入，输出端保持打开（不关不重开），起点不变；重新写入时出错照常停止。音频页工具栏新增“循环/Loop”复选框 `editor-audio-loop`，shell 新增 `break_editor_shell_audio_set_loop`、`break_editor_shell_audio_loop`。停止、附件变化和输出端拒绝仍会结束播放；播放中关闭循环则在下一次末尾停止。设计与计划见 `docs/superpowers/specs/2026-11-19-editor-audio-loop-design.md`、`docs/superpowers/plans/2026-11-19-editor-audio-loop.md`。

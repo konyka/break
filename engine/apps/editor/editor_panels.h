@@ -464,6 +464,14 @@ bool break_editor_shell_audio_cut(BreakEditorShell *shell);
  * the whole clip without one; undoable. False without an attachment. */
 bool break_editor_shell_audio_fade(BreakEditorShell *shell);
 bool break_editor_shell_audio_normalize(BreakEditorShell *shell);
+/* Zoom and scroll of the Audio page's view (design
+ * 2026-11-19-editor-audio-zoom): zoom halves or doubles the view length
+ * around its centre (at least 16 frames, clamped to the clip); scroll moves
+ * it by a quarter of its length. Both return whether the view changed.
+ * view reports it (false without an attachment). */
+bool break_editor_shell_audio_zoom(BreakEditorShell *shell, bool in);
+bool break_editor_shell_audio_scroll(BreakEditorShell *shell, bool forward);
+bool break_editor_shell_audio_view(const BreakEditorShell *shell, u32 *out_begin, u32 *out_end);
 /* Loop toggle of the Audio page (the "Loop" checkbox): at the end of the
  * played range playback starts it again. Returns the state afterwards. */
 bool break_editor_shell_audio_set_loop(BreakEditorShell *shell, bool loop);

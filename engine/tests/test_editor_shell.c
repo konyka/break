@@ -3616,6 +3616,108 @@ TEST(audio_page_selects_and_trims_or_cuts)
     break_editor_shell_destroy(shell);
 }
 
+/* Zoom and scroll (design 2026-11-19-editor-audio-zoom). */
+TEST(audio_page_zooms_and_scrolls_the_view)
+{
+    static i16 pcm[4000u];
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    my_widget_t *wave, *zin, *zout, *left, *right;
+    u32 b = 0u, e = 0u, i, n, w;
+    i16 lo = 0, hi = 0;
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    for (i = 0u; i < 4000u; i++) pcm[i] = (i16)(i < 2000u ? 0 : 20000);
+    ASSERT_FALSE(break_editor_shell_audio_view(shell, &b, &e));
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 4000u));
+    ASSERT_TRUE(break_editor_shell_select_tab(shell, 0u, 4u));
+    shell_paint(shell);
+    break_editor_shell_tick(shell);
+    wave = find(shell, "editor-audio-waveform");
+    zin = find(shell, "editor-audio-zoom-in");
+    zout = find(shell, "editor-audio-zoom-out");
+    left = find(shell, "editor-audio-scroll-left");
+    right = find(shell, "editor-audio-scroll-right");
+    ASSERT_TRUE(wave && zin && zout && left && right);
+    w = (u32)wave->rect.w;
+    /* the default view is the whole clip */
+    ASSERT_TRUE(break_editor_shell_audio_view(shell, &b, &e));
+    ASSERT_EQ(b, 0u);
+    ASSERT_EQ(e, 4000u);
+    /* zoom out at the full view changes nothing */
+    ASSERT_FALSE(break_editor_shell_audio_zoom(shell, false));
+    /* zoom in halves the view around its centre: [1000, 3000) */
+    emit_click(zin);
+    ASSERT_TRUE(break_editor_shell_audio_view(shell, &b, &e));
+    ASSERT_EQ(b, 1000u);
+    ASSERT_EQ(e, 3000u);
+    break_editor_shell_tick(shell);
+    /* the columns now come from the view: the first half is silent */
+    n = break_editor_shell_audio_column_count(shell);
+    ASSERT_TRUE(n > 0u);
+    ASSERT_TRUE(break_editor_shell_audio_column(shell, 0u, &lo, &hi));
+    ASSERT_EQ(hi, 0);
+    ASSERT_TRUE(break_editor_shell_audio_column(shell, n - 1u, &lo, &hi));
+    ASSERT_EQ(hi, 20000);
+    /* scrolling moves by a quarter of the view and stops at the ends */
+    emit_click(right);
+    ASSERT_TRUE(break_editor_shell_audio_view(shell, &b, &e));
+    ASSERT_EQ(b, 1500u);
+    ASSERT_EQ(e, 3500u);
+    emit_click(right);
+    ASSERT_TRUE(break_editor_shell_audio_view(shell, &b, &e));
+    ASSERT_EQ(b, 2000u);
+    ASSERT_EQ(e, 4000u);
+    ASSERT_FALSE(break_editor_shell_audio_scroll(shell, true));
+    /* a click maps through a scrolled view: the middle of [2000, 4000) */
+    pointer_press_at(shell, wave, (int32_t)(w / 2u), 0u);
+    ASSERT_TRUE(break_editor_shell_audio_cursor_frames(shell) >= 2950u);
+    ASSERT_TRUE(break_editor_shell_audio_cursor_frames(shell) <= 3050u);
+    /* the ruler starts at the first round time inside the view, at x >= 0 */
+    {
+        u32 frame = 0u;
+        const char *label = NULL;
+        i32 x = -1;
+        ASSERT_TRUE(break_editor_shell_audio_tick(shell, 0u, &frame, &x, &label));
+        ASSERT_TRUE(frame >= 2000u);
+        ASSERT_TRUE(x >= 0 && x < (i32)w);
+    }
+    for (i = 0u; i < 8u; i++) (void)break_editor_shell_audio_scroll(shell, false);
+    ASSERT_TRUE(break_editor_shell_audio_view(shell, &b, &e));
+    ASSERT_EQ(b, 0u);
+    ASSERT_EQ(e, 2000u);
+    /* a click maps through the view */
+    pointer_press_at(shell, wave, (int32_t)(w / 2u), 0u);
+    ASSERT_TRUE(break_editor_shell_audio_cursor_frames(shell) >= 950u);
+    ASSERT_TRUE(break_editor_shell_audio_cursor_frames(shell) <= 1050u);
+    /* the ruler ticks follow the view: finer than at the full clip */
+    {
+        u32 frame = 0u;
+        const char *label = NULL;
+        i32 x = 0;
+        ASSERT_TRUE(break_editor_shell_audio_tick(shell, 1u, &frame, &x, &label));
+        ASSERT_TRUE(frame <= 800u); /* 100 ms or less over a 0.25 s view */
+    }
+    /* zoom in to the floor, then out all the way */
+    for (i = 0u; i < 12u; i++) (void)break_editor_shell_audio_zoom(shell, true);
+    ASSERT_TRUE(break_editor_shell_audio_view(shell, &b, &e));
+    ASSERT_EQ(e - b, 16u);
+    ASSERT_FALSE(break_editor_shell_audio_zoom(shell, true));
+    for (i = 0u; i < 12u; i++) (void)break_editor_shell_audio_zoom(shell, false);
+    ASSERT_TRUE(break_editor_shell_audio_view(shell, &b, &e));
+    ASSERT_EQ(b, 0u);
+    ASSERT_EQ(e, 4000u);
+    /* an attachment change resets the view */
+    ASSERT_TRUE(break_editor_shell_audio_zoom(shell, true));
+    ASSERT_TRUE(break_editor_doc_audio_trim(doc, 0u, 1000u));
+    break_editor_shell_tick(shell);
+    ASSERT_TRUE(break_editor_shell_audio_view(shell, &b, &e));
+    ASSERT_EQ(b, 0u);
+    ASSERT_EQ(e, 1000u);
+    shell_paint(shell);
+    break_editor_shell_destroy(shell);
+}
+
 /* Loop playback (design 2026-11-19-editor-audio-loop). */
 TEST(audio_page_loops_the_playing_range)
 {
@@ -13161,6 +13263,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(audio_page_selects_by_dragging_the_waveform);
     RUN_TEST(audio_page_shows_a_timeline_ruler);
     RUN_TEST(audio_page_loops_the_playing_range);
+    RUN_TEST(audio_page_zooms_and_scrolls_the_view);
     RUN_TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo);
     RUN_TEST(assets_panel_load_guards_unsaved_changes);
     RUN_TEST(palette_save_as_writes_the_typed_path);

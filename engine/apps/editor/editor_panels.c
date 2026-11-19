@@ -4253,6 +4253,18 @@ bool break_editor_shell_audio_cut(BreakEditorShell *shell) {
     return shell != NULL && editor_panel_audio_edit_selection(shell->audio_panel, true);
 }
 
+bool break_editor_shell_audio_zoom(BreakEditorShell *shell, bool in) {
+    return shell != NULL && editor_panel_audio_zoom(shell->audio_panel, in);
+}
+
+bool break_editor_shell_audio_scroll(BreakEditorShell *shell, bool forward) {
+    return shell != NULL && editor_panel_audio_scroll(shell->audio_panel, forward);
+}
+
+bool break_editor_shell_audio_view(const BreakEditorShell *shell, u32 *out_begin, u32 *out_end) {
+    return shell != NULL && editor_panel_audio_view(shell->audio_panel, out_begin, out_end);
+}
+
 bool break_editor_shell_audio_set_loop(BreakEditorShell *shell, bool loop) {
     if (shell != NULL) {
         editor_panel_audio_set_loop(shell->audio_panel, loop);

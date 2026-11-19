@@ -126,6 +126,10 @@ bool editor_panel_audio_edit_selection(EditorPanelAudio *panel, bool cut);
 /* normalize = false: fade; true: normalize. Selection or whole clip. */
 bool editor_panel_audio_effect(EditorPanelAudio *panel, bool normalize);
 
+bool editor_panel_audio_zoom(EditorPanelAudio *panel, bool in);
+bool editor_panel_audio_scroll(EditorPanelAudio *panel, bool forward);
+bool editor_panel_audio_view(const EditorPanelAudio *panel, u32 *out_begin, u32 *out_end);
+
 /* The page's Loop checkbox: forwards to the preview and updates the box. */
 void editor_panel_audio_set_loop(EditorPanelAudio *panel, bool loop);
 

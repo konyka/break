@@ -63,6 +63,11 @@ struct EditorPanelAudio {
     my_widget_t *fade;        /* weak */
     my_widget_t *normalize;   /* weak */
     my_widget_t *loop;        /* weak */
+    my_widget_t *zoom_in;     /* weak */
+    my_widget_t *zoom_out;    /* weak */
+    my_widget_t *scroll_left; /* weak */
+    my_widget_t *scroll_right; /* weak */
+    u32 view_begin, view_end; /* visible [begin, end) frames; empty = whole clip */
     u32 sel_begin, sel_end;   /* [begin, end) frames; empty when equal */
     bool dragging;            /* a primary press is down on the waveform */
     u32 drag_anchor;          /* frame the drag started at */
@@ -73,6 +78,7 @@ struct EditorPanelAudio {
     u64 seen_revision;
     i32 seen_width;
     u32 columns;
+    u32 seen_view_begin, seen_view_end;
     char info_text[EDITOR_AUDIO_INFO_BYTES];
     i16 min[BREAK_EDITOR_AUDIO_WAVEFORM_MAX_COLUMNS];
     i16 max[BREAK_EDITOR_AUDIO_WAVEFORM_MAX_COLUMNS];
@@ -141,28 +147,49 @@ static void audio_panel_format_info(EditorPanelAudio *panel) {
     }
 }
 
+/* The visible range. A zero-length stored view (a fresh panel, or one whose
+ * attachment changed) means the whole clip. */
+static u32 audio_view_begin(const EditorPanelAudio *panel) {
+    return panel->view_begin < panel->view_end ? panel->view_begin : 0u;
+}
+
+static u32 audio_view_end(const EditorPanelAudio *panel) {
+    return panel->view_begin < panel->view_end
+               ? panel->view_end
+               : break_editor_doc_audio_frames(break_editor_shell_doc(panel->shell));
+}
+
+static u32 audio_view_len(const EditorPanelAudio *panel) {
+    return audio_view_end(panel) - audio_view_begin(panel);
+}
+
 static void audio_panel_refresh(EditorPanelAudio *panel) {
     const BreakEditorDoc *doc = break_editor_shell_doc(panel->shell);
     if (panel->seen_revision != break_editor_doc_audio_revision(doc)) {
-        /* the cursor and the selection may point past the new end */
+        /* the cursor, the selection and the view may point past the new end */
         break_editor_audio_preview_reset_cursor(panel->preview);
         panel->sel_begin = panel->sel_end = 0u;
+        panel->view_begin = panel->view_end = 0u;
         panel->dragging = false;
     }
     const i32 width = panel->waveform != NULL ? panel->waveform->rect.w : 0;
     u32 columns = width > 0 ? (u32)width : 1u;
-    const u32 frames = break_editor_doc_audio_frames(doc);
+    const u32 view_begin = audio_view_begin(panel);
+    const u32 view_end = audio_view_end(panel);
+    const u32 frames = view_end - view_begin;
     if (columns > frames) columns = frames;
     if (columns > BREAK_EDITOR_AUDIO_WAVEFORM_MAX_COLUMNS) {
         columns = BREAK_EDITOR_AUDIO_WAVEFORM_MAX_COLUMNS;
     }
-    if (columns == 0u ||
-        !break_editor_doc_audio_waveform(doc, columns, panel->min, panel->max)) {
+    if (columns == 0u || !break_editor_doc_audio_waveform_range(doc, view_begin, view_end, columns,
+                                                                panel->min, panel->max)) {
         columns = 0u;
     }
     panel->columns = columns;
     panel->seen_revision = break_editor_doc_audio_revision(doc);
     panel->seen_width = width;
+    panel->seen_view_begin = view_begin;
+    panel->seen_view_end = view_end;
     panel->fresh = true;
     audio_panel_format_info(panel);
     if (panel->waveform != NULL) {
@@ -199,10 +226,15 @@ static void audio_waveform_on_paint(my_widget_t *widget, my_vgcanvas_t *vg) {
     mid = h * 0.5f;
     scale = (h * 0.5f) / 32768.0f;
     if (panel->sel_begin < panel->sel_end) {
-        const u32 frames = break_editor_doc_audio_frames(break_editor_shell_doc(panel->shell));
-        if (frames != 0u) {
-            const float x0 = (float)((double)panel->sel_begin * (double)w / (double)frames);
-            const float x1 = (float)((double)panel->sel_end * (double)w / (double)frames);
+        const u32 view_begin = audio_view_begin(panel);
+        const u32 view_end = audio_view_end(panel);
+        /* clipped to the view: a selection may run past either edge */
+        const u32 lo = panel->sel_begin > view_begin ? panel->sel_begin : view_begin;
+        const u32 hi = panel->sel_end < view_end ? panel->sel_end : view_end;
+        if (view_begin < view_end && lo < hi) {
+            const double len = (double)(view_end - view_begin);
+            const float x0 = (float)((double)(lo - view_begin) * (double)w / len);
+            const float x1 = (float)((double)(hi - view_begin) * (double)w / len);
             my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(break_editor_theme_is_light()
                                                                      ? BREAK_EDITOR_THEME_LIGHT_SELECTION
                                                                      : BREAK_EDITOR_THEME_SELECTION));
@@ -225,12 +257,15 @@ static void audio_waveform_on_paint(my_widget_t *widget, my_vgcanvas_t *vg) {
         (void)my_vgcanvas_fill_rect(vg, &(my_rectf_t){x0, top, bar_w, bar_h});
     }
     {
-        const u32 frames = break_editor_doc_audio_frames(break_editor_shell_doc(panel->shell));
+        const u32 view_begin = audio_view_begin(panel);
+        const u32 view_end = audio_view_end(panel);
         const bool playing = break_editor_audio_preview_playing(panel->preview);
         const u32 at = playing ? break_editor_audio_preview_position_frames(panel->preview)
                                : break_editor_audio_preview_cursor_frames(panel->preview);
-        if (frames != 0u && (playing || at != 0u)) {
-            const float x = (float)((double)at * (double)w / (double)frames);
+        /* only while it is inside the view */
+        if (view_begin < view_end && at >= view_begin && at < view_end && (playing || at != 0u)) {
+            const float x = (float)((double)(at - view_begin) * (double)w /
+                                    (double)(view_end - view_begin));
             my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(break_editor_theme_is_light()
                                                                      ? EDITOR_AUDIO_LIGHT_CURSOR
                                                                      : BREAK_EDITOR_THEME_TEXT));
@@ -280,7 +315,10 @@ static my_ret_t audio_waveform_on_event(my_widget_t *widget, const my_event_t *e
     my_widget_global_to_local(widget, &gx, &gy);
     if (gx < 0) gx = 0;
     if (gx >= widget->rect.w) gx = widget->rect.w - 1;
-    frame = (u32)((u64)(u32)gx * frames / (u32)widget->rect.w);
+    /* through the view, not the whole clip */
+    frame = audio_view_begin(panel) +
+            (u32)((u64)(u32)gx * audio_view_len(panel) / (u32)widget->rect.w);
+    if (frame >= frames) frame = frames - 1u;
     if (press) {
         if ((event->u.pointer.modifiers & MY_KEYMOD_SHIFT) != 0u) {
             /* from the cursor to the pressed frame, both included */
@@ -491,6 +529,137 @@ static const u32 k_audio_tick_steps_ms[] = {1u,     2u,     5u,     10u,    20u,
                                             10000u, 20000u, 30000u, 60000u, 120000u, 300000u};
 #define EDITOR_AUDIO_TICK_MIN_PX 60
 
+/* Zooming in stops here: fewer frames than this across the width makes the
+ * columns meaningless (one frame repeated over many pixels). */
+#define EDITOR_AUDIO_VIEW_MIN_FRAMES 16u
+#define EDITOR_AUDIO_SCROLL_DIVISOR 4u /* one step = a quarter of the view */
+
+/* Replaces the visible range, clamped to the clip; returns whether it moved.
+ * A change recomputes the columns and repaints the waveform and the ruler. */
+static bool audio_view_set(EditorPanelAudio *panel, u32 begin, u32 end) {
+    const u32 frames = break_editor_doc_audio_frames(break_editor_shell_doc(panel->shell));
+    if (frames == 0u) {
+        return false;
+    }
+    if (end > frames) end = frames;
+    if (begin >= end) {
+        return false;
+    }
+    if (begin == audio_view_begin(panel) && end == audio_view_end(panel)) {
+        return false;
+    }
+    panel->view_begin = begin;
+    panel->view_end = end;
+    audio_panel_refresh(panel); /* the columns belong to the view */
+    if (panel->ruler != NULL) {
+        my_widget_invalidate(panel->ruler, NULL);
+    }
+    return true;
+}
+
+bool editor_panel_audio_zoom(EditorPanelAudio *panel, bool in) {
+    u32 frames, len, centre, new_len, begin;
+    if (panel == NULL) {
+        return false;
+    }
+    audio_panel_catch_up(panel);
+    frames = break_editor_doc_audio_frames(break_editor_shell_doc(panel->shell));
+    if (frames == 0u) {
+        return false;
+    }
+    len = audio_view_len(panel);
+    centre = audio_view_begin(panel) + len / 2u;
+    if (in) {
+        new_len = len / 2u;
+        if (new_len < EDITOR_AUDIO_VIEW_MIN_FRAMES) {
+            new_len = EDITOR_AUDIO_VIEW_MIN_FRAMES;
+        }
+        if (new_len >= len) {
+            return false; /* already at the floor */
+        }
+    } else {
+        new_len = len < frames / 2u ? len * 2u : frames;
+    }
+    if (new_len >= frames) {
+        return audio_view_set(panel, 0u, frames);
+    }
+    /* keep the centre where it was, then push the range inside the clip */
+    begin = centre > new_len / 2u ? centre - new_len / 2u : 0u;
+    if (begin + new_len > frames) {
+        begin = frames - new_len;
+    }
+    return audio_view_set(panel, begin, begin + new_len);
+}
+
+bool editor_panel_audio_scroll(EditorPanelAudio *panel, bool forward) {
+    u32 frames, len, step, begin;
+    if (panel == NULL) {
+        return false;
+    }
+    audio_panel_catch_up(panel);
+    frames = break_editor_doc_audio_frames(break_editor_shell_doc(panel->shell));
+    if (frames == 0u) {
+        return false;
+    }
+    len = audio_view_len(panel);
+    if (len >= frames) {
+        return false; /* the whole clip is visible */
+    }
+    step = len / EDITOR_AUDIO_SCROLL_DIVISOR;
+    if (step == 0u) {
+        step = 1u;
+    }
+    begin = audio_view_begin(panel);
+    if (forward) {
+        begin += step;
+        if (begin + len > frames) {
+            begin = frames - len;
+        }
+    } else {
+        begin = begin > step ? begin - step : 0u;
+    }
+    return audio_view_set(panel, begin, begin + len);
+}
+
+bool editor_panel_audio_view(const EditorPanelAudio *panel, u32 *out_begin, u32 *out_end) {
+    u32 begin, end;
+    if (panel == NULL) {
+        return false;
+    }
+    begin = audio_view_begin(panel);
+    end = audio_view_end(panel);
+    if (begin >= end) {
+        return false; /* no attachment */
+    }
+    if (out_begin != NULL) *out_begin = begin;
+    if (out_end != NULL) *out_end = end;
+    return true;
+}
+
+static void on_audio_zoom_in_click(void *ctx, const char *event, void *data) {
+    (void)event;
+    (void)data;
+    (void)editor_panel_audio_zoom((EditorPanelAudio *)ctx, true);
+}
+
+static void on_audio_zoom_out_click(void *ctx, const char *event, void *data) {
+    (void)event;
+    (void)data;
+    (void)editor_panel_audio_zoom((EditorPanelAudio *)ctx, false);
+}
+
+static void on_audio_scroll_left_click(void *ctx, const char *event, void *data) {
+    (void)event;
+    (void)data;
+    (void)editor_panel_audio_scroll((EditorPanelAudio *)ctx, false);
+}
+
+static void on_audio_scroll_right_click(void *ctx, const char *event, void *data) {
+    (void)event;
+    (void)data;
+    (void)editor_panel_audio_scroll((EditorPanelAudio *)ctx, true);
+}
+
 void editor_panel_audio_set_loop(EditorPanelAudio *panel, bool loop) {
     if (panel == NULL) {
         return;
@@ -520,7 +689,9 @@ bool editor_panel_audio_ticks(const EditorPanelAudio *panel, EditorAudioTicks *o
         return false;
     }
     const u32 rate = break_editor_doc_audio_sample_rate(break_editor_shell_doc(panel->shell));
-    const u32 frames = break_editor_doc_audio_frames(break_editor_shell_doc(panel->shell));
+    const u32 view_begin = audio_view_begin(panel);
+    const u32 view_end = audio_view_end(panel);
+    const u32 frames = view_end - view_begin; /* the visible span, not the clip */
     const u32 width = (u32)panel->ruler->rect.w;
     if (frames == 0u || rate == 0u) {
         return false;
@@ -537,13 +708,21 @@ bool editor_panel_audio_ticks(const EditorPanelAudio *panel, EditorAudioTicks *o
         }
     }
     if (step == 0u) {
-        step = frames; /* even the largest step is too narrow: frame 0 only */
+        step = frames; /* even the largest step is too narrow: one tick only */
     }
-    for (u32 frame = 0u; frame < frames && out->count < EDITOR_AUDIO_TICKS_MAX; frame += step) {
-        const u32 i = out->count++;
-        const double seconds = (double)frame / (double)rate;
+    /* the first multiple of the step at or after the view's start, so the
+     * labels stay on round times while the view scrolls */
+    for (u32 frame = view_begin - view_begin % step;
+         frame < view_end && out->count < EDITOR_AUDIO_TICKS_MAX; frame += step) {
+        u32 i;
+        double seconds;
+        if (frame < view_begin) {
+            continue;
+        }
+        i = out->count++;
+        seconds = (double)frame / (double)rate;
         out->frame[i] = frame;
-        out->x[i] = (i32)((u64)frame * width / frames);
+        out->x[i] = (i32)((u64)(frame - view_begin) * width / frames);
         if (seconds < 10.0) {
             (void)snprintf(out->label[i], sizeof(out->label[i]), "%.3f s", seconds);
         } else {
@@ -623,7 +802,7 @@ static bool audio_panel_add(my_widget_t *parent, my_widget_t *child, const char 
 
 bool editor_panel_audio_build(EditorPanelAudio *panel, my_widget_t *parent) {
     my_widget_t *section, *bar, *info, *play, *trim, *cut, *fade, *normalize, *loop, *ruler,
-        *waveform;
+        *waveform, *view_bar, *zoom_in, *zoom_out, *scroll_left, *scroll_right;
     if (panel == NULL || parent == NULL) {
         return false;
     }
@@ -719,6 +898,45 @@ bool editor_panel_audio_build(EditorPanelAudio *panel, my_widget_t *parent) {
         my_widget_unref(section);
         return false;
     }
+    /* the view controls sit on their own row so the toolbar keeps room for
+     * the info label; their symbols need no translation */
+    view_bar = my_widget_create(NULL, "editor-audio-view-bar");
+    if (view_bar == NULL) {
+        my_widget_unref(section);
+        return false;
+    }
+    (void)my_widget_set_layouter(view_bar, my_layouter_linear_create(NULL, true, 4));
+    if (!audio_panel_add(section, view_bar, "w:100% h:20")) {
+        my_widget_unref(section);
+        return false;
+    }
+    zoom_in = my_button_create(NULL, "+");
+    zoom_out = my_button_create(NULL, "-");
+    scroll_left = my_button_create(NULL, "<");
+    scroll_right = my_button_create(NULL, ">");
+    if (zoom_in == NULL || zoom_out == NULL || scroll_left == NULL || scroll_right == NULL) {
+        if (zoom_in != NULL) my_widget_unref(zoom_in);
+        if (zoom_out != NULL) my_widget_unref(zoom_out);
+        if (scroll_left != NULL) my_widget_unref(scroll_left);
+        if (scroll_right != NULL) my_widget_unref(scroll_right);
+        my_widget_unref(section);
+        return false;
+    }
+    (void)my_widget_set_name(zoom_out, "editor-audio-zoom-out");
+    (void)my_widget_set_name(zoom_in, "editor-audio-zoom-in");
+    (void)my_widget_set_name(scroll_left, "editor-audio-scroll-left");
+    (void)my_widget_set_name(scroll_right, "editor-audio-scroll-right");
+    (void)my_widget_on(zoom_out, "click", on_audio_zoom_out_click, panel);
+    (void)my_widget_on(zoom_in, "click", on_audio_zoom_in_click, panel);
+    (void)my_widget_on(scroll_left, "click", on_audio_scroll_left_click, panel);
+    (void)my_widget_on(scroll_right, "click", on_audio_scroll_right_click, panel);
+    if (!audio_panel_add(view_bar, zoom_out, "w:26 h:100%") ||
+        !audio_panel_add(view_bar, zoom_in, "w:26 h:100%") ||
+        !audio_panel_add(view_bar, scroll_left, "w:26 h:100%") ||
+        !audio_panel_add(view_bar, scroll_right, "w:26 h:100%")) {
+        my_widget_unref(section);
+        return false;
+    }
     ruler = my_widget_create(NULL, "editor-audio-ruler");
     if (ruler == NULL || my_widget_subclass_init(ruler, &k_audio_ruler_vtable) != MY_RET_OK) {
         if (ruler != NULL) {
@@ -758,6 +976,10 @@ bool editor_panel_audio_build(EditorPanelAudio *panel, my_widget_t *parent) {
     panel->fade = fade;
     panel->normalize = normalize;
     panel->loop = loop;
+    panel->zoom_in = zoom_in;
+    panel->zoom_out = zoom_out;
+    panel->scroll_left = scroll_left;
+    panel->scroll_right = scroll_right;
     panel->waveform = waveform;
     panel->ruler = ruler;
     panel->fresh = false;
@@ -778,7 +1000,9 @@ void editor_panel_audio_tick(EditorPanelAudio *panel) {
     }
     break_editor_audio_preview_pump(panel->preview);
     if (!panel->fresh || panel->seen_revision != break_editor_doc_audio_revision(doc) ||
-        (panel->waveform != NULL && panel->seen_width != panel->waveform->rect.w)) {
+        (panel->waveform != NULL && panel->seen_width != panel->waveform->rect.w) ||
+        panel->seen_view_begin != audio_view_begin(panel) ||
+        panel->seen_view_end != audio_view_end(panel)) {
         audio_panel_refresh(panel);
     } else if (panel->shown_playing != break_editor_audio_preview_playing(panel->preview) ||
                panel->shown_position !=

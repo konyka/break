@@ -39,6 +39,10 @@ u64 break_editor_doc_audio_revision(const BreakEditorDoc *doc);
  * 1..BREAK_EDITOR_AUDIO_WAVEFORM_MAX_COLUMNS. Read-only. */
 bool break_editor_doc_audio_waveform(const BreakEditorDoc *doc, u32 columns,
                                      i16 *out_min, i16 *out_max);
+/* The same over frames [begin, end) only (the whole clip for 0..frames);
+ * false and nothing written for an empty or out-of-clip range. */
+bool break_editor_doc_audio_waveform_range(const BreakEditorDoc *doc, u32 begin, u32 end,
+                                           u32 columns, i16 *out_min, i16 *out_max);
 
 /* One snapshot command per successful edit; false leaves PCM/history unchanged. */
 bool break_editor_doc_audio_trim(BreakEditorDoc *doc, u32 begin, u32 end);

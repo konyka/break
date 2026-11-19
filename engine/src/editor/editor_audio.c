@@ -83,20 +83,27 @@ u64 break_editor_doc_audio_revision(const BreakEditorDoc *doc) {
 
 bool break_editor_doc_audio_waveform(const BreakEditorDoc *doc, u32 columns,
                                      i16 *out_min, i16 *out_max) {
+    return break_editor_doc_audio_waveform_range(
+        doc, 0u, doc && doc->audio ? doc->audio->frames : 0u, columns, out_min, out_max);
+}
+
+bool break_editor_doc_audio_waveform_range(const BreakEditorDoc *doc, u32 begin, u32 end,
+                                           u32 columns, i16 *out_min, i16 *out_max) {
     if (!doc || !doc->audio || !out_min || !out_max || columns == 0u ||
-        columns > BREAK_EDITOR_AUDIO_WAVEFORM_MAX_COLUMNS || doc->audio->frames == 0u) {
+        columns > BREAK_EDITOR_AUDIO_WAVEFORM_MAX_COLUMNS || begin >= end ||
+        end > doc->audio->frames) {
         return false;
     }
     const BreakEditorAudioState *audio = doc->audio;
-    const u64 frames = audio->frames;
+    const u64 frames = (u64)end - begin;
     for (u32 c = 0u; c < columns; ++c) {
-        const u64 begin = (u64)c * frames / columns;
-        u64 end = (u64)(c + 1u) * frames / columns;
-        if (end <= begin) end = begin + 1u;
-        const i16 *sample = audio->samples + begin * audio->channels;
-        const i16 *last = audio->samples + end * audio->channels;
+        const u64 first = begin + (u64)c * frames / columns;
+        u64 last = begin + (u64)(c + 1u) * frames / columns;
+        if (last <= first) last = first + 1u;
+        const i16 *sample = audio->samples + first * audio->channels;
+        const i16 *stop = audio->samples + last * audio->channels;
         i16 lo = *sample, hi = *sample;
-        for (; sample < last; ++sample) {
+        for (; sample < stop; ++sample) {
             if (*sample < lo) lo = *sample;
             if (*sample > hi) hi = *sample;
         }
