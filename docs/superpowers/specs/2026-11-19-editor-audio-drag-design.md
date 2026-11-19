@@ -34,9 +34,10 @@ and the release pixel (inclusive); dragging left gives the same range; the
 selection updates before the release; a press and release on the same frame
 stays a plain click (seek, no selection); a second press without a release
 re-anchors the drag instead of extending the previous one; a move after a
-mid-drag tab switch
-leaves the selection unchanged and the drag ends; a move without a press
-selects nothing.
+mid-drag tab switch leaves the selection unchanged and the drag ends; a
+document reset mid-drag ends it (the next move selects nothing); destroying
+the shell mid-drag touches no freed state (checked under ASan); a move
+without a press selects nothing.
 
 ## Out of scope
 
