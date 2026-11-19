@@ -22,7 +22,10 @@ typedef enum CoreAppScenarioKind {
     CORE_APP_SCENARIO_QUIT,
     CORE_APP_SCENARIO_LEVEL,
     /* Switch the playback device: path holds the name, "" for the default. */
-    CORE_APP_SCENARIO_AUDIO_DEVICE
+    CORE_APP_SCENARIO_AUDIO_DEVICE,
+    /* Switch the voice capture device: path holds the name, "" for the
+     * default. */
+    CORE_APP_SCENARIO_VOICE_CAPTURE_DEVICE
 } CoreAppScenarioKind;
 
 /* The audio layer refuses names of 128 bytes or more. */

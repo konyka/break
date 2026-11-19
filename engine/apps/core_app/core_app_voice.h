@@ -41,6 +41,11 @@ typedef struct {
     u64 capture_reopen_failures;
     /* Playback reopens the pump noticed (audio_system_recoveries). */
     u64 playback_recoveries;
+    /* Runtime capture switches (core_app_voice_request_capture_device):
+     * opened, refused for the name, failed for another reason. */
+    u64 capture_switches;
+    u64 capture_switch_rejected;
+    u64 capture_switch_failures;
 } CoreAppVoiceStats;
 
 /* Only create/thread-start allocate, and pump when it reopens a lost capture
@@ -65,6 +70,14 @@ const char *core_app_voice_capture_backend(const CoreAppVoice *voice);
 /* Fills out with the capture device name; false and "" when it has none.
  * Not while the worker runs: a reopen rewrites the name. */
 bool core_app_voice_capture_name(const CoreAppVoice *voice, char *out, usize capacity);
+/* Asks the pumping thread to open another input device (NULL or "" for the
+ * default) on its next pump. One request at a time from one requesting
+ * thread: OVERLOAD while an earlier one is still pending, REJECTED for a
+ * name of 128 bytes or more or a voice that is not started, INVALID for
+ * NULL. The pump keeps the old device when the name is unknown (no fallback
+ * to the default); a switched name is the one a later loss reopens. The
+ * result shows up in the capture_switch* stats. */
+BreakRuntimeError core_app_voice_request_capture_device(CoreAppVoice *voice, const char *name);
 /* FAKE/NULL capture only (tests): forwards audio_capture_simulate_event. */
 BreakRuntimeError core_app_voice_simulate_capture_event(CoreAppVoice *voice,
                                                         AudioCaptureEvent event);

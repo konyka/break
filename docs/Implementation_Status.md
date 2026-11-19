@@ -1,3 +1,10 @@
+## Core App 运行中切换采集设备（2026-11-19）
+
+- **交付**：scenario 新命令 `TICK voice-capture-device NAME` 与 `TICK voice-capture-device`（切回默认输入），名称规则与 `audio-device` 相同。`core_app_voice_request_capture_device` 把名称放入单槽请求，语音泵线程在下一次 pump 时调用 `audio_capture_reopen`；未知名称被拒且旧输入继续采集，不退回默认；切换成功后之后的丢失恢复重开新名称。结果写 `event=voice_capture_device result=switched device=NAME|default`、`result=rejected reason=device_name` 或 `result=failed`；没有 voice lane 时写 `result=rejected tick=N reason=mode`。voice `result=stopped` 行追加 `capture_switches`、`capture_switch_rejected`、`capture_switch_failures`。设计与计划见 `docs/superpowers/specs/2026-11-19-core-app-runtime-capture-switch-design.md`、`docs/superpowers/plans/2026-11-19-core-app-runtime-capture-switch.md`。
+- **TDD**：`test_core_app_runtime`（scenario 解析，1 项）、`test_core_app_voice`（按名称切换 / 拒绝未知名称 / 切回默认 / OVERLOAD / 未启动与超长名称 REJECTED / 切换后丢失重开新名称；FAKE 采集拒绝命名切换并继续产帧，2 项）、`test_core_app_voice_lane.cmake`（fake 模式切换确定且两次运行逐字节相同，无 voice 时 `reason=mode`）、`test_core_app_voice_device.cmake`（本机真实设备拒绝未知名称后切回默认，帧不丢）均先 RED 后 GREEN。三个变异（未知名称退回默认、待处理请求被覆盖、槽位不释放）都判红。
+- **评审**：独立评审结论 Ready。按意见修改：停止前没被处理的已接受请求写 `result=failed reason=stopped`（新增合同场景，先 RED 后 GREEN）；加 `_Static_assert` 固定两个名称缓冲大小一致。
+- **边界**：一次只处理一个请求；没有 UI 或控制台发出该命令；结果行不带 tick。
+
 ## Core App 运行中切换播放设备（2026-11-19）
 
 - **交付**：scenario 新命令 `TICK audio-device NAME`（NAME 为命令后一个空格之后的整行，可含空格，1..127 字节，不能以空格开头或结尾，不能含控制字符）与 `TICK audio-device`（切回默认设备）。`core_app_audio_request_device` 把切换作为 `CORE_APP_AUDIO_SWITCH_DEVICE` 命令排入音频队列，由音频 owner 线程按队列顺序调用 `audio_system_switch_device`；声源、总线、听者和参考环保留。结果写 `event=audio_device result=switched device=NAME|default`、`result=rejected reason=device_name` 或 `result=failed`，都不让运行失败。record / null 模式请求被拒并写 `event=audio_device result=rejected tick=N reason=mode`。device `result=stopped` 行追加 `device_switches`、`device_switch_rejected`、`device_switch_failures`。设计与计划见 `docs/superpowers/specs/2026-11-19-core-app-runtime-device-switch-design.md`、`docs/superpowers/plans/2026-11-19-core-app-runtime-device-switch.md`。

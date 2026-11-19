@@ -26,3 +26,10 @@
 5. Mutations: an unknown name falls back to the default; a request while pending overwrites instead of OVERLOAD; the slot is never released.
 
 Out of scope: listing input devices from the CLI, a UI or console entry, mixing several inputs.
+
+## Result
+
+- RED then GREEN: scenario parsing (1 test in `test_core_app_runtime`), the voice mailbox (2 tests in `test_core_app_voice`), the fake-lane contract and the real-device contract. On this host the unknown name was refused, the default input reopened, and produced equalled consumed.
+- Mutations: an unknown name falling back to the default; a pending request being overwritten; the slot never being released. Each fails at least one test.
+- Deviation: core_app also refuses a second request while the first has no traced result yet (`reason=overload`), so each accepted request gets exactly one result line.
+- Independent review: Ready. Fixed after it: an accepted request that the pump never reached before stop now traces `result=failed reason=stopped` at join (new lane-contract case, RED then GREEN), so the one-result-per-request rule holds; a `_Static_assert` ties the two name buffers to the same size. Known limits: result lines carry no tick; `reason=name` / `reason=invalid` are defensive; the real-device contract could see `reason=overload` if one real reopen took longer than ~2900 fixed-step ticks.

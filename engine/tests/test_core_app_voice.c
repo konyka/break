@@ -719,6 +719,117 @@ TEST(a_named_capture_device_opens_and_an_unknown_name_is_rejected)
     audio_system_destroy(playback);
 }
 
+static void pump_until_handled(CoreAppVoice *voice, u64 handled)
+{
+    CoreAppVoiceStats stats;
+    for (u32 attempt = 0u; attempt < 4u; ++attempt) {
+        ASSERT_EQ(core_app_voice_pump(voice, 1u), BREAK_RUNTIME_OK);
+        voice_stats(voice, &stats);
+        if (stats.capture_switches + stats.capture_switch_rejected +
+                stats.capture_switch_failures >= handled) {
+            return;
+        }
+    }
+}
+
+/* A started voice switches its capture device on the pumping thread: by
+ * name, refused for a name no device has (the old device keeps capturing),
+ * and back to the default. A loss afterwards reopens the switched name. */
+TEST(a_running_voice_switches_its_capture_device)
+{
+    AudioSystem *playback = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(playback);
+    CoreAppVoiceConfig config = recovery_config(playback, 0u, 3u);
+    config.capture_backend = AUDIO_BACKEND_NULL;
+    CoreAppVoice *voice = create_voice(&config);
+    ASSERT_NOT_NULL(voice);
+    ASSERT_EQ(core_app_voice_request_capture_device(NULL, NULL), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(core_app_voice_request_capture_device(voice, "NULL Capture Device"),
+              BREAK_RUNTIME_REJECTED);
+    ASSERT_EQ(core_app_voice_start(voice), BREAK_RUNTIME_OK);
+    char long_name[200];
+    memset(long_name, 'a', sizeof(long_name) - 1u);
+    long_name[sizeof(long_name) - 1u] = '\0';
+    ASSERT_EQ(core_app_voice_request_capture_device(voice, long_name), BREAK_RUNTIME_REJECTED);
+
+    ASSERT_EQ(core_app_voice_request_capture_device(voice, "NULL Capture Device"),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_voice_request_capture_device(voice, NULL), BREAK_RUNTIME_OVERLOAD);
+    pump_until_handled(voice, 1u);
+    CoreAppVoiceStats stats;
+    voice_stats(voice, &stats);
+    ASSERT_EQ(stats.capture_switches, 1u);
+    char opened[128] = {0};
+    ASSERT_TRUE(core_app_voice_capture_name(voice, opened, sizeof(opened)));
+    ASSERT_STR_EQ(opened, "NULL Capture Device");
+
+    ASSERT_EQ(core_app_voice_request_capture_device(voice, "no such microphone"),
+              BREAK_RUNTIME_OK);
+    pump_until_handled(voice, 2u);
+    voice_stats(voice, &stats);
+    ASSERT_EQ(stats.capture_switches, 1u);
+    ASSERT_EQ(stats.capture_switch_rejected, 1u);
+    ASSERT_TRUE(core_app_voice_capture_name(voice, opened, sizeof(opened)));
+    ASSERT_STR_EQ(opened, "NULL Capture Device");
+
+    /* the switched name is the one a loss reopens */
+    ASSERT_EQ(core_app_voice_simulate_capture_event(voice, AUDIO_CAPTURE_EVENT_DEVICE_LOST),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_voice_pump(voice, 1u), BREAK_RUNTIME_OK);
+    voice_stats(voice, &stats);
+    ASSERT_EQ(stats.capture_recoveries, 1u);
+    ASSERT_TRUE(core_app_voice_capture_name(voice, opened, sizeof(opened)));
+    ASSERT_STR_EQ(opened, "NULL Capture Device");
+
+    ASSERT_EQ(core_app_voice_request_capture_device(voice, ""), BREAK_RUNTIME_OK);
+    pump_until_handled(voice, 3u);
+    voice_stats(voice, &stats);
+    ASSERT_EQ(stats.capture_switches, 2u);
+    ASSERT_EQ(stats.capture_switch_rejected, 1u);
+    ASSERT_EQ(stats.capture_switch_failures, 0u);
+    ASSERT_EQ(core_app_voice_request_capture_device(voice, NULL), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_voice_stop(voice), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_voice_request_capture_device(voice, NULL), BREAK_RUNTIME_REJECTED);
+    core_app_voice_destroy(voice);
+    audio_system_destroy(playback);
+}
+
+/* A FAKE capture has no named device: the switch is refused and the
+ * capture keeps producing frames. */
+TEST(a_fake_capture_refuses_a_named_switch_and_keeps_producing)
+{
+    AudioSystem *playback = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(playback);
+    const CoreAppVoiceConfig config = test_config(playback);
+    CoreAppVoice *voice = create_voice(&config);
+    ASSERT_NOT_NULL(voice);
+    AudioPcmStreamHandle stream = open_reference_stream(playback);
+    ASSERT_NEQ(stream, 0u);
+    ASSERT_EQ(core_app_voice_start(voice), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_voice_request_capture_device(voice, "fake"), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_voice_pump(voice, 1u), BREAK_RUNTIME_OK);
+    i16 stereo[VOICE_TEST_FRAMES * 2u] = {0};
+    f32 rendered[VOICE_TEST_FRAMES * 2u];
+    f32 capture[VOICE_TEST_FRAMES];
+    fill_capture(capture, 0u);
+    drive_fake(voice, playback, stream, capture, stereo, rendered);
+    ASSERT_EQ(core_app_voice_pump(voice, 1u), BREAK_RUNTIME_OK);
+    CoreAppVoiceStats stats;
+    voice_stats(voice, &stats);
+    ASSERT_EQ(stats.capture_switch_rejected, 1u);
+    ASSERT_EQ(stats.capture_switches, 0u);
+    ASSERT_EQ(stats.produced, 1u);
+    /* the default switch is accepted on a FAKE capture */
+    ASSERT_EQ(core_app_voice_request_capture_device(voice, NULL), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_voice_pump(voice, 1u), BREAK_RUNTIME_OK);
+    voice_stats(voice, &stats);
+    ASSERT_EQ(stats.capture_switches, 1u);
+    ASSERT_EQ(core_app_voice_stop(voice), BREAK_RUNTIME_OK);
+    core_app_voice_destroy(voice);
+    ASSERT_EQ(audio_pcm_stream_close(playback, stream), AUDIO_OK);
+    audio_system_destroy(playback);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(create_validates_config_and_lifecycle);
     RUN_TEST(manual_packet_matches_independent_pipeline);
@@ -734,4 +845,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(reopen_attempts_wait_for_the_interval);
     RUN_TEST(the_worker_recovers_a_lost_capture_and_keeps_running);
     RUN_TEST(a_named_capture_device_opens_and_an_unknown_name_is_rejected);
+    RUN_TEST(a_running_voice_switches_its_capture_device);
+    RUN_TEST(a_fake_capture_refuses_a_named_switch_and_keeps_producing);
 TEST_MAIN_END()

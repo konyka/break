@@ -98,6 +98,47 @@ TEST(scenario_rejects_malformed_audio_device_names) {
     scenario_free(scenario);
 }
 
+TEST(scenario_parses_voice_capture_device_switches) {
+    CoreAppScenario *scenario = scenario_new();
+    char text[1024];
+    char name[129];
+    const char *valid =
+        "core-app-scenario 1\n"
+        "seed 12648430\n"
+        "fixed-dt-ns 16666667\n"
+        "2 voice-capture-device NULL Capture Device\n"
+        "3 voice-capture-device\n"
+        "4 quit\n";
+    ASSERT_NOT_NULL(scenario);
+    ASSERT_EQ(parse(valid, scenario), CORE_APP_SCENARIO_OK);
+    ASSERT_EQ(scenario->event_count, 3u);
+    ASSERT_EQ(scenario->events[0].kind, CORE_APP_SCENARIO_VOICE_CAPTURE_DEVICE);
+    ASSERT_EQ(scenario->events[0].tick, 2u);
+    ASSERT_STR_EQ(scenario->events[0].path, "NULL Capture Device");
+    ASSERT_EQ(scenario->events[1].kind, CORE_APP_SCENARIO_VOICE_CAPTURE_DEVICE);
+    ASSERT_STR_EQ(scenario->events[1].path, "");
+    memset(name, 'n', 128u);
+    name[128] = '\0';
+    snprintf(text, sizeof(text),
+             "core-app-scenario 1\nseed 1\nfixed-dt-ns 16666667\n"
+             "2 voice-capture-device %s\n3 quit\n", name);
+    ASSERT_EQ(parse(text, scenario), CORE_APP_SCENARIO_INVALID);
+    ASSERT_EQ(scenario->event_count, 0u);
+    ASSERT_EQ(parse("core-app-scenario 1\nseed 1\nfixed-dt-ns 16666667\n"
+                    "2 voice-capture-device bad\tname\n3 quit\n", scenario),
+              CORE_APP_SCENARIO_INVALID);
+    ASSERT_EQ(parse("core-app-scenario 1\nseed 1\nfixed-dt-ns 16666667\n"
+                    "2 voice-capture-device  leading\n3 quit\n", scenario),
+              CORE_APP_SCENARIO_INVALID);
+    ASSERT_EQ(parse("core-app-scenario 1\nseed 1\nfixed-dt-ns 16666667\n"
+                    "2 voice-capture-device trailing \n3 quit\n", scenario),
+              CORE_APP_SCENARIO_INVALID);
+    ASSERT_EQ(parse("core-app-scenario 1\nseed 1\nfixed-dt-ns 16666667\n"
+                    "2 voice-capture-devicex\n3 quit\n", scenario),
+              CORE_APP_SCENARIO_INVALID);
+    scenario_free(scenario);
+}
+
 TEST(scenario_rejects_too_many_events_without_partial_events) {
     CoreAppScenario *scenario = scenario_new();
     char *text = (char *)malloc(900000u);
@@ -1724,6 +1765,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(scenario_rejects_tick_regression_without_partial_events);
     RUN_TEST(scenario_parses_audio_device_switches);
     RUN_TEST(scenario_rejects_malformed_audio_device_names);
+    RUN_TEST(scenario_parses_voice_capture_device_switches);
     RUN_TEST(scenario_rejects_too_many_events_without_partial_events);
     RUN_TEST(scenario_accepts_exactly_max_events);
     RUN_TEST(scenario_rejects_oversized_file_without_partial_events);

@@ -1721,3 +1721,18 @@ loopback 测试：对端 A、A2、F（late_auth 模式下为 G）各自恰好收
 验证：`test_core_app_runtime` 59 项、`test_core_app_named_device`（本机 PulseAudio 运行中切换成功）；全量 451/451；ASan+UBSan 与 TSan 树相关 10 项通过。变异（未知名称当作切换、record 模式接受、切换不在 owner 线程）都判红。
 
 仍缺：运行中切换采集设备、UI 或控制台入口、对端语音混音、漂移补偿、Opus、真实声学验证。
+
+## 补充（2026-11-19）：运行中切换采集设备
+
+- **scenario 文法**：`<tick> voice-capture-device <name>` 与 `<tick> voice-capture-device`，名称规则与 `audio-device` 相同（命令后一个空格之后的整行，1..127 字节，首尾不能是空格，不能含 0x00–0x1F 或 0x7F）。没有名称表示切回默认输入。新事件类型 `CORE_APP_SCENARIO_VOICE_CAPTURE_DEVICE`，名称存入 `event.path`。
+- **语音层**：`core_app_voice_request_capture_device(voice, name)` 把名称写入单槽请求（名称缓冲 + `atomic_bool switch_pending`）。NULL voice 返回 INVALID；未启动或名称 ≥128 字节返回 REJECTED；上一个请求还没处理返回 OVERLOAD。只允许一个请求线程。`core_app_voice_pump` 在丢失检查之前处理请求，调用 `audio_capture_reopen(capture, name)`，不退回默认设备：OK 时更新保存的设备名（之后的丢失恢复重开这个名称），丢弃过期的采集和参考帧，重置处理器，清零连续重开失败计数，计 `capture_switches`；REJECTED 计 `capture_switch_rejected`，旧设备继续采集；其他结果计 `capture_switch_failures`，若因此丢失采集，由已有的恢复逻辑重开原名称。计数更新之后才以 release 顺序释放槽位。`CoreAppVoiceStats` 增加这三个计数。
+- **core_app**：scenario 事件调用该请求。没有 voice lane 时写 `event=voice_capture_device result=rejected tick=N reason=mode`；名称过长 `reason=name`，有未出结果的请求或 OVERLOAD 时 `reason=overload`，参数无效 `reason=invalid`。被接受的请求在 `app_voice_tick` 泵之后（以及 join 时）检查三个计数，变化时写 `result=switched device=<name>|default`、`result=rejected reason=device_name` 或 `result=failed`，名称中的空白替换为 `_`。fake 模式在同一 tick 内泵，trace 确定；device 模式在 worker 处理后的下一个 tick 出现。
+- **trace**：voice `result=stopped` 行在 `playback_recoveries` 之后追加 `capture_switches=N capture_switch_rejected=M capture_switch_failures=K`。
+- **合同**：`test_core_app_voice_lane.cmake` 在 fake 模式下切到默认（switched）再切到未知名称（rejected），两行按顺序出现，stopped 行为 1/1/0，帧没有丢失，两次运行逐字节相同；不带 `--voice` 时两次请求都写 `reason=mode`。`test_core_app_voice_device.cmake` 在真实设备上先请求未知名称再切回默认，两行按顺序出现，stopped 行为 1/1/0，produced 等于 consumed。
+
+- **评审后的修改**：被接受但在停止前没有被泵处理的请求（fake 模式下与 `quit` 同一 tick，或 device 模式下 worker 被 join 前没来得及处理），在 join 时写 `event=voice_capture_device result=failed reason=stopped`，因此每个被接受的请求恰好有一行结果；`test_core_app_voice_lane.cmake` 增加该场景。`core_app_voice.c` 用 `_Static_assert` 固定请求名缓冲与保存名缓冲大小相同。
+- **已知限制**：结果行不带 `tick=`；`reason=name` 与 `reason=invalid` 是防御分支，scenario 解析已限制名称长度，正常运行到不了。真实设备合同两次请求相隔约 2900 个固定步 tick，如果一次真实重开慢于这段时间，第二个请求会被记为 `reason=overload` 而让合同失败；本机运行没有出现。
+
+验证：`test_core_app_voice` 16 项（新增 2 项），`test_core_app_runtime` 60 项（新增 1 项），本机真实设备切换通过。变异（未知名称退回默认、待处理请求被覆盖、槽位不释放）都判红。
+
+仍缺：UI 或控制台入口、对端语音混音、漂移补偿、Opus、真实声学验证。

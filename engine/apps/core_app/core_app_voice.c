@@ -28,6 +28,13 @@ struct CoreAppVoice {
     atomic_uint_least64_t capture_reopen_failures;
     u64 seen_playback_recoveries;
     atomic_uint_least64_t playback_recoveries;
+    /* One-slot switch mailbox: the requester writes the name while pending
+     * is false, the pumping thread reads it while pending is true. */
+    char requested_name[128];
+    atomic_bool switch_pending;
+    atomic_uint_least64_t capture_switches;
+    atomic_uint_least64_t capture_switch_rejected;
+    atomic_uint_least64_t capture_switch_failures;
     PlatformThread worker;
     PlatformThreadId worker_id;
     atomic_int worker_error;
@@ -37,6 +44,9 @@ struct CoreAppVoice {
     atomic_bool worker_ready;
 };
 
+_Static_assert(sizeof(((CoreAppVoice *)0)->requested_name) ==
+                   sizeof(((CoreAppVoice *)0)->capture_device_name),
+               "A switched name is copied whole into the stored device name");
 _Static_assert((CORE_APP_VOICE_QUEUE_CAPACITY & (CORE_APP_VOICE_QUEUE_CAPACITY - 1u)) == 0u,
                "Voice queue capacity must be a power of two");
 
@@ -249,6 +259,41 @@ static void voice_follow_playback_reopen(CoreAppVoice *voice) {
     atomic_fetch_add_explicit(&voice->playback_recoveries, 1u, memory_order_relaxed);
 }
 
+BreakRuntimeError core_app_voice_request_capture_device(CoreAppVoice *voice, const char *name) {
+    if (!voice) return BREAK_RUNTIME_INVALID;
+    const char *text = name ? name : "";
+    const usize length = strlen(text);
+    if (!voice->started || length >= sizeof(voice->requested_name)) {
+        return BREAK_RUNTIME_REJECTED;
+    }
+    if (atomic_load_explicit(&voice->switch_pending, memory_order_acquire)) {
+        return BREAK_RUNTIME_OVERLOAD;
+    }
+    memcpy(voice->requested_name, text, length + 1u);
+    atomic_store_explicit(&voice->switch_pending, true, memory_order_release);
+    return BREAK_RUNTIME_OK;
+}
+
+/* Pumping thread only. An unknown name keeps the old device; a failure that
+ * left the capture lost is handled by the recovery of the stored name. */
+static void voice_switch_capture(CoreAppVoice *voice) {
+    if (!atomic_load_explicit(&voice->switch_pending, memory_order_acquire)) return;
+    const AudioResult result = audio_capture_reopen(voice->capture, voice->requested_name);
+    if (result == AUDIO_OK) {
+        memcpy(voice->capture_device_name, voice->requested_name,
+               sizeof(voice->capture_device_name));
+        voice->consecutive_reopen_failures = 0u;
+        voice_discard_stale(voice);
+        audio_voice_processor_reset(voice->processor);
+        atomic_fetch_add_explicit(&voice->capture_switches, 1u, memory_order_relaxed);
+    } else if (result == AUDIO_REJECTED) {
+        atomic_fetch_add_explicit(&voice->capture_switch_rejected, 1u, memory_order_relaxed);
+    } else {
+        atomic_fetch_add_explicit(&voice->capture_switch_failures, 1u, memory_order_relaxed);
+    }
+    atomic_store_explicit(&voice->switch_pending, false, memory_order_release);
+}
+
 BreakRuntimeError core_app_voice_pump(CoreAppVoice *voice, u32 max_packets) {
     if (!voice) return BREAK_RUNTIME_INVALID;
     if (!voice->started) return BREAK_RUNTIME_REJECTED;
@@ -257,6 +302,7 @@ BreakRuntimeError core_app_voice_pump(CoreAppVoice *voice, u32 max_packets) {
         return BREAK_RUNTIME_REJECTED;
     }
     if (max_packets == 0u) return BREAK_RUNTIME_OK;
+    voice_switch_capture(voice);
     if (audio_capture_lost(voice->capture)) {
         const BreakRuntimeError recovered = voice_recover_capture(voice);
         if (recovered == BREAK_RUNTIME_REJECTED) return BREAK_RUNTIME_OK;
@@ -297,6 +343,9 @@ BreakRuntimeError core_app_voice_stats(CoreAppVoice *voice, CoreAppVoiceStats *o
         atomic_load_explicit(&voice->capture_recoveries, memory_order_relaxed),
         atomic_load_explicit(&voice->capture_reopen_failures, memory_order_relaxed),
         atomic_load_explicit(&voice->playback_recoveries, memory_order_relaxed),
+        atomic_load_explicit(&voice->capture_switches, memory_order_relaxed),
+        atomic_load_explicit(&voice->capture_switch_rejected, memory_order_relaxed),
+        atomic_load_explicit(&voice->capture_switch_failures, memory_order_relaxed),
     };
     *out = stats;
     return BREAK_RUNTIME_OK;

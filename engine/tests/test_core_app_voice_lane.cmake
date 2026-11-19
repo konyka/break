@@ -10,7 +10,9 @@
 #   2. two identical fake runs write byte-identical traces,
 #   3. a run without --voice writes no voice event,
 #   4. an unknown --voice value, --voice=device without --audio=device, and
-#      --voice-null-capture without --voice=device are CLI errors (exit 2).
+#      --voice-null-capture without --voice=device are CLI errors (exit 2),
+#   5. scenario voice-capture-device switches are traced and counted (see
+#      the section below).
 
 foreach(var CORE_APP WORK ASSET_ROOT)
     if(NOT DEFINED ${var} OR "${${var}}" STREQUAL "")
@@ -55,7 +57,7 @@ if(NOT fake_a MATCHES "event=voice mode=fake result=ready frames=480 capture=fak
     message(FATAL_ERROR "the voice lane never became ready\n${fake_a}")
 endif()
 if(NOT fake_a MATCHES
-   "event=voice mode=fake result=stopped produced=([0-9]+) consumed=([0-9]+) dropped=([0-9]+) sequence_gaps=([0-9]+) peak=([0-9]+) capture_overruns=([0-9]+) reference_overruns=([0-9]+) capture_recoveries=0 capture_reopen_failures=0 playback_recoveries=0\n")
+   "event=voice mode=fake result=stopped produced=([0-9]+) consumed=([0-9]+) dropped=([0-9]+) sequence_gaps=([0-9]+) peak=([0-9]+) capture_overruns=([0-9]+) reference_overruns=([0-9]+) capture_recoveries=0 capture_reopen_failures=0 playback_recoveries=0 capture_switches=0 capture_switch_rejected=0 capture_switch_failures=0\n")
     message(FATAL_ERROR "the voice lane never stopped\n${fake_a}")
 endif()
 set(produced "${CMAKE_MATCH_1}")
@@ -99,6 +101,68 @@ if(NOT fake_a STREQUAL fake_b)
 endif()
 if(off MATCHES "event=voice")
     message(FATAL_ERROR "a run without --voice wrote a voice event\n${off}")
+endif()
+
+# 5. Runtime capture switches: a FAKE capture accepts the default and
+#    refuses a name; both results are traced in order, the stopped line
+#    counts them, the run keeps producing every frame, two runs stay
+#    byte-identical, and without --voice the request is refused (mode).
+set(switch_scenario "${WORK}/switch.scenario")
+file(WRITE "${switch_scenario}"
+    "core-app-scenario 1\n"
+    "seed 12648430\n"
+    "fixed-dt-ns 16666667\n"
+    "1 level\n"
+    "10 voice-capture-device\n"
+    "20 voice-capture-device no such microphone\n"
+    "100 quit\n")
+set(scenario_saved "${scenario}")
+set(scenario "${switch_scenario}")
+run_app(switch_a switch_a --voice=fake)
+run_app(switch_b switch_b --voice=fake)
+run_app(switch_off switch_off)
+set(scenario "${scenario_saved}")
+string(FIND "${switch_a}"
+    "event=voice_capture_device result=switched device=default\n" switched_at)
+string(FIND "${switch_a}"
+    "event=voice_capture_device result=rejected reason=device_name\n" refused_at)
+if(switched_at LESS 0 OR refused_at LESS 0 OR NOT switched_at LESS refused_at)
+    message(FATAL_ERROR "capture switch results missing or out of order\n${switch_a}")
+endif()
+if(NOT switch_a MATCHES
+   "event=voice mode=fake result=stopped produced=([0-9]+) consumed=([0-9]+) dropped=0 sequence_gaps=0 [^\n]* capture_switches=1 capture_switch_rejected=1 capture_switch_failures=0\n")
+    message(FATAL_ERROR "the stopped line does not count the switches\n${switch_a}")
+endif()
+if(NOT CMAKE_MATCH_1 EQUAL CMAKE_MATCH_2 OR CMAKE_MATCH_1 LESS 150)
+    message(FATAL_ERROR "switch run lost frames: produced=${CMAKE_MATCH_1}"
+                        " consumed=${CMAKE_MATCH_2}")
+endif()
+if(NOT switch_a STREQUAL switch_b)
+    message(FATAL_ERROR "two identical capture switch runs wrote different traces")
+endif()
+if(NOT switch_off MATCHES
+   "event=voice_capture_device result=rejected tick=10 reason=mode\n.*event=voice_capture_device result=rejected tick=20 reason=mode\n")
+    message(FATAL_ERROR "a switch without --voice was not refused\n${switch_off}")
+endif()
+
+# 6. A request accepted on the quit tick is never pumped: it still gets
+#    exactly one result line, reason=stopped, before the stopped line.
+set(late_scenario "${WORK}/late.scenario")
+file(WRITE "${late_scenario}"
+    "core-app-scenario 1\n"
+    "seed 12648430\n"
+    "fixed-dt-ns 16666667\n"
+    "1 level\n"
+    "50 voice-capture-device\n"
+    "50 quit\n")
+set(scenario "${late_scenario}")
+run_app(late late --voice=fake)
+set(scenario "${scenario_saved}")
+string(REGEX MATCHALL "event=voice_capture_device result=[^\n]*\n" late_results "${late}")
+list(LENGTH late_results late_count)
+if(NOT late_count EQUAL 1 OR NOT late MATCHES
+   "event=voice_capture_device result=failed reason=stopped\n[^\n]*\n?.*event=voice mode=fake result=stopped [^\n]* capture_switches=0 capture_switch_rejected=0 capture_switch_failures=0\n")
+    message(FATAL_ERROR "a request left at stop got no single stopped result\n${late}")
 endif()
 
 foreach(bad_args "--voice=bogus" "--voice=device" "--voice-null-capture"

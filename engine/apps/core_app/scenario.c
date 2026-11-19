@@ -280,6 +280,12 @@ CoreAppScenarioStatus core_app_scenario_parse(const char *text, usize size,
             if (*rest == ' ' && !device_name(event.path, rest + 1)) goto invalid;
             if (*rest != '\0' && *rest != ' ') goto invalid;
             event.kind = CORE_APP_SCENARIO_AUDIO_DEVICE;
+        } else if (strcmp(command, "voice-capture-device") == 0) {
+            const char *rest =
+                strstr(tick_end, "voice-capture-device") + strlen("voice-capture-device");
+            if (*rest == ' ' && !device_name(event.path, rest + 1)) goto invalid;
+            if (*rest != '\0' && *rest != ' ') goto invalid;
+            event.kind = CORE_APP_SCENARIO_VOICE_CAPTURE_DEVICE;
         } else if (strcmp(command, "quit") == 0 && count == 1) {
             event.kind = CORE_APP_SCENARIO_QUIT;
             parsed.has_quit = true;
