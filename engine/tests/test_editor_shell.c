@@ -3274,8 +3274,46 @@ TEST(audio_page_plays_the_attachment_through_the_sink)
 
 static void pointer_click(BreakEditorShell *shell, my_widget_t *w);
 
+/* True when a pending dirty rect of the shell's window overlaps `w`. */
+static bool dirty_overlaps(BreakEditorShell *shell, my_widget_t *w) {
+    my_window_t *win = break_editor_shell_window(shell);
+    int32_t gx = 0, gy = 0;
+    usize i;
+    my_widget_local_to_global(w, &gx, &gy);
+    for (i = 0u; i < win->dirty.count; i++) {
+        const my_rect_t *r = &win->dirty.rects[i];
+        if (r->x < gx + w->rect.w && gx < r->x + r->w && r->y < gy + w->rect.h &&
+            gy < r->y + r->h) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void pointer_press(BreakEditorShell *shell, my_widget_t *w, u8 button) {
+    my_window_t *win = break_editor_shell_window(shell);
+    int32_t gx = 0, gy = 0;
+    my_event_t ev;
+    my_widget_local_to_global(w, &gx, &gy);
+    ev = my_event_init(MY_EVENT_POINTER_DOWN);
+    ev.u.pointer.x = gx + w->rect.w / 4;
+    ev.u.pointer.y = gy + w->rect.h / 2;
+    ev.u.pointer.button = button;
+    (void)my_event_dispatch(&win->dispatcher, &ev);
+    ev = my_event_init(MY_EVENT_POINTER_UP);
+    ev.u.pointer.x = gx + w->rect.w / 4;
+    ev.u.pointer.y = gy + w->rect.h / 2;
+    ev.u.pointer.button = button;
+    (void)my_event_dispatch(&win->dispatcher, &ev);
+}
+
 /* Seek (design 2026-11-19-editor-audio-seek): a click on the waveform picks
  * where playback is or starts. */
+/* First sample of the attachment (Play from 0 writes it first). */
+static i16 pcm_after_fade_first(BreakEditorDoc *doc) {
+    return break_editor_doc_audio_samples(doc)[0];
+}
+
 TEST(audio_page_seeks_from_the_waveform)
 {
     static i16 pcm[2000u];
@@ -3305,8 +3343,20 @@ TEST(audio_page_seeks_from_the_waveform)
     cursor = break_editor_shell_audio_cursor_frames(shell);
     ASSERT_TRUE(cursor >= 900u && cursor <= 1100u);
     ASSERT_EQ(fake.opens, 0u);
-    /* Play starts there */
+    /* other buttons are ignored */
+    pointer_press(shell, wave, 2u);
+    pointer_press(shell, wave, 3u);
+    ASSERT_EQ(break_editor_shell_audio_cursor_frames(shell), cursor);
+    /* Play starts there; the cursor line repaints as playback moves */
     ASSERT_TRUE(break_editor_shell_audio_play(shell));
+    shell_paint(shell);
+    my_dirty_rects_clear(&break_editor_shell_window(shell)->dirty);
+    break_editor_shell_tick(shell);
+    ASSERT_FALSE(dirty_overlaps(shell, wave));
+    fake.played = 50u;
+    break_editor_shell_tick(shell);
+    ASSERT_TRUE(dirty_overlaps(shell, wave));
+    shell_paint(shell);
     ASSERT_EQ(fake.written, 2000u - cursor);
     ASSERT_EQ(fake.data[0], (i16)cursor);
     fake.played = 100u;
@@ -3324,10 +3374,13 @@ TEST(audio_page_seeks_from_the_waveform)
     ASSERT_EQ(fake.closes, 1u);
     ASSERT_EQ(fake.written, 500u);
     ASSERT_EQ(fake.data[0], (i16)1500);
-    /* the end by itself resets the cursor */
+    /* the end by itself resets the cursor and repaints the line away */
+    shell_paint(shell);
+    my_dirty_rects_clear(&break_editor_shell_window(shell)->dirty);
     fake.played = 500u;
     break_editor_shell_tick(shell);
     ASSERT_FALSE(break_editor_shell_audio_playing(shell));
+    ASSERT_TRUE(dirty_overlaps(shell, wave));
     ASSERT_EQ(break_editor_shell_audio_cursor_frames(shell), 0u);
     /* past the end clamps to the last frame */
     ASSERT_FALSE(break_editor_shell_audio_seek(shell, 99999u));
@@ -3340,6 +3393,35 @@ TEST(audio_page_seeks_from_the_waveform)
     ASSERT_EQ(break_editor_shell_audio_cursor_frames(shell), 1999u);
     ASSERT_TRUE(break_editor_doc_audio_fade(doc, 1.0, 0.0));
     break_editor_shell_tick(shell);
+    ASSERT_EQ(break_editor_shell_audio_cursor_frames(shell), 0u);
+    /* an edit followed at once by Play (no tick in between) still resets */
+    ASSERT_FALSE(break_editor_shell_audio_seek(shell, 1200u));
+    ASSERT_TRUE(break_editor_doc_audio_fade(doc, 2.0, 0.0));
+    ASSERT_TRUE(break_editor_shell_audio_play(shell));
+    ASSERT_EQ(fake.data[0], pcm_after_fade_first(doc));
+    break_editor_shell_tick(shell);
+    ASSERT_TRUE(break_editor_shell_audio_playing(shell));
+    /* an edit then a seek while playing (no tick in between): the stale
+     * copy stops and the seek does not restart it */
+    ASSERT_TRUE(break_editor_doc_audio_fade(doc, 3.0, 0.0));
+    ASSERT_FALSE(break_editor_shell_audio_seek(shell, 5u));
+    ASSERT_FALSE(break_editor_shell_audio_playing(shell));
+    ASSERT_EQ(break_editor_shell_audio_cursor_frames(shell), 5u);
+    ASSERT_TRUE(break_editor_shell_audio_play(shell));
+    ASSERT_EQ(fake.data[0], break_editor_doc_audio_samples(doc)[5]);
+    /* a seek whose restart fails stops and says so */
+    fake.refuse_open = true;
+    ASSERT_FALSE(break_editor_shell_audio_seek(shell, 10u));
+    ASSERT_FALSE(break_editor_shell_audio_playing(shell));
+    ASSERT_STR_EQ(last_console_line(break_editor_shell_console_text(shell)),
+                  "audio could not be played\n");
+    fake.refuse_open = false;
+    /* no attachment: a seek does nothing */
+    ASSERT_TRUE(break_editor_doc_reset(doc));
+    break_editor_shell_tick(shell);
+    ASSERT_FALSE(break_editor_shell_audio_seek(shell, 10u));
+    ASSERT_EQ(break_editor_shell_audio_cursor_frames(shell), 0u);
+    pointer_click(shell, wave);
     ASSERT_EQ(break_editor_shell_audio_cursor_frames(shell), 0u);
     shell_paint(shell);
     break_editor_shell_destroy(shell);

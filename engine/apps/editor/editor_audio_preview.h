@@ -55,8 +55,9 @@ void break_editor_audio_preview_reset_cursor(BreakEditorAudioPreview *preview);
 void break_editor_audio_preview_pump(BreakEditorAudioPreview *preview);
 void break_editor_audio_preview_stop(BreakEditorAudioPreview *preview);
 bool break_editor_audio_preview_playing(const BreakEditorAudioPreview *preview);
-/* Clip frames consumed by the output so far (written minus queued, at most
- * the clip length; device latency not included); 0 when stopped. */
+/* Clip frame the output has reached: the start frame plus frames consumed
+ * (written minus queued), at most the clip length; device latency is not
+ * included. 0 when stopped. */
 u32 break_editor_audio_preview_position_frames(const BreakEditorAudioPreview *preview);
 /* Length and rate of the clip being played; 0 when stopped. */
 u32 break_editor_audio_preview_length_frames(const BreakEditorAudioPreview *preview);

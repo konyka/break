@@ -83,8 +83,16 @@ static void audio_panel_format_info(EditorPanelAudio *panel) {
                                prate);
         }
     }
-    panel->shown_playing = playing;
-    panel->shown_position = break_editor_audio_preview_position_frames(panel->preview);
+    {
+        const u32 position = break_editor_audio_preview_position_frames(panel->preview);
+        /* the waveform draws the playing position: repaint it when that moves */
+        if (panel->waveform != NULL &&
+            (playing != panel->shown_playing || position != panel->shown_position)) {
+            my_widget_invalidate(panel->waveform, NULL);
+        }
+        panel->shown_playing = playing;
+        panel->shown_position = position;
+    }
     if (panel->info != NULL) {
         (void)my_label_set_text(panel->info, panel->info_text);
     }
@@ -96,6 +104,10 @@ static void audio_panel_format_info(EditorPanelAudio *panel) {
 
 static void audio_panel_refresh(EditorPanelAudio *panel) {
     const BreakEditorDoc *doc = break_editor_shell_doc(panel->shell);
+    if (panel->seen_revision != break_editor_doc_audio_revision(doc)) {
+        /* the cursor may point past the new end */
+        break_editor_audio_preview_reset_cursor(panel->preview);
+    }
     const i32 width = panel->waveform != NULL ? panel->waveform->rect.w : 0;
     u32 columns = width > 0 ? (u32)width : 1u;
     const u32 frames = break_editor_doc_audio_frames(doc);
@@ -229,33 +241,45 @@ bool editor_panel_audio_toggle(EditorPanelAudio *panel) {
         break_editor_audio_preview_stop(panel->preview);
     } else if (!break_editor_audio_preview_has_sink(panel->preview)) {
         editor_shell_log(panel->shell, "%s", break_editor_tr(BREAK_EDITOR_TR_LOG_AUDIO_NO_OUTPUT));
-    } else if (!break_editor_audio_preview_play_from(
-                   panel->preview, break_editor_shell_doc(panel->shell),
-                   break_editor_audio_preview_cursor_frames(panel->preview))) {
-        editor_shell_log(panel->shell, "%s",
-                         break_editor_tr(BREAK_EDITOR_TR_LOG_AUDIO_PLAY_FAILED));
     } else {
-        /* the copy is taken now: bring the page up to date so that only an
-         * attachment change from here on stops it */
+        /* bring the page up to date first: an edit not seen by a tick yet
+         * resets the cursor, and afterwards only a later change stops it */
         if (!panel->fresh || panel->seen_revision != break_editor_doc_audio_revision(
                                                          break_editor_shell_doc(panel->shell))) {
             audio_panel_refresh(panel);
         }
-        break_editor_audio_preview_pump(panel->preview);
+        if (!break_editor_audio_preview_play_from(
+                panel->preview, break_editor_shell_doc(panel->shell),
+                break_editor_audio_preview_cursor_frames(panel->preview))) {
+            editor_shell_log(panel->shell, "%s",
+                             break_editor_tr(BREAK_EDITOR_TR_LOG_AUDIO_PLAY_FAILED));
+        } else {
+            break_editor_audio_preview_pump(panel->preview);
+        }
     }
     audio_panel_format_info(panel);
     return break_editor_audio_preview_playing(panel->preview);
 }
 
 bool editor_panel_audio_seek(EditorPanelAudio *panel, u32 frame) {
-    bool playing;
+    bool was_playing, playing;
     if (panel == NULL) {
         return false;
     }
+    if (!panel->fresh || panel->seen_revision != break_editor_doc_audio_revision(
+                                                     break_editor_shell_doc(panel->shell))) {
+        /* an edit not seen yet: stop the stale copy and reset first */
+        break_editor_audio_preview_stop(panel->preview);
+        audio_panel_refresh(panel);
+    }
+    was_playing = break_editor_audio_preview_playing(panel->preview);
     playing = break_editor_audio_preview_seek(panel->preview, break_editor_shell_doc(panel->shell),
                                               frame);
     if (playing) {
         break_editor_audio_preview_pump(panel->preview);
+    } else if (was_playing) {
+        editor_shell_log(panel->shell, "%s",
+                         break_editor_tr(BREAK_EDITOR_TR_LOG_AUDIO_PLAY_FAILED));
     }
     audio_panel_format_info(panel);
     if (panel->waveform != NULL) {
@@ -355,10 +379,9 @@ void editor_panel_audio_tick(EditorPanelAudio *panel) {
     }
     doc = break_editor_shell_doc(panel->shell);
     if (panel->seen_revision != break_editor_doc_audio_revision(doc)) {
-        /* the preview plays a copy taken at Play: an edit makes it stale,
-         * and the cursor may point past the new end */
+        /* the preview plays a copy taken at Play: an edit makes it stale
+         * (the refresh below resets the cursor) */
         break_editor_audio_preview_stop(panel->preview);
-        break_editor_audio_preview_reset_cursor(panel->preview);
     }
     break_editor_audio_preview_pump(panel->preview);
     if (!panel->fresh || panel->seen_revision != break_editor_doc_audio_revision(doc) ||

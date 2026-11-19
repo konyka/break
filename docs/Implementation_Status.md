@@ -2,6 +2,7 @@
 
 - **交付**：音频页波形上主键按下即跳转（x × 帧数 / 宽度）。播放中从新位置重开输出端，停止时只设置下次播放的起点；播放到结尾或附件变化时起点归 0，停止不改起点。波形上画 1 像素竖线标出播放位置（停止时标出非 0 的起点）。预览新增 `play_from`、`seek`、`cursor_frames`、`reset_cursor`，shell 新增 `break_editor_shell_audio_seek`、`break_editor_shell_audio_cursor_frames`。设计与计划见 `docs/superpowers/specs/2026-11-19-editor-audio-seek-design.md`、`docs/superpowers/plans/2026-11-19-editor-audio-seek.md`。
 - **TDD**：shell 与真实 PCM 流各一个新用例，先在桩实现上失败再通过（`test_editor_shell` 210/210，`test_editor_audio_sink` 4/4）。6 个变异全部判红。
+- **评审**：首轮 Not ready：播放位置变化和播放/停止时波形没有重绘，光标线停在旧位置。修复为信息行刷新时若播放状态或位置变化就使波形失效，并用脏矩形检查固定。另外：编辑后立即播放或跳转（中间没有 tick）也会重置起点，跳转不再重启过时的副本；播放中跳转重开失败时记日志；头文件对位置的描述改正；补充非主键忽略、无附件跳转无效的检查。每项修复都有判红的变异。
 - **边界**：不能拖动光标，没有选区、循环和缩放。
 
 ## 编辑器音频预览播放（2026-11-19）
