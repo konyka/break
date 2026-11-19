@@ -46,6 +46,13 @@ hash and verified fail-closed at configure time.
   section. `locked_dependencies.json` records the pin metadata
   (`sha256 = n/a-commit-pinned-via-configure-check`); the CMake gate is the
   enforcement point, not the JSON file.
+- **After pulling a pin move:** an existing build directory keeps pointing at
+  the same `SNOWFLAKE_SOURCE_DIR`, so the next configure fails with the
+  mismatch until that checkout is moved too:
+  `git -C "$SNOWFLAKE_SOURCE_DIR" fetch origin && git -C "$SNOWFLAKE_SOURCE_DIR" checkout <pin>`
+  (the fetch is needed when the new pin was pushed after the clone). Every
+  build directory sharing that path picks it up at once. The pin is read from
+  `BREAK_SNOWFLAKE_PIN` in `engine/CMakeLists.txt`.
 - **OpenSSL assertion:** when `BREAK_ENABLE_CRYPTO=ON`, the same configure
   block additionally requires the tree to ship `src/snow_openssl.c` and
   requires `SNOW_HAVE_OPENSSL=TRUE` after `add_subdirectory` (snow's own
