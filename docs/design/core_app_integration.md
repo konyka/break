@@ -1701,3 +1701,7 @@ loopback 测试：对端 A、A2、F（late_auth 模式下为 G）各自恰好收
 验证：本机一次运行为 received=64、rate_limited=136、relayed=64，B 收到 64 条。全量 451/451；`build-voice-relay-asan` 相关 13 项通过。变异（不检查限速、每条消息都重置限速器）都使 voice_flood 判红。
 
 仍缺：对端语音混音、漂移补偿、运行中通过命令切换设备、Opus、真实声学验证。
+
+## 补充（2026-11-19）：网络合同的验证范围
+
+`test_core_app_network_*`（loopback、late_auth、voice、voice_relay、voice_relay_off、voice_mute、voice_flood、start_failure）只在 `_core_app_net_transport AND NOT WIN32` 时注册（`engine/CMakeLists.txt`），而 `CORE_APP_ENABLE_NETWORK` 默认关闭，`.github/workflows` 中没有任何 lane 打开它或 `BREAK_ENABLE_SNOWFLAKE`。所以远程 CI 的绿灯不覆盖这些网络合同，它们只在本机开启网络的构建树（`build-core-app-net`，以及 ASan+UBSan 的 `build-voice-relay-asan`）中运行。增加 CI lane 需要能拉取固定提交的 Snowflake 源码，而 `konyka/snowflake` 是私有仓库：没有凭据时匿名克隆和 API 都被拒绝。需要仓库所有者添加只读 deploy key 或 token 作为 Actions secret，之后才能加一个 Linux lane（`-DBREAK_ENABLE_SNOWFLAKE=ON -DCORE_APP_ENABLE_NETWORK=ON -DBREAK_ENABLE_CRYPTO=ON -DSNOWFLAKE_SOURCE_DIR=...`，运行 `ctest -L network`）。
