@@ -67,6 +67,7 @@
 #include "myui/widgets/my_list_view.h"
 #include "myui/widgets/my_edit.h"
 #include "myui/widgets/my_checkbox.h"
+#include "myui/widgets/my_scroll_bar.h"
 #include <asset/vfs.h>
 
 static void emit_click(my_widget_t *w) {
@@ -3806,6 +3807,73 @@ static bool key_to_window(BreakEditorShell *shell, u32 key, u8 mods) {
     ev.u.key.key = key;
     ev.u.key.modifiers = mods;
     return my_event_dispatch(&win->dispatcher, &ev);
+}
+
+/* The view's scroll bar (design 2026-11-19-editor-audio-scrollbar). */
+TEST(audio_page_scroll_bar_mirrors_and_moves_the_view)
+{
+    static i16 pcm[4000u];
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    my_widget_t *bar;
+    u32 b = 0u, e = 0u, i;
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    for (i = 0u; i < 4000u; i++) pcm[i] = (i16)(i % 100u);
+    ASSERT_TRUE(break_editor_shell_select_tab(shell, 0u, 4u));
+    shell_paint(shell);
+    bar = find(shell, "editor-audio-scrollbar");
+    ASSERT_NOT_NULL(bar);
+    ASSERT_TRUE(my_scroll_bar_is_horizontal(bar));
+    /* no attachment: nothing to scroll */
+    break_editor_shell_tick(shell);
+    ASSERT_FLOAT_EQ(my_scroll_bar_get_value(bar), 0.0f, 0.0001f);
+    ASSERT_FLOAT_EQ(my_scroll_bar_get_page_size(bar), 1.0f, 0.0001f);
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, 8000u, 1u, pcm, 4000u));
+    break_editor_shell_tick(shell);
+    ASSERT_FLOAT_EQ(my_scroll_bar_get_page_size(bar), 1.0f, 0.0001f);
+    /* a 1000-frame view at 1500: a quarter page, half way along */
+    for (i = 0u; i < 2u; i++) (void)break_editor_shell_audio_zoom(shell, true);
+    ASSERT_TRUE(break_editor_shell_audio_view(shell, &b, &e));
+    ASSERT_EQ(b, 1500u);
+    ASSERT_EQ(e, 2500u);
+    ASSERT_FLOAT_EQ(my_scroll_bar_get_page_size(bar), 0.25f, 0.0001f);
+    ASSERT_FLOAT_EQ(my_scroll_bar_get_value(bar), 0.5f, 0.0001f);
+    /* scrolling moves the bar with the view */
+    ASSERT_TRUE(break_editor_shell_audio_scroll(shell, true));
+    ASSERT_FLOAT_EQ(my_scroll_bar_get_value(bar), 1750.0f / 3000.0f, 0.001f);
+    /* the bar drives the view: value 1 goes to the clip's end */
+    ASSERT_EQ(my_scroll_bar_set_value(bar, 1.0f), MY_RET_OK);
+    ASSERT_EQ(my_emitter_emit(bar->emitter, "changed", NULL), MY_RET_OK);
+    ASSERT_TRUE(break_editor_shell_audio_view(shell, &b, &e));
+    ASSERT_EQ(b, 3000u);
+    ASSERT_EQ(e, 4000u);
+    ASSERT_EQ(my_scroll_bar_set_value(bar, 0.0f), MY_RET_OK);
+    ASSERT_EQ(my_emitter_emit(bar->emitter, "changed", NULL), MY_RET_OK);
+    ASSERT_TRUE(break_editor_shell_audio_view(shell, &b, &e));
+    ASSERT_EQ(b, 0u);
+    ASSERT_EQ(e, 1000u);
+    /* zooming out all the way restores a full-width thumb at the start */
+    for (i = 0u; i < 4u; i++) (void)break_editor_shell_audio_zoom(shell, false);
+    ASSERT_TRUE(break_editor_shell_audio_view(shell, &b, &e));
+    ASSERT_EQ(e - b, 4000u);
+    ASSERT_FLOAT_EQ(my_scroll_bar_get_page_size(bar), 1.0f, 0.0001f);
+    ASSERT_FLOAT_EQ(my_scroll_bar_get_value(bar), 0.0f, 0.0001f);
+    /* a changed event with a full view changes nothing */
+    ASSERT_EQ(my_scroll_bar_set_value(bar, 1.0f), MY_RET_OK);
+    ASSERT_EQ(my_emitter_emit(bar->emitter, "changed", NULL), MY_RET_OK);
+    ASSERT_TRUE(break_editor_shell_audio_view(shell, &b, &e));
+    ASSERT_EQ(b, 0u);
+    ASSERT_EQ(e, 4000u);
+    /* an attachment change resets the bar with the view */
+    for (i = 0u; i < 2u; i++) (void)break_editor_shell_audio_zoom(shell, true);
+    ASSERT_FLOAT_EQ(my_scroll_bar_get_page_size(bar), 0.25f, 0.0001f);
+    ASSERT_TRUE(break_editor_doc_audio_trim(doc, 0u, 1000u));
+    break_editor_shell_tick(shell);
+    ASSERT_FLOAT_EQ(my_scroll_bar_get_page_size(bar), 1.0f, 0.0001f);
+    ASSERT_FLOAT_EQ(my_scroll_bar_get_value(bar), 0.0f, 0.0001f);
+    shell_paint(shell);
+    break_editor_shell_destroy(shell);
 }
 
 /* Keyboard zoom and scroll (design 2026-11-19-editor-audio-keys). */
@@ -13679,6 +13747,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(audio_page_zooms_with_the_wheel_around_the_pointer);
     RUN_TEST(audio_page_follows_the_playing_position);
     RUN_TEST(audio_page_zooms_and_scrolls_from_the_keyboard);
+    RUN_TEST(audio_page_scroll_bar_mirrors_and_moves_the_view);
     RUN_TEST(audio_page_zooms_and_scrolls_the_view);
     RUN_TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo);
     RUN_TEST(assets_panel_load_guards_unsaved_changes);

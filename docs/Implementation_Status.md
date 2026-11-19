@@ -1,3 +1,10 @@
+## 编辑器音频视图滚动条（2026-11-19）
+
+- **交付**：波形下方新增 12 像素的水平滚动条 `editor-audio-scrollbar`。滚动条映射视图：`page_size` 为视图长度占整段的比例，`value` 为视图起点占可滚动范围（`frames - 视图长度`）的比例，覆盖整段时为满宽滑块且值为 0；面板刷新（任何视图或附件变化都会经过它）时同步。拖动滚动条反过来把值映射回视图起点（四舍五入）并保持视图长度，覆盖整段时忽略。设计与计划见 `docs/superpowers/specs/2026-11-19-editor-audio-scrollbar-design.md`、`docs/superpowers/plans/2026-11-19-editor-audio-scrollbar.md`。
+- **TDD**：新用例先在无该控件时失败再通过，`test_editor_shell` 220/220。4 个变异全部判红：`page_size` 固定为 1、值用整段长度而非可滚动范围、处理函数用整段长度换算、刷新里去掉同步调用（最后一个要写成 `if (false) ...`，直接删会让静态函数变成未使用而被 `-Werror` 拒绝）。
+- **已核对**：不存在回环——面板写值用的 `my_scroll_bar_set_value` 有意不发 "changed"（`my_scroll_bar.c` 的 `sb_set_internal(..., notify=false)`），同步不会重入处理函数。
+- **边界**：覆盖整段时不自动隐藏，没有纵向幅度缩放，不能拖动滚动条两端来改变视图长度。
+
 ## myui 滚动条支持水平方向（2026-11-19）
 
 - **交付**：`my_scroll_bar` 新增 `my_scroll_bar_set_horizontal`/`my_scroll_bar_is_horizontal`，默认仍为垂直，既有使用者行为不变。滑块长度与位置改走“长轴”（水平时取 `rect.w`，否则 `rect.h`），指针命中、拖动偏移和轨道翻页在水平时读局部 x，绘制沿长轴、圆角半径取短轴以保持胶囊形状；按键不变（左/上后退，右/下前进，PageUp/PageDown 翻页，Home/End 到端点）。设计与计划见 `docs/superpowers/specs/2026-11-19-myui-horizontal-scroll-bar-design.md`、`docs/superpowers/plans/2026-11-19-myui-horizontal-scroll-bar.md`。

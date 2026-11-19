@@ -49,6 +49,7 @@
 #include "myui/widgets/my_button.h"
 #include "myui/widgets/my_checkbox.h"
 #include "myui/widgets/my_label.h"
+#include "myui/widgets/my_scroll_bar.h"
 
 #define EDITOR_AUDIO_INFO_BYTES 128u
 #define EDITOR_BOTTOM_TAB_AUDIO 4u /* index in editor_panels.c k_tab_pages[0] */
@@ -71,6 +72,7 @@ struct EditorPanelAudio {
     my_widget_t *scroll_left; /* weak */
     my_widget_t *scroll_right; /* weak */
     my_widget_t *follow;      /* weak */
+    my_widget_t *scrollbar;   /* weak */
     bool following;           /* the view chases the playing position */
     u32 view_begin, view_end; /* visible [begin, end) frames; empty = whole clip */
     u32 sel_begin, sel_end;   /* [begin, end) frames; empty when equal */
@@ -171,6 +173,29 @@ static u32 audio_view_len(const EditorPanelAudio *panel) {
     return audio_view_end(panel) - audio_view_begin(panel);
 }
 
+/* Mirror the view on the scroll bar: the thumb covers the visible fraction
+ * and sits at the view's position in the scrollable range. set_value does
+ * not emit "changed", so this cannot feed back into the handler. */
+static void audio_panel_sync_scrollbar(EditorPanelAudio *panel) {
+    u32 frames, len, scrollable;
+    if (panel->scrollbar == NULL) {
+        return;
+    }
+    frames = break_editor_doc_audio_frames(break_editor_shell_doc(panel->shell));
+    len = audio_view_len(panel);
+    if (frames == 0u || len >= frames) {
+        (void)my_scroll_bar_set_page_size(panel->scrollbar, 1.0f);
+        (void)my_scroll_bar_set_value(panel->scrollbar, 0.0f);
+        return;
+    }
+    scrollable = frames - len;
+    (void)my_scroll_bar_set_page_size(panel->scrollbar,
+                                      (float)((double)len / (double)frames));
+    (void)my_scroll_bar_set_value(
+        panel->scrollbar,
+        (float)((double)audio_view_begin(panel) / (double)scrollable));
+}
+
 static void audio_panel_refresh(EditorPanelAudio *panel) {
     const BreakEditorDoc *doc = break_editor_shell_doc(panel->shell);
     if (panel->seen_revision != break_editor_doc_audio_revision(doc)) {
@@ -200,6 +225,7 @@ static void audio_panel_refresh(EditorPanelAudio *panel) {
     panel->seen_view_end = view_end;
     panel->fresh = true;
     audio_panel_format_info(panel);
+    audio_panel_sync_scrollbar(panel);
     if (panel->waveform != NULL) {
         my_widget_invalidate(panel->waveform, NULL);
     }
@@ -850,6 +876,28 @@ void editor_panel_audio_set_loop(EditorPanelAudio *panel, bool loop) {
     }
 }
 
+/* Dragging the bar moves the view, keeping its length. */
+static void on_audio_scrollbar_changed(void *ctx, const char *event, void *data) {
+    EditorPanelAudio *panel = (EditorPanelAudio *)ctx;
+    u32 frames, len, scrollable, begin;
+    (void)event;
+    (void)data;
+    if (panel == NULL || panel->scrollbar == NULL) {
+        return;
+    }
+    audio_panel_catch_up(panel);
+    frames = break_editor_doc_audio_frames(break_editor_shell_doc(panel->shell));
+    len = audio_view_len(panel);
+    if (frames == 0u || len >= frames) {
+        return; /* nothing to scroll */
+    }
+    scrollable = frames - len;
+    begin = (u32)((double)my_scroll_bar_get_value(panel->scrollbar) *
+                      (double)scrollable +
+                  0.5);
+    (void)audio_view_set(panel, begin, begin + len);
+}
+
 static void on_audio_follow_changed(void *ctx, const char *event, void *data) {
     EditorPanelAudio *panel = (EditorPanelAudio *)ctx;
     (void)event;
@@ -992,7 +1040,7 @@ static bool audio_panel_add(my_widget_t *parent, my_widget_t *child, const char 
 bool editor_panel_audio_build(EditorPanelAudio *panel, my_widget_t *parent) {
     my_widget_t *section, *bar, *info, *play, *trim, *cut, *fade, *normalize, *loop, *ruler,
         *waveform, *view_bar, *zoom_in, *zoom_out, *scroll_left, *scroll_right,
-        *follow_box;
+        *follow_box, *scrollbar;
     if (panel == NULL || parent == NULL) {
         return false;
     }
@@ -1169,6 +1217,18 @@ bool editor_panel_audio_build(EditorPanelAudio *panel, my_widget_t *parent) {
         my_widget_unref(section);
         return false;
     }
+    scrollbar = my_scroll_bar_create(NULL);
+    if (scrollbar == NULL) {
+        my_widget_unref(section);
+        return false;
+    }
+    (void)my_widget_set_name(scrollbar, "editor-audio-scrollbar");
+    (void)my_scroll_bar_set_horizontal(scrollbar, true);
+    (void)my_widget_on(scrollbar, "changed", on_audio_scrollbar_changed, panel);
+    if (!audio_panel_add(section, scrollbar, "w:100% h:12")) {
+        my_widget_unref(section);
+        return false;
+    }
     if (!audio_panel_add(parent, section, "w:100% h:1f")) {
         return false;
     }
@@ -1184,6 +1244,7 @@ bool editor_panel_audio_build(EditorPanelAudio *panel, my_widget_t *parent) {
     panel->scroll_left = scroll_left;
     panel->scroll_right = scroll_right;
     panel->follow = follow_box;
+    panel->scrollbar = scrollbar;
     panel->waveform = waveform;
     panel->ruler = ruler;
     panel->fresh = false;
