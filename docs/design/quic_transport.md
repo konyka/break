@@ -103,9 +103,10 @@ application traffic for v1. Messages are length-prefixed frames:
   deadlocked against ngtcp2's MAX_STREAM_DATA emission throttle).
 
 Why not QUIC datagrams (RFC 9221): the pinned ngtcp2 adapter v1 surface is
-stream-oriented; datagram support lands with the replay-window wiring
-(transport_security.md §3, 2026-10-30 decision reserves `break_replay_window`
-for exactly that datagram path).
+stream-oriented. The datagram slice is designed in
+`docs/design/quic_datagram.md`（评审稿，含 replay-window 接线与上游依赖）；
+`break_replay_window` 自 2026-10-30 起就是为这条路径预留的
+（transport_security.md §3 决策）。
 
 ## 4. Security model
 
@@ -138,8 +139,8 @@ Server side:
   read, ≤ 64 KiB each); a missing/mismatched pair fails create.
 - Client authentication at the TLS layer is **not** provided by the pinned
   adapter's server config (no trust-store field); application-level peer
-  authentication therefore remains the CHALLENGE/AUTH-v2 seam
-  (transport_security.md §3). Wiring it onto QUIC frames is a next slice (§9).
+  authentication therefore runs the CHALLENGE/AUTH-v2 seam on QUIC frames
+  (transport_security.md §3, delivered 2026-11-08).
 - v1 does not configure the adapter's Retry policy (`retry_secret`): a
   tokenless Initial costs the server handshake state. This is a documented
   DoS surface for Internet-facing use (§8); the adapter supports the policy
@@ -239,7 +240,9 @@ same loopback echo (dual-language policy, Build_Guide §1.1).
 ## 9. NOT delivered
 
 - Connection migration surfaced to the app, multi-stream APIs.
-- QUIC datagrams + `break_replay_window` wiring (§3).
+- QUIC datagrams + `break_replay_window` wiring：设计评审稿已出
+  （`docs/design/quic_datagram.md`），依赖上游 snow 的数据报 API 落地
+  （见该文档 §11）。
 - Reactor integration (THREAD mode) with the TCP break_net reactor.
 - 0-RTT resumption, migration, multi-stream APIs, per-stream prioritization.
 - Windows support, IPv6.
