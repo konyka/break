@@ -175,32 +175,19 @@ static void voice_drift_reset(CoreAppVoice *voice) {
     atomic_store_explicit(&voice->drift_correction_ppb, 0, memory_order_relaxed);
 }
 
-/* Without compensation a packet needs one raw packet. With it, the missing
- * resampled frames need about missing * ratio raw frames; two more cover
- * the interpolation position, and refills read the ring in packets. */
-static bool voice_reference_ready(const CoreAppVoice *voice) {
-    const u32 available = audio_reference_available(voice->playback);
-    if (!voice->drift) return available >= CORE_APP_VOICE_FRAME_FRAMES;
-    if (voice->drift_fifo_frames >= CORE_APP_VOICE_FRAME_FRAMES) return true;
-    const double missing = (double)(CORE_APP_VOICE_FRAME_FRAMES - voice->drift_fifo_frames);
-    const double raw = ceil(missing * audio_drift_compensator_ratio(voice->drift)) + 2.0;
-    const u32 packets = ((u32)raw + CORE_APP_VOICE_FRAME_FRAMES - 1u) / CORE_APP_VOICE_FRAME_FRAMES;
-    return available >= packets * CORE_APP_VOICE_FRAME_FRAMES;
-}
-
-/* One packet of reference: the raw read, or with drift compensation the
- * oldest resampled frames, refilled one raw packet at a time while short
- * (voice_reference_ready checked that the ring holds enough). */
-static AudioResult voice_read_reference(CoreAppVoice *voice, i16 *out) {
-    u32 frames = 0u;
+/* Whether a packet of reference is ready. Without compensation that is one
+ * raw packet in the ring. With it, every whole raw packet the ring holds is
+ * resampled into the FIFO while the FIFO is short of a packet, so a packet
+ * is ready as soon as the resampled frames are, without waiting for more. */
+static AudioResult voice_reference_ready(CoreAppVoice *voice, bool *out_ready) {
     if (!voice->drift) {
-        const AudioResult result = audio_reference_read_i16(voice->playback, out,
-                                                            CORE_APP_VOICE_FRAME_FRAMES, &frames);
-        return result == AUDIO_OK && frames != CORE_APP_VOICE_FRAME_FRAMES ? AUDIO_FAILED
-                                                                           : result;
+        *out_ready = audio_reference_available(voice->playback) >= CORE_APP_VOICE_FRAME_FRAMES;
+        return AUDIO_OK;
     }
-    while (voice->drift_fifo_frames < CORE_APP_VOICE_FRAME_FRAMES) {
+    while (voice->drift_fifo_frames < CORE_APP_VOICE_FRAME_FRAMES &&
+           audio_reference_available(voice->playback) >= CORE_APP_VOICE_FRAME_FRAMES) {
         i16 raw[CORE_APP_VOICE_FRAME_FRAMES];
+        u32 frames = 0u;
         AudioResult result = audio_reference_read_i16(voice->playback, raw,
                                                       CORE_APP_VOICE_FRAME_FRAMES, &frames);
         if (result != AUDIO_OK) return result;
@@ -212,6 +199,21 @@ static AudioResult voice_read_reference(CoreAppVoice *voice, i16 *out) {
         if (result != AUDIO_OK) return result;
         voice->drift_fifo_frames += produced;
     }
+    *out_ready = voice->drift_fifo_frames >= CORE_APP_VOICE_FRAME_FRAMES;
+    return AUDIO_OK;
+}
+
+/* One packet of reference once voice_reference_ready said so: the raw read,
+ * or with drift compensation the oldest resampled frames. */
+static AudioResult voice_read_reference(CoreAppVoice *voice, i16 *out) {
+    if (!voice->drift) {
+        u32 frames = 0u;
+        const AudioResult result = audio_reference_read_i16(voice->playback, out,
+                                                            CORE_APP_VOICE_FRAME_FRAMES, &frames);
+        return result == AUDIO_OK && frames != CORE_APP_VOICE_FRAME_FRAMES ? AUDIO_FAILED
+                                                                           : result;
+    }
+    if (voice->drift_fifo_frames < CORE_APP_VOICE_FRAME_FRAMES) return AUDIO_FAILED;
     memcpy(out, voice->drift_fifo, CORE_APP_VOICE_FRAME_FRAMES * sizeof(*out));
     voice->drift_fifo_frames -= CORE_APP_VOICE_FRAME_FRAMES;
     memmove(voice->drift_fifo, voice->drift_fifo + CORE_APP_VOICE_FRAME_FRAMES,
@@ -424,8 +426,11 @@ BreakRuntimeError core_app_voice_pump(CoreAppVoice *voice, u32 max_packets) {
     }
     voice_follow_playback_reopen(voice);
     for (u32 packet = 0u; packet < max_packets; ++packet) {
+        bool reference_ready = false;
+        const AudioResult filled = voice_reference_ready(voice, &reference_ready);
+        if (filled != AUDIO_OK) return voice_audio_error(filled);
         if (audio_capture_available(voice->capture) < CORE_APP_VOICE_FRAME_FRAMES ||
-            !voice_reference_ready(voice)) {
+            !reference_ready) {
             break;
         }
         const BreakRuntimeError result = voice_pump_packet(voice);

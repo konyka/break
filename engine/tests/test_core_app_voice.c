@@ -1005,6 +1005,35 @@ TEST(a_slower_playback_clock_is_compensated_without_failing)
     audio_system_destroy(playback);
 }
 
+/* Compensation adds no latency: one packet of reference and capture is
+ * enough for one packet of voice, as without it. */
+TEST(drift_compensation_produces_each_packet_without_waiting)
+{
+    AudioSystem *playback = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(playback);
+    const CoreAppVoiceConfig config = drift_config(playback, true);
+    CoreAppVoice *voice = create_voice(&config);
+    ASSERT_NOT_NULL(voice);
+    AudioPcmStreamHandle stream = open_reference_stream(playback);
+    ASSERT_NEQ(stream, 0u);
+    ASSERT_EQ(core_app_voice_start(voice), BREAK_RUNTIME_OK);
+    i16 stereo[VOICE_TEST_FRAMES * 2u] = {0};
+    f32 rendered[VOICE_TEST_FRAMES * 2u];
+    f32 capture[VOICE_TEST_FRAMES];
+    CoreAppVoiceStats stats;
+    for (u32 packet = 0u; packet < 3u; ++packet) {
+        fill_capture(capture, packet);
+        drive_fake(voice, playback, stream, capture, stereo, rendered);
+        ASSERT_EQ(core_app_voice_pump(voice, 4u), BREAK_RUNTIME_OK);
+        voice_stats(voice, &stats);
+        ASSERT_EQ(stats.produced, packet + 1u);
+    }
+    ASSERT_EQ(core_app_voice_stop(voice), BREAK_RUNTIME_OK);
+    core_app_voice_destroy(voice);
+    ASSERT_EQ(audio_pcm_stream_close(playback, stream), AUDIO_OK);
+    audio_system_destroy(playback);
+}
+
 /* A capture switch and a playback reopen are new clocks too. */
 TEST(a_capture_switch_and_a_playback_reopen_reset_the_drift_ratio)
 {
@@ -1061,4 +1090,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(drift_compensation_off_leaves_the_reference_alone);
     RUN_TEST(a_slower_playback_clock_is_compensated_without_failing);
     RUN_TEST(a_capture_switch_and_a_playback_reopen_reset_the_drift_ratio);
+    RUN_TEST(drift_compensation_produces_each_packet_without_waiting);
 TEST_MAIN_END()

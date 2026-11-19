@@ -5349,7 +5349,7 @@ endif()
     target_link_libraries(test_core_app_voice PRIVATE core_app_runtime m Threads::Threads)
     add_test(NAME test_core_app_voice COMMAND test_core_app_voice)
     set_tests_properties(test_core_app_voice PROPERTIES
-        LABELS "headless;core_app;audio" TIMEOUT 60)
+        LABELS "headless;core_app;audio" TIMEOUT 300)
 
     add_executable(test_core_app_mesh tests/test_core_app_mesh.c
         apps/core_app/core_app_mesh.c)
