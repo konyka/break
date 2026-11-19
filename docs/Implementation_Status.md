@@ -1,11 +1,12 @@
 ## 编辑器音频预览播放（2026-11-19）
 
 - **交付**：
-  - `apps/editor/editor_audio_preview.{h,c}`：播放时复制文档的音频附件，每次 pump 写入输出端能接收的帧数；全部写完且输出端排空后自动停止并关闭输出端。位置等于已写帧数减去仍在排队的帧数。输出端是一个小接口（open/write/queued/close），测试用假实现。
+  - `apps/editor/editor_audio_preview.{h,c}`：播放时复制文档的音频附件，每次 pump 写入输出端能接收的帧数，片尾再补输出端声明的静音尾帧；写完且队列只剩尾帧时自动停止并关闭输出端。位置等于已写帧数减去排队帧数，不超过片长。输出端是一个小接口（open/write/queued/close），测试用假实现。
   - 音频页新增“播放/停止”按钮。tick 驱动播放；附件修订号变化时停止（复制的数据已过时）；播放中信息行末尾显示“ | 位置 / 长度 s”。`break_editor_shell_set_audio_sink` 设置输出端，没有输出端时点击播放记日志“no audio output”。
   - `apps/editor/editor_audio_sink.{h,c}`：基于引擎 PCM 流（`audio_pcm_stream_open_rate`，主总线，音量 1）的输出端，每次 open 关闭上一个流。`editor_main.c` 启动时打开默认播放设备，在 shell 之后销毁。
   - 设计与计划见 `docs/superpowers/specs/2026-11-19-editor-audio-preview-design.md`、`docs/superpowers/plans/2026-11-19-editor-audio-preview.md`。
-- **TDD**：shell 新用例先在桩实现上失败再通过，`test_editor_shell` 共 209/209。新增 `test_editor_audio_sink`（FAKE 后端逐样本核对渲染输出），先失败再通过，2/2。6 个变异全部判红。
+- **TDD**：shell 新用例先在桩实现上失败再通过，`test_editor_shell` 共 209/209。新增 `test_editor_audio_sink`（FAKE 后端逐样本核对渲染输出），先失败再通过。6 个变异全部判红。
+- **评审**：首轮 Not ready。采样率不能整除 48 kHz 时（如 44.1 kHz），混音器为插值保留最后 1 帧（线性）或 8 帧（sinc），队列永远不为 0，播放不会自动停止。修复为输出端声明尾帧数（线性 2、sinc 为前瞻 + 1），预览在片尾补静音并在只剩尾帧时停止，位置不超过片长。新用例在 7 种采样率、两种重采样下经真实 PCM 流播放到结束（修复前失败），`test_editor_audio_sink` 3/3。输入脚本回放改用 FAKE 后端，不打开真实设备。
 - **边界**：没有跳转、循环、只播选区、音量和波形上的播放光标；预览不经过混音总线以外的处理。
 
 ## 编辑器音频波形页（2026-11-19）

@@ -3083,6 +3083,7 @@ typedef struct {
     u32 chunk;
     u32 written;  /* frames recorded since the last open */
     u32 played;   /* frames drained so far */
+    u32 tail;     /* frames reported by tail_frames */
     i16 data[2u * 4096u];
 } FakeAudioSink;
 
@@ -3125,8 +3126,13 @@ static void fake_sink_close(void *user) {
     f->is_open = false;
 }
 
+static u32 fake_sink_tail(void *user) { return ((FakeAudioSink *)user)->tail; }
+
 static const BreakEditorAudioSink k_fake_sink = {fake_sink_open, fake_sink_write,
-                                                 fake_sink_queued, fake_sink_close};
+                                                 fake_sink_queued, fake_sink_close, NULL};
+static const BreakEditorAudioSink k_fake_tail_sink = {fake_sink_open, fake_sink_write,
+                                                      fake_sink_queued, fake_sink_close,
+                                                      fake_sink_tail};
 
 /* Preview playback (design 2026-11-19-editor-audio-preview). */
 TEST(audio_page_plays_the_attachment_through_the_sink)
@@ -3225,11 +3231,44 @@ TEST(audio_page_plays_the_attachment_through_the_sink)
     ASSERT_FALSE(break_editor_shell_audio_playing(shell));
     ASSERT_EQ(fake.closes, 4u);
     ASSERT_FALSE(break_editor_shell_audio_play(shell));
+    /* a sink with a tail: the clip is padded with silence, the position
+     * never passes the clip and the queue down to the tail counts as done */
+    break_editor_shell_set_audio_sink(shell, &k_fake_tail_sink, &fake);
+    fake.tail = 4u;
+    ASSERT_TRUE(break_editor_shell_audio_play(shell));
+    for (i = 0u; i < 4u; i++) break_editor_shell_tick(shell);
+    ASSERT_EQ(fake.written, 504u);
+    for (i = 500u; i < 504u; i++) {
+        ASSERT_EQ(fake.data[2u * i], 0);
+        ASSERT_EQ(fake.data[2u * i + 1u], 0);
+    }
+    fake.played = 499u;
+    break_editor_shell_tick(shell);
+    ASSERT_TRUE(break_editor_shell_audio_playing(shell));
+    fake.played = 502u; /* 2 queued: inside the tail */
+    break_editor_shell_tick(shell);
+    ASSERT_FALSE(break_editor_shell_audio_playing(shell));
+    /* part of the tail written and already consumed: the position stops at
+     * the clip length */
+    fake.chunk = 502u;
+    ASSERT_TRUE(break_editor_shell_audio_play(shell));
+    ASSERT_EQ(fake.written, 502u);
+    fake.played = 502u;
+    fake.chunk = 0u;
+    break_editor_shell_tick(shell);
+    ASSERT_TRUE(break_editor_shell_audio_playing(shell));
+    ASSERT_STR_EQ(break_editor_shell_audio_info_text(shell),
+                  "8000 Hz, 2 ch, 0.062 s | 0.062 / 0.062 s");
+    fake.chunk = 300u;
+    break_editor_shell_tick(shell);
+    ASSERT_FALSE(break_editor_shell_audio_playing(shell));
+    break_editor_shell_set_audio_sink(shell, &k_fake_sink, &fake);
+    fake.tail = 0u;
     /* destroy while playing closes the sink */
     break_editor_shell_set_audio_sink(shell, &k_fake_sink, &fake);
     ASSERT_TRUE(break_editor_shell_audio_play(shell));
     break_editor_shell_destroy(shell);
-    ASSERT_EQ(fake.closes, 5u);
+    ASSERT_EQ(fake.closes, 7u);
     ASSERT_FALSE(fake.is_open);
 }
 

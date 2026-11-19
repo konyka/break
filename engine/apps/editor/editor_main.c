@@ -255,7 +255,13 @@ int main(int argc, char **argv) {
   /* Audio page preview output: the default playback device. Without one the
    * editor runs and Play reports "no audio output". The system outlives the
    * shell, whose teardown closes the preview stream. */
+#ifdef BREAK_EDITOR_INPUT_SCRIPT
+  /* a replay (also run headless in CI) must not open the user's speakers */
+  audio = script != NULL ? audio_system_create_ex(AUDIO_BACKEND_FAKE)
+                         : audio_system_create();
+#else
   audio = audio_system_create();
+#endif
   if (audio == NULL) {
     fprintf(stderr, "editor: no audio output (playback device did not open)\n");
   } else {

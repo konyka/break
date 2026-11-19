@@ -7232,21 +7232,24 @@ endif()
     target_link_libraries(test_audio_hrtf PRIVATE m)
     add_test(NAME test_audio_hrtf COMMAND test_audio_hrtf)
 
-    # test_audio_capture: the input ring, miniaudio's null capture device in
-    # real time, and a producer thread against the reader.
-    # Editor audio preview output: the PCM stream sink on the FAKE backend.
+    # Editor audio preview output: the PCM stream sink and the preview on the
+    # FAKE backend (the editor document comes from break_editor_test).
     add_executable(test_editor_audio_sink tests/test_editor_audio_sink.c
-        apps/editor/editor_audio_sink.c
+        apps/editor/editor_audio_sink.c apps/editor/editor_audio_preview.c
         src/audio/audio.c src/audio/audio_extended.c src/audio/audio_dsp.c src/audio/audio_hrtf.c)
     target_include_directories(test_editor_audio_sink PRIVATE ${TEST_INCLUDE_DIRS}
         ${CMAKE_CURRENT_SOURCE_DIR}/apps/editor)
-    target_link_libraries(test_editor_audio_sink PRIVATE Threads::Threads m ${CMAKE_DL_LIBS})
+    target_link_libraries(test_editor_audio_sink PRIVATE break_editor_test Threads::Threads m
+        ${CMAKE_DL_LIBS})
     if(ENGINE_PLATFORM STREQUAL "linux" OR ENGINE_PLATFORM STREQUAL "qnx")
         target_compile_definitions(test_editor_audio_sink PRIVATE _POSIX_C_SOURCE=200112L)
     endif()
     add_test(NAME test_editor_audio_sink COMMAND test_editor_audio_sink)
     set_tests_properties(test_editor_audio_sink PROPERTIES LABELS "headless;editor;audio"
         TIMEOUT 30)
+
+    # test_audio_capture: the input ring, miniaudio's null capture device in
+    # real time, and a producer thread against the reader.
     add_executable(test_audio_capture tests/test_audio_capture.c src/audio/audio_capture.c
         src/audio/audio.c src/audio/audio_extended.c src/audio/audio_dsp.c src/audio/audio_hrtf.c)
     target_include_directories(test_audio_capture PRIVATE ${TEST_INCLUDE_DIRS})

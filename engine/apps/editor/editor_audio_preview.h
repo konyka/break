@@ -1,8 +1,9 @@
 #pragma once
 /* Plays a snapshot of the document's PCM attachment through a sink (design
  * 2026-11-19-editor-audio-preview). The preview copies the attachment on
- * play, then each pump writes as many frames as the sink accepts; once all
- * frames are written and the sink has drained, it closes the sink and stops.
+ * play, then each pump writes as many frames as the sink accepts, followed by
+ * the sink's silent tail; once the queue is down to that tail, it closes the
+ * sink and stops.
  * One allocation at create (BREAK_EDITOR_AUDIO_MAX_FRAMES stereo frames).
  * Shell thread only. */
 
@@ -16,6 +17,11 @@ typedef struct BreakEditorAudioSink {
     /* Frames written but not played yet. */
     bool (*queued)(void *user, u32 *out_frames);
     void (*close)(void *user);
+    /* Optional (NULL = 0): frames the output holds back at the end of a
+     * stream (a resampler's lookahead). The preview writes that many frames
+     * of silence after the clip and counts the clip as heard once no more
+     * than that many are queued. */
+    u32 (*tail_frames)(void *user);
 } BreakEditorAudioSink;
 
 typedef struct BreakEditorAudioPreview BreakEditorAudioPreview;
@@ -37,7 +43,9 @@ bool break_editor_audio_preview_play(BreakEditorAudioPreview *preview,
 void break_editor_audio_preview_pump(BreakEditorAudioPreview *preview);
 void break_editor_audio_preview_stop(BreakEditorAudioPreview *preview);
 bool break_editor_audio_preview_playing(const BreakEditorAudioPreview *preview);
-/* Frames heard so far (written minus queued); 0 when stopped. */
+/* Clip frames consumed by the output so far (written minus queued, at most
+ * the clip length; device latency not included); 0 when stopped. */
 u32 break_editor_audio_preview_position_frames(const BreakEditorAudioPreview *preview);
+/* Length and rate of the clip being played; 0 when stopped. */
 u32 break_editor_audio_preview_length_frames(const BreakEditorAudioPreview *preview);
 u32 break_editor_audio_preview_sample_rate(const BreakEditorAudioPreview *preview);

@@ -21,6 +21,10 @@ static bool stream_sink_open(void *user, u32 sample_rate, u32 channels) {
                                    &handle) != AUDIO_OK) {
         return false;
     }
+    if (audio_pcm_stream_set_resample(sink->system, handle, sink->resample) != AUDIO_OK) {
+        (void)audio_pcm_stream_close(sink->system, handle);
+        return false;
+    }
     sink->stream = handle;
     sink->open = true;
     return true;
@@ -39,8 +43,18 @@ static bool stream_sink_queued(void *user, u32 *out_frames) {
            audio_pcm_stream_queued(sink->system, sink->stream, out_frames) == AUDIO_OK;
 }
 
+/* The mixer keeps the frames an interpolation still needs: one for LINEAR
+ * between two frames, the lookahead plus one for SINC. */
+static u32 stream_sink_tail_frames(void *user) {
+    const BreakEditorAudioStreamSink *sink = (const BreakEditorAudioStreamSink *)user;
+    return sink != NULL && sink->resample == AUDIO_RESAMPLE_SINC
+               ? AUDIO_PCM_STREAM_SINC_LOOKAHEAD + 1u
+               : 2u;
+}
+
 static const BreakEditorAudioSink k_stream_sink = {stream_sink_open, stream_sink_write,
-                                                   stream_sink_queued, stream_sink_close};
+                                                   stream_sink_queued, stream_sink_close,
+                                                   stream_sink_tail_frames};
 
 const BreakEditorAudioSink *break_editor_audio_stream_sink(void) { return &k_stream_sink; }
 
@@ -50,5 +64,6 @@ void break_editor_audio_stream_sink_init(BreakEditorAudioStreamSink *sink,
         sink->system = system;
         sink->stream = 0u;
         sink->open = false;
+        sink->resample = AUDIO_RESAMPLE_LINEAR;
     }
 }

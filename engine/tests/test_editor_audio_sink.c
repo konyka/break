@@ -4,6 +4,8 @@
 
 #include "editor_audio_sink.h"
 
+#include <editor/editor_audio.h>
+
 #include <core/log.h>
 
 #include <math.h>
@@ -82,7 +84,56 @@ TEST(stream_sink_reopens_and_rejects_bad_formats)
     audio_system_destroy(as);
 }
 
+/* The preview over the real stream: at rates that do not divide 48 kHz the
+ * mixer holds the last frame(s) back for interpolation, so without the
+ * finish padding the preview would never see an empty queue. */
+static void play_to_the_end(u32 rate, AudioResampleMode mode)
+{
+    static i16 pcm[3000u];
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    BreakEditorAudioStreamSink sink;
+    BreakEditorAudioPreview *preview = break_editor_audio_preview_create();
+    BreakEditorDoc *doc = break_editor_doc_create();
+    static f32 out[2u * 1024u];
+    u32 i, last = 0u;
+    ASSERT_NOT_NULL(as);
+    ASSERT_NOT_NULL(preview);
+    ASSERT_NOT_NULL(doc);
+    for (i = 0u; i < 3000u; i++) pcm[i] = (i16)((i % 50u) * 300u);
+    ASSERT_TRUE(break_editor_doc_audio_attach(doc, rate, 1u, pcm, 3000u));
+    break_editor_audio_stream_sink_init(&sink, as);
+    sink.resample = mode;
+    break_editor_audio_preview_set_sink(preview, break_editor_audio_stream_sink(), &sink);
+    ASSERT_TRUE(break_editor_audio_preview_play(preview, doc));
+    for (i = 0u; i < 2000u && break_editor_audio_preview_playing(preview); i++) {
+        break_editor_audio_preview_pump(preview);
+        const u32 pos = break_editor_audio_preview_position_frames(preview);
+        if (break_editor_audio_preview_playing(preview)) {
+            ASSERT_TRUE(pos >= last);
+            ASSERT_TRUE(pos <= 3000u);
+            last = pos;
+        }
+        ASSERT_EQ(audio_system_render(as, out, 1024u), AUDIO_OK);
+    }
+    ASSERT_FALSE(break_editor_audio_preview_playing(preview));
+    ASSERT_FALSE(sink.open);
+    ASSERT_TRUE(i < 2000u);
+    break_editor_audio_preview_destroy(preview);
+    break_editor_doc_destroy(doc);
+    audio_system_destroy(as);
+}
+
+TEST(preview_stops_by_itself_at_any_rate_and_resampler)
+{
+    const u32 rates[] = {8000u, 22050u, 44100u, 48000u, 88200u, 96000u, 192000u};
+    for (u32 r = 0u; r < sizeof(rates) / sizeof(rates[0]); ++r) {
+        play_to_the_end(rates[r], AUDIO_RESAMPLE_LINEAR);
+        play_to_the_end(rates[r], AUDIO_RESAMPLE_SINC);
+    }
+}
+
 TEST_MAIN_BEGIN()
+    RUN_TEST(preview_stops_by_itself_at_any_rate_and_resampler);
     RUN_TEST(stream_sink_plays_written_frames_on_the_master_mix);
     RUN_TEST(stream_sink_reopens_and_rejects_bad_formats);
 TEST_MAIN_END()
