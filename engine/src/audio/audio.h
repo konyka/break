@@ -80,6 +80,37 @@ const char  *audio_system_backend_name(const AudioSystem *as);
 bool         audio_system_device_name(const AudioSystem *as, char *out, usize capacity);
 void         audio_system_destroy(AudioSystem *as);
 
+/* Playback devices of a backend: DEFAULT the system's, NULL miniaudio's
+ * null device ("NULL Playback Device"), FAKE none. Writes up to `capacity`
+ * entries (id is the index as decimal text) and returns how many exist,
+ * which may exceed capacity; 0 when the backend cannot be enumerated, the
+ * backend is invalid, or `out` is NULL with capacity > 0. */
+u32          audio_system_list_devices(AudioBackend backend, AudioDeviceInfo *out, u32 capacity);
+/* audio_system_create_ex opening the playback device with this name (as
+ * audio_system_list_devices reports it); DEFAULT tries its backends in
+ * miniaudio's order and opens the first one that has the name. NULL or ""
+ * opens the default device. REJECTED for a FAKE backend with a name or a
+ * name no backend has, FAILED when the system does not open, INVALID for a
+ * NULL out or an invalid backend. *out is written only on success. */
+AudioResult  audio_system_create_named(AudioBackend backend, const char *device_name,
+                                       AudioSystem **out);
+/* Opens the named playback device (NULL or "": the default) while the old
+ * one keeps playing, then closes the old one and starts the new one in its
+ * place. Sources, buses, the listener and the reference tap are kept. OK
+ * selects the name for later reopens and counts one in
+ * audio_system_recoveries. REJECTED for a name no device has (or any name
+ * on FAKE) and for a name of 128 bytes or more. FAILED when the new device
+ * does not open (nothing changes) or does not start: then the previous
+ * selection is kept and the previous device is opened again, without a
+ * recovery count; if that does not open or start either, the system stays
+ * without a playing device until audio_system_reopen succeeds. A FAKE
+ * system only clears the selection. INVALID for NULL. The owner thread,
+ * like audio_system_reopen. */
+AudioResult  audio_system_switch_device(AudioSystem *as, const char *device_name);
+/* The selected playback device name into out; false and "" when the
+ * default is selected or for NULL. */
+bool         audio_system_selected_device(const AudioSystem *as, char *out, usize capacity);
+
 typedef enum {
     AUDIO_SYSTEM_EVENT_DEVICE_LOST = 0,
     /* Simulation only: the next audio_system_reopen fails with AUDIO_FAILED
@@ -95,8 +126,9 @@ bool         audio_system_lost(const AudioSystem *as);
 /* Successful reopens of a lost device so far. Any thread: a reader of the
  * reference tap uses a change to drop frames that straddle the gap. */
 u64          audio_system_recoveries(const AudioSystem *as);
-/* Closes the playback device and opens the default one in its place with the
- * same format, then starts it. Sources, buses, the listener and the reference
+/* Closes the playback device and opens the selected one (the default when
+ * none is selected or no device has the selected name any more; the
+ * selection is kept) in its place with the same format, then starts it. Sources, buses, the listener and the reference
  * tap are kept. OK clears the lost state and counts a recovery; FAILED
  * keeps it (after a real failure the system has no device until a later
  * reopen succeeds). A device that is started again, because the backend

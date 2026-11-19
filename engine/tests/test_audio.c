@@ -18,6 +18,7 @@
 
 #include "test_framework.h"
 #include <stdatomic.h>
+#include <stdint.h>
 #include <time.h>
 #include <audio/audio.h>
 #include <audio/audio_extended.h>
@@ -35,6 +36,24 @@ static void reference_test_hook(void *opaque)
     while (!atomic_load_explicit(&reference_hook_release, memory_order_acquire)) {
         platform_thread_yield();
     }
+}
+
+/* Each count refuses one device start inside audio_system_switch_device:
+ * the replacement first, then the previous device it restores. */
+static atomic_uint switch_start_refusals;
+
+static bool switch_start_test_hook(void *opaque)
+{
+    (void)opaque;
+    u32 pending = atomic_load_explicit(&switch_start_refusals, memory_order_acquire);
+    while (pending > 0u) {
+        if (atomic_compare_exchange_weak_explicit(&switch_start_refusals, &pending,
+                                                  pending - 1u, memory_order_acq_rel,
+                                                  memory_order_acquire)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 #include "../src/audio/audio.c"
@@ -860,6 +879,283 @@ TEST(playback_recovery_calls_validate_their_arguments)
     audio_system_destroy(as);
 }
 
+#define TEST_NULL_PLAYBACK_NAME "NULL Playback Device"
+
+TEST(playback_devices_are_listed_by_backend)
+{
+    AudioDeviceInfo devices[4];
+    memset(devices, 0, sizeof(devices));
+    ASSERT_EQ(audio_system_list_devices(AUDIO_BACKEND_NULL, devices, 4u), 1u);
+    ASSERT_STR_EQ(devices[0].name, TEST_NULL_PLAYBACK_NAME);
+    ASSERT_STR_EQ(devices[0].id, "0");
+    ASSERT_EQ(audio_system_list_devices(AUDIO_BACKEND_NULL, NULL, 0u), 1u);
+    ASSERT_EQ(audio_system_list_devices(AUDIO_BACKEND_NULL, devices, 0u), 1u);
+    ASSERT_EQ(audio_system_list_devices(AUDIO_BACKEND_FAKE, devices, 4u), 0u);
+    ASSERT_EQ(audio_system_list_devices((AudioBackend)(AUDIO_BACKEND_FAKE + 1), devices, 4u),
+              0u);
+    ASSERT_EQ(audio_system_list_devices(AUDIO_BACKEND_NULL, NULL, 4u), 0u);
+}
+
+TEST(a_named_playback_device_opens_and_an_unknown_name_is_rejected)
+{
+    AudioSystem *as = NULL;
+    char name[128];
+    ASSERT_EQ(audio_system_create_named(AUDIO_BACKEND_NULL, TEST_NULL_PLAYBACK_NAME, &as),
+              AUDIO_OK);
+    ASSERT_NOT_NULL(as);
+    ASSERT_TRUE(audio_system_device_name(as, name, sizeof(name)));
+    ASSERT_STR_EQ(name, TEST_NULL_PLAYBACK_NAME);
+    ASSERT_TRUE(audio_system_selected_device(as, name, sizeof(name)));
+    ASSERT_STR_EQ(name, TEST_NULL_PLAYBACK_NAME);
+    audio_system_destroy(as);
+
+    AudioSystem *untouched = (AudioSystem *)&name;
+    as = untouched;
+    ASSERT_EQ(audio_system_create_named(AUDIO_BACKEND_NULL, "no such output", &as),
+              AUDIO_REJECTED);
+    ASSERT_TRUE(as == untouched);
+    ASSERT_EQ(audio_system_create_named(AUDIO_BACKEND_FAKE, TEST_NULL_PLAYBACK_NAME, &as),
+              AUDIO_REJECTED);
+    ASSERT_TRUE(as == untouched);
+    ASSERT_EQ(audio_system_create_named((AudioBackend)99, NULL, &as), AUDIO_INVALID);
+    ASSERT_EQ(audio_system_create_named(AUDIO_BACKEND_NULL, NULL, NULL), AUDIO_INVALID);
+
+    ASSERT_EQ(audio_system_create_named(AUDIO_BACKEND_NULL, "", &as), AUDIO_OK);
+    ASSERT_FALSE(audio_system_selected_device(as, name, sizeof(name)));
+    ASSERT_STR_EQ(name, "");
+    audio_system_destroy(as);
+    ASSERT_EQ(audio_system_create_named(AUDIO_BACKEND_FAKE, NULL, &as), AUDIO_OK);
+    ASSERT_STR_EQ(audio_system_backend_name(as), "fake");
+    audio_system_destroy(as);
+}
+
+TEST(switching_playback_device_keeps_sources_and_the_reference_tap)
+{
+    char path[512];
+    snprintf(path, sizeof(path), "%s/break_test_switch_%ld.wav", test_temp_dir(),
+             (long)clock());
+    ASSERT_TRUE(write_test_wav(path));
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_NULL);
+    ASSERT_NOT_NULL(as);
+    u32 source = audio_play(as, path, 0.5f, true);
+    ASSERT_TRUE(source != 0u);
+    ma_device *old_device = test_playback_device(as);
+    ASSERT_EQ(audio_system_switch_device(as, TEST_NULL_PLAYBACK_NAME), AUDIO_OK);
+    ASSERT_TRUE(test_playback_device(as) != old_device);
+    ASSERT_NOT_NULL(test_playback_device(as)->playback.pID);
+    ASSERT_EQ(audio_system_recoveries(as), 1u);
+    ASSERT_FALSE(audio_system_lost(as));
+    char name[128];
+    ASSERT_TRUE(audio_system_selected_device(as, name, sizeof(name)));
+    ASSERT_STR_EQ(name, TEST_NULL_PLAYBACK_NAME);
+    ASSERT_TRUE(audio_system_device_name(as, name, sizeof(name)));
+    ASSERT_STR_EQ(name, TEST_NULL_PLAYBACK_NAME);
+    ASSERT_FALSE(audio_source_at_end(as, source));
+    ASSERT_EQ(audio_reference_start(as), AUDIO_OK);
+    ASSERT_TRUE(reference_frames_arrive(as));
+    ASSERT_EQ(audio_reference_stop(as), AUDIO_OK);
+    /* back to the default: the selection is cleared */
+    ASSERT_EQ(audio_system_switch_device(as, NULL), AUDIO_OK);
+    ASSERT_EQ(audio_system_recoveries(as), 2u);
+    ASSERT_TRUE(test_playback_device(as)->playback.pID == NULL);
+    ASSERT_FALSE(audio_system_selected_device(as, name, sizeof(name)));
+    audio_stop(as, source);
+    audio_system_destroy(as);
+    remove(path);
+}
+
+TEST(an_unknown_switch_target_changes_nothing)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_NULL);
+    ASSERT_NOT_NULL(as);
+    ma_device *device = test_playback_device(as);
+    ASSERT_EQ(audio_system_switch_device(as, "no such output"), AUDIO_REJECTED);
+    ASSERT_TRUE(test_playback_device(as) == device);
+    ASSERT_EQ(audio_system_recoveries(as), 0u);
+    ASSERT_FALSE(audio_system_lost(as));
+    char name[128] = "unchanged";
+    ASSERT_FALSE(audio_system_selected_device(as, name, sizeof(name)));
+    ASSERT_EQ(audio_system_switch_device(NULL, NULL), AUDIO_INVALID);
+    audio_system_destroy(as);
+
+    as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    ASSERT_EQ(audio_system_switch_device(as, TEST_NULL_PLAYBACK_NAME), AUDIO_REJECTED);
+    ASSERT_EQ(audio_system_switch_device(as, NULL), AUDIO_OK);
+    ASSERT_FALSE(audio_system_selected_device(NULL, name, sizeof(name)));
+    audio_system_destroy(as);
+}
+
+/* A refused switch opens the new device and then gives it up: the old
+ * device must still be playing, so it may only be closed after the new one
+ * opened. */
+TEST(a_refused_switch_keeps_the_old_device_playing)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_NULL);
+    ASSERT_NOT_NULL(as);
+    ma_device *device = test_playback_device(as);
+    ASSERT_EQ(audio_system_simulate_event(as, AUDIO_SYSTEM_EVENT_REOPEN_REFUSED), AUDIO_OK);
+    ASSERT_EQ(audio_system_switch_device(as, TEST_NULL_PLAYBACK_NAME), AUDIO_FAILED);
+    ASSERT_TRUE(test_playback_device(as) == device);
+    ASSERT_EQ(ma_device_get_state(device), ma_device_state_started);
+    ASSERT_EQ(audio_system_recoveries(as), 0u);
+    char name[128];
+    ASSERT_FALSE(audio_system_selected_device(as, name, sizeof(name)));
+    ASSERT_EQ(audio_reference_start(as), AUDIO_OK);
+    ASSERT_TRUE(reference_frames_arrive(as));
+    ASSERT_EQ(audio_reference_stop(as), AUDIO_OK);
+    audio_system_destroy(as);
+}
+
+TEST(reopen_keeps_the_selected_device)
+{
+    AudioSystem *as = NULL;
+    ASSERT_EQ(audio_system_create_named(AUDIO_BACKEND_NULL, TEST_NULL_PLAYBACK_NAME, &as),
+              AUDIO_OK);
+    ASSERT_NOT_NULL(test_playback_device(as)->playback.pID);
+    ASSERT_EQ(audio_system_simulate_event(as, AUDIO_SYSTEM_EVENT_DEVICE_LOST), AUDIO_OK);
+    ASSERT_EQ(audio_system_reopen(as), AUDIO_OK);
+    /* opened by id, not as the default that happens to share the name */
+    ASSERT_NOT_NULL(test_playback_device(as)->playback.pID);
+    char name[128];
+    ASSERT_TRUE(audio_system_selected_device(as, name, sizeof(name)));
+    ASSERT_STR_EQ(name, TEST_NULL_PLAYBACK_NAME);
+    ASSERT_TRUE(audio_system_device_name(as, name, sizeof(name)));
+    ASSERT_STR_EQ(name, TEST_NULL_PLAYBACK_NAME);
+    /* the named device is gone: the reopen falls back to the default and
+     * keeps the selection for a later reopen */
+    struct AudioImpl *impl = (struct AudioImpl *)as->engine;
+    snprintf(impl->selected_device, sizeof(impl->selected_device), "%s", "gone output");
+    ASSERT_EQ(audio_system_simulate_event(as, AUDIO_SYSTEM_EVENT_DEVICE_LOST), AUDIO_OK);
+    ASSERT_EQ(audio_system_reopen(as), AUDIO_OK);
+    ASSERT_FALSE(audio_system_lost(as));
+    ASSERT_TRUE(audio_system_selected_device(as, name, sizeof(name)));
+    ASSERT_STR_EQ(name, "gone output");
+    ASSERT_TRUE(test_playback_device(as)->playback.pID == NULL);
+    ASSERT_TRUE(audio_system_device_name(as, name, sizeof(name)));
+    ASSERT_STR_EQ(name, TEST_NULL_PLAYBACK_NAME);
+    audio_system_destroy(as);
+}
+
+TEST(a_name_of_128_bytes_is_rejected_by_create_and_switch)
+{
+    char long_name[200];
+    memset(long_name, 'a', sizeof(long_name) - 1u);
+    long_name[sizeof(long_name) - 1u] = '\0';
+    AudioSystem *as = NULL;
+    AudioSystem *untouched = (AudioSystem *)(uintptr_t)0x1;
+    as = untouched;
+    ASSERT_EQ(audio_system_create_named(AUDIO_BACKEND_NULL, long_name, &as), AUDIO_REJECTED);
+    ASSERT_TRUE(as == untouched);
+    ASSERT_EQ(audio_system_create_named(AUDIO_BACKEND_FAKE, long_name, &as), AUDIO_REJECTED);
+    ASSERT_TRUE(as == untouched);
+
+    as = audio_system_create_ex(AUDIO_BACKEND_NULL);
+    ASSERT_NOT_NULL(as);
+    ma_device *device = test_playback_device(as);
+    ASSERT_EQ(audio_system_switch_device(as, long_name), AUDIO_REJECTED);
+    ASSERT_TRUE(test_playback_device(as) == device);
+    ASSERT_EQ(ma_device_get_state(device), ma_device_state_started);
+    /* one byte short of the limit is a lookup, not a rejection by length */
+    long_name[127] = '\0';
+    ASSERT_EQ(audio_system_switch_device(as, long_name), AUDIO_REJECTED);
+    ASSERT_TRUE(test_playback_device(as) == device);
+    audio_system_destroy(as);
+}
+
+/* A replacement that does not start is closed again and the previous
+ * device is reopened: the engine never keeps a device that never played,
+ * and a refused switch changes neither the selection nor playback. */
+TEST(a_switch_that_cannot_start_restores_the_old_device)
+{
+    AudioSystem *as = NULL;
+    ASSERT_EQ(audio_system_create_named(AUDIO_BACKEND_NULL, TEST_NULL_PLAYBACK_NAME, &as),
+              AUDIO_OK);
+    char before[128];
+    ASSERT_TRUE(audio_system_selected_device(as, before, sizeof(before)));
+    ASSERT_STR_EQ(before, TEST_NULL_PLAYBACK_NAME);
+    ASSERT_EQ(audio_reference_start(as), AUDIO_OK);
+    ASSERT_TRUE(reference_frames_arrive(as));
+    atomic_store_explicit(&switch_start_refusals, 1u, memory_order_release);
+    ASSERT_EQ(audio_system_switch_device(as, NULL), AUDIO_FAILED);
+    ASSERT_EQ(atomic_load_explicit(&switch_start_refusals, memory_order_acquire), 0u);
+    /* the device that never played is gone; the selected one plays again */
+    ma_device *restored = test_playback_device(as);
+    ASSERT_NOT_NULL(restored);
+    ASSERT_NOT_NULL(restored->playback.pID);
+    ASSERT_EQ(ma_device_get_state(restored), ma_device_state_started);
+    char after[128];
+    ASSERT_TRUE(audio_system_selected_device(as, after, sizeof(after)));
+    ASSERT_STR_EQ(after, before);
+    ASSERT_EQ(audio_system_recoveries(as), 0u);
+    ASSERT_TRUE(reference_frames_arrive(as));
+    ASSERT_EQ(audio_reference_stop(as), AUDIO_OK);
+    audio_system_destroy(as);
+}
+
+/* When the restored device does not start either, the block stays
+ * installed (opened, stopped), so a later reopen can repair it. */
+TEST(a_switch_whose_restore_cannot_start_is_repaired_by_reopen)
+{
+    AudioSystem *as = NULL;
+    ASSERT_EQ(audio_system_create_named(AUDIO_BACKEND_NULL, TEST_NULL_PLAYBACK_NAME, &as),
+              AUDIO_OK);
+    atomic_store_explicit(&switch_start_refusals, 2u, memory_order_release);
+    ASSERT_EQ(audio_system_switch_device(as, NULL), AUDIO_FAILED);
+    ASSERT_EQ(atomic_load_explicit(&switch_start_refusals, memory_order_acquire), 0u);
+    ma_device *device = test_playback_device(as);
+    ASSERT_NOT_NULL(device);
+    ASSERT_TRUE(ma_device_get_state(device) != ma_device_state_started);
+    char name[128];
+    ASSERT_TRUE(audio_system_selected_device(as, name, sizeof(name)));
+    ASSERT_STR_EQ(name, TEST_NULL_PLAYBACK_NAME);
+    ASSERT_EQ(audio_system_reopen(as), AUDIO_OK);
+    device = test_playback_device(as);
+    ASSERT_NOT_NULL(device);
+    ASSERT_EQ(ma_device_get_state(device), ma_device_state_started);
+    ASSERT_NOT_NULL(device->playback.pID);
+    ASSERT_EQ(audio_system_recoveries(as), 1u);
+    ASSERT_EQ(audio_reference_start(as), AUDIO_OK);
+    ASSERT_TRUE(reference_frames_arrive(as));
+    ASSERT_EQ(audio_reference_stop(as), AUDIO_OK);
+    audio_system_destroy(as);
+}
+
+/* A reopen that cannot look the selection up in a context must open the
+ * default device, never a context that was not initialised. */
+TEST(a_reopen_without_a_context_opens_the_default)
+{
+    AudioSystem *as = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(as);
+    struct AudioImpl *impl = (struct AudioImpl *)as->engine;
+    ASSERT_FALSE(impl->context_initialized);
+    snprintf(impl->selected_device, sizeof(impl->selected_device), "%s", "gone output");
+    /* FAKE has no device to reopen, but the lost state still clears */
+    ASSERT_EQ(audio_system_simulate_event(as, AUDIO_SYSTEM_EVENT_DEVICE_LOST), AUDIO_OK);
+    ASSERT_TRUE(audio_system_lost(as));
+    ASSERT_EQ(audio_system_reopen(as), AUDIO_OK);
+    ASSERT_FALSE(audio_system_lost(as));
+    char name[128];
+    ASSERT_TRUE(audio_system_selected_device(as, name, sizeof(name)));
+    ASSERT_STR_EQ(name, "gone output");
+    audio_system_destroy(as);
+}
+
+/* The selection is looked up in the system's own context: a named NULL
+ * system reopens by id after a loss. */
+TEST(a_reopen_looks_the_selection_up_in_the_system_context)
+{
+    AudioSystem *as = NULL;
+    ASSERT_EQ(audio_system_create_named(AUDIO_BACKEND_NULL, TEST_NULL_PLAYBACK_NAME, &as),
+              AUDIO_OK);
+    struct AudioImpl *impl = (struct AudioImpl *)as->engine;
+    ASSERT_TRUE(impl->context_initialized);
+    ASSERT_EQ(audio_system_simulate_event(as, AUDIO_SYSTEM_EVENT_DEVICE_LOST), AUDIO_OK);
+    ASSERT_EQ(audio_system_reopen(as), AUDIO_OK);
+    ASSERT_NOT_NULL(test_playback_device(as)->playback.pID);
+    audio_system_destroy(as);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(atten_inside_min_is_full);
     RUN_TEST(atten_inverse_known_values);
@@ -897,4 +1193,15 @@ TEST_MAIN_BEGIN()
     RUN_TEST(default_playback_reopen_keeps_rendering);
     RUN_TEST(refused_playback_reopen_keeps_the_system_lost_once_per_event);
     RUN_TEST(playback_recovery_calls_validate_their_arguments);
+    RUN_TEST(playback_devices_are_listed_by_backend);
+    RUN_TEST(a_named_playback_device_opens_and_an_unknown_name_is_rejected);
+    RUN_TEST(a_name_of_128_bytes_is_rejected_by_create_and_switch);
+    RUN_TEST(a_switch_that_cannot_start_restores_the_old_device);
+    RUN_TEST(a_switch_whose_restore_cannot_start_is_repaired_by_reopen);
+    RUN_TEST(a_reopen_without_a_context_opens_the_default);
+    RUN_TEST(a_reopen_looks_the_selection_up_in_the_system_context);
+    RUN_TEST(switching_playback_device_keeps_sources_and_the_reference_tap);
+    RUN_TEST(an_unknown_switch_target_changes_nothing);
+    RUN_TEST(a_refused_switch_keeps_the_old_device_playing);
+    RUN_TEST(reopen_keeps_the_selected_device);
 TEST_MAIN_END()

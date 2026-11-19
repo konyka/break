@@ -114,6 +114,7 @@ struct AudioImpl {
     atomic_uint refused_reopens;  /* simulated: reopens still to refuse */
     atomic_uint_least64_t device_recoveries;
     ma_timer clock;               /* monotonic base for the loss grace period */
+    char selected_device[128];    /* "" = the default output */
 };
 
 bool audio_extended_init(AudioSystem *as, ma_engine *engine);
@@ -244,6 +245,21 @@ static void audio_device_data_callback(ma_device *device, void *output, const vo
     ma_engine_read_pcm_frames((ma_engine *)device->pUserData, output, frame_count, NULL);
 }
 
+/* The id of the playback device with this exact name in the context. */
+static bool audio_find_playback_device(ma_context *context, const char *name,
+                                       ma_device_id *out) {
+    ma_device_info *infos = NULL;
+    ma_uint32 count = 0;
+    if (ma_context_get_devices(context, &infos, &count, NULL, NULL) != MA_SUCCESS) return false;
+    for (ma_uint32 i = 0; i < count; ++i) {
+        if (strcmp(infos[i].name, name) == 0) {
+            *out = infos[i].id;
+            return true;
+        }
+    }
+    return false;
+}
+
 /* Every device backend miniaudio enables, in its order of preference (Null
  * last), each with a context the system owns. The engine keeps the
  * context's log, so a reopen must not free it with the old device. Like
@@ -251,7 +267,7 @@ static void audio_device_data_callback(ma_device *device, void *output, const vo
  * device does not open, and iOS playback uses the playback session. */
 static ma_result audio_engine_init_with_context(struct AudioImpl *impl,
                                                 ma_engine_config *engine_config,
-                                                bool use_null) {
+                                                bool use_null, const char *device_name) {
     ma_backend backends[MA_BACKEND_COUNT];
     size_t backend_count = 0u;
     if (use_null) {
@@ -266,9 +282,21 @@ static ma_result audio_engine_init_with_context(struct AudioImpl *impl,
     context_config.coreaudio.sessionCategory = ma_ios_session_category_playback;
 #endif
     ma_result result = MA_NO_BACKEND;
+    bool name_seen = false;
     for (size_t i = 0u; i < backend_count; ++i) {
         result = ma_context_init(&backends[i], 1, &context_config, &impl->context);
         if (result != MA_SUCCESS) continue;
+        ma_device_id named_id;
+        engine_config->pPlaybackDeviceID = NULL;
+        if (device_name) {
+            if (!audio_find_playback_device(&impl->context, device_name, &named_id)) {
+                ma_context_uninit(&impl->context);
+                result = MA_DOES_NOT_EXIST;
+                continue;
+            }
+            name_seen = true;
+            engine_config->pPlaybackDeviceID = &named_id;
+        }
         engine_config->pContext = &impl->context;
         result = ma_engine_init(engine_config, &impl->engine);
         if (result == MA_SUCCESS) {
@@ -278,20 +306,27 @@ static ma_result audio_engine_init_with_context(struct AudioImpl *impl,
         ma_context_uninit(&impl->context);
     }
     engine_config->pContext = NULL;
-    return result;
+    engine_config->pPlaybackDeviceID = NULL;
+    if (device_name && !name_seen) return MA_DOES_NOT_EXIST;
+    return result == MA_DOES_NOT_EXIST ? MA_NO_BACKEND : result;
 }
 
-AudioSystem *audio_system_create_ex(AudioBackend backend) {
-    if (backend < AUDIO_BACKEND_DEFAULT || backend > AUDIO_BACKEND_FAKE) {
-        return NULL;
-    }
+static bool audio_backend_valid(AudioBackend backend) {
+    return backend >= AUDIO_BACKEND_DEFAULT && backend <= AUDIO_BACKEND_FAKE;
+}
+
+/* device_name is NULL for the default, never "" here. */
+static AudioResult audio_system_open(AudioBackend backend, const char *device_name,
+                                     AudioSystem **out) {
+    if (!audio_backend_valid(backend) || !out) return AUDIO_INVALID;
+    if (backend == AUDIO_BACKEND_FAKE && device_name) return AUDIO_REJECTED;
     usize as_sz  = sizeof(AudioSystem);
     usize align  = _Alignof(long double);
     usize as_off = (as_sz + align - 1) & ~(align - 1);
     u8 *audio_block = (u8 *)calloc(1, as_off + sizeof(struct AudioImpl));
     if (!audio_block) {
         LOG_ERROR("Audio: system allocation failed");
-        return NULL;
+        return AUDIO_FAILED;
     }
     AudioSystem *as  = (AudioSystem *)audio_block;
     struct AudioImpl *impl = (struct AudioImpl *)(audio_block + as_off);
@@ -313,12 +348,19 @@ AudioSystem *audio_system_create_ex(AudioBackend backend) {
     engine_config.noDevice = backend == AUDIO_BACKEND_FAKE ? MA_TRUE : MA_FALSE;
     result = backend == AUDIO_BACKEND_FAKE
                  ? ma_engine_init(engine_config_ptr, &impl->engine)
-                 : audio_engine_init_with_context(impl, &engine_config, use_null);
+                 : audio_engine_init_with_context(impl, &engine_config, use_null, device_name);
     if (result != MA_SUCCESS) {
-        LOG_ERROR("Failed to init audio engine (%d)", result);
+        if (result == MA_DOES_NOT_EXIST) {
+            LOG_WARN("Audio: no playback device is named '%s'", device_name);
+        } else {
+            LOG_ERROR("Failed to init audio engine (%d)", result);
+        }
         if (impl->context_initialized) ma_context_uninit(&impl->context);
         free(as);
-        return NULL;
+        return result == MA_DOES_NOT_EXIST ? AUDIO_REJECTED : AUDIO_FAILED;
+    }
+    if (device_name) {
+        snprintf(impl->selected_device, sizeof(impl->selected_device), "%s", device_name);
     }
 
     as->engine = impl;
@@ -331,7 +373,7 @@ AudioSystem *audio_system_create_ex(AudioBackend backend) {
         ma_engine_uninit(&impl->engine);
         if (impl->context_initialized) ma_context_uninit(&impl->context);
         free(as);
-        return NULL;
+        return AUDIO_FAILED;
     }
     as->source_count = 0;
     as->listener_forward = vec3(0, 0, -1);
@@ -343,12 +385,70 @@ AudioSystem *audio_system_create_ex(AudioBackend backend) {
         ma_engine_uninit(&impl->engine);
         if (impl->context_initialized) ma_context_uninit(&impl->context);
         free(as);
-        return NULL;
+        return AUDIO_FAILED;
     }
 
     if (use_null) LOG_WARN("Audio system initialized with null backend (silent)");
     else LOG_INFO("Audio system initialized");
-    return as;
+    *out = as;
+    return AUDIO_OK;
+}
+
+AudioSystem *audio_system_create_ex(AudioBackend backend) {
+    AudioSystem *as = NULL;
+    return audio_system_open(backend, NULL, &as) == AUDIO_OK ? as : NULL;
+}
+
+AudioResult audio_system_create_named(AudioBackend backend, const char *device_name,
+                                      AudioSystem **out) {
+    const bool named = device_name && device_name[0] != '\0';
+    if (named && strlen(device_name) >= sizeof(((struct AudioImpl *)0)->selected_device)) {
+        return AUDIO_REJECTED;
+    }
+    return audio_system_open(backend, named ? device_name : NULL, out);
+}
+
+u32 audio_system_list_devices(AudioBackend backend, AudioDeviceInfo *out, u32 capacity) {
+    if (!audio_backend_valid(backend) || backend == AUDIO_BACKEND_FAKE ||
+        (!out && capacity > 0u)) {
+        return 0u;
+    }
+    ma_context context;
+    ma_backend null_backend = ma_backend_null;
+    bool use_null = backend == AUDIO_BACKEND_NULL;
+#if defined(AUDIO_SIMULATOR_NULL_BACKEND)
+    use_null = true;
+#endif
+    if (ma_context_init(use_null ? &null_backend : NULL, use_null ? 1u : 0u, NULL, &context) !=
+        MA_SUCCESS) {
+        return 0u;
+    }
+    ma_device_info *infos = NULL;
+    ma_uint32 count = 0;
+    if (ma_context_get_devices(&context, &infos, &count, NULL, NULL) != MA_SUCCESS) {
+        ma_context_uninit(&context);
+        return 0u;
+    }
+    for (u32 i = 0; i < count && i < capacity; ++i) {
+        memset(&out[i], 0, sizeof(out[i]));
+        usize length = strlen(infos[i].name);
+        if (length >= sizeof(out[i].name)) length = sizeof(out[i].name) - 1u;
+        memcpy(out[i].name, infos[i].name, length);
+        out[i].name[length] = '\0';
+        snprintf(out[i].id, sizeof(out[i].id), "%u", i);
+        out[i].is_default = infos[i].isDefault != 0;
+    }
+    ma_context_uninit(&context);
+    return (u32)count;
+}
+
+bool audio_system_selected_device(const AudioSystem *as, char *out, usize capacity) {
+    if (out && capacity > 0u) out[0] = '\0';
+    if (!as || !as->engine) return false;
+    const struct AudioImpl *impl = (const struct AudioImpl *)as->engine;
+    if (impl->selected_device[0] == '\0') return false;
+    if (out && capacity > 0u) snprintf(out, capacity, "%s", impl->selected_device);
+    return true;
 }
 
 const char *audio_system_backend_name(const AudioSystem *as) {
@@ -441,17 +541,10 @@ static void audio_mark_recovered(struct AudioImpl *impl) {
     atomic_fetch_add_explicit(&impl->device_recoveries, 1u, memory_order_acq_rel);
 }
 
-/* Replaces the engine's device in place: same memory, same format, the
- * default output. The node graph, and with it every source, is untouched.
- * On WASAPI the COM notification thread may still reroute or restart the
- * old device between the started check and ma_device_uninit; the 250 ms
- * grace period makes that window rare, it is not closed. */
-static AudioResult audio_reopen_device(struct AudioImpl *impl) {
-    ma_engine *engine = &impl->engine;
-    ma_device *device = ma_engine_get_device(engine);
-    if (!device) return AUDIO_FAILED;
-    ma_device_uninit(device);
+/* The engine's playback format on the given device (NULL: the default). */
+static ma_device_config audio_playback_config(ma_engine *engine, const ma_device_id *id) {
     ma_device_config config = ma_device_config_init(ma_device_type_playback);
+    config.playback.pDeviceID = id;
     config.playback.format = ma_format_f32;
     config.playback.channels = ma_engine_get_channels(engine);
     config.sampleRate = ma_engine_get_sample_rate(engine);
@@ -459,6 +552,24 @@ static AudioResult audio_reopen_device(struct AudioImpl *impl) {
     config.pUserData = engine;
     config.noPreSilencedOutputBuffer = MA_TRUE;
     config.noClip = MA_TRUE;
+    return config;
+}
+
+/* Replaces the engine's device in place: same memory, same format, the
+ * selected output, or the default when no device has its name any more.
+ * The node graph, and with it every source, is untouched. On WASAPI the COM
+ * notification thread may still reroute or restart the old device between
+ * the started check and ma_device_uninit; the 250 ms grace period makes
+ * that window rare, it is not closed. */
+static AudioResult audio_reopen_device(struct AudioImpl *impl) {
+    ma_engine *engine = &impl->engine;
+    ma_device *device = ma_engine_get_device(engine);
+    if (!device) return AUDIO_FAILED;
+    ma_device_uninit(device);
+    ma_device_id id;
+    const bool named = impl->context_initialized && impl->selected_device[0] != '\0' &&
+                       audio_find_playback_device(&impl->context, impl->selected_device, &id);
+    ma_device_config config = audio_playback_config(engine, named ? &id : NULL);
     ma_result result = ma_device_init(&impl->context, &config, device);
     if (result != MA_SUCCESS) {
         /* closed and zeroed (uninitialized state): the names report "none"
@@ -506,6 +617,90 @@ AudioResult audio_system_simulate_event(AudioSystem *as, AudioSystemEvent event)
     }
     return AUDIO_OK;
 }
+
+/* The new device is opened stopped beside the old one, so a failure to open
+ * or a simulated refusal leaves the old one playing. The old one is closed
+ * before the new one starts (ma_device_uninit waits for its last callback),
+ * so the engine is never read by two devices at once. The engine frees
+ * pDevice with its own allocation callbacks, so the new device is allocated
+ * with them. When the new device does not start, the previous selection
+ * and the previous device are reopened in the same block, so nothing ever
+ * points at a device that never played. */
+AudioResult audio_system_switch_device(AudioSystem *as, const char *device_name) {
+    struct AudioImpl *impl = audio_impl(as);
+    if (!impl) return AUDIO_INVALID;
+    const bool named = device_name && device_name[0] != '\0';
+    if (named && strlen(device_name) >= sizeof(impl->selected_device)) return AUDIO_REJECTED;
+    if (as->backend == AUDIO_BACKEND_FAKE) {
+        if (named) return AUDIO_REJECTED;
+        impl->selected_device[0] = '\0';
+        return AUDIO_OK;
+    }
+    ma_engine *engine = &impl->engine;
+    ma_device_id id;
+    if (named && !audio_find_playback_device(&impl->context, device_name, &id)) {
+        return AUDIO_REJECTED;
+    }
+    ma_device *replacement =
+        (ma_device *)ma_malloc(sizeof(*replacement), &engine->allocationCallbacks);
+    if (!replacement) return AUDIO_FAILED;
+    ma_device_config config = audio_playback_config(engine, named ? &id : NULL);
+    if (ma_device_init(&impl->context, &config, replacement) != MA_SUCCESS) {
+        ma_free(replacement, &engine->allocationCallbacks);
+        LOG_WARN("Audio: playback device switch failed to open the new device");
+        return AUDIO_FAILED;
+    }
+    if (audio_take_refusal(impl)) {
+        ma_device_uninit(replacement);
+        ma_free(replacement, &engine->allocationCallbacks);
+        return AUDIO_FAILED;
+    }
+    ma_device *old = engine->pDevice;
+    ma_device_uninit(old);
+    ma_free(old, &engine->allocationCallbacks);
+    engine->pDevice = replacement;
+    char previous[sizeof(impl->selected_device)];
+    memcpy(previous, impl->selected_device, sizeof(previous));
+    if (named) {
+        snprintf(impl->selected_device, sizeof(impl->selected_device), "%s", device_name);
+    } else {
+        impl->selected_device[0] = '\0';
+    }
+    bool may_start = true;
+#ifdef AUDIO_SWITCH_START_TEST_HOOK
+    may_start = AUDIO_SWITCH_START_TEST_HOOK(impl);
+#endif
+    const bool started = may_start && ma_device_start(replacement) == MA_SUCCESS;
+    if (!started) {
+        /* the replacement never played: close it, restore the selection and
+         * reopen the previous device in the same block, so a refused switch
+         * changes nothing. The block stays installed either way: zeroed when
+         * the previous device does not open, opened but stopped when it does
+         * not start, and a later audio_system_reopen repairs both. */
+        ma_device_uninit(replacement);
+        memcpy(impl->selected_device, previous, sizeof(previous));
+        ma_device_id previous_id;
+        const bool previous_named =
+            previous[0] != '\0' &&
+            audio_find_playback_device(&impl->context, previous, &previous_id);
+        ma_device_config restore_config =
+            audio_playback_config(engine, previous_named ? &previous_id : NULL);
+        LOG_WARN("Audio: switched playback device did not start");
+        if (ma_device_init(&impl->context, &restore_config, replacement) != MA_SUCCESS) {
+            memset(replacement, 0, sizeof(*replacement));
+            return AUDIO_FAILED;
+        }
+#ifdef AUDIO_SWITCH_START_TEST_HOOK
+        may_start = AUDIO_SWITCH_START_TEST_HOOK(impl);
+#endif
+        const bool restarted = may_start && ma_device_start(replacement) == MA_SUCCESS;
+        if (!restarted) LOG_WARN("Audio: previous playback device did not start again");
+        return AUDIO_FAILED;
+    }
+    audio_mark_recovered(impl);
+    return AUDIO_OK;
+}
+
 
 AudioSystem *audio_system_create(void) {
     return audio_system_create_ex(AUDIO_BACKEND_DEFAULT);
