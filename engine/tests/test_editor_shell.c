@@ -3483,8 +3483,10 @@ TEST(audio_page_selects_and_trims_or_cuts)
     ASSERT_EQ(b, cursor);
     ASSERT_TRUE(e > 700u && e <= 760u);
     ASSERT_EQ(break_editor_shell_audio_cursor_frames(shell), cursor);
+    ASSERT_TRUE(break_editor_shell_audio_select(shell, 0u, 600u));
     break_editor_shell_tick(shell);
-    ASSERT_TRUE(strstr(break_editor_shell_audio_info_text(shell), " | sel ") != NULL);
+    ASSERT_STR_EQ(break_editor_shell_audio_info_text(shell),
+                  "8000 Hz, 1 ch, 0.125 s | sel 0.000 - 0.075 s");
     shell_paint(shell);
     /* a plain click clears it */
     pointer_press_at(shell, wave, 3, 0u);
@@ -3518,6 +3520,41 @@ TEST(audio_page_selects_and_trims_or_cuts)
     ASSERT_FALSE(break_editor_shell_audio_selection(shell, &b, &e));
     ASSERT_TRUE(break_editor_undo(doc));
 
+    /* an edit that no tick has seen yet (undo in the same frame): the old
+     * selection is gone, Trim refuses, a new selection survives the tick */
+    ASSERT_TRUE(break_editor_shell_audio_select(shell, 100u, 300u));
+    emit_click(cut);
+    break_editor_shell_tick(shell);
+    ASSERT_TRUE(break_editor_shell_audio_select(shell, 10u, 20u));
+    ASSERT_TRUE(break_editor_undo(doc));
+    ASSERT_FALSE(break_editor_shell_audio_trim(shell));
+    ASSERT_EQ(break_editor_doc_audio_frames(doc), 1000u);
+    ASSERT_TRUE(break_editor_redo(doc));
+    ASSERT_TRUE(break_editor_shell_audio_select(shell, 10u, 20u));
+    break_editor_shell_tick(shell);
+    ASSERT_TRUE(break_editor_shell_audio_selection(shell, &b, &e));
+    ASSERT_EQ(b, 10u);
+    ASSERT_TRUE(break_editor_undo(doc));
+    break_editor_shell_tick(shell);
+    /* Trim of the whole clip changes nothing and is refused */
+    ASSERT_TRUE(break_editor_shell_audio_select(shell, 0u, 1000u));
+    ASSERT_FALSE(break_editor_shell_audio_trim(shell));
+    ASSERT_EQ(break_editor_cmd_stack_undo_count(break_editor_doc_stack(doc)), 0u);
+    /* Cut while the preview plays stops it */
+    {
+        static FakeAudioSink fake;
+        memset(&fake, 0, sizeof(fake));
+        fake.chunk = 4096u;
+        break_editor_shell_set_audio_sink(shell, &k_fake_sink, &fake);
+        ASSERT_TRUE(break_editor_shell_audio_play(shell));
+        ASSERT_TRUE(break_editor_shell_audio_select(shell, 0u, 10u));
+        ASSERT_TRUE(break_editor_shell_audio_cut(shell));
+        ASSERT_FALSE(break_editor_shell_audio_playing(shell));
+        ASSERT_EQ(fake.closes, 1u);
+        ASSERT_EQ(break_editor_doc_audio_frames(doc), 990u);
+        ASSERT_TRUE(break_editor_undo(doc));
+        break_editor_shell_set_audio_sink(shell, NULL, NULL);
+    }
     /* clamped; an empty or out-of-clip range selects nothing */
     ASSERT_TRUE(break_editor_shell_audio_select(shell, 900u, 5000u));
     ASSERT_TRUE(break_editor_shell_audio_selection(shell, &b, &e));

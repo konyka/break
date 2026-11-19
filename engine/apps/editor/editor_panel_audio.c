@@ -148,6 +148,17 @@ static void audio_panel_refresh(EditorPanelAudio *panel) {
     }
 }
 
+/* An attachment change no tick has seen yet (an undo in the same frame):
+ * stop the stale copy and refresh, which clears the selection and resets the
+ * cursor before anything reads them. */
+static void audio_panel_catch_up(EditorPanelAudio *panel) {
+    if (!panel->fresh || panel->seen_revision != break_editor_doc_audio_revision(
+                                                     break_editor_shell_doc(panel->shell))) {
+        break_editor_audio_preview_stop(panel->preview);
+        audio_panel_refresh(panel);
+    }
+}
+
 static void audio_waveform_on_paint(my_widget_t *widget, my_vgcanvas_t *vg) {
     const EditorPanelAudio *panel;
     float w, h, mid, scale;
@@ -207,7 +218,8 @@ static void audio_waveform_on_paint(my_widget_t *widget, my_vgcanvas_t *vg) {
     }
 }
 
-/* A primary-button press seeks to the frame under the pointer. */
+/* A primary-button press seeks to the frame under the pointer and clears the
+ * selection; with Shift it selects from the cursor to that frame instead. */
 static my_ret_t audio_waveform_on_event(my_widget_t *widget, const my_event_t *event) {
     EditorPanelAudio *panel;
     int32_t gx, gy;
@@ -219,6 +231,11 @@ static my_ret_t audio_waveform_on_event(my_widget_t *widget, const my_event_t *e
     panel = (EditorPanelAudio *)my_widget_get_user_data(widget);
     frames = panel != NULL ? break_editor_doc_audio_frames(break_editor_shell_doc(panel->shell))
                            : 0u;
+    if (frames == 0u) {
+        return MY_RET_FAIL;
+    }
+    audio_panel_catch_up(panel); /* the Shift anchor reads the cursor */
+    frames = break_editor_doc_audio_frames(break_editor_shell_doc(panel->shell));
     if (frames == 0u) {
         return MY_RET_FAIL;
     }
@@ -309,12 +326,7 @@ bool editor_panel_audio_seek(EditorPanelAudio *panel, u32 frame) {
     if (panel == NULL) {
         return false;
     }
-    if (!panel->fresh || panel->seen_revision != break_editor_doc_audio_revision(
-                                                     break_editor_shell_doc(panel->shell))) {
-        /* an edit not seen yet: stop the stale copy and reset first */
-        break_editor_audio_preview_stop(panel->preview);
-        audio_panel_refresh(panel);
-    }
+    audio_panel_catch_up(panel);
     was_playing = break_editor_audio_preview_playing(panel->preview);
     playing = break_editor_audio_preview_seek(panel->preview, break_editor_shell_doc(panel->shell),
                                               frame);
@@ -336,6 +348,7 @@ bool editor_panel_audio_select(EditorPanelAudio *panel, u32 begin, u32 end) {
     if (panel == NULL) {
         return false;
     }
+    audio_panel_catch_up(panel);
     frames = break_editor_doc_audio_frames(break_editor_shell_doc(panel->shell));
     if (end > frames) end = frames;
     if (begin >= end) {
@@ -365,12 +378,16 @@ bool editor_panel_audio_edit_selection(EditorPanelAudio *panel, bool cut) {
     if (panel == NULL) {
         return false;
     }
-    if (panel->sel_begin >= panel->sel_end) {
+    audio_panel_catch_up(panel);
+    doc = break_editor_shell_doc(panel->shell);
+    /* a trim of the whole clip would change nothing */
+    if (panel->sel_begin >= panel->sel_end ||
+        (!cut && panel->sel_begin == 0u &&
+         panel->sel_end == break_editor_doc_audio_frames(doc))) {
         editor_shell_log(panel->shell, "%s",
                          break_editor_tr(BREAK_EDITOR_TR_LOG_AUDIO_NO_SELECTION));
         return false;
     }
-    doc = break_editor_shell_doc(panel->shell);
     ok = cut ? break_editor_doc_audio_cut(doc, panel->sel_begin, panel->sel_end)
              : break_editor_doc_audio_trim(doc, panel->sel_begin, panel->sel_end);
     if (!ok) {

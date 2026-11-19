@@ -19,14 +19,21 @@ Panel (`apps/editor/editor_panel_audio.c`):
 - Buttons `editor-audio-trim` ("Trim"/"裁剪") and `editor-audio-cut`
   ("Cut"/"剪切") run `trim(begin, end)` / `cut(begin, end)` on the document.
   Without a selection they log "select a range first (Shift+click)". On
-  success the selection and cursor are cleared; the edit is undoable
-  through the document history like any other command, and the page
-  refreshes on the next tick through the revision.
+  success the selection and cursor are cleared, a running preview stops and
+  the page refreshes at once; the edit is undoable through the document
+  history like any other command. A Trim of the whole clip would change
+  nothing and is refused like an empty selection.
 - The selection is cleared on any attachment change (revision).
-- The paint fills the selected columns with a translucent band behind the
-  bars.
+- The paint fills the selected columns with the theme's selection colour
+  (opaque) behind the mid line and the bars.
 - Info line: while a selection exists and nothing plays, the info line ends
-  with " | sel <a> - <b> s".
+  with " | sel <a> - <b> s" (while playing it shows the position instead).
+  A Shift press anchors at the cursor (where Play started), not at the
+  moving play line.
+- Every entry point (select, Shift press, Trim/Cut, seek) first catches up
+  with an attachment change no tick has seen yet (an undo in the same
+  frame), so a selection made on an older version of the clip is never
+  applied.
 - Accessors: `break_editor_shell_audio_select(shell, begin, end)` (the same
   as a Shift press pair, for tests and the remote), `..._audio_selection(shell,
   *begin, *end)` (false when empty), `..._audio_trim(shell)`,
@@ -50,3 +57,4 @@ selection only, loop.
 - RED: the new `test_editor_shell` case failed against stubs (no buttons), then 211/211.
 - Mutations, each failing the test: the pressed frame not included, Shift ignored, the selection not cleared on an attachment change, Cut calling trim, a plain click not clearing the selection.
 - `editor_panel_audio_edit_selection` stops a running preview and refreshes the page at once (not only on the next tick).
+- Review (Not ready, fixed): select and Trim/Cut did not catch up with an attachment change that no tick had seen, so an undo followed by Trim in the same frame trimmed the old frame range out of the restored clip. They now share the page's catch-up (also used by seek and the Shift anchor); a regression case pins it, and removing either guard fails it. Also: a whole-clip Trim is refused (mutation fails), Trim/Cut stopping a playing preview is tested, the info suffix is asserted in full, the band is described as opaque.
