@@ -1,3 +1,11 @@
+## arm64 音频与一百三十一项 CTest（2026-11-20）
+
+- **最小场景**：新增二十三项音频测试：二十二个直接可执行目标共 356 个分项（voice playback 4、audio 47、audio extended 129、dsp 10、hrtf 9、capture 13、agc 8、noise gate 8、echo canceller 9、delay estimator 21、fft 8、noise suppressor 8、residual echo suppressor 8、delay tracker 8、gcc-phat 8、drift estimator 8、drift resampler 12、drift compensator 8、edit 6、voice processor 3、voice aligner 6、wav 7），以及宿主 `cmake -P` 的 realtime 契约。均不使用音频设备，采集与播放走进程内 sink。
+- **未修改基线与 focused 复验**：改动前干净容器交叉 23/23，CTest 16.57 秒，最慢的 delay tracker 3.66 秒，远低于既有 20/30 秒单项超时和 lane 的 300 秒上限；分项数与原生一致。改动后原生以完整新 `-R` 复跑 23/23，无 skip。无需修改产品或测试源码。
+- **RED 与精确选择**：旧 workflow 因缺少二十二个构建目标按预期 RED。新增独立的 `test_audio(_(extended|dsp|hrtf|capture|agc|noise_gate|echo_canceller|delay_estimator|fft|noise_suppressor|residual_echo_suppressor|delay_tracker|gcc_phat|drift_estimator|drift_resampler|drift_compensator|edit|voice_processor|voice_aligner|wav|realtime_contract))?$|test_voice_playback$`，未改动既有表达式；真实选择为既有一百零八项加二十三项，共一百三十一项。派生名称与同带 `audio` 标签的 `test_core_app_voice`、`test_core_app_voice_lane`、`test_editor_audio_sink`（及 `test_editor_audio`）被拒绝。
+- **覆盖缺口**：realtime 契约只检查源码中的实时路径约束，不代表 arm64 行为；QEMU 下通过只说明同一 arm64 构建内 DSP 管线自洽，不证明跨架构逐位一致，也不代表真机实时期限。
+- **验证状态**：原生全量、最终干净容器、独立评审及远端 job 在实际完成后补记。真实音频设备、core_app 语音通道、编辑器音频、Snowflake/QUIC、GPU 与物理设备仍不在本次覆盖内。
+
 ## arm64 AI 与一百零八项 CTest（2026-11-20）
 
 - **最小场景**：新增 `break_ai` 块注册的十四项：十二个只链接 `break_ai` 的直接可执行目标，分项为 nav bake 3、nav query 3、nav query concurrent 2、nav follow 1、perception 1、behavior 1、steer 1、ai dynamic 6、steer velocity 6、ai agents 2、ai formation 5、ai smart object 3，共 34 个分项；另含宿主 `cmake -P` 的 target 与 hot-path 契约。
