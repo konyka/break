@@ -561,7 +561,7 @@ if(BREAK_ENABLE_QUIC)
     endif()
     message(STATUS "Break QUIC transport: enabled (snow ngtcp2 adapter)")
     add_library(break_net_quic STATIC src/network/break_net_quic.c
-        src/network/break_replay_window.c)
+        src/network/break_replay_window.c src/network/break_online_voice_quic.c)
     set_property(TARGET break_net_quic PROPERTY C_STANDARD 11)
     target_compile_definitions(break_net_quic PRIVATE _POSIX_C_SOURCE=199309L)
     target_include_directories(break_net_quic PUBLIC
@@ -853,7 +853,8 @@ add_library(break_online STATIC
     src/network/break_voice_mixer.c
     src/network/break_online_aspect.c
     src/network/break_online_aspect_replication.c
-    src/network/break_replay_window.c)
+    src/network/break_replay_window.c
+    src/network/network.c)
 set_property(TARGET break_online PROPERTY C_STANDARD 11)
 target_include_directories(break_online PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(break_online PUBLIC Threads::Threads break_replication_core)
@@ -8184,7 +8185,7 @@ endif()
         target_include_directories(test_break_net_quic PRIVATE ${TEST_INCLUDE_DIRS})
         target_compile_definitions(test_break_net_quic PRIVATE
             BREAK_TEST_SSL_FIXTURE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ssl)
-        target_link_libraries(test_break_net_quic PRIVATE break_net_quic)
+        target_link_libraries(test_break_net_quic PRIVATE break_net_quic break_online)
         add_test(NAME test_break_net_quic COMMAND test_break_net_quic)
         set_tests_properties(test_break_net_quic PROPERTIES
             LABELS "headless;network;snowflake;quic" TIMEOUT 120)

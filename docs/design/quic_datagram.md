@@ -162,7 +162,19 @@ typedef enum BreakNetTransportClass {
 3. **未认证门控**：`test_datagram_unauthenticated_dropped` —— 未认证连接的数据报被丢弃（server_cap.count == 0）
 4. **C++20 同步**：`test_break_net_quic_cpp20` 的 `run_datagram_echo` —— 封装层 `SendDatagram` / `SetDatagramHandler` 全链路验证
 
-完整套件：`test_break_net_quic` 15/15（传输 8 + 会话 4 + 数据报 3），C++20 封装 echo+auth+datagram 全过。
+完整套件：`test_break_net_quic` 16/16（传输 8 + 会话 4 + 数据报 3 + 语音 1），C++20 封装 echo+auth+datagram 全过。
+
+## 12.1 语音路径已迁移到数据报通道
+
+`break_online_voice_quic.{h,c}`（2026-11-19）把现有的 BRV 编码语音路径从 raw UDP socket 迁移到 QUIC 数据报：
+
+- **发送**：`break_voice_encode`（BRV1/BRV2）→ `break_net_quic_datagram_send`，payload 即完整语音帧
+- **接收**：QUIC 数据报回调（`type == BREAK_VOICE_QUIC_MSG_TYPE`）→ `break_voice_receiver_push` → 现有 inbox + jitter buffer + 播放路径不变
+- **收益**：语音流量获得 QUIC 的 AEAD 加密、CHALLENGE/AUTH-v2 认证门控、拥塞控制（不再裸奔在 UDP 上）
+- **序号分层**：QUIC 数据报序号用于传输层去重/重放防护；语音帧序号保留在 BRV 格式内，用于应用层 jitter buffer 排序——两个序号系统各司其职
+- **尺寸**：BRV1 最大 976 字节、BRV2 更小，均在 1200 字节数据报载荷限制内
+
+测试 `test_voice_over_quic_datagram`：认证后客户端发语音帧（BRV1）→ 服务器接收器接受（inbox + pump + jitter buffer），服务器回发 → 客户端接受。
 
 ## 13. NOT delivered（本切片明确不覆盖）
 

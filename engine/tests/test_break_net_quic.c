@@ -4,6 +4,8 @@
  * condition-polled with a deadline (no fixed sleeps). */
 
 #include "network/break_net_quic.h"
+#include "network/break_online_voice.h"
+#include "network/break_online_voice_quic.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -720,6 +722,101 @@ static bool test_datagram_unauthenticated_dropped(void) {
     return true;
 }
 
+/* ---- voice over QUIC datagram --------------------------------------------- */
+
+static bool test_voice_over_quic_datagram(void) {
+    Pair p = make_auth_pair(0u);
+    ASSERT_TRUE(p.server != NULL && p.client != NULL);
+    ASSERT_TRUE(pump_until(&p, cond_handshake, 5000u));
+
+    /* 创建语音接收器（服务器和客户端各一个） */
+    BreakVoiceReceiver *server_rx = NULL;
+    BreakVoiceReceiver *client_rx = NULL;
+    BreakVoiceStreamConfig voice_cfg;
+    memset(&voice_cfg, 0, sizeof(voice_cfg));
+    voice_cfg.sample_rate = 16000u;
+    voice_cfg.channels = 1u;
+    voice_cfg.sample_count = 160u;
+    voice_cfg.jitter_delay_ms = 20u;
+    voice_cfg.jitter_capacity = 8u;
+    voice_cfg.queue_capacity = 16u;
+    ASSERT_TRUE(break_voice_receiver_create(NULL, &voice_cfg, &server_rx) ==
+                BREAK_RUNTIME_OK);
+    ASSERT_TRUE(break_voice_receiver_create(NULL, &voice_cfg, &client_rx) ==
+                BREAK_RUNTIME_OK);
+
+    /* 注册语音接收器到 QUIC 数据报通道 */
+    break_voice_quic_attach_receiver_server(p.server, server_rx);
+    break_voice_quic_attach_receiver(p.client, client_rx);
+
+    /* 完成认证 */
+    bool authed = false;
+    for (u32 i = 0u; i < 2500u && !authed; i++) {
+        break_net_quic_server_step(p.server, 1u);
+        break_net_quic_client_step(p.client, 1u);
+        if (break_net_quic_client_handshake_done(p.client)) {
+            authed = break_net_quic_client_authenticate(p.client, k_test_key_id,
+                                                        k_test_psk);
+        }
+    }
+    ASSERT_TRUE(authed);
+
+    g_want_event = BREAK_NET_QUIC_EVENT_AUTHENTICATED;
+    ASSERT_TRUE(pump_until(&p, cond_server_event_auth, 5000u));
+    BreakNetQuicConn *conn = break_net_quic_server_conn(p.server,
+                                                        p.first_event.conn_id);
+    ASSERT_TRUE(conn != NULL);
+    p.has_first_event = false;
+
+    /* 构造一帧语音并发送（BRV1 编码） */
+    BreakVoiceFrame frame;
+    memset(&frame, 0, sizeof(frame));
+    frame.sequence = 1u;
+    frame.sample_rate = 16000u;
+    frame.channels = 1u;
+    frame.sample_count = 160u;
+    for (u32 i = 0u; i < 160u; i++) {
+        frame.samples[i] = (i16)(i * 100); /* 简单的斜坡信号 */
+    }
+    ASSERT_TRUE(break_voice_quic_send(p.client, &frame, false));
+
+    /* 驱动直到服务器收到语音帧。注意：inbox 接收与 jitter buffer 入队是
+     * 两个阶段——数据报进 inbox 后需要 pump 才会被解码入队。 */
+    BreakVoiceReceiverStats stats;
+    u64 now_ms = 1000u;
+    for (u32 i = 0u; i < 2500u; i++) {
+        break_net_quic_server_step(p.server, 1u);
+        break_net_quic_client_step(p.client, 1u);
+        break_voice_receiver_pump(server_rx, 16u, now_ms);
+        now_ms += 1u;
+        if (break_voice_receiver_stats(server_rx, &stats) == BREAK_RUNTIME_OK &&
+            stats.accepted >= 1u) {
+            break;
+        }
+    }
+    ASSERT_TRUE(stats.accepted >= 1u);
+
+    /* 服务器回发一帧语音给客户端 */
+    frame.sequence = 2u;
+    ASSERT_TRUE(break_voice_quic_send_server(p.server, conn, &frame, false));
+    for (u32 i = 0u; i < 2500u; i++) {
+        break_net_quic_server_step(p.server, 1u);
+        break_net_quic_client_step(p.client, 1u);
+        break_voice_receiver_pump(client_rx, 16u, now_ms);
+        now_ms += 1u;
+        if (break_voice_receiver_stats(client_rx, &stats) == BREAK_RUNTIME_OK &&
+            stats.accepted >= 1u) {
+            break;
+        }
+    }
+    ASSERT_TRUE(stats.accepted >= 1u);
+
+    break_voice_receiver_destroy(server_rx);
+    break_voice_receiver_destroy(client_rx);
+    free_pair(&p);
+    return true;
+}
+
 /* ---- runner --------------------------------------------------------------- */
 
 typedef bool (*TestFn)(void);
@@ -745,6 +842,7 @@ int main(void) {
         {"datagram_echo", test_datagram_echo},
         {"datagram_size_boundary", test_datagram_size_boundary},
         {"datagram_unauthenticated_dropped", test_datagram_unauthenticated_dropped},
+        {"voice_over_quic_datagram", test_voice_over_quic_datagram},
     };
     size_t passed = 0;
     size_t total = sizeof(tests) / sizeof(tests[0]);
