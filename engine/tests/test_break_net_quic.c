@@ -1394,7 +1394,18 @@ typedef struct {
     TestFn fn;
 } TestCase;
 
-int main(void) {
+static bool run_test_case(const TestCase *test) {
+    int before = g_failures;
+    bool ok = test->fn();
+    if (ok && g_failures == before) {
+        printf("PASS %s\n", test->name);
+        return true;
+    }
+    printf("FAIL %s\n", test->name);
+    return false;
+}
+
+int main(int argc, char **argv) {
     static const TestCase tests[] = {
         {"config_validation", test_config_validation},
         {"handshake_echo", test_handshake_echo},
@@ -1420,16 +1431,27 @@ int main(void) {
         {"voice_conference_seeded_uplink_loss", test_voice_conference_seeded_uplink_loss},
         {"voice_conference_seeded_downlink_loss", test_voice_conference_seeded_downlink_loss},
     };
-    size_t passed = 0;
     size_t total = sizeof(tests) / sizeof(tests[0]);
-    for (size_t i = 0u; i < total; i++) {
-        int before = g_failures;
-        bool ok = tests[i].fn();
-        if (ok && g_failures == before) {
-            printf("PASS %s\n", tests[i].name);
+    if (argc == 3 && strcmp(argv[1], "--only") == 0) {
+        for (size_t i = 0u; i < total; ++i) {
+            if (strcmp(argv[2], tests[i].name) == 0) {
+                bool passed = run_test_case(&tests[i]);
+                printf("%u/1 passed\n", passed ? 1u : 0u);
+                return passed ? 0 : 1;
+            }
+        }
+        fprintf(stderr, "unknown test case: %s\n", argv[2]);
+        return 2;
+    }
+    if (argc != 1) {
+        fprintf(stderr, "usage: %s [--only <test-case>]\n", argv[0]);
+        return 2;
+    }
+
+    size_t passed = 0;
+    for (size_t i = 0u; i < total; ++i) {
+        if (run_test_case(&tests[i])) {
             passed++;
-        } else {
-            printf("FAIL %s\n", tests[i].name);
         }
     }
     printf("%zu/%zu passed\n", passed, total);

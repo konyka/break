@@ -168,7 +168,7 @@ typedef enum BreakNetTransportClass {
 9. **下行高丢包**：`test_voice_conference_seeded_downlink_loss` —— 种子 `0xD00D1003`，上行 5%、下行 40%，验证下行实际丢包与双方向抖动
 10. **C++20 同步**：`test_break_net_quic_cpp20` —— 封装层 echo/auth/datagram 全链路验证，并检查 `Conn::Id()`、`Conn::DroppedDatagrams()` 与 C 接口一致
 
-完整套件：`test_break_net_quic` 23/23（传输 8 + 会话 4 + 数据报 4 + 语音 6 + lobby 1），连续重复运行 10/10 通过；C++20 封装测试通过；非图形 CTest 414/414 通过（2026-11-20）。
+完整套件：`test_break_net_quic` 23/23（传输 8 + 会话 4 + 数据报 4 + 语音 6 + lobby 1），连续重复运行 10/10 通过；四个独立弱网 CTest 连续重复运行 10/10 通过；C++20 封装测试通过；非图形 CTest 418/418 通过（2026-11-20，含四个独立弱网场景）。
 
 ## 12.1 语音路径已迁移到数据报通道
 
@@ -218,6 +218,25 @@ typedef enum BreakNetTransportClass {
 | `test_voice_conference_seeded_downlink_loss` | `0xD00D1003` | 5% | 40% |
 
 三个场景均为每客户端上下行各六帧，低于八帧 jitter capacity；代理队列全部排空后才做混音和播放断言。`dropped_by_direction` 用于断言每个配置为至少 25% 的方向确实发生丢包，`jittered_by_direction` 用于断言上下行都出现非零抖动；短样本的实际比例不被当作统计收敛证明。语音发送遇到拥塞时有界重试，BRV 帧内容及其应用序号保持不变；传输数据报序号允许因失败尝试产生间隔。
+
+## 12.6 独立 CTest 场景
+
+`test_break_net_quic` 支持 `--only <test-case>` 精确选择一个内部用例；未知名称或错误参数返回 2，不会静默漏跑。原无参数入口仍执行全部 23 项，保持现有本地工作流不变。
+
+四个弱网场景另外注册为独立 CTest，名称依次为：
+
+- `test_break_net_quic_voice_conference_weak_network`
+- `test_break_net_quic_voice_conference_seeded_weak_network`
+- `test_break_net_quic_voice_conference_seeded_uplink_loss`
+- `test_break_net_quic_voice_conference_seeded_downlink_loss`
+
+它们带 `weak_network` 标签，可与全量入口并行调度；因此非图形 CTest 总数由 414 增至 418，新增四项是有意的独立覆盖，不是测试清单误重复。
+
+```sh
+./build-review-now/test_break_net_quic --only voice_conference_seeded_downlink_loss
+ctest --test-dir build-review-now -L weak_network -j4 --output-on-failure
+ctest --test-dir build-review-now -R '^test_break_net_quic_voice_conference_seeded_uplink_loss$' --output-on-failure
+```
 
 ## 13. NOT delivered（本切片明确不覆盖）
 

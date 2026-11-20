@@ -8214,6 +8214,21 @@ endif()
         set_tests_properties(test_break_net_quic PROPERTIES
             LABELS "headless;network;snowflake;quic" TIMEOUT 120)
 
+        # Independently schedulable weak-net scenarios. The aggregate test
+        # above stays unchanged for local full-suite compatibility.
+        set(_break_quic_weak_cases
+            voice_conference_weak_network
+            voice_conference_seeded_weak_network
+            voice_conference_seeded_uplink_loss
+            voice_conference_seeded_downlink_loss)
+        foreach(case IN LISTS _break_quic_weak_cases)
+            add_test(NAME test_break_net_quic_${case}
+                COMMAND test_break_net_quic --only ${case})
+            set_tests_properties(test_break_net_quic_${case} PROPERTIES
+                LABELS "headless;network;snowflake;quic;weak_network" TIMEOUT 120)
+        endforeach()
+        unset(_break_quic_weak_cases)
+
         add_executable(test_break_net_quic_cpp20 tests/test_break_net_quic_cpp20.cpp)
         set_property(TARGET test_break_net_quic_cpp20 PROPERTY CXX_STANDARD 20)
         set_property(TARGET test_break_net_quic_cpp20 PROPERTY CXX_STANDARD_REQUIRED ON)
