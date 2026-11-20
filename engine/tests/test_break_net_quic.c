@@ -6,6 +6,8 @@
 #include "network/break_net_quic.h"
 #include "network/break_online_voice.h"
 #include "network/break_online_voice_quic.h"
+#include "network/break_online_lobby.h"
+#include "network/break_online_session_quic.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -817,6 +819,69 @@ static bool test_voice_over_quic_datagram(void) {
     return true;
 }
 
+/* ---- lobby over QUIC authenticated session -------------------------------- */
+
+static bool test_lobby_quic_auth_source(void) {
+    Pair p = make_auth_pair(0u);
+    ASSERT_TRUE(p.server != NULL && p.client != NULL);
+    ASSERT_TRUE(pump_until(&p, cond_handshake, 5000u));
+
+    /* 完成认证 */
+    bool authed = false;
+    for (u32 i = 0u; i < 2500u && !authed; i++) {
+        break_net_quic_server_step(p.server, 1u);
+        break_net_quic_client_step(p.client, 1u);
+        if (break_net_quic_client_handshake_done(p.client)) {
+            authed = break_net_quic_client_authenticate(p.client, k_test_key_id,
+                                                        k_test_psk);
+        }
+    }
+    ASSERT_TRUE(authed);
+
+    g_want_event = BREAK_NET_QUIC_EVENT_AUTHENTICATED;
+    ASSERT_TRUE(pump_until(&p, cond_server_event_auth, 5000u));
+    u32 conn_id = p.first_event.conn_id;
+    p.has_first_event = false;
+
+    /* 创建 lobby，用 QUIC 认证源 */
+    BreakLobbyConfig lobby_cfg;
+    memset(&lobby_cfg, 0, sizeof(lobby_cfg));
+    lobby_cfg.max_rooms = 8u;
+    lobby_cfg.max_members_per_room = 4u;
+    BreakLobby *lobby = NULL;
+    ASSERT_TRUE(break_lobby_create(&lobby_cfg, &lobby) == BREAK_RUNTIME_OK);
+
+    BreakOnlineAuthSource auth = break_online_session_quic_auth(p.server);
+
+    /* 认证后的 conn_id 可以创建房间 */
+    BreakLobbyAuth la;
+    la.session = conn_id;
+    la.source = auth;
+    BreakOnlineHandle room;
+    BreakOnlineMemberHandle member;
+    BreakLobbyRoomDesc desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.name = "quic-test-room";
+    desc.region = 1u;
+    desc.mode = 1u;
+    desc.max_members = 4u;
+    desc.listed = true;
+    ASSERT_TRUE(break_lobby_room_create(lobby, &la, &desc, &room, &member) ==
+                BREAK_RUNTIME_OK);
+    /* handle.index 从 0 开始（第一个房间）；验证 handle 有效即可 */
+    ASSERT_TRUE(break_online_handle_valid(room));
+
+    /* 未认证的 conn_id（比如 999）被拒绝 */
+    la.session = 999u;
+    BreakOnlineHandle bad_room;
+    ASSERT_FALSE(break_lobby_room_create(lobby, &la, &desc, &bad_room,
+                                         &member) == BREAK_RUNTIME_OK);
+
+    break_lobby_destroy(lobby);
+    free_pair(&p);
+    return true;
+}
+
 /* ---- runner --------------------------------------------------------------- */
 
 typedef bool (*TestFn)(void);
@@ -843,6 +908,7 @@ int main(void) {
         {"datagram_size_boundary", test_datagram_size_boundary},
         {"datagram_unauthenticated_dropped", test_datagram_unauthenticated_dropped},
         {"voice_over_quic_datagram", test_voice_over_quic_datagram},
+        {"lobby_quic_auth_source", test_lobby_quic_auth_source},
     };
     size_t passed = 0;
     size_t total = sizeof(tests) / sizeof(tests[0]);

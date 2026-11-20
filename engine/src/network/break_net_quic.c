@@ -1122,6 +1122,10 @@ u64 break_net_quic_server_events_overflow(const BreakNetQuicServer *s) {
     return s != NULL ? s->events.overflow : 0u;
 }
 
+bool break_net_quic_conn_is_authenticated(const BreakNetQuicConn *conn) {
+    return conn != NULL && conn->auth_state == 2u;
+}
+
 /* ---- RFC 9221 datagram channel ------------------------------------------ */
 
 void break_net_quic_server_set_datagram_handler(BreakNetQuicServer *s,

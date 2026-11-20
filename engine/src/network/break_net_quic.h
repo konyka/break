@@ -192,6 +192,11 @@ bool break_net_quic_client_poll_event(BreakNetQuicClient *client,
 void break_net_quic_client_close(BreakNetQuicClient *client);
 void break_net_quic_client_destroy(BreakNetQuicClient **client);
 
+/* Authentication state of a server-side connection: true only after the
+ * CHALLENGE/AUTH-v2 handshake verified (EVENT_AUTHENTICATED was posted).
+ * Used by break_online's lobby as its authentication source. */
+bool break_net_quic_conn_is_authenticated(const BreakNetQuicConn *conn);
+
 /* ---- session layer: envelopes + CHALLENGE/AUTH-v2 over frames ----------- */
 
 /* Envelope payloads ride frames: the 18-byte envelope header leaves this

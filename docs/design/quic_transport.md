@@ -267,6 +267,17 @@ cmake -S engine -B build-quic -DBREAK_ENABLE_SNOWFLAKE=ON \
 ctest --test-dir build-quic -R break_net_quic --output-on-failure
 ```
 
+## 10.1 控制面已接入（lobby 认证源）
+
+`break_online_session_quic.{h,c}`（2026-11-20）把 break_online 的 lobby/NAT 认证源桥接到 QUIC 的认证状态：
+
+- `break_online_session_quic_auth(server)` 返回 `BreakOnlineAuthSource`：lobby 的 `session` 参数 = QUIC conn_id，只有 EVENT_AUTHENTICATED 的连接通过认证
+- `BreakOnlineIdentity` 的 session_id/player_id 均填 conn_id
+- 与 TCP 的 BreakSessionManager 接缝不同：这是 per-server 的，不是进程全局
+- 语音（数据报）与控制面（lobby/房间管理）现在共享同一条认证 QUIC 连接——认证一次，两个平面都受益
+
+测试 `test_lobby_quic_auth_source`：认证后的 conn_id 成功创建 lobby 房间；未认证的 conn_id（999）被 fail-closed 拒绝。
+
 ## 11. Evidence index
 
 - Implementation: `engine/src/network/break_net_quic.{h,c}`.
@@ -292,6 +303,11 @@ ctest --test-dir build-quic -R break_net_quic --output-on-failure
   by default; test_break_net_quic 12/12 unchanged plus the retry_requests
   assertion, test_break_net_quic_cpp20 echo+auth green, 5/5 repeated runs,
   full non-graphics suite 413/413 under parallel load.
+- Control-plane evidence (2026-11-20): lobby authentication source bridged
+  from the QUIC verified state (break_online_session_quic);
+  test_lobby_quic_auth_source proves authenticated room create and
+  fail-closed rejection of unknown conn_ids. Full suite 17/17 for
+  break_net_quic, 414/414 overall.
 - Environment evidence: macOS arm64 + OpenSSL 4.0.3 (self-built,
   `-DOPENSSL_ROOT_DIR`), QUICv1 / TLS_AES_256_GCM_SHA384 loopback verified
   via raw OpenSSL 4.x API (2026-11-08 smoke) and via the snow adapter

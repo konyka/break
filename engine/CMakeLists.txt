@@ -561,7 +561,8 @@ if(BREAK_ENABLE_QUIC)
     endif()
     message(STATUS "Break QUIC transport: enabled (snow ngtcp2 adapter)")
     add_library(break_net_quic STATIC src/network/break_net_quic.c
-        src/network/break_replay_window.c src/network/break_online_voice_quic.c)
+        src/network/break_replay_window.c src/network/break_online_voice_quic.c
+        src/network/break_online_session_quic.c)
     set_property(TARGET break_net_quic PROPERTY C_STANDARD 11)
     target_compile_definitions(break_net_quic PRIVATE _POSIX_C_SOURCE=199309L)
     target_include_directories(break_net_quic PUBLIC
