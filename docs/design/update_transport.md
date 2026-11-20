@@ -129,6 +129,6 @@ Mutations that turn it red: the server ignoring Range, the client ignoring the p
 
 未修改基线中三个可执行目标已通过 21/21、44/44、72/72；manifest 与更新 e2e 因宿主直接执行 arm64 工具失败，两个契约因缺少目标感知 `nm` 失败。接入后，manifest 和更新 e2e 的 TOOL/VERIFY/server/client 使用可选 `TARGET_RUNNER`，更新契约的现场链接程序使用 `UPDATE_CONTRACT_RUNNER`，两个契约使用宿主交叉 `nm`。宿主 CMake、shell 和 `nm` 本身不模拟；原生空运行器保持直接执行。
 
-修改 CI 前的干净 Ubuntu 容器七项全部通过：`break_manifest_tool OK`、21/44/72、两个契约以及 `break_update_e2e OK`。这验证真实 arm64 上的签名 manifest、A/B 状态、TLS、Range/断点续传、篡改与无 CA 拒绝；HTTP 72 项还覆盖代理认证、SPKI 钉扎、CRL 和 OCSP stapling。没有放宽或过滤任何用例。
+修改 CI 前的干净 Ubuntu 容器七项全部通过：`break_manifest_tool OK`、21/44/72、两个契约以及 `break_update_e2e OK`。这验证 QEMU 中 arm64 目标二进制的签名 manifest、A/B 状态、TLS、Range/断点续传、篡改与无 CA 拒绝；HTTP 72 项还覆盖代理认证、SPKI 钉扎、CRL 和 OCSP stapling。没有放宽或过滤任何用例。
 
 本结果仍是选定测试的模拟证据，不是全量 arm64 CTest、GPU 或物理设备验证，也不代表生产更新服务、HTTP/2、https 代理、主动 OCSP responder 或发布二进制接入由此交付。
