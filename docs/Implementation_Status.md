@@ -3,7 +3,10 @@
 - **最小场景**：新增 platform config 10 例、null-safety 1 例、fs-write 11 例、size-semantics 3 例、task 16 例和 task-singleton 1 例，共 42 个分项、六个直接可执行目标。均由既有 QEMU 命令执行，无窗口系统或 X11 依赖。
 - **未修改基线与 focused 复验**：原生和交叉均为 6/6、10/1/11/3/16/1；最新 focused CTest 为 0.01/0.14 秒，无 skip。无需修改产品或测试源码。
 - **RED 与精确选择**：旧 workflow 因缺少六个构建目标按预期 RED。加入 `test_(platform_config|platform_null_safety|platform_fs_write|platform_size_semantics|task|task_singleton)$` 后，真实原生选择为既有六十六项加六项，共七十二项；未来派生前缀被拒绝，显式集合断言通过。
-- **验证状态**：原生全量、最终干净容器、独立评审及远端 job 在实际完成后补记。窗口/WSI、移动设备后端、编辑器/渲染、Snowflake/QUIC、GPU 与物理设备仍不在本次覆盖内。
+- **本地验证（2026-11-20 18:46 CST）**：原生全量 455 项零失败，4 个既有平台用例跳过，CTest 157.99 秒。最终干净 Ubuntu 24.04 容器按 workflow 原始步骤完成构建、对象检查与七十二项 CTest，72/72、CTest 118.37 秒；PAL/Job 42 个分项及全部既有分项/契约/e2e 成功，既有 ptrace 设置 skip 恰好一次，无新增跳过。`git diff --check` 通过。
+- **独立评审**：只读评审未发现任何 Critical/Important/Minor 问题，确认精确 72 项选择、局部锚点、直接 QEMU 执行和无 X11 边界。
+- **远端验证**：[CI run 44722611194](https://github.com/konyka/break/actions/runs/44722611194) 的 [arm64 job 136241900447](https://github.com/konyka/break/actions/runs/44722611194/job/136241900447) 在提交 `57bc8dff` 上全部步骤成功。原始日志断言确认精确七十二项、`0 tests failed out of 72`、PAL/Job 10/1/11/3/16/1、全部既有契约/e2e，既有 ptrace 设置 skip 恰好一次；非 root 权限分支实际执行。
+- **验证边界**：窗口/WSI、移动设备后端、编辑器/渲染、Snowflake/QUIC、GPU 与物理设备仍不在本次覆盖内。
 
 ## arm64 profiler/trace 工具与六十六项 CTest（2026-11-20）
 
