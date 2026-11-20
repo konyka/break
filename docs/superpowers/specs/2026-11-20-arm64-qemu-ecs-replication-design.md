@@ -52,7 +52,7 @@ The contract has no binary target. Add these locally end-anchored alternatives
 to the existing CTest selection:
 
 ```text
-test_ecs($|_system|_replication)
+test_ecs(_system|_replication)?$
 test_replication_target_contract$
 ```
 

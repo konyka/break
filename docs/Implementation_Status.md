@@ -1,3 +1,10 @@
+## arm64 ECS/replication 与四十二项 CTest（2026-11-20）
+
+- **最小场景**：新增 ECS 核心 45 例、系统调度 6 例、ECS snapshot/delta/AOI 35 例和 replication 目标结构契约。三个可执行目标使用既有 QEMU emulator；契约仅由宿主 CMake 检查正式源码归属，无目标工具适配。
+- **未修改基线与 focused 复验**：原生和交叉均为 4/4、45/6/35 与 `formal replication target contract passed`，CTest 各 0.04/0.16 秒，无 skip。无需修改产品或测试源码。
+- **RED 与精确选择**：旧 workflow 因缺少三个构建目标按预期 RED。加入 `test_ecs(_system|_replication)?$` 与 `test_replication_target_contract$` 后，真实原生选择为既有三十八项加四项，共四十二项。初版 `test_ecs($|_system|_replication)` 被未来前缀用例抓红，因为 `$` 只约束分组首分支；改为覆盖整个可选后缀的局部锚点后，所有前缀拒绝与 42 项集合断言通过。
+- **验证状态**：原生全量、最终干净容器、独立评审及远端 job 在实际完成后补记。Lua、world streaming、编辑器/渲染、Snowflake loopback/voice、QUIC、GPU 与物理设备仍不在本次覆盖内。
+
 ## arm64 runtime facade/IO/reload 与三十八项 CTest（2026-11-20）
 
 - **最小场景**：新增 runtime facade 18 例、runtime IO 16 例、runtime reload/profiler 34 例，共 68 个分项、三个直接可执行目标。均链接既有测试专用 `runtime_core_test`，由生成的 QEMU 命令执行，无嵌套工具或宿主 driver 修改。

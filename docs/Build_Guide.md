@@ -1414,9 +1414,9 @@ sips -s format png \
 - `METAL_DEVICE_WRAPPER_TYPE=1 ./engine_demo --frames 3` 开 Metal validation
   取证（encoder-state 类缺陷的唯一可靠观测，计划 C Task 11 方法学）。
 
-### 1.5 Linux arm64 交叉构建与 QEMU 服务/安全/网络/运行时测试
+### 1.5 Linux arm64 交叉构建与 QEMU 服务/安全/网络/运行时/ECS 测试
 
-`engine/toolchain-aarch64-linux.cmake` 用 `aarch64-linux-gnu-` 工具链交叉编译到 Linux arm64，让 `__aarch64__` 分支得到类型检查与链接验证。CI 的 `lane-cross-aarch64-linux` 安装 Ubuntu `qemu-user`，配置 `CMAKE_CROSSCOMPILING_EMULATOR`，通过一次 CTest 选择执行崩溃、HTTP、在线更新、密码学、完整性、权威、核心网络与 runtime_core 共三十八项测试；这不代表跑过全量 arm64 `ctest`，也不包含需要额外依赖门控的 Snowflake/QUIC 测试。
+`engine/toolchain-aarch64-linux.cmake` 用 `aarch64-linux-gnu-` 工具链交叉编译到 Linux arm64，让 `__aarch64__` 分支得到类型检查与链接验证。CI 的 `lane-cross-aarch64-linux` 安装 Ubuntu `qemu-user`，配置 `CMAKE_CROSSCOMPILING_EMULATOR`，通过一次 CTest 选择执行崩溃、HTTP、在线更新、密码学、完整性、权威、核心网络、运行时与 ECS 共四十二项测试；这不代表跑过全量 arm64 `ctest`，也不包含需要额外依赖门控的 Snowflake/QUIC 测试。
 
 完整 `engine` 在 Linux 上仍需要 Wayland、xkbcommon、OpenGL/EGL 与默认启用的 OpenSSL；`ENGINE_RHI_BACKEND=headless` 不是 Linux 的合法选择，所以这里显式选择 `opengl`，图形路径只有编译/链接证据。Ubuntu 24.04 的参考依赖布局是 multiarch：主机包提供 `wayland-scanner` 和协议 XML，arm64 包提供目标头文件与库。完整的 ports 源配置和安装命令见 `.github/workflows/ci.yml` 的 **Install the host and arm64 build dependencies** 步骤。
 
@@ -1430,7 +1430,7 @@ cmake -S engine -B build-arm64 -G Ninja \
     --toolchain "$PWD/engine/toolchain-aarch64-linux.cmake" \
     -DCMAKE_BUILD_TYPE=Debug -DENGINE_RHI_BACKEND=opengl \
     '-DCMAKE_CROSSCOMPILING_EMULATOR=/usr/bin/qemu-aarch64;-L;/'
-cmake --build build-arm64 --parallel --target break_crash engine test_break_crash test_break_crash_symbolize test_break_crash_cluster test_break_crash_upload_http break_crash_server break_crash_report break_crash_e2e test_break_update test_break_update_client test_break_http break_manifest_tool break_manifest_verify break_update_server break_update_e2e test_break_crypto test_break_integrity test_break_authority break_keygen test_packet test_network test_break_online_lobby test_break_online_nat test_break_online_voice test_break_voice_mixer test_break_replay_window test_break_msg_rate test_break_online_aspect test_break_online_aspect_replication test_break_replication_fragment test_core_app_network core_app test_runtime_core test_runtime_facade test_runtime_io test_runtime_reload
+cmake --build build-arm64 --parallel --target break_crash engine test_break_crash test_break_crash_symbolize test_break_crash_cluster test_break_crash_upload_http break_crash_server break_crash_report break_crash_e2e test_break_update test_break_update_client test_break_http break_manifest_tool break_manifest_verify break_update_server break_update_e2e test_break_crypto test_break_integrity test_break_authority break_keygen test_packet test_network test_break_online_lobby test_break_online_nat test_break_online_voice test_break_voice_mixer test_break_replay_window test_break_msg_rate test_break_online_aspect test_break_online_aspect_replication test_break_replication_fragment test_core_app_network core_app test_runtime_core test_runtime_facade test_runtime_io test_runtime_reload test_ecs test_ecs_system test_ecs_replication
 qemu-aarch64 --version
 BREAK_TEST_NM=aarch64-linux-gnu-nm \
 BREAK_TEST_READELF=aarch64-linux-gnu-readelf \
@@ -1438,10 +1438,10 @@ BREAK_TEST_STRIP=aarch64-linux-gnu-strip \
 BREAK_TEST_RUNNER='qemu-aarch64 -L /' \
 BREAK_TEST_QEMU_USER=1 \
 timeout 300 ctest --test-dir build-arm64 --verbose --no-tests=error \
-  -R '^(test_break_crash|test_break_update|test_break_http|test_break_manifest_tool|test_break_crypto|test_break_keygen|test_break_integrity|test_break_authority|test_packet|test_network|test_break_online_lobby|test_break_online_nat|test_break_online_voice|test_break_voice_mixer|test_break_replay_window|test_break_msg_rate|test_break_online_aspect|test_break_replication_fragment|test_core_app_network($|_offline)|test_runtime_core($|_target_contract)|test_runtime_(facade|io|reload)$)'
+  -R '^(test_break_crash|test_break_update|test_break_http|test_break_manifest_tool|test_break_crypto|test_break_keygen|test_break_integrity|test_break_authority|test_packet|test_network|test_break_online_lobby|test_break_online_nat|test_break_online_voice|test_break_voice_mixer|test_break_replay_window|test_break_msg_rate|test_break_online_aspect|test_break_replication_fragment|test_core_app_network($|_offline)|test_runtime_core($|_target_contract)|test_runtime_(facade|io|reload)$|test_ecs(_system|_replication)?$|test_replication_target_contract$)'
 ```
 
-选择当前恰好三十八项：既有三十五项，加 `test_runtime_facade`（18 例）、`test_runtime_io`（16 例）和 `test_runtime_reload`（34 例）。三者均为直接可执行目标，由既有 emulator 启动；`test_runtime_(facade|io|reload)$` 不选择其他测试。runtime_core 单元/契约仍由 `test_runtime_core($|_target_contract)` 精确选择，契约保持宿主 CMake 源码结构检查。core_app offline 继续执行确定性 trace 和无网络符号扫描，无 skip 77。`--no-tests=error` 防止空选择通过，超时和失败不重试、不屏蔽。
+选择当前恰好四十二项：既有三十八项，加 `test_ecs`（45 例）、`test_ecs_system`（6 例）、`test_ecs_replication`（35 例）和 `test_replication_target_contract`。三个可执行目标由既有 emulator 启动；契约仅由宿主 CMake 检查正式目标源码归属。`test_ecs(_system|_replication)?$` 与 `test_replication_target_contract$` 的局部结尾锚点阻止未来同前缀测试自动混入。runtime_core 与 core_app 的既有选择不变。`--no-tests=error` 防止空选择通过，超时和失败不重试、不屏蔽。
 
 `-L /` 让模拟器使用 multiarch arm64 根文件系统。CMake 自动给可执行目标测试加 QEMU；宿主 CMake 驱动的归档契约接收 `CMAKE_NM`，其现场链接程序与 e2e 的 server/report/client 使用目标运行器。符号化 fixture 使用 `BREAK_TEST_RUNNER`；manifest、更新 e2e 和 keygen 的目标工具使用 `TARGET_RUNNER`，包括 keygen 的 RLIMIT_FSIZE 与并发 shell 启动。宿主 `nm`、CMake 和 shell 不模拟，shell 前缀逐元素转义。未配置交叉运行器时，原生测试仍直接执行。
 

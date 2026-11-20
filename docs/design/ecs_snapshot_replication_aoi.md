@@ -162,3 +162,10 @@ Distributed Cell services, cross-World persistent NetEntityId, client prediction
 ## Validation
 
 Focused validation uses `test_ecs_replication`, `test_break_replication_fragment`, and, when Snowflake is enabled, `test_break_replication`. Earlier fragment and Snowflake replication focused evidence was **7/7** in normal, ASan, and TSan lanes, with independent fuzz smoke evidence of **5/5**. The Task 7 closeout record (2026-10-23, clean `build-sdd-t7`/`build-sdd-t7-asan`/`build-sdd-t7-tsan` trees, `BREAK_ENABLE_SNOWFLAKE=ON`): the focused runtime/ecs/net lane passes **16/16** in each of the normal, ASan+UBSan, and TSan trees; all five fuzz executables are explicitly built and `ctest -L fuzz` passes **5/5**; the full non-graphics/non-fuzz CTest run has 178 selected tests with **177 passed, 0 failed, and 1 platform skip** (`test_d3d12_dependency_gate`, Windows-only lane) out of 187 registered tests. `test_break_replication_fragment` passed in every lane in this record; it carries a pre-existing intermittent flake note parked outside this plan's commits. The historical `test_myui_text_layout` Hebrew boundary failure did not reproduce (the test passed in the full run); `test_vulkan` is graphics-labeled and was not exercised in this host run. Documentation changes are checked with `git diff --check`.
+
+
+## 补充（2026-11-20）：arm64 ECS/replication 验证
+
+arm64 lane 新增 `test_ecs`（45 例）、`test_ecs_system`（6 例）、`test_ecs_replication`（35 例）与 `test_replication_target_contract`，统一选择达到四十二项。原生与交叉 focused 均为 4/4，快照/增量/AOI 和事务回滚用例直接经 QEMU 执行，目标契约保持宿主 CMake 源码结构检查。
+
+选择使用 `test_ecs(_system|_replication)?$` 与 `test_replication_target_contract$`，局部结尾锚点覆盖整个名称，防止未来派生前缀自动混入。本项证据不外推为 world streaming、网络传输或全量 arm64 覆盖。
