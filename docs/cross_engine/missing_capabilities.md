@@ -396,3 +396,6 @@
 
 
 - **诊断/远程调试验证追加**：2026-11-20 arm64 lane 新增 profiler 28 例、clock offset 8 例、trace core 15 例、trace merge 5 例及真实 trace_merge 工具契约，统一选择达到六十六项。`TRACE_MERGE_RUNNER` 仅启动目标工具，空参数 shell 路径也实际通过；实时远程会话、生产授权和其他 arm64 子系统仍需独立覆盖。
+
+
+- **PAL/线程与任务验证追加**：2026-11-20 arm64 lane 新增 platform config 10 例、null-safety 1 例、fs-write 11 例、size-semantics 3 例、task 16 例和 task-singleton 1 例，统一选择达到七十二项。未修改 QEMU 树六项全通过，无新增 skip 或 X11 内容；窗口/WSI、移动设备后端和其他 arm64 子系统仍需独立覆盖。

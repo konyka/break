@@ -1,3 +1,10 @@
+## arm64 PAL/Job System 与七十二项 CTest（2026-11-20）
+
+- **最小场景**：新增 platform config 10 例、null-safety 1 例、fs-write 11 例、size-semantics 3 例、task 16 例和 task-singleton 1 例，共 42 个分项、六个直接可执行目标。均由既有 QEMU 命令执行，无窗口系统或 X11 依赖。
+- **未修改基线与 focused 复验**：原生和交叉均为 6/6、10/1/11/3/16/1；最新 focused CTest 为 0.01/0.14 秒，无 skip。无需修改产品或测试源码。
+- **RED 与精确选择**：旧 workflow 因缺少六个构建目标按预期 RED。加入 `test_(platform_config|platform_null_safety|platform_fs_write|platform_size_semantics|task|task_singleton)$` 后，真实原生选择为既有六十六项加六项，共七十二项；未来派生前缀被拒绝，显式集合断言通过。
+- **验证状态**：原生全量、最终干净容器、独立评审及远端 job 在实际完成后补记。窗口/WSI、移动设备后端、编辑器/渲染、Snowflake/QUIC、GPU 与物理设备仍不在本次覆盖内。
+
 ## arm64 profiler/trace 工具与六十六项 CTest（2026-11-20）
 
 - **最小场景**：新增 profiler 28 例、clock offset 8 例、trace core 15 例、trace merge 5 例和真实 trace_merge 工具契约。前四项由既有 QEMU 命令直接执行。

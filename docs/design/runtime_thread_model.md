@@ -318,3 +318,10 @@ Slice A 的 target 边界与 Slice B/C/D 的首批基元已交付（2026-10-22/2
 - 类别固定为 6 个：`cpu`、`frame`、`gpu`、`meta`、`runtime`、`runtime.flow`，分别对应 `BREAK_TRACE_CAT_*` 常量；导出代码不再内联类别字面量。
 - `profiler_export_chrome_trace` 和 `profiler_export_chrome_trace_ring` 写完整文档，结尾为 `],"otherData":{"schema":"break.trace","schema_version":1}}`。`otherData` 属于 Chrome Trace Event Format，查看器照常加载。
 - `break_runtime_profiler_export_flows` 只输出要拼进调用方 `traceEvents` 数组的事件片段，所以不带 marker，由外层文档提供。
+
+
+## 补充（2026-11-20）：arm64 PAL 与任务系统验证
+
+arm64 lane 新增 `test_task`（16 例）和 `test_task_singleton`（1 例），并加入 platform config/null-safety/fs-write/size-semantics 四项 PAL 测试，统一选择达到七十二项。原生与交叉 focused 均为 6/6，任务/单例汇总 16/1，PAL 汇总 10/1/11/3，无新增 skip。
+
+覆盖任务提交、优先级、依赖、容量、worker 行为和进程级所有权，以及配置、空平台查询、原子写入和尺寸语义。这些是直接 QEMU 单元测试，不涉及窗口后端、X11、WSI 或物理设备。
