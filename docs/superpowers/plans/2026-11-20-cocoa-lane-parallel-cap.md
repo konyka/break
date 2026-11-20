@@ -9,4 +9,4 @@
 - [x] **Step 1:** `build-core-app-net/cocoa_parallel_contract.py` on the old workflow; expected FAIL at the bare `--parallel` in the `dxx_break` build.
 - [x] **Step 2:** Replace both bare `--parallel` flags in that lane with `--parallel "$(sysctl -n hw.ncpu)"`.
 - [x] **Step 3:** Re-run the contract; expected `cocoa parallel contract passed: 2 build steps capped at hw.ncpu`.
-- [ ] **Step 4:** Push; confirm `macOS Cocoa + MoltenVK (Clang)` succeeds on the exact HEAD and that its log shows a numeric `-j`; record the URL.
+- [x] **Step 4:** Push; confirm `macOS Cocoa + MoltenVK (Clang)` succeeds on the exact HEAD; record the URL. (make does not echo the `-j` value, so the log shows the capped command lines, not the number.)

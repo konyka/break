@@ -19,9 +19,11 @@ This slice adds exactly those twelve for a 164-test selection.
 
 ## Existing Behavior and Baseline
 
-The kernel executables link only `break_kernel`; the flow executables link only
-`break_flow`. `test_break_kernel_level` writes a sidecar file under the
-per-process `test_tmp()` directory. None fork or use devices.
+The kernel executables link `break_kernel` (which itself depends on
+`break_ecs_replication`); the flow executables link `break_flow`; both add
+`pthread m` on Linux. `test_break_kernel_level` writes one sidecar file next to
+its per-process `test_tmp()` path and removes it. None fork, start threads, or
+use devices.
 
 | Test | Cases | Test | Cases |
 |---|---|---|---|
@@ -63,4 +65,6 @@ test_break_kernel_(actor|items|weapons|actions|move|level|area|flow|target_contr
 A selected 164-test suite, not full arm64 CTest. Three kernel executables
 (actions, move, level) have one case each and `test_break_kernel_area` has
 two, so their coverage is thin. The target contract
-checks build wiring, not arm64 behavior.
+checks build wiring, not arm64 behavior. `test_core_app_lifecycle_script_flow`
+and `test_editor_flow` are the only other registry names containing kernel or
+flow; they belong to the core_app and editor families and stay out.

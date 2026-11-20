@@ -1,9 +1,9 @@
 ## arm64 kernel/flow 与一百六十四项 CTest（2026-11-20）
 
-- **最小场景**：新增 `engine/CMakeLists.txt:4944-4981` 注册的十二项：八个只链接 `break_kernel` 的可执行目标（actor 6、items 5、weapons 16、actions 1、move 1、level 1、area 2、flow 4）、宿主 `cmake -P` 的 kernel target 契约，以及三个只链接 `break_flow` 的可执行目标（graph 8、serial 6、runtime 12），十一个可执行目标共 62 个分项。`test_break_kernel_level` 只在 per-process 的 `test_tmp()` 目录写侧车文件；均不 fork、不用设备。
+- **最小场景**：新增 `engine/CMakeLists.txt:4944-4981` 注册的十二项：八个直接链接 `break_kernel`（其依赖 `break_ecs_replication`）的可执行目标（actor 6、items 5、weapons 16、actions 1、move 1、level 1、area 2、flow 4）、宿主 `cmake -P` 的 kernel target 契约，以及三个只链接 `break_flow` 的可执行目标（graph 8、serial 6、runtime 12），十一个可执行目标共 62 个分项。`test_break_kernel_level` 只在 per-process 的 `test_tmp()` 路径旁写一个侧车文件并在结束时删除；均不 fork、不起线程、不用设备。
 - **未修改基线与 focused 复验**：原生分项数一致；改动前干净容器交叉 12/12、CTest 0.73 秒。改动后原生以完整新 `-R` 复跑 12/12，无 skip。无需修改产品或测试源码。
 - **RED 与精确选择**：旧 workflow 因缺少十一个构建目标按预期 RED。新增独立的 `test_break_kernel_(actor|items|weapons|actions|move|level|area|flow|target_contract)$|test_break_flow_(graph|serial|runtime)$`，未改动既有表达式；真实选择为既有一百五十二项加十二项，共一百六十四项，派生名称被拒绝，既有 `test_break_kernel_lua` 仍被选中。lane 时间预算契约改为要求选择不少于一百五十二项，以便后续扩选不必改它。
-- **覆盖缺口**：kernel 的 actions、move、level 各只有一个用例，area 只有两个；target 契约只检查构建接线，不代表 arm64 行为。
+- **覆盖缺口**：kernel 的 actions、move、level 各只有一个用例，area 只有两个；target 契约只检查构建接线，不代表 arm64 行为。名称含 kernel/flow 但未选的只有 `test_core_app_lifecycle_script_flow` 与 `test_editor_flow`，分别属于 core_app 与编辑器测试族。
 - **验证状态**：原生全量、最终干净容器、独立评审及远端 job 在实际完成后补记。
 
 ## macOS Cocoa lane 构建并发上限（2026-11-20）
@@ -11,7 +11,7 @@
 - **问题**：`macOS Cocoa + MoltenVK (Clang)` 在最近 39 次 CI 中失败 4 次。其中 3 次（`7ae28b5b`、`e1944152`、`753765ff`）都是 `clang: error: unable to execute command: posix_spawn failed: Resource temporarily unavailable`，随后 `make[2]: *** wait: No child processes.  Stop.`。该 lane 用默认 Unix Makefiles 生成器，两处 `cmake --build ... --parallel` 不带数字，CMake 传给 make 的是不限并发的 `-j`，完整构建 909 个目标文件时耗尽 runner 的进程上限。第 4 次（`60aeae9d`）是 `test_fork_deadline` 的 `snprintf` 声明问题，已另行修复。
 - **改动**：该 lane 两处构建改为 `--parallel "$(sysctl -n hw.ncpu)"`。未切换到 Ninja（会改变该 lane 一直验证的构建图并需额外安装）；也未用 `CMAKE_BUILD_PARALLEL_LEVEL`（命令行上的裸 `--parallel` 会覆盖它）。其余用 Makefiles 生成器的 lane 都在 Linux 上，未出现此失败，记录为候选，本次不改。
 - **TDD**：契约要求该 lane 恰有两处 `cmake --build`、都不含裸 `--parallel`、都使用 `--parallel "$(sysctl -n hw.ncpu)"`、且仍未改用 Ninja；旧 workflow 在 `dxx_break` 那一处 RED，改动后 GREEN。
-- **验证状态**：远端 job 在实际完成后补记。本地无 macOS，无法复现资源耗尽本身。
+- **远端验证**：[CI run 44751783061](https://github.com/konyka/break/actions/runs/44751783061) 在提交 `a26634bc` 上整体成功（含 Windows Clang ASan 等全部 job），其中 [macOS Cocoa + MoltenVK job 136341206800](https://github.com/konyka/break/actions/runs/44751783061/job/136341206800) 成功：日志里两处构建命令均为 `--parallel "$(sysctl -n hw.ncpu)"`，编译 1367 个目标文件，无 `posix_spawn` 失败、无 `##[error]`。make 不回显实际的 `-j` 值，因此日志只能证明命令行已限定并发。一次通过不能证明偶发失败已消除（此前失败率约 3/39），需在后续运行中继续观察。本地无 macOS，无法复现资源耗尽本身。
 
 ## fork 子进程截止等待（2026-11-20）
 
