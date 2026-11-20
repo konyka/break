@@ -215,7 +215,7 @@ if(NOT link_rc EQUAL 0)
         "minimal link test failed to build (libbreak_crypto.a + -lcrypto only): ${link_err}")
 endif()
 execute_process(
-    COMMAND "${link_exe}"
+    COMMAND ${CRYPTO_CONTRACT_RUNNER} "${link_exe}"
     RESULT_VARIABLE run_rc
     OUTPUT_VARIABLE run_out
     ERROR_VARIABLE run_err)

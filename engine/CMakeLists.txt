@@ -2838,6 +2838,7 @@ if(BREAK_ENABLE_CRYPTO AND TARGET break_crypto)
         add_test(NAME test_break_keygen
             COMMAND ${CMAKE_COMMAND}
                 -DKEYGEN=$<TARGET_FILE:break_keygen>
+                "-DTARGET_RUNNER=${CMAKE_CROSSCOMPILING_EMULATOR}"
                 -DWORK=${CMAKE_CURRENT_BINARY_DIR}/break-keygen
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_keygen.cmake)
         set_tests_properties(test_break_keygen PROPERTIES LABELS "headless;security")
@@ -7077,6 +7078,8 @@ endif()
                 -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
                 -DCRYPTO_CONTRACT_ARCHIVE=$<TARGET_FILE:break_crypto>
                 -DCRYPTO_CONTRACT_CC=${CMAKE_C_COMPILER}
+                -DCRYPTO_CONTRACT_NM=${CMAKE_NM}
+                "-DCRYPTO_CONTRACT_RUNNER=${CMAKE_CROSSCOMPILING_EMULATOR}"
                 -DCRYPTO_CONTRACT_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/src
                 -DCRYPTO_CONTRACT_WORK=${CMAKE_CURRENT_BINARY_DIR}/crypto_contract_tmp
                 -DCRYPTO_CONTRACT_SAN=${BREAK_CRYPTO_CONTRACT_SAN}
@@ -8305,6 +8308,7 @@ endif()
         add_test(NAME test_break_authority_target_contract
             COMMAND ${CMAKE_COMMAND}
                 -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+                -DNM=${CMAKE_NM}
                 -DAUTH_ARCHIVE=$<TARGET_FILE:break_authority>
                 -DINTEG_ARCHIVE=$<TARGET_FILE:break_integrity>
                 -DSRC_DIR=${CMAKE_CURRENT_SOURCE_DIR}/src

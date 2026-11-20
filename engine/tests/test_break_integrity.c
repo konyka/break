@@ -108,6 +108,13 @@ TEST(a_traced_process_reports_the_debugger_bit) {
     {
         int status = 0;
         ASSERT_EQ(waitpid(pid, &status, 0), pid);     /* child stopped itself */
+        if (WIFEXITED(status) && WEXITSTATUS(status) == 90) {
+            const char *qemu_user = getenv("BREAK_TEST_QEMU_USER");
+            if (qemu_user != NULL && strcmp(qemu_user, "1") == 0) {
+                printf("skipped (QEMU user has no PTRACE_TRACEME) ");
+                return;
+            }
+        }
         ASSERT_TRUE(WIFSTOPPED(status));
         ASSERT_EQ(ptrace(PTRACE_CONT, pid, NULL, NULL), 0);
         ASSERT_EQ(waitpid(pid, &status, 0), pid);

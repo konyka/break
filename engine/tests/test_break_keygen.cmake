@@ -12,9 +12,14 @@ endif()
 file(REMOVE_RECURSE "${WORK}")
 file(MAKE_DIRECTORY "${WORK}")
 set(RING "${WORK}/ring.txt")
+set(target_runner_text "")
+foreach(target_runner_arg IN LISTS TARGET_RUNNER)
+    string(REPLACE "'" "'\"'\"'" quoted_target_runner_arg "${target_runner_arg}")
+    string(APPEND target_runner_text "'${quoted_target_runner_arg}' ")
+endforeach()
 
 function(keygen expect_ok)
-    execute_process(COMMAND "${KEYGEN}" ${ARGN}
+    execute_process(COMMAND ${TARGET_RUNNER} "${KEYGEN}" ${ARGN}
                     RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err)
     if(expect_ok AND NOT rc EQUAL 0)
         message(FATAL_ERROR "break_keygen ${ARGN} failed (${rc}): ${out}${err}")
@@ -177,7 +182,7 @@ if(UNIX)
         math(EXPR ring7_size "${probe_size} - 20")
         write_ring("${RING7}" ${ring7_size})
         file(READ "${RING7}" r7_before)
-        execute_process(COMMAND sh -c "trap '' XFSZ; ulimit -f 1; exec '${KEYGEN}' '${RING7}' 6465766963653031 '${WORK}/f1.psk'"
+        execute_process(COMMAND sh -c "trap '' XFSZ; ulimit -f 1; exec ${target_runner_text}'${KEYGEN}' '${RING7}' 6465766963653031 '${WORK}/f1.psk'"
                         RESULT_VARIABLE rc7 OUTPUT_QUIET ERROR_QUIET)
         if(rc7 EQUAL 0)
             message(FATAL_ERROR "append beyond the file size limit (${probe_size} bytes, ring ${ring7_size}) unexpectedly succeeded")
@@ -194,7 +199,7 @@ if(UNIX)
     # concurrent runs never exceed the ring size or tear a line
     set(RING8 "${WORK}/ring8.txt")
     execute_process(COMMAND sh -c
-        "i=0; while [ $i -lt 12 ]; do id=$(printf '64657669636530%02x' $i); '${KEYGEN}' '${RING8}' $id '${WORK}/p'$i'.psk' >/dev/null 2>&1 & i=$((i+1)); done; wait"
+        "i=0; while [ $i -lt 12 ]; do id=$(printf '64657669636530%02x' $i); ${target_runner_text}'${KEYGEN}' '${RING8}' $id '${WORK}/p'$i'.psk' >/dev/null 2>&1 & i=$((i+1)); done; wait"
         RESULT_VARIABLE rc8)
     file(STRINGS "${RING8}" lines8)
     list(LENGTH lines8 n8)
