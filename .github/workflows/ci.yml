@@ -152,11 +152,11 @@ jobs:
           name: evidence-receipt-headless-linux-gcc-asan
           path: receipt.json
 
-  # Cross-compile the architecture-specific code, then run the complete crash
-  # capture/symbolization/cluster/upload family with QEMU user emulation. The
-  # native suite remains the broader regression net; this is not a full ctest.
+  # Cross-compile the architecture-specific code, then run the crash, HTTP and
+  # online-update families with QEMU user emulation. The native suite remains
+  # the broader regression net; this selected CTest set is not a full run.
   lane-cross-aarch64-linux:
-    name: Linux arm64 cross-build + QEMU crash tests (GCC)
+    name: Linux arm64 cross-build + QEMU crash/update tests (GCC)
     runs-on: ubuntu-24.04
     defaults:
       run:
@@ -209,7 +209,7 @@ jobs:
       # libraries so a type error anywhere in them fails here too.
       - name: Build the arm64 targets
         run: |
-          cmake --build build-arm64 --parallel --target break_crash engine test_break_crash test_break_crash_symbolize test_break_crash_cluster test_break_crash_upload_http break_crash_server break_crash_report break_crash_e2e
+          cmake --build build-arm64 --parallel --target break_crash engine test_break_crash test_break_crash_symbolize test_break_crash_cluster test_break_crash_upload_http break_crash_server break_crash_report break_crash_e2e test_break_update test_break_update_client test_break_http break_manifest_tool break_manifest_verify break_update_server break_update_e2e
 
       - name: Confirm the objects really are arm64
         run: |
@@ -217,7 +217,7 @@ jobs:
           aarch64-linux-gnu-objdump -f build-arm64/CMakeFiles/break_crash.dir/src/crash/break_crash.c.o \
             | tee /dev/stderr | grep -q 'aarch64'
 
-      - name: Run the crash tests under QEMU
+      - name: Run the crash and update tests under QEMU
         run: |
           qemu-aarch64 --version
           BREAK_TEST_NM=aarch64-linux-gnu-nm \
@@ -225,7 +225,7 @@ jobs:
           BREAK_TEST_STRIP=aarch64-linux-gnu-strip \
           BREAK_TEST_RUNNER='qemu-aarch64 -L /' \
           timeout 300 ctest --test-dir build-arm64 --verbose --no-tests=error \
-            -R '^test_break_crash'
+            -R '^(test_break_crash|test_break_update|test_break_http|test_break_manifest_tool)'
 
   lane-libfuzzer-linux-clang:
     name: Linux + Clang-18 (libFuzzer, coverage-guided)

@@ -1414,9 +1414,9 @@ sips -s format png \
 - `METAL_DEVICE_WRAPPER_TYPE=1 ./engine_demo --frames 3` 开 Metal validation
   取证（encoder-state 类缺陷的唯一可靠观测，计划 C Task 11 方法学）。
 
-### 1.5 Linux arm64 交叉构建与 QEMU 崩溃测试
+### 1.5 Linux arm64 交叉构建与 QEMU 崩溃/更新测试
 
-`engine/toolchain-aarch64-linux.cmake` 用 `aarch64-linux-gnu-` 工具链交叉编译到 Linux arm64，让 `__aarch64__` 分支得到类型检查与链接验证。CI 的 `lane-cross-aarch64-linux` 安装 Ubuntu `qemu-user`，配置 `CMAKE_CROSSCOMPILING_EMULATOR`，通过一次 CTest 选择执行完整的六个 `crash` 标签测试及相关的服务端归档契约，共七项。覆盖真实 SIGSEGV/SIGABRT、AArch64 ELF、非 PIE/PIE 调用链、聚类、TLS 上传、重试、导出符号与端到端收集报告；这不代表跑过全量 arm64 `ctest`。
+`engine/toolchain-aarch64-linux.cmake` 用 `aarch64-linux-gnu-` 工具链交叉编译到 Linux arm64，让 `__aarch64__` 分支得到类型检查与链接验证。CI 的 `lane-cross-aarch64-linux` 安装 Ubuntu `qemu-user`，配置 `CMAKE_CROSSCOMPILING_EMULATOR`，通过一次 CTest 选择执行崩溃、HTTP 和在线更新共十四项测试。除既有崩溃覆盖外，新增更新核心 21 例、客户端 44 例、HTTP 72 例、manifest 签名工具、两个更新/HTTP 归档契约及真实 TLS/Range 更新 e2e；这不代表跑过全量 arm64 `ctest`。
 
 完整 `engine` 在 Linux 上仍需要 Wayland、xkbcommon、OpenGL/EGL 与默认启用的 OpenSSL；`ENGINE_RHI_BACKEND=headless` 不是 Linux 的合法选择，所以这里显式选择 `opengl`，图形路径只有编译/链接证据。Ubuntu 24.04 的参考依赖布局是 multiarch：主机包提供 `wayland-scanner` 和协议 XML，arm64 包提供目标头文件与库。完整的 ports 源配置和安装命令见 `.github/workflows/ci.yml` 的 **Install the host and arm64 build dependencies** 步骤。
 
@@ -1430,19 +1430,19 @@ cmake -S engine -B build-arm64 -G Ninja \
     --toolchain "$PWD/engine/toolchain-aarch64-linux.cmake" \
     -DCMAKE_BUILD_TYPE=Debug -DENGINE_RHI_BACKEND=opengl \
     '-DCMAKE_CROSSCOMPILING_EMULATOR=/usr/bin/qemu-aarch64;-L;/'
-cmake --build build-arm64 --parallel --target break_crash engine test_break_crash test_break_crash_symbolize test_break_crash_cluster test_break_crash_upload_http break_crash_server break_crash_report break_crash_e2e
+cmake --build build-arm64 --parallel --target break_crash engine test_break_crash test_break_crash_symbolize test_break_crash_cluster test_break_crash_upload_http break_crash_server break_crash_report break_crash_e2e test_break_update test_break_update_client test_break_http break_manifest_tool break_manifest_verify break_update_server break_update_e2e
 qemu-aarch64 --version
 BREAK_TEST_NM=aarch64-linux-gnu-nm \
 BREAK_TEST_READELF=aarch64-linux-gnu-readelf \
 BREAK_TEST_STRIP=aarch64-linux-gnu-strip \
 BREAK_TEST_RUNNER='qemu-aarch64 -L /' \
 timeout 300 ctest --test-dir build-arm64 --verbose --no-tests=error \
-  -R '^test_break_crash'
+  -R '^(test_break_crash|test_break_update|test_break_http|test_break_manifest_tool)'
 ```
 
-选择必须包含七项：`test_break_crash`、`test_break_crash_target_contract`、`test_break_crash_symbolize`、`test_break_crash_cluster`、`test_break_crash_upload_http`、`test_break_crash_server_target_contract`、`test_break_crash_e2e`。`--no-tests=error` 防止空选择通过，verbose 保留 37/45/26/8 个用例汇总、两项契约及 e2e 状态；超时和失败不重试、不屏蔽。
+选择当前恰好十四项：既有七项崩溃测试，加 `test_break_update`、`test_break_update_client`、`test_break_update_target_contract`、`test_break_update_e2e`、`test_break_http`、`test_break_http_target_contract`、`test_break_manifest_tool`。`--no-tests=error` 防止空选择通过，verbose 保留 37/45/26/8 与 21/44/72 用例汇总、契约、manifest 和 e2e 状态；超时和失败不重试、不屏蔽。
 
-`-L /` 让模拟器使用 multiarch arm64 根文件系统。CMake 自动给可执行目标测试加 QEMU；两个归档契约及 e2e 是宿主 CMake 驱动，分别接收 `CMAKE_NM` 和同一运行器列表。`aarch64-linux-gnu-nm/readelf/strip` 是读取 AArch64 文件的宿主工具，不由 QEMU 执行；契约现场链接的最小程序和 e2e 的 server/report/client 使用目标运行器，符号化测试新编译的崩溃 fixture 仍单独通过 `BREAK_TEST_RUNNER` 启动。e2e 的 shell 启动逐个转义运行器参数，含空格或单引号的自定义路径不会被拆分。未配置交叉运行器时，原生测试仍直接执行。
+`-L /` 让模拟器使用 multiarch arm64 根文件系统。CMake 自动给可执行目标测试加 QEMU；宿主 CMake 驱动的归档契约接收 `CMAKE_NM`，其现场链接程序与 e2e 的 server/report/client 使用目标运行器。符号化测试新编译的崩溃 fixture 单独通过 `BREAK_TEST_RUNNER`；manifest 和更新 e2e 的 TOOL/VERIFY/server/client 也通过 `TARGET_RUNNER` 启动。`aarch64-linux-gnu-nm/readelf/strip` 是读取 AArch64 文件的宿主工具，不由 QEMU 执行；宿主 CMake 和 shell 同样不模拟。e2e 的 shell 启动逐个转义运行器参数，含空格或单引号的自定义路径不会被拆分。未配置交叉运行器时，原生测试仍直接执行。
 
 e2e 的不可写统计文件场景保留权限语义：root 容器明确报告跳过；非 root runner 实际执行写入失败与重试。符号化测试的两个真实 LLVM Mach-O 工具链子检查也保留条件跳过语义，精简 QEMU 环境缺工具时不计作实际运行，合成 Mach-O 用例照常执行。上述结果不能外推成全量 arm64 `ctest`、GPU 或物理设备证据。
 

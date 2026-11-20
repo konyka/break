@@ -1,3 +1,11 @@
+## arm64 crash/update 十四项 CTest（2026-11-20）
+
+- **新增范围**：在既有七项崩溃测试上加入更新核心 21 例、更新客户端 44 例、HTTP 72 例、manifest 工具、更新目标契约、HTTP 契约和更新 e2e，共七项；统一选择当前总计十四项，不是全量 arm64 `ctest`。
+- **RED 基线**：未修改环境中三个可执行目标已通过现有 emulator（21/44/72）；manifest 与更新 e2e 因宿主直接执行 arm64 工具失败，两个契约因缺少目标感知 `nm` 失败。所有签名、Range/断点、篡改拒绝、TLS 与导出断言保持原样。
+- **交付**：manifest 和更新 e2e 的 TOOL/VERIFY/server/client 接收 `TARGET_RUNNER`，更新契约接收 `CMAKE_NM` 与 `UPDATE_CONTRACT_RUNNER`，HTTP 契约接收 `CMAKE_NM`。宿主 CMake、shell 和 `nm` 不模拟；server runner 逐元素 shell 转义。原生空运行器七项 focused 7/7。
+- **交叉验证**：修改 CI 前干净容器七项 7/7，日志包含 `break_manifest_tool OK`、21/44/72、两个契约和 `break_update_e2e OK`，CTest 71.26 秒；模拟 HTTP 的 72 项包含真实回环连接、代理、钉扎、吊销和 OCSP 路径。
+- **CI 与本地验证**：YAML 契约先在旧显示名处 RED，补齐十六目标和十四项正则后 GREEN，并核对真实原生选择集合恰好十四项。原生全量 455 项零失败，4 个既有平台用例跳过。最终干净容器十四项 14/14，CTest 109.21 秒；37/45/26/8 与 21/44/72、全部契约、manifest、崩溃/更新 e2e 均成功，root 权限跳过仍明确。远端 job 结果在实际完成后补记。生产更新服务、HTTP/2、https 代理、主动 OCSP、GPU、物理设备及其他 arm64 子系统仍不在本次覆盖内。
+
 ## arm64 crash 七项 CTest（2026-11-20）
 
 - **范围**：统一选择六个 `crash` 标签测试与服务端归档契约，共七项：崩溃记录 37 例、目标契约、符号化 45 例、聚类 26 例、HTTP 上传 8 例、服务端契约、端到端 11 个场景。不是全量 arm64 `ctest`。
