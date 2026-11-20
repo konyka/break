@@ -17,4 +17,4 @@
 - [x] **Step 2:** Replace `timeout 300 ctest` with `timeout 600 ctest` in `.github/workflows/ci.yml` and `docs/Build_Guide.md`.
 - [x] **Step 3:** Re-run the contract; expected `lane budget contract passed: 600 s guard, 25 min cap, 152 tests`.
 - [x] **Step 4:** Clean-container workflow run on an idle host: 152/152, one ptrace setup skip.
-- [ ] **Step 5:** Push; confirm the exact-HEAD remote job succeeds with `assert_arm64_log.py <log> 152`; record the URL.
+- [x] **Step 5:** Push; confirm the exact-HEAD remote job succeeds with `assert_arm64_log.py <log> 152`; record the URL.

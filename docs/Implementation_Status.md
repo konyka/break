@@ -5,7 +5,7 @@
 - **TDD**：预算契约要求恰好一处 `timeout 600 ctest`、无 `timeout 300`、job 上限仍为 25 分钟、指南同步、选择仍为一百五十二项；旧 workflow 在「old 300 s guard still present」处 RED，改动后 GREEN。
 - **独立评审**：只读评审未发现 Critical/Important 问题，确认 600 秒守护在 25 分钟 job 中仍留约 13 分钟余量（CTest 在 job 开始约 1 分 50 秒后启动）、135/152 与 DartConfiguration 默认 1500 秒属实。采纳 Minor：`docs/design/crash_symbolization.md` 的命令块注明为崩溃切片原始命令并指向 Build_Guide 1.5；音频节的「300 秒上限」补注 2026-11-20 起为 600 秒。旧的带日期 spec/plan 按历史保留。
 - **本地验证与第二次挂起**：第一次干净容器运行在既有 `test_runtime_reload` 第 23 例 `reload_destroy_requires_shutdown_aborts` 挂起：fork 子进程两个线程都停在 futex，父进程停在 `waitpid`，表现与此前 `test_runtime_io` 第 15 例一致；两者都在 fork 子进程里起 worker 线程，再期待 abort。该次运行被人工停止。重跑 152/152、CTest 139.83 秒，既有 ptrace skip 恰好一次。根因尚未定位：最小复现（fork 后在子进程建线程，或建线程后 abort，串行与 12 路并行各数百次）以及 QEMU 上游 [issue 358](https://gitlab.com/qemu-project/qemu/-/issues/358) 的复现程序在 QEMU 8.2.2 下均为 0 次挂起。远端 job 历次未出现。不加重试、不屏蔽；记录为待办：给这两个用例加子进程级超时以便挂起时立即失败并给出诊断，再继续缩小触发条件。
-- **验证状态**：远端 job 在实际完成后补记。
+- **远端验证**：无冲突 rebase 到远端 `753765ff`（只改 QUIC 测试，不影响本 lane 选择，契约复跑仍为一百五十二项）后，[CI run 44743325447](https://github.com/konyka/break/actions/runs/44743325447) 的 [arm64 job 136312218139](https://github.com/konyka/break/actions/runs/44743325447/job/136312218139) 在提交 `a6b2c54d` 上全部步骤成功。日志确认命令为 `timeout 600 ctest`、精确一百五十二项、`0 tests failed out of 152`、全部既有契约/e2e、ptrace skip 恰好一次；CTest 134.93 秒，占新守护的 22%。
 
 ## arm64 规则引擎与一百五十二项 CTest（2026-11-20）
 
