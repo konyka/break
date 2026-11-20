@@ -398,8 +398,9 @@ static BreakElfSymbols *macho_fat_from_bytes(const u8 *file, u64 size, u32 want_
     return macho_thin_from_bytes(file + offs[pick], lens[pick], want_cpu);
 }
 
-/* want_cpu 0: a thin image of either CPU, or the x86_64 slice of a
- * universal file (frame recovery walks x86-64 frames only). */
+/* want_cpu 0: a thin image of either CPU, or the x86_64 slice of a universal
+ * file for backward-compatible default selection. Frame recovery supports
+ * both CPUs; callers can select the arm64 slice explicitly. */
 static BreakElfSymbols *macho_from_bytes(const u8 *file, u64 size, u32 want_cpu) {
     if (mo_is_fat(file, size)) return macho_fat_from_bytes(file, size, want_cpu ? want_cpu : MO_CPU_X86_64);
     return macho_thin_from_bytes(file, size, want_cpu);

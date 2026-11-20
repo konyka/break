@@ -46,7 +46,9 @@ u32 break_elf_symbols_count(const BreakElfSymbols *s);
  * arm64; MH_EXECUTE, MH_DYLIB, MH_BUNDLE or MH_DSYM) into the same table.
  * 32-bit and big-endian images are refused, as is any load command that is
  * malformed or points outside the file. A universal (fat) file gives its
- * x86_64 slice, the CPU frame recovery walks; a thin file of either CPU
+ * x86_64 slice for backward-compatible default selection; frame recovery
+ * supports both x86_64 and arm64, and callers can request the arm64 slice
+ * explicitly with break_macho_symbols_open_cpu. A thin file of either CPU
  * opens as is. Kept symbols are
  * section-defined, not stabs, inside a section that holds instructions;
  * Mach-O stores no sizes, so a symbol ends at the next higher kept symbol or

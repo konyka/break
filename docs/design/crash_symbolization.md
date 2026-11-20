@@ -26,7 +26,7 @@
 - 符号查找要求地址落在 `[start, start+size)` 内；函数间的填充和最后一个函数之后都不解析。嵌套或别名符号向前走有界步数（64）。
 - Mach-O（2026-11-17）：`break_macho_symbols_open` 读单架构 64 位小端 Mach-O（x86_64、arm64；EXECUTE、DYLIB、BUNDLE、DSYM）的 `LC_SYMTAB`，返回同一个 `BreakElfSymbols`。`break_crash_symbols_open` 按文件 magic 选 ELF 或 Mach-O，符号库用它，所以 `<root>/<build-id>/<module>` 里两种格式都可以放。规则：
   - 拒绝 32 位、大端、其他 CPU 和其他文件类型（含 OBJECT）。
-  - 通用（fat）文件（2026-11-17）：大端头 `0xcafebabe`（20 字节条目）或 `0xcafebabf`（32 字节条目），条目数 1..32（`0xcafebabe` 也是 Java class 文件的 magic，那里此位置是 45 以上的版本号）。每个条目都先检查：slice 在文件内、位于条目表之后、与其他 slice 不重叠、CPU 不重复；选中的 slice 按它声明的大小当作单架构文件解析，且其 CPU 必须等于条目的 CPU。`break_macho_symbols_open_cpu(path, cpu)` 取指定 CPU（只接受 x86_64、arm64）；`break_macho_symbols_open` 与符号库取 x86_64 slice，因为帧恢复只走 x86-64；单架构文件仍按原样打开。
+  - 通用（fat）文件（2026-11-17）：大端头 `0xcafebabe`（20 字节条目）或 `0xcafebabf`（32 字节条目），条目数 1..32（`0xcafebabe` 也是 Java class 文件的 magic，那里此位置是 45 以上的版本号）。每个条目都先检查：slice 在文件内、位于条目表之后、与其他 slice 不重叠、CPU 不重复；选中的 slice 按它声明的大小当作单架构文件解析，且其 CPU 必须等于条目的 CPU。`break_macho_symbols_open_cpu(path, cpu)` 取指定 CPU（只接受 x86_64、arm64）；`break_macho_symbols_open` 与符号库保留 x86_64 默认 slice 选择；这不表示帧恢复只走 x86-64，调用方可用 `break_macho_symbols_open_cpu` 显式选择 arm64 slice；单架构文件仍按原样打开。
   - load command：`ncmds` ≤ 4096；每条 `cmdsize` ≥ 8、是 8 的倍数、不超出 `sizeofcmds`；`LC_SEGMENT_64` 的 `cmdsize` 必须等于 72 + 80 × nsects；section 的 `addr + size` 不回绕；`LC_SYMTAB` 最多一条，大小 24，符号表和字符串表都在文件内；`LC_UUID` 大小 24。没有 `__TEXT` 段的文件拒绝。
   - 保留的符号：不是 stab，类型为 `N_SECT`，`n_sect`（跨段从 1 计数）指向带 `S_ATTR_PURE_INSTRUCTIONS` 或 `S_ATTR_SOME_INSTRUCTIONS` 的 section，值落在该 section 内且不低于 `__TEXT` 的 vmaddr，名字在字符串表内且非空。去掉一个前导 `_`。
   - Mach-O 不存符号大小：一个符号延伸到下一个更高地址的符号或所在 section 的末尾，取较近者。同地址的别名大小相同。

@@ -4,7 +4,9 @@
 - **测试工具链接入**：`test_break_crash_symbolize` 可用 `BREAK_TEST_NM`、`BREAK_TEST_READELF`、`BREAK_TEST_STRIP` 选择 GNU ELF 工具，用 `BREAK_TEST_RUNNER` 启动新编译 fixture；未设置时保持原生默认。CI 传入交叉 binutils 和 `qemu-aarch64 -L /`，不依赖 binfmt 全局状态。LLVM Mach-O 工具路径未被替换。
 - **TDD 与诊断**：原生新用例先以 44 通过/1 失败证明 `s is NULL`，白名单修改后 45/45。未修改 QEMU 基线为 28/44；ELF 修复后为 30/45（15 失败，`s is NULL` 消失）；显式工具/运行器后为 43/45，仅两个真实崩溃调用链把 `outer` 放在 `mid` 的位置。
 - **帧指针根因与修复**：反汇编确认 AArch64 GCC 即使收到 `-fno-omit-frame-pointer`，仍对故障叶子函数省略 `x29` 帧；原始记录的首个返回地址 `0x40168c` 位于 `outer`，而 `mid` 的返回地址只在未记录的 `x30`。没有伪造或放宽断言：fixture 在故障前调用不可内联的 `prepare_leaf`，使故障函数实际建立帧。随后真实非 PIE/PIE arm64 调用链均通过，QEMU 45/45；精简容器中的两个真实 LLVM Mach-O 子检查按既有条件跳过，合成 Mach-O 用例照常执行。
-- **本地验证**：原生 focused 45/45 和手工 QEMU 45/45 已完成。修改后 CI 的干净 Ubuntu 容器全流程通过：四个 arm64 目标、对象检查、崩溃测试 37/37、符号化 45/45，两个真实 LLVM Mach-O 子检查报告条件跳过。`build-core-app-net` 原生全量 455 项零失败，4 个既有平台用例跳过；`git diff --check` 通过。远端 job 结果在实际完成后补记。这里不宣称全量 arm64 `ctest`、GPU 或物理设备覆盖。
+- **本地验证**：原生 focused 45/45 和手工 QEMU 45/45 已完成。修改后 CI 的干净 Ubuntu 容器全流程通过：四个 arm64 目标、对象检查、崩溃测试 37/37、符号化 45/45，两个真实 LLVM Mach-O 子检查报告条件跳过。`build-core-app-net` 原生全量 455 项零失败，4 个既有平台用例跳过；`git diff --check` 通过。这里不宣称全量 arm64 `ctest`、GPU 或物理设备覆盖。
+- **远端验证**：[CI run 44661270634](https://github.com/konyka/break/actions/runs/44661270634) 的 [arm64 job 136039816836](https://github.com/konyka/break/actions/runs/44661270634/job/136039816836) 在提交 `af9405a6` 上成功；依赖安装、配置、构建、对象检查和 QEMU 步骤均为 `success`。真实日志包含 `37 passed, 0 failed, 37 total` 和 `45 passed, 0 failed, 45 total`，两个真实 LLVM Mach-O 子检查均明确报告工具缺失条件跳过。
+- **独立评审**：只读评审未发现 Critical 或 Important 问题；评审指出的 Mach-O 默认 slice 旧说明已同步修正，帧恢复支持 x86-64 与 arm64，而默认通用文件 slice 选择保持兼容。
 
 ## arm64 QEMU 崩溃测试（2026-11-20）
 
