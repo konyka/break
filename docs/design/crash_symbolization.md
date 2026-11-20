@@ -115,29 +115,28 @@ Mach-O 用例在测试里逐字节构造镜像，不需要 Apple SDK：dylib 与
 
 ### Linux arm64 QEMU 运行（2026-11-20）
 
-CI 的 `lane-cross-aarch64-linux` 在 `break_crash`、`engine` 编译链接和对象架构检查之后，构建两个测试可执行文件并运行：
+CI 的 `lane-cross-aarch64-linux` 配置 `CMAKE_CROSSCOMPILING_EMULATOR=/usr/bin/qemu-aarch64;-L;/`，构建九个目标后统一执行：
 
 ```sh
-qemu-aarch64 --version
-timeout 240 qemu-aarch64 -L / ./build-arm64/test_break_crash
 BREAK_TEST_NM=aarch64-linux-gnu-nm \
 BREAK_TEST_READELF=aarch64-linux-gnu-readelf \
 BREAK_TEST_STRIP=aarch64-linux-gnu-strip \
 BREAK_TEST_RUNNER='qemu-aarch64 -L /' \
-timeout 240 qemu-aarch64 -L / ./build-arm64/test_break_crash_symbolize
+timeout 300 ctest --test-dir build-arm64 --verbose --no-tests=error \
+  -R '^test_break_crash'
 ```
 
-Ubuntu `qemu-user` 提供模拟器，`-L /` 使用 multiarch 安装的 arm64 根文件系统。37 项崩溃用例覆盖记录构造、有界 spool、真实 SIGSEGV/SIGABRT 捕获、context blob、恢复上传和脱敏，实际执行 aarch64 信号帧中的 `uc_mcontext.pc`、`.sp`、`.regs[29]` 读取路径。
+选择恰好七项：六个 `crash` 标签测试（`test_break_crash`、其目标契约、符号化、聚类、HTTP 上传、e2e）以及 `test_break_crash_server_target_contract`。可执行目标由 CMake 自动加 QEMU；宿主 CMake 驱动的契约显式接收 `CMAKE_NM`，现场链接检查与 e2e 的 server/report/client 接收同一目标运行器。宿主工具和 `nm` 本身不由 QEMU 执行，也不修改宿主 binfmt。
 
-45 项符号化用例额外覆盖真实 AArch64 ELF 的 `.symtab`/`.dynsym`、构建 id、非 PIE/PIE 模块偏移，以及 `leaf -> mid -> outer -> main` 帧链。交叉 GNU 工具是读取目标文件的宿主程序；`BREAK_TEST_RUNNER` 只给新编译的 arm64 fixture 加模拟器前缀，不修改宿主 binfmt。超时和测试失败不被重试或退出码屏蔽。
+37 项崩溃用例覆盖记录、有界 spool、真实 SIGSEGV/SIGABRT、context blob、恢复上传和脱敏；45 项符号化覆盖真实 AArch64 ELF、非 PIE/PIE 调用链与既有 Mach-O 规则；26 项聚类覆盖签名、去重、回归、持久化与进程锁；8 项上传覆盖真实 loopback TLS、状态/成帧错误和重试。两项归档契约保留精确导出清单及禁链检查，e2e 保留真实崩溃到 TLS 收集、聚类、回归报告和拒绝/重试的 11 个场景。`--no-tests=error` 防止空选择，失败与超时不被重试或屏蔽。
 
-AArch64 GCC 可对叶子函数省略 `x29` 帧，即使命令带 `-fno-omit-frame-pointer`。真实崩溃 fixture 在故障前调用不可内联的 `prepare_leaf`，确保故障函数建立帧；没有降低调用链断言。没有帧指针且未记录 `x30` 时仍可能得到短链，这是既有明确限制，不能据此声称支持 DWARF CFI 或无帧指针展开。
+AArch64 GCC 可对叶子函数省略 `x29` 帧，即使命令带 `-fno-omit-frame-pointer`。符号化 fixture 在故障前调用不可内联的 `prepare_leaf`，确保故障函数建立帧；没有降低调用链断言。没有帧指针且未记录 `x30` 时仍可能得到短链，这是既有限制，不能据此声称支持 DWARF CFI 或无帧指针展开。
 
-精简 QEMU 环境未安装 clang/lld/llvm 工具时，两个真实 LLVM Mach-O 子检查按既有条件报告 skipped；合成 Mach-O 用例照常执行。这属于选定测试的模拟 Linux arm64 证据，不是全量 arm64 `ctest`、GPU 或物理设备证据。
+e2e 的不可写统计文件场景依赖权限：root 容器明确报告跳过，非 root runner 实际执行。精简 QEMU 环境缺少 clang/lld/llvm 工具时，两个真实 LLVM Mach-O 子检查按既有条件 skipped，合成 Mach-O 用例照常执行。这属于七项崩溃测试的模拟 Linux arm64 证据，不是全量 arm64 `ctest`、GPU 或物理设备证据。
 
 ## 7. 没有做的
 
-- minidump / PE 格式、Windows SEH/VEH（`_WIN32` 仍是编译期 stub）；Windows 与 macOS lane 未运行（新库只在 `UNIX AND NOT APPLE` 下构建，服务与工具只在 POSIX 下构建）。Mach-O 只读符号表。2026-11-20：帧恢复不再是 x86-64 专用——AAPCS64 的帧记录与 x86-64 同为 `[fp]`/`[fp+8]` 布局，同一套遍历两者通用；信号处理器在 Linux arm64 下读 `pc`/`sp`/`x29`，字段名已对照内核 aarch64 `asm/sigcontext.h` 编译验证。后续 CI 已执行 37 项 QEMU 崩溃测试和 45 项符号化测试，包括真实 AArch64 ELF 与非 PIE/PIE 调用链；物理设备验证仍未完成，没有验证 macOS 客户端生成的真实崩溃记录。
+- minidump / PE 格式、Windows SEH/VEH（`_WIN32` 仍是编译期 stub）；Windows 与 macOS lane 未运行（新库只在 `UNIX AND NOT APPLE` 下构建，服务与工具只在 POSIX 下构建）。Mach-O 只读符号表。2026-11-20：AAPCS64 与 x86-64 帧记录同为 `[fp]`/`[fp+8]` 布局，信号处理器在 Linux arm64 下读 `pc`/`sp`/`x29`。后续 CI 统一执行七项崩溃相关 CTest，包括真实 AArch64 ELF、聚类、TLS 上传、两项契约与 e2e；物理设备验证仍未完成，没有验证 macOS 客户端生成的真实崩溃记录。
 - DWARF CFI 展开；内联帧；无帧指针代码的可靠调用栈。
 - 生产服务：认证上传者、按客户端限速、记录本身的存储与保留、符号库管理与发布流程、统计的数据库、仪表板、告警。
 - GPU/RHI/网络/输入摘要的自动采集（仍由应用经 context-blob 接缝接入）。

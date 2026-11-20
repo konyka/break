@@ -1,3 +1,11 @@
+## arm64 crash 七项 CTest（2026-11-20）
+
+- **范围**：统一选择六个 `crash` 标签测试与服务端归档契约，共七项：崩溃记录 37 例、目标契约、符号化 45 例、聚类 26 例、HTTP 上传 8 例、服务端契约、端到端 11 个场景。不是全量 arm64 `ctest`。
+- **RED 基线**：未修改环境中聚类 26/26、上传 8/8 已能通过；两个归档契约因宿主脚本找不到目标感知 `nm` 失败；e2e 因宿主直接执行 arm64 client 失败。没有放宽任何导出、TLS、重试或记录断言。
+- **交付**：CI 配置 `CMAKE_CROSSCOMPILING_EMULATOR=/usr/bin/qemu-aarch64;-L;/`；两个契约接收 `CMAKE_NM`，目标契约的现场链接程序与 e2e server/report/client 接收可选运行器列表。原生空运行器保持直接执行，原生七项 focused CTest 7/7。
+- **交叉验证**：修改 CI 前以相同 Configure/CTest 命令取得七项 7/7，日志确认可执行目标由 `/usr/bin/qemu-aarch64 -L /` 启动；37/45/26/8 全绿，两项契约及 `break_crash_e2e OK` 均出现。root 容器仅按既有规则明确跳过不可写统计文件场景；两个真实 LLVM Mach-O 子检查仍按工具缺失条件跳过。
+- **CI 与本地验证**：YAML 契约先在缺少 emulator 处 RED，补齐九目标和统一七项 CTest 后 GREEN，并核对真实选择集合恰好七项。原生全量 455 项零失败，4 个既有平台用例跳过。最终 CI run 脚本的干净容器复验同样七项 7/7，37/45/26/8、两项契约及 e2e 成功，root 权限跳过保持明确。远端 job 与非 root e2e 权限结果在实际完成后补记；无 GPU、物理设备或其他 arm64 子系统覆盖声明。
+
 ## arm64 ELF 符号化与 QEMU 测试（2026-11-20）
 
 - **交付**：`break_crash_symbolize` 的 ELF64 白名单由仅 `EM_X86_64` 扩为 `EM_X86_64`/`EM_AARCH64`，其余边界、符号过滤和地址换算不变。新增 `an_aarch64_elf_uses_the_same_symbol_table_layout` 原生回归；公开接口和记录格式不变。

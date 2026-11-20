@@ -1416,9 +1416,9 @@ sips -s format png \
 
 ### 1.5 Linux arm64 交叉构建与 QEMU 崩溃测试
 
-`engine/toolchain-aarch64-linux.cmake` 用 `aarch64-linux-gnu-` 工具链交叉编译到 Linux arm64，让 `__aarch64__` 分支（崩溃处理器的寄存器捕获、Mach-O 读取器的 arm64 slice、平台层的 arm64 分支）得到类型检查与链接验证。CI 的 `lane-cross-aarch64-linux` 还安装 Ubuntu `qemu-user`，显式通过 QEMU 执行 `test_break_crash` 的 37 个用例和 `test_break_crash_symbolize` 的 45 个用例，包括真实 SIGSEGV/SIGABRT、AArch64 ELF 符号读取和非 PIE/PIE 调用链恢复。这不同于在 x86-64 主机上直接执行目标二进制，也不代表跑过全量 arm64 `ctest`。
+`engine/toolchain-aarch64-linux.cmake` 用 `aarch64-linux-gnu-` 工具链交叉编译到 Linux arm64，让 `__aarch64__` 分支得到类型检查与链接验证。CI 的 `lane-cross-aarch64-linux` 安装 Ubuntu `qemu-user`，配置 `CMAKE_CROSSCOMPILING_EMULATOR`，通过一次 CTest 选择执行完整的六个 `crash` 标签测试及相关的服务端归档契约，共七项。覆盖真实 SIGSEGV/SIGABRT、AArch64 ELF、非 PIE/PIE 调用链、聚类、TLS 上传、重试、导出符号与端到端收集报告；这不代表跑过全量 arm64 `ctest`。
 
-完整 `engine` 在 Linux 上仍需要 Wayland、xkbcommon、OpenGL/EGL 与默认启用的 OpenSSL；`ENGINE_RHI_BACKEND=headless` 不是 Linux 的合法选择，所以这里显式选择 `opengl`，图形路径只有编译/链接证据。Ubuntu 24.04 的参考依赖布局是 multiarch：主机包提供 `wayland-scanner` 和协议 XML，arm64 包提供目标头文件与库。完整的 ports 源配置和安装命令见 `.github/workflows/ci.yml` 的 **Install the host and arm64 build dependencies** 步骤；目标包包括 `libwayland-dev:arm64`、`libxkbcommon-dev:arm64`、`libgl-dev:arm64`、`libegl-dev:arm64`、`libopengl-dev:arm64`、`libssl-dev:arm64`。
+完整 `engine` 在 Linux 上仍需要 Wayland、xkbcommon、OpenGL/EGL 与默认启用的 OpenSSL；`ENGINE_RHI_BACKEND=headless` 不是 Linux 的合法选择，所以这里显式选择 `opengl`，图形路径只有编译/链接证据。Ubuntu 24.04 的参考依赖布局是 multiarch：主机包提供 `wayland-scanner` 和协议 XML，arm64 包提供目标头文件与库。完整的 ports 源配置和安装命令见 `.github/workflows/ci.yml` 的 **Install the host and arm64 build dependencies** 步骤。
 
 依赖安装后，从仓库根目录执行：
 
@@ -1428,19 +1428,22 @@ export AARCH64_SYSROOT=/
 export PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/aarch64-linux-gnu/lib/pkgconfig:/usr/share/pkgconfig
 cmake -S engine -B build-arm64 -G Ninja \
     --toolchain "$PWD/engine/toolchain-aarch64-linux.cmake" \
-    -DCMAKE_BUILD_TYPE=Debug -DENGINE_RHI_BACKEND=opengl
-cmake --build build-arm64 --parallel --target break_crash engine test_break_crash test_break_crash_symbolize
+    -DCMAKE_BUILD_TYPE=Debug -DENGINE_RHI_BACKEND=opengl \
+    '-DCMAKE_CROSSCOMPILING_EMULATOR=/usr/bin/qemu-aarch64;-L;/'
+cmake --build build-arm64 --parallel --target break_crash engine test_break_crash test_break_crash_symbolize test_break_crash_cluster test_break_crash_upload_http break_crash_server break_crash_report break_crash_e2e
 qemu-aarch64 --version
-timeout 240 qemu-aarch64 -L / ./build-arm64/test_break_crash
 BREAK_TEST_NM=aarch64-linux-gnu-nm \
 BREAK_TEST_READELF=aarch64-linux-gnu-readelf \
 BREAK_TEST_STRIP=aarch64-linux-gnu-strip \
 BREAK_TEST_RUNNER='qemu-aarch64 -L /' \
-timeout 240 qemu-aarch64 -L / ./build-arm64/test_break_crash_symbolize
+timeout 300 ctest --test-dir build-arm64 --verbose --no-tests=error \
+  -R '^test_break_crash'
 ```
 
-`-L /` 让模拟器从上述 multiarch 根文件系统加载 arm64 动态库；`timeout 240` 使挂起变成失败，测试退出码不重试、不屏蔽。`aarch64-linux-gnu-nm/readelf/strip` 是读取 AArch64 文件的宿主工具；`BREAK_TEST_RUNNER` 只给测试中新编译的 arm64 崩溃 fixture 加模拟器前缀，避免依赖 binfmt 全局注册。未设置这些测试环境变量时，仍使用原生 `nm/readelf/strip` 和直接执行。
+选择必须包含七项：`test_break_crash`、`test_break_crash_target_contract`、`test_break_crash_symbolize`、`test_break_crash_cluster`、`test_break_crash_upload_http`、`test_break_crash_server_target_contract`、`test_break_crash_e2e`。`--no-tests=error` 防止空选择通过，verbose 保留 37/45/26/8 个用例汇总、两项契约及 e2e 状态；超时和失败不重试、不屏蔽。
 
-符号化测试的两个真实 LLVM Mach-O 工具链子检查保留条件跳过语义：QEMU 精简环境未安装 clang/lld/llvm 工具时会报告 skipped，但合成 Mach-O 用例照常执行；原生宿主工具齐全时这两项实际运行。上述结果不能外推成全量 arm64 `ctest`、GPU 或物理设备证据。
+`-L /` 让模拟器使用 multiarch arm64 根文件系统。CMake 自动给可执行目标测试加 QEMU；两个归档契约及 e2e 是宿主 CMake 驱动，分别接收 `CMAKE_NM` 和同一运行器列表。`aarch64-linux-gnu-nm/readelf/strip` 是读取 AArch64 文件的宿主工具，不由 QEMU 执行；契约现场链接的最小程序和 e2e 的 server/report/client 才使用目标运行器。未配置交叉运行器时，原生测试仍直接执行。
+
+e2e 的不可写统计文件场景保留权限语义：root 容器明确报告跳过；非 root runner 实际执行写入失败与重试。符号化测试的两个真实 LLVM Mach-O 工具链子检查也保留条件跳过语义，精简 QEMU 环境缺工具时不计作实际运行，合成 Mach-O 用例照常执行。上述结果不能外推成全量 arm64 `ctest`、GPU 或物理设备证据。
 
 `--toolchain` 必须传绝对路径；相对路径不会按仓库根目录解析，会在读取工具链之前报 `Could not find toolchain file`。不要把 `/usr/aarch64-linux-gnu` 单独当编译器 sysroot，否则链接器会重复添加交叉 libc 链接脚本中的绝对路径前缀。没装交叉编译器时，configure 会在成功读取工具链后报告 `aarch64-linux-gnu-gcc` 不在 `PATH`，这是预期的失败形式。
