@@ -116,3 +116,10 @@
 - focused ctest：`test_break_lua_runtime`（9，含 §2.7 内存预算）+ `test_break_lua_module`（19）+ `test_break_lua_value`（27）+ `test_break_lua_binding`（22）+ `test_break_lua_target_contract` + 兼容层 `test_script_lua`，在 Task 5 closeout 干净树 `build-sdd-l5`（normal）、`build-sdd-l5-asan`（ASan+UBSan，零报告；per-task lane 曾抓到并已修复 batch double-destroy 的一例真实 UAF——registry 按值查询必须先于任何解引用）、`build-sdd-l5-tsan`（TSan，四个 break_lua 二进制各连跑 10 次零报告）三树各自 6/6 全绿；`ENGINE_BUILD_TESTS=OFF` 树（`build-sdd-l5-notests`）独立构建 `break_lua` 且 nm 验证 0 个 test-hook 导出符号（仅 26 个 `break_lua_*` production 导出）。
 - 全量套件（`ctest -LE 'graphics|fuzz'`，`build-sdd-l5`）：共 180 项，179 通过 + 1 项 platform-skip（`test_d3d12_dependency_gate`，Windows-only 门）、0 失败；兼容层 `engine/src/script/script_lua.c/.h` 与 `engine/tests/test_script_lua.c` 在 `master..HEAD` 全分支逐字节未动（diff 0 行）。
 - 任务报告：`.superpowers/sdd/2026-10-23-lua-runtime/task-{1,2,3,4,5}-report.md`。
+
+
+## 补充（2026-11-20）：arm64 Lua Runtime 验证
+
+arm64 lane 新增全部十个 `break_lua` 标签测试：九个可执行目标共 126 例，以及宿主 CMake 目标结构契约，统一选择达到五十二项。原生与交叉 focused 均为 10/10，九组汇总为 9/24/34/33/4/5/9/4/4，无新增 skip 或驱动适配。
+
+覆盖模块版本化热加载与旧版本保留、值/帧分发、沙箱和指令预算、稳定句柄、有界表、默认关闭的调试、内核集成和 ECS 记录应用。选择使用局部结尾锚定的显式名称，不包含旧版 `test_script_lua`；本项证据也不代表 LuaJIT 或全量 arm64 验证。

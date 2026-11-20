@@ -384,3 +384,6 @@
 
 
 - **ECS/实体系统验证追加**：2026-11-20 arm64 lane 新增 ECS 核心 45 例、系统调度 6 例、ECS snapshot/delta/AOI 35 例和 replication 目标结构契约，统一选择达到四十二项。未修改 QEMU 树四项全通过，无新增 skip；Lua、world streaming、编辑器/渲染和其他 arm64 子系统仍需独立覆盖。
+
+
+- **脚本/Lua 验证追加**：2026-11-20 arm64 lane 新增九个 Stage 3 Lua 可执行测试与目标契约，共 126 个分项，统一选择达到五十二项。未修改 QEMU 树十项全通过，无新增 skip；LuaJIT、旧版 `test_script_lua` 兼容层、编辑器/渲染和其他 arm64 子系统仍需独立覆盖。
