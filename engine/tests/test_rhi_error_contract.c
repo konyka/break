@@ -110,8 +110,8 @@ TEST(busy_while_frame_or_control_in_flight)
     ASSERT_EQ(rhi_device_destroy_ex(device), RHI_RESULT_BUSY);
     rhi_test_frame_owner_release(device);
     ASSERT_EQ(rhi_device_destroy_ex(device), RHI_RESULT_OK);
-    /* destroy_ex 已销毁设备路径由 rhi_device_destroy 接管（backend_data 为
-     * NULL 时是安全的空操作）；不再调用 rhi_test_device_destroy。 */
+    /* backend_data 为空时 destroy_ex 不拥有 test helper 的分配，仍须释放。 */
+    rhi_test_device_destroy(device);
 }
 
 TEST(declared_metal_and_d3d12_backends_fail_closed)

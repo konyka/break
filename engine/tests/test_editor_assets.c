@@ -237,6 +237,16 @@ TEST(platform_list_stat_join_overflow_skips_entry) {
     int level = 0;
     while (strlen(dir) < 984) {
         char seg[64];
+        usize remaining = 984u - strlen(dir);
+        if (remaining < 48u) {
+            usize len = strlen(dir);
+            usize component = remaining == 1u ? 2u : remaining;
+            dir[len] = '/';
+            memset(dir + len + 1u, 'd', component - 1u);
+            dir[len + component] = '\0';
+            ASSERT_TRUE(mk_dir(dir));
+            break;
+        }
         snprintf(seg, sizeof(seg), "/%047d", level); /* '/' + 47 chars */
         if (strlen(dir) + strlen(seg) >= PLATFORM_FS_PATH_CAPACITY - 1) break;
         strcat(dir, seg);

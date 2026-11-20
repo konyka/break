@@ -12,6 +12,7 @@
 
 typedef struct timed_request_t {
   my_pal_main_loop_t* loop;
+  my_pal_t* pal;
   uint32_t interval_ms;
   uint64_t due_us;
   int64_t latency_us;
@@ -36,7 +37,9 @@ static my_ret_t timed_one_shot(void* context) {
 
 static my_ret_t timed_command_execute(void* context) {
   timed_request_t* request = (timed_request_t*)context;
-  request->due_us = time_microseconds() + (uint64_t)request->interval_ms * 1000u;
+  request->due_us =
+      (my_pal_time_now_ms(request->pal) + (uint64_t)request->interval_ms) *
+      1000u;
   if (my_pal_main_loop_add_timer(request->loop, timed_one_shot, request,
                                  request->interval_ms) == 0u) {
     atomic_fetch_add(&request->add_failed, 1);
@@ -113,6 +116,7 @@ static bool timed_run_case(uint32_t interval_ms) {
   memset(producers, 0, sizeof(producers));
   for (i = 0; i < TIMER_REQUEST_COUNT; ++i) {
     requests[i].loop = loop;
+    requests[i].pal = pal;
     requests[i].interval_ms = interval_ms;
     atomic_init(&requests[i].fired, 0);
     atomic_init(&requests[i].destroyed, 0);
@@ -167,8 +171,10 @@ static bool timed_run_case(uint32_t interval_ms) {
             fired == TIMER_REQUEST_COUNT && destroyed == TIMER_REQUEST_COUNT;
   if (success) {
     qsort(latencies, expected, sizeof(latencies[0]), timed_latency_compare);
-    printf("timer_concurrent_latency,interval_ms=%u,p50=%lld,p95=%lld,p99=%lld,max=%lld\n",
+    success = latencies[0] >= 0;
+    printf("timer_concurrent_latency,interval_ms=%u,min=%lld,p50=%lld,p95=%lld,p99=%lld,max=%lld\n",
            interval_ms,
+           (long long)latencies[0],
            (long long)timed_percentile(latencies, expected, 50u),
            (long long)timed_percentile(latencies, expected, 95u),
            (long long)timed_percentile(latencies, expected, 99u),

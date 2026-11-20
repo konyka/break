@@ -1,4 +1,8 @@
 #include "mypal/screen/my_pal_screen.h"
+#include "mypal/screen/my_pal_screen_cursor.h"
+#if defined(MYUI_HAS_GLES2)
+#include "mypal/screen/my_pal_screen_gl.h"
+#endif
 #include "myui/my_ui_command_internal.h"
 #include "myr/my_lcd_mem.h"
 #include "myc/my_str.h"
@@ -7,6 +11,7 @@
 #include <sys/keycodes.h>
 #include <errno.h>
 #include <limits.h>
+#include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <string.h>
@@ -34,6 +39,7 @@ struct my_screen_window_t {
   screen_window_t native;
   screen_session_t pointer_session;
   struct my_screen_lcd_t* lcd;
+  my_pal_gl_t* gl;
   my_screen_window_t* next;
   int32_t width;
   int32_t height;
@@ -47,6 +53,7 @@ struct my_screen_window_t {
   uint32_t buttons;
   int32_t pointer_x;
   int32_t pointer_y;
+  my_screen_cursor_t software_cursor;
   bool ime_enabled;
   bool has_pointer_position;
   bool buffer_replace_failed;
@@ -68,6 +75,8 @@ typedef struct my_screen_lcd_t {
   my_screen_buffer_slot_t slots[SCREEN_BUFFER_SLOT_COUNT];
   uint8_t* shadow;
   uint32_t post_count;
+  bool has_posted_cursor;
+  my_rect_t posted_cursor;
   bool buffer_acquired;
   bool restore_required;
   bool in_frame;
@@ -94,7 +103,7 @@ typedef struct my_screen_loop_t {
   my_screen_pal_t* pal;
   my_screen_event_t* head;
   my_screen_event_t* tail;
-  atomic_flag event_lock;
+  pthread_mutex_t event_lock;
   bool wake_pending;
   atomic_bool accepting_events;
   atomic_bool quit;
@@ -166,6 +175,8 @@ static void screen_lcd_release_buffers(my_screen_lcd_t* x) {
   x->shadow = NULL;
   x->mem = NULL;
   x->buffer = NULL;
+  x->has_posted_cursor = false;
+  x->posted_cursor = my_rect_init(0, 0, 0, 0);
   x->buffer_acquired = false;
   x->restore_required = false;
   x->in_frame = false;
@@ -328,8 +339,14 @@ static my_ret_t screen_lcd_begin(my_lcd_t* lcd, const my_rect_t* dirty) {
 
 static my_ret_t screen_lcd_end(my_lcd_t* lcd) {
   my_screen_lcd_t* x = (my_screen_lcd_t*)lcd;
+  my_screen_window_t* w = x->window;
   my_ret_t result;
+  my_rect_t bounds = screen_lcd_bounds(x);
   my_rect_t damage;
+  my_rect_t cursor_rect = my_rect_init(0, 0, 0, 0);
+  my_rect_t current_cursor = my_rect_init(0, 0, 0, 0);
+  bool has_current_cursor = false;
+  bool has_cursor_damage;
   int dirty[4];
   int count = 0;
   const int* rects = NULL;
@@ -343,12 +360,38 @@ static my_ret_t screen_lcd_end(my_lcd_t* lcd) {
     return result;
   }
   damage = screen_lcd_frame_damage(x);
+  if (w->software_cursor.enabled || x->has_posted_cursor) {
+    result = my_screen_cursor_bounds(&w->software_cursor, w->width, w->height,
+                                     &cursor_rect);
+    if (result != MY_RET_OK) {
+      x->in_frame = false;
+      return result;
+    }
+    has_current_cursor =
+        !my_rect_is_empty(&cursor_rect) &&
+        my_rect_intersect(&cursor_rect, &bounds, &current_cursor);
+  }
+  has_cursor_damage = x->has_posted_cursor || has_current_cursor;
+  if (x->has_posted_cursor) {
+    my_rect_union(&damage, &x->posted_cursor, &damage);
+  }
+  if (has_current_cursor) my_rect_union(&damage, &current_cursor, &damage);
   result = screen_lcd_capture(x, &damage);
   if (result != MY_RET_OK) {
     x->in_frame = false;
     return result;
   }
-  if (x->has_unposted) {
+  if (has_current_cursor) {
+    result = my_screen_cursor_composite(
+        &w->software_cursor, my_lcd_get_buffer(x->mem),
+        my_lcd_get_stride(x->mem), w->width, w->height, &cursor_rect);
+    if (result != MY_RET_OK) {
+      x->in_frame = false;
+      return result;
+    }
+    x->restore_required = true;
+  }
+  if (x->has_unposted || (has_cursor_damage && x->has_dirty)) {
     dirty[0] = damage.x;
     dirty[1] = damage.y;
     dirty[2] = damage.w;
@@ -363,10 +406,12 @@ static my_ret_t screen_lcd_end(my_lcd_t* lcd) {
     count = 1;
     rects = dirty;
   }
-  post_result = screen_post_window(x->window->native, x->buffer, count, rects,
+  post_result = screen_post_window(w->native, x->buffer, count, rects,
                                    SCREEN_DONT_BLOCK);
   if (post_result == 0) {
     x->has_unposted = false;
+    x->has_posted_cursor = has_current_cursor;
+    x->posted_cursor = current_cursor;
     x->post_count++;
     x->buffer_acquired = false;
     x->in_frame = false;
@@ -503,6 +548,9 @@ static my_ret_t screen_win_replace_buffers(my_screen_window_t* w, int32_t width,
   }
   if (result != MY_RET_OK) goto fail;
   w->buffer_replace_failed = false;
+#if defined(MYUI_HAS_GLES2)
+  if (w->gl != NULL) return my_screen_gl_resize(w->gl, width, height);
+#endif
   return MY_RET_OK;
 
 fail:
@@ -602,6 +650,9 @@ static my_ret_t screen_win_set_cursor(my_pal_window_t* win,
   int error;
   int size[2] = {w->width, w->height};
   int position[2] = {0, 0};
+  if (w->software_cursor.enabled) {
+    return my_screen_cursor_set_shape(&w->software_cursor, cursor);
+  }
   if (cursor == MY_CURSOR_ARROW) {
     shape = SCREEN_CURSOR_SHAPE_ARROW;
   } else if (cursor == MY_CURSOR_TEXT) {
@@ -655,7 +706,27 @@ static my_ret_t screen_win_move(my_pal_window_t* win, int32_t x, int32_t y) {
   return MY_RET_OK;
 }
 
+static my_pal_gl_t* screen_win_gl_enable_api(my_pal_window_t* win, int api) {
+#if defined(MYUI_HAS_GLES2)
+  my_screen_window_t* w = (my_screen_window_t*)win;
+  if (api != MY_PAL_GL_API_GLES2 || w->destroy_requested) return NULL;
+  if (w->gl != NULL) return w->gl;
+  return my_screen_gl_create(win, w->pal->allocator, &w->gl);
+#else
+  (void)win;
+  (void)api;
+  return NULL;
+#endif
+}
+
+static my_pal_gl_t* screen_win_gl_enable(my_pal_window_t* win) {
+  return screen_win_gl_enable_api(win, MY_PAL_GL_API_GLES2);
+}
+
 static void screen_win_free(my_screen_window_t* w) {
+#if defined(MYUI_HAS_GLES2)
+  my_screen_gl_destroy(w->gl);
+#endif
   if (w->pointer_session != NULL) {
     (void)screen_destroy_session(w->pointer_session);
   }
@@ -690,11 +761,13 @@ static const my_pal_window_vtable_t s_window_vtable = {
     .get_size = screen_win_get_size,
     .get_lcd = screen_win_get_lcd,
     .destroy = screen_win_destroy,
+    .gl_enable = screen_win_gl_enable,
     .ime_set_enabled = screen_win_ime_set_enabled,
     .ime_set_surrounding = screen_win_ime_set_surrounding,
     .ime_set_spot = screen_win_ime_set_spot,
     .move = screen_win_move,
-    .set_cursor = screen_win_set_cursor};
+    .set_cursor = screen_win_set_cursor,
+    .gl_enable_api = screen_win_gl_enable_api};
 
 static my_pal_window_t* screen_pal_window_create(my_pal_t* pal, int32_t width,
                                                  int32_t height,
@@ -712,6 +785,7 @@ static my_pal_window_t* screen_pal_window_create(my_pal_t* pal, int32_t width,
   w->pal = p;
   w->width = width;
   w->height = height;
+  my_screen_cursor_init(&w->software_cursor);
   size[0] = width;
   size[1] = height;
   if (screen_create_window(&w->native, p->context) != 0 ||
@@ -771,6 +845,39 @@ bool my_pal_screen_has_native_ime(void) {
   return false;
 }
 
+my_ret_t my_pal_screen_software_cursor_set_enabled(my_pal_window_t* win,
+                                                   bool enabled) {
+  my_screen_window_t* w = (my_screen_window_t*)win;
+  if (w == NULL || w->destroy_requested) return MY_RET_INVALID_PARAMS;
+  if (enabled && w->pointer_session != NULL) {
+    (void)screen_destroy_session(w->pointer_session);
+    w->pointer_session = NULL;
+    (void)screen_flush_context(w->pal->context, 0);
+  }
+  my_screen_cursor_set_enabled(&w->software_cursor, enabled);
+  return MY_RET_OK;
+}
+
+my_ret_t my_pal_screen_test_software_cursor_state(
+    my_pal_window_t* win, my_pal_screen_software_cursor_state_t* out) {
+  my_screen_window_t* w = (my_screen_window_t*)win;
+  my_rect_t bounds;
+  my_ret_t result;
+  if (w == NULL || out == NULL || w->destroy_requested) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  out->shape = w->software_cursor.shape;
+  out->x = w->software_cursor.x;
+  out->y = w->software_cursor.y;
+  out->enabled = w->software_cursor.enabled;
+  out->has_position = w->software_cursor.has_position;
+  result = my_screen_cursor_bounds(&w->software_cursor, w->width, w->height,
+                                   &bounds);
+  if (result != MY_RET_OK) return result;
+  out->visible = !my_rect_is_empty(&bounds);
+  return MY_RET_OK;
+}
+
 void* my_pal_screen_test_native_pointer_session(my_pal_window_t* win) {
   my_screen_window_t* w = (my_screen_window_t*)win;
   return w != NULL && !w->destroy_requested ? w->pointer_session : NULL;
@@ -803,11 +910,9 @@ static my_ret_t screen_loop_wake_locked(my_screen_loop_t* loop) {
 
 static my_ret_t screen_loop_wake(my_screen_loop_t* loop) {
   my_ret_t result;
-  while (atomic_flag_test_and_set_explicit(&loop->event_lock,
-                                           memory_order_acquire)) {
-  }
+  (void)pthread_mutex_lock(&loop->event_lock);
   result = screen_loop_wake_locked(loop);
-  atomic_flag_clear_explicit(&loop->event_lock, memory_order_release);
+  (void)pthread_mutex_unlock(&loop->event_lock);
   return result;
 }
 
@@ -836,9 +941,7 @@ static my_ret_t screen_loop_post(my_pal_main_loop_t* loop,
     }
     item->event.u.ime.text = item->ime_text;
   }
-  while (atomic_flag_test_and_set_explicit(&l->event_lock,
-                                           memory_order_acquire)) {
-  }
+  (void)pthread_mutex_lock(&l->event_lock);
   if (!atomic_load_explicit(&l->accepting_events, memory_order_relaxed)) {
     result = MY_RET_PENDING;
   } else if (l->wake_pending) {
@@ -855,7 +958,7 @@ static my_ret_t screen_loop_post(my_pal_main_loop_t* loop,
     }
     l->tail = item;
   }
-  atomic_flag_clear_explicit(&l->event_lock, memory_order_release);
+  (void)pthread_mutex_unlock(&l->event_lock);
   if (result != MY_RET_OK) {
     my_mem_free(l->pal->allocator, item->ime_text);
     my_mem_free(l->pal->allocator, item);
@@ -875,49 +978,47 @@ static void screen_loop_deliver(my_screen_loop_t* l, my_pal_window_t* window,
 static uint64_t screen_loop_pending_count(my_screen_loop_t* l) {
   my_screen_event_t* item;
   uint64_t count = 0u;
-  while (atomic_flag_test_and_set_explicit(&l->event_lock,
-                                           memory_order_acquire)) {
-  }
+  (void)pthread_mutex_lock(&l->event_lock);
   for (item = l->head; item != NULL; item = item->next) count++;
-  atomic_flag_clear_explicit(&l->event_lock, memory_order_release);
+  (void)pthread_mutex_unlock(&l->event_lock);
   return count;
 }
 
-static bool screen_loop_has_pending(my_screen_loop_t* l) {
-  bool pending;
-  while (atomic_flag_test_and_set_explicit(&l->event_lock,
-                                           memory_order_acquire)) {
-  }
-  pending = l->head != NULL;
-  if (!pending) l->wake_pending = false;
-  atomic_flag_clear_explicit(&l->event_lock, memory_order_release);
-  return pending;
-}
-
 static bool screen_loop_drain(my_screen_loop_t* l, uint64_t budget) {
-  while (budget > 0u) {
-    my_screen_event_t* item;
-    if (l->destroy_requested) return true;
-    while (atomic_flag_test_and_set_explicit(&l->event_lock,
-                                             memory_order_acquire)) {
-    }
-    item = l->head;
-    if (item == NULL) {
-      l->wake_pending = false;
-      atomic_flag_clear_explicit(&l->event_lock, memory_order_release);
-      return false;
-    }
-    l->head = item->next;
-    if (l->head == NULL) l->tail = NULL;
-    atomic_flag_clear_explicit(&l->event_lock, memory_order_release);
-    screen_loop_deliver(l, NULL, &item->event);
+  my_screen_event_t* batch;
+  my_screen_event_t* end = NULL;
+  my_screen_event_t* remaining;
+  bool pending;
+  if (l->destroy_requested) return true;
+  if (budget == 0u) return false;
+  (void)pthread_mutex_lock(&l->event_lock);
+  batch = l->head;
+  remaining = batch;
+  while (remaining != NULL && budget > 0u) {
+    end = remaining;
+    remaining = remaining->next;
+    budget--;
+  }
+  l->head = remaining;
+  if (remaining != NULL) {
+    end->next = NULL;
+  } else {
+    l->tail = NULL;
+  }
+  (void)pthread_mutex_unlock(&l->event_lock);
+  while (batch != NULL) {
+    my_screen_event_t* item = batch;
+    batch = batch->next;
+    if (!l->destroy_requested) screen_loop_deliver(l, NULL, &item->event);
     my_event_release_payload(&item->event);
     my_mem_free(l->pal->allocator, item->ime_text);
     my_mem_free(l->pal->allocator, item);
-    budget--;
-    if (budget == 0u) return screen_loop_has_pending(l);
   }
-  return false;
+  (void)pthread_mutex_lock(&l->event_lock);
+  pending = l->head != NULL;
+  if (!pending) l->wake_pending = false;
+  (void)pthread_mutex_unlock(&l->event_lock);
+  return l->destroy_requested || pending;
 }
 
 static uint8_t screen_native_modifiers(screen_event_t native) {
@@ -1136,6 +1237,7 @@ static void screen_native_pointer(my_screen_loop_t* l,
     moved = !w->has_pointer_position || w->pointer_x != x || w->pointer_y != y;
   }
   if (x < INT32_MIN || x > INT32_MAX || y < INT32_MIN || y > INT32_MAX) return;
+  my_screen_cursor_set_position(&w->software_cursor, (int32_t)x, (int32_t)y);
   (void)screen_get_event_property_iv(native, SCREEN_PROPERTY_BUTTONS, &buttons);
   (void)screen_get_event_property_iv(native, SCREEN_PROPERTY_MOUSE_WHEEL, &wheel);
   changed = w->buttons ^ (uint32_t)buttons;
@@ -1239,7 +1341,7 @@ static my_ret_t screen_loop_run(my_pal_main_loop_t* loop) {
     uint64_t timeout;
     int rc;
     int type;
-    bool pending = screen_loop_drain(l, 64u);
+    bool pending = screen_loop_drain(l, 256u);
     if (atomic_load_explicit(&l->quit, memory_order_acquire)) break;
     (void)my_timer_manager_fire(l->timers);
     if (atomic_load_explicit(&l->quit, memory_order_acquire)) break;
@@ -1281,14 +1383,12 @@ static my_ret_t screen_loop_remove_timer(my_pal_main_loop_t* loop, uint32_t id) 
 static void screen_loop_free(my_screen_loop_t* l) {
   my_screen_event_t* pending;
   l->destroy_requested = true;
-  while (atomic_flag_test_and_set_explicit(&l->event_lock,
-                                           memory_order_acquire)) {
-  }
+  (void)pthread_mutex_lock(&l->event_lock);
   atomic_store_explicit(&l->accepting_events, false, memory_order_release);
   pending = l->head;
   l->head = NULL;
   l->tail = NULL;
-  atomic_flag_clear_explicit(&l->event_lock, memory_order_release);
+  (void)pthread_mutex_unlock(&l->event_lock);
   while (pending != NULL) {
     my_screen_event_t* item = pending;
     pending = item->next;
@@ -1297,6 +1397,7 @@ static void screen_loop_free(my_screen_loop_t* l) {
     my_mem_free(l->pal->allocator, item);
   }
   my_timer_manager_destroy(l->timers);
+  (void)pthread_mutex_destroy(&l->event_lock);
   my_mem_free(l->pal->allocator, l);
 }
 
@@ -1322,9 +1423,12 @@ static my_pal_main_loop_t* screen_pal_loop_create(my_pal_t* pal) {
   if (p == NULL) return NULL;
   l = my_mem_calloc(p->allocator, 1, sizeof(*l));
   if (l == NULL) return NULL;
+  if (pthread_mutex_init(&l->event_lock, NULL) != 0) {
+    my_mem_free(p->allocator, l);
+    return NULL;
+  }
   l->base.vtable = &s_loop_vtable;
   l->pal = p;
-  atomic_flag_clear(&l->event_lock);
   atomic_init(&l->accepting_events, true);
   atomic_init(&l->quit, false);
   l->timers = my_timer_manager_create(p->allocator, screen_now_ms, p);
@@ -1397,9 +1501,31 @@ static float screen_pal_scale(my_pal_t* pal) {
   return 1.0f;
 }
 
+static const char* const s_screen_vulkan_extensions[] = {
+    "VK_KHR_surface", "VK_EXT_headless_surface"};
+
+static my_ret_t screen_vulkan_instance_extensions(
+    void* context, my_pal_window_t* window, const char* const** names,
+    uint32_t* count) {
+  my_screen_pal_t* p = (my_screen_pal_t*)context;
+  my_screen_window_t* w = (my_screen_window_t*)window;
+  if (p == NULL || w == NULL || w->pal != p || w->destroy_requested ||
+      names == NULL || count == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  *names = s_screen_vulkan_extensions;
+  *count = 2u;
+  return MY_RET_OK;
+}
+
+static void screen_vulkan_provider_release(void* context) {
+  (void)context;
+}
+
 static void screen_pal_destroy(my_pal_t* pal) {
   my_screen_pal_t* p = (my_screen_pal_t*)pal;
   if (p == NULL) return;
+  my_pal_unregister_vulkan_provider(pal);
   my_pal_unregister_media_provider(pal);
   if (p->event != NULL) (void)screen_destroy_event(p->event);
   if (p->wake_event != NULL) (void)screen_destroy_event(p->wake_event);
@@ -1418,6 +1544,7 @@ my_pal_t* my_pal_screen_create(const my_allocator_t* allocator) {
   my_screen_pal_t* p = my_mem_calloc(allocator, 1, sizeof(*p));
   int type = SCREEN_EVENT_USER;
   int data[4] = {SCREEN_WAKE_COOKIE, 0, 0, 0};
+  my_pal_vulkan_provider_t vulkan_provider;
   if (p == NULL) return NULL;
   p->base.vtable = &s_pal_vtable;
   p->allocator = allocator;
@@ -1428,6 +1555,16 @@ my_pal_t* my_pal_screen_create(const my_allocator_t* allocator) {
                                    &type) != 0 ||
       screen_set_event_property_iv(p->wake_event, SCREEN_PROPERTY_USER_DATA,
                                    data) != 0) {
+    screen_pal_destroy(&p->base);
+    return NULL;
+  }
+  memset(&vulkan_provider, 0, sizeof(vulkan_provider));
+  vulkan_provider.size = sizeof(vulkan_provider);
+  vulkan_provider.abi_version = MY_PAL_VULKAN_PROVIDER_ABI_VERSION;
+  vulkan_provider.get_instance_extensions = screen_vulkan_instance_extensions;
+  vulkan_provider.context = p;
+  vulkan_provider.release_context = screen_vulkan_provider_release;
+  if (my_pal_register_vulkan_provider(&p->base, &vulkan_provider) != MY_RET_OK) {
     screen_pal_destroy(&p->base);
     return NULL;
   }

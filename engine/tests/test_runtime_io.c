@@ -1,4 +1,5 @@
 #include "test_framework.h"
+#include "test_qnx_spawn.h"
 #include <runtime/runtime_thread.h>
 #include <runtime/runtime_io.h>
 #include <runtime/runtime_test_hooks.h>
@@ -981,39 +982,35 @@ TEST(io_completion_wait_deadline_and_shutdown_interruption)
     vfs_destroy(vfs);
 }
 
+static int io_double_release_child_main(void)
+{
+    VFS *vfs = fixture_setup();
+    BreakRuntimeIoConfig cfg;
+    BreakRuntimeIoRequest *req = NULL;
+    if (!vfs) return 2;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.vfs = vfs;
+    cfg.worker_count = 1u;
+    cfg.request_capacity = 4u;
+    if (break_runtime_io_init(&cfg) != BREAK_RUNTIME_OK) return 2;
+    if (break_runtime_io_submit(&req, "payload.bin", 0u, 0u) != BREAK_RUNTIME_OK ||
+        break_runtime_io_cancel(req) != BREAK_RUNTIME_OK ||
+        break_runtime_io_shutdown(2000u) != BREAK_RUNTIME_OK) return 2;
+    break_runtime_io_request_release(req);
+    break_runtime_io_request_release(req);
+    return 0;
+}
+
 TEST(io_request_double_release_aborts)
 {
 #if !defined(_WIN32)
-    pid_t pid = fork();
-    if (pid == 0) {
-        VFS *vfs = fixture_setup();
-        BreakRuntimeIoConfig cfg;
-        BreakRuntimeIoRequest *req = NULL;
-        if (!vfs) {
-            _exit(2); /* fixture failure: not the path under test */
-        }
-        memset(&cfg, 0, sizeof(cfg));
-        cfg.vfs = vfs;
-        cfg.worker_count = 1u;
-        cfg.request_capacity = 4u;
-        if (break_runtime_io_init(&cfg) != BREAK_RUNTIME_OK) {
-            _exit(2);
-        }
-        if (break_runtime_io_submit(&req, "payload.bin", 0u, 0u) !=
-                BREAK_RUNTIME_OK ||
-            break_runtime_io_cancel(req) != BREAK_RUNTIME_OK ||
-            break_runtime_io_shutdown(2000u) != BREAK_RUNTIME_OK) {
-            _exit(2); /* setup failed: not the path under test */
-        }
-        break_runtime_io_request_release(req);
-        break_runtime_io_request_release(req); /* violation: must abort */
-        _exit(0); /* reached only if double release was NOT rejected */
-    }
+    pid_t pid = test_qnx_spawn_death_child(io_double_release_child_main);
     ASSERT_TRUE(pid > 0);
     {
         int status = 0;
         ASSERT_EQ(waitpid(pid, &status, 0), pid);
         ASSERT_TRUE(WIFSIGNALED(status));
+        ASSERT_EQ(WTERMSIG(status), SIGABRT);
     }
 #endif
 }
@@ -1064,7 +1061,7 @@ TEST(io_facade_alloc_failure_injection)
     vfs_destroy(vfs);
 }
 
-TEST_MAIN_BEGIN()
+TEST_QNX_SPAWN_MAIN_BEGIN(io_double_release_child_main)
     RUN_TEST(thread_create_validation_and_oom);
     RUN_TEST(thread_start_runs_and_owner_stops);
     RUN_TEST(thread_self_exit_owner_completion);

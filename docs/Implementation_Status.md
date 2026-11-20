@@ -1,5 +1,86 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：QNX 非官方虚拟兼容与软件渲染验收（2026-10-29 起，2026-11-20 更新）
+
+- **2026-11-20 最终复验**：Linux 普通、ASan/UBSan、隔离 Mesa TSan 同树均为
+  **235/235**（消毒器套件按运行器约定 64 MiB 栈，TSan 无竞态报告，无 suppression）；
+  QNX x86_64 目标机 headless 清单 **191/191**。定时器跨平台路径目标机复验
+  `test_platform_time` **5/5**、高并发 1/5/16/100 ms 三轮 256 回调/0 失败且
+  min 延迟 ≥ 0、1 万 pending 提交约 80 µs。修复 `test_rhi_vk_screen_post` 链接
+  缺 6 个 `--wrap=screen_*` 导致首帧 capture 段错误，并补齐 verify enqueue 检查、
+  卡死 buffer 恢复与 damage 保存重试语义（目标机 11/11）。ARM 完整 `test_vulkan`、
+  ARM ASan 最终退出码、物理 GPU、QNX TSan 与硬实时仍未验收。详见
+  `docs/qnx_compat.md` 与 `docs/design/qnx_timer_perf_plan.md`。
+- **ARM 目标**：固定社区 `qemu-virt` BSP 和自定义 IFS，在 QEMU 八核 Cortex-A72
+  仿真上运行 AArch64 QNX；默认完整清单既有 **191/191**，ARM 2307 新 30000-inode
+  镜像的 headless 清单 **192/192**。完整 `test_vulkan` 与 ARM ASan 最终运行均尚未
+  取得最终退出码，保持进行中，不能写成完整 ARM 验收。内存 QNX6 loopback 仅作
+  `sync=none` 的临时测试盘，不宣称持久化或硬件验证；tar 部署路径保留。
+- **Screen 与定时器**：x86_64 Screen 普通及 ASan/UBSan 十项全矩阵通过：runtime
+  **14/14**、failures **17/17**、concurrency **3/3**、present **3/3**、stability
+  **3/3**、E2E **1/1**、display **3/3**、input **4/4**、软件 cursor **7/7**、
+  GLES **5/5**。这些是软件虚拟显示器和 CPU 路径结果，不是物理 GPU、原生 Vulkan
+  surface 或实际显示 FPS。无其他 Vulkan 测试争用 CPU 时，四生产者 1/5/16/100 ms
+  用例通过，p99 最大约 1.7 ms；不是硬实时或所有负载下的保证。
+- **CPU 渲染**：固定提交的 SwiftShader 在 x86_64 与 AArch64 上各有 4096/4096
+  离屏像素一致记录；x86_64 引擎 headless surface + CPU readback + Screen post
+  已核验 480000 个 clear 像素。x86_64 完整 `test_vulkan` 已退出 0，500 帧墙钟
+  **126.60 秒**、平均 **3.9 FPS**、wall frame min/max **186.79/4080.50 ms**、
+  simulation time **50.00 秒**，见 `build-validation/qnx-vulkan-final-metrics-target.log`。
+  这些数字仅来自软件渲染与并行验证负载，不是硬件性能或绝对最优证明，也不构成
+  原生 `VK_QNX_screen_surface`、物理 GPU 或 Khronos validation 证据。
+- **目标与宿主回归**：Linux 普通、ASan/UBSan、隔离 Mesa TSan 均 **235/235**，
+  每种配置有 1 个 Windows-only 平台设计内跳过，包含实际图形且无 suppression。
+  精确 Mesa 26.0.8 插桩证实 llvmpipe fence 读侧竞态，隔离实验驱动为
+  `lp_fence_signalled` 的 SW fence 读侧加同一 mutex；未改系统 Mesa、未加 `glFinish`
+  或减少 worker，且这不是 QNX TSan 或最终合并树的复验计数。x86_64 默认 headless
+  既有 **191/191**、Vulkan headless 既有 **192/192**，两项最终复跑仍在进行。
+  应用级 IPC 在 Linux 普通/ASan/UBSan/TSan 与 QNX 普通、ASan/UBSan 均 **10/10**；
+  QNX 消毒器父进程保留检查，spawn 子进程使用普通二进制。无 EGL 的 Screen 运行时
+  已通过 **15/15**，普通及 ASan/UBSan 失败注入各 **17/17**，无 EGL/GLES 动态依赖。
+- **失败路径 TDD**：OpenGL depth cubemap 销毁类型错误已修复，真实 X11/OpenGL
+  普通及 ASan/UBSan 各 **3/3**。Screen post 失败曾使 Vulkan acquired image 遗失；
+  现保留错误返回并继续正常 present 生命周期，QNX 普通与 OUT_OF_DATE 组合恢复
+  **2/2**，post 故障/尺寸 **7/7**，Screen stability **3/3**。
+- **性能与并发**：ARM 同条件 LOD 从 14421.7 ms 降至 4733.4 ms，保留
+  `<10000 ms` 断言；异步加载 17/17、1200/1200 回调、pending=0。ARM Screen 的
+  30 秒 soak 已修复为 **3/3**，500/500 lifecycle、零 watchdog、零 FIFO 错误，
+  未改时限或场景。
+- **CPU mount 与环境所有权**：myui offscreen Vulkan→LCD 普通独立复跑 **11/11**、
+  禁用版 **3/3**，Vulkan ASan **11/11** 无泄漏报告；ES2 ASan pbuffer 为 **64/64**
+  像素精确、bottom-up。共享 EGLDisplay 的提前 terminate 已修复。GLES ASan 旧四轮
+  共 416 字节泄漏已定位为 `VK_ICD_FILENAMES` 恢复的环境所有权问题并修复；当前
+  GLES **5/5** 无未预期 LSan 报告，最终 ANGLE 普通及 ASan 构建均完成。
+- **消毒器与 TLS**：默认 QNX ASan/UBSan 既有 **192/192**、独立 TLS opt-in 既有
+  **197/197**，两项最终复跑均在进行中，不预判退出码；既有范围包含死亡测试、
+  普通子进程 helper、520 线程压力及真实溢出/泄漏负向对照。Vulkan+TLS 组合加载
+  已将 `libc++.so.2` 放到 ASan 前，4 项定向检查通过，123 字节故意泄漏仍被检出。
+  运行器按进程 `on -ad`，死亡测试父进程保留 sanitizer、子进程使用普通二进制，
+  不全局关闭 ASLR。
+- **测试专用退出清理**：`BREAK_QNX_SANITIZER_CLEANUP=1` 要求显式
+  `BREAK_QNX_VULKAN_RUNTIME=1`，禁止 TLS interpose；preload 顺序为 `libc++.so.2` →
+  `libstdc++.so.6` → `libasan.so.8` → `libubsan.so.1` → 未插桩 cleanup helper →
+  `libgraphics_conf_redirect.so`。helper destructor 对 libc++ 和 libstdc++ 分别调用
+  `_ZN9__gnu_cxx9__freeresEv`，释放两个 C++ 运行库的 emergency pool。仅辅助库
+  不插桩以避免改变 finalize 顺序；被测二进制仍保留 ASan/UBSan/LSan 和原断言，
+  无 suppression。这不是产品 runtime 通用修复。旧 ARM 全量使用被插桩 helper 的
+  失败记录保留，新未插桩 helper 尚未完成全量验收；详见 `docs/qnx_compat.md` §6.8。
+- **shaderc 定向修复**：上游 `new std::mutex` 的 8 字节永久分配已由
+  `engine/tools/qnx/shaderc-qnx.patch` 改为静态 mutex，AArch64/x86 均构建完成。
+  ARM 定向 `test_qnx_shaderc` 2/2 且 `shaderc=0`，无未预期 LSan；故意 123 字节
+  泄漏负向仍检出，见 `build-validation/qnx-arm-asan-static-mutex-target.log`。
+  不得据此写成 shaderc 全量 ARM 或 ARM ASan 全清单通过。
+- **部署与获取门禁**：部署与运行器主机测试现为 **29/29**，包含新增
+  `__pycache__`/`*.pyc` 缓存排除红绿用例，见
+  `build-validation/qnx-arm-runtime-host-current.log`；tar/loopback 部署包已排除这些
+  缓存。`fetch_angle_qnx.sh` 完整网络获取仍受 Google/CIPD 可达性、Python 3.14
+  `ast.Str` 兼容和 LLVM Gitiles 映射阻塞，不能称成功。
+- **未覆盖边界与后续门禁**：`_LIBCPP_HAS_NO_ASAN` 容器注解、Khronos validation、
+  物理 GPU/原生 surface、QNX TSan、硬实时和绝对最优仍未验证；原生 OS
+  clipboard/IME 仍未验证，应用级 IPC 不冒充系统能力。历史失败记录不改写为通过；
+  2026-11-20 已完成同树 Linux 三配置 235/235 与 QNX x86_64 目标机 191/191 复验并
+  推送/合并；ARM 完整 Vulkan、ARM ASan、新 helper 全量仍作为后续里程碑边界。
+
 ## 本轮更新：Stage 4 Scene Editor — 资源浏览器图片预览与纹理热加载（2026-10-28）
 
 - **交付**：资源浏览器点击 `.png/.jpg/.jpeg/.bmp/.tga` 在列表下方打开预览（尺寸/状态文字 + 等比显示的图片）；外部修改该文件后自动重载。`break_editor_image`（stb_image 头部探测与 RGBA8 解码，单边 0 或超过 4096 一律拒绝）；`editor_image_preview`（资源面板持有）：Runtime Core 重载协调器（1 个 worker）+ 挂在文件所在目录的 VFS + 该文件的监视；worker 只探测头部，owner 线程在 commit 钩子里解码（Runtime Core 钩子只传原始字节，4096 上限约束解码耗时），shell tick 里先建新 `RHITexture` 成功后再销毁旧的；任何失败（读不到、探测、解码、建纹理）都保留当前纹理；每 tick 泵提交队列。同目录换文件取消在途请求并改监视，跨目录重建协调器；无设备时仍解码并报告尺寸，接上设备时上传一次。新增 i18n 键 6 个（中英）。
@@ -10013,4 +10094,144 @@ clipboard/IME, or myui GPU mount. Its virtual display driver rejects cursor
 configuration, so only NOT_SUPPORTED and resource cleanup are exercised there;
 positive physical cursor behavior remains unverified. A separate test disk resolves
 deployment capacity without modifying the original VM disk. See docs/qnx_compat.md
-§5.4 for the evidence levels and remaining master-merge gate.
+§5.5 for the evidence levels and remaining master-merge gate.
+
+After the latest upstream merge, Linux normal, ASan/UBSan and TSan are each 226/226,
+with graphics 4/4. QNX x86_64 passes 187/187 default and 188/188 Vulkan target
+commands, including the new crypto/update/crash/editor cases; crash itself is 36/36
+in normal and sanitizer configurations. Screen remains 40/40 per configuration,
+and both 30-second soaks retain balanced command/frame lifetimes with no watchdog,
+FIFO or error failures. These latest results do not remove the hardware and OS
+capability boundaries above.
+
+The ownership follow-up releases demo child references, RHI test-helper devices,
+and the explorer PAL loop/canvas in lifecycle order; CTest no longer disables leak
+detection for the widget demo and explorer selftests. Linux normal, ASan/UBSan and
+TSan remain 226/226, graphics is 4/4, and real X11 close/palshot runs pass ASan.
+QNX editor i18n/shell pass 7/7 and 81/81 under ASan after giving test-owned putenv
+strings explicit lifetimes. The initial full QNX ASan manifest was 184/187: three
+crypto/update commands reproduced a QNX libc TLS-array realloc/ASan reentry
+fault, also reproduced by a standalone TLS probe without project or OpenSSL code.
+
+After merging the image-preview upstream line (b8a36b65), Linux normal,
+ASan/UBSan and TSan are 227/227, with graphics 4/4. QNX x86_64 passes 188/188
+default and 189/189 Vulkan target commands, including the new image tests.
+AArch64 default, Vulkan and Screen full-tree builds pass; these remain compile-only
+results without ARM runtime. The six Screen commands are 40/40 in normal and ASan
+modes, with display/input 3/3 and 4/4 and software rendering 50/50; timer budgets
+and command/frame lifetime balances hold in both modes.
+
+The final full QNX ASan/UBSan manifest is 189/189, including the TLS-capacity
+selftest. The SDP 8.0 test-only shim reserves main-thread TLS capacity without
+replacing allocator functions or disabling checks; its worker regression uses
+explicit scoped enter/leave after OPENSSL_thread_stop. Overflow and leak negative
+controls still fail as required. This restores the three original crypto/update
+test runs (20/20, 19/19, 43/43), but is not a generic runtime or arbitrary-thread
+fix. GPU/ARM runtime, physical devices, QNX TSan, full OS clipboard/IME and myui
+GPU mounting remain outside the verified envelope; this is not full acceptance.
+A follow-up thread-exit probe also showed __cxa_thread_atexit running before the
+pthread key destructor, so it is not a safe generic TLS restoration point. Public
+SDP 8.0.5 OS-library notes provide no evidence of this ASan fix; no unsupported
+libc hook or unverified SDK upgrade was introduced.
+
+A separate non-VMware ARM runtime is now available in the local validation area.
+It uses the pinned community qemu-virt BSP, QNX SDP 8.0 and workspace-local QEMU,
+not physical ARM hardware. The IFS load address and FDT handoff are corrected;
+a real SMP2 failure was fixed with PSCI/HVC CPU_ON, and both the repeated minimal
+boots and the self-contained test VM show two Cortex-A72 processors through
+`pidin info`. The missing ARM `devb-virtio` is not replaced by an unrelated binary:
+deployment instead uses an explicit 256 MiB devf-ram filesystem and SSH. ARM default
+(188), Vulkan (189) and Screen manifests have been generated. The first full default
+run completed 174/188: 14 real failures cover runtime libraries, source lookup,
+RTC and performance/concurrency; these are being fixed and retested, not waived.
+The PL031 RTC fix passes the timestamp test 136/136 and platform time test 4/4.
+`run_arm_qemu.sh`, `build_arm_runtime.py` and the PSCI patch make the runtime
+reproducible, and the generator's four host-side tests pass. The nine original
+library/resource failures pass on ARM, and editor_shell/shader_io now pass
+86/86 and 59/59 respectively. SwiftShader CPU Vulkan builds for QNX x86_64 and
+renders a real 64x64 offscreen image with all 4096 readback pixels matching;
+MemFd and CPU/LLVM JIT enumeration are verified. This is not a native surface or
+GPU result: VK_QNX_screen_surface is absent, engine integration and the ARM
+build are still being tested, and Screen mounting is not accepted yet. See
+docs/qnx_compat.md §6.5 for the evidence boundary and continued full-suite gates.
+
+## QNX software-rendering follow-up (2026-10-29)
+
+The current worktree has additional bounded evidence, not a master-merge approval.
+On x86_64 QNX, the complete SwiftShader `test_vulkan` finished in 806 seconds with
+exit status zero; the material, golden/camera, compute, deferred, culling and full
+stress scenarios were retained. The golden MAE/max values are 0.33/1 and 0.64/1.
+No Khronos validation layer is available, so the validation gate explicitly remains
+inactive rather than being counted as a pass. The 20-file SwiftShader patch has
+forward, reverse and per-file consistency checks. ARM offscreen and RT probes are
+not a substitute for the still incomplete full ARM run.
+
+Linux normal, ASan/UBSan and TSan each pass 234/234 on the current shared-code
+changes. Normal and sanitizer graphics use an isolated Xvfb server; the GNOME
+fullscreen race was reproduced, not removed from the suite. ASan also exposed a
+real OpenGL depth-cubemap leak: creation registers `RHI_RES_CUBEMAP`, but destruction
+looked up `RHI_RES_TEXTURE` and leaked the texture wrapper. The new 32-lifecycle
+test reproduced 32 leaked objects before the type correction and now passes 3/3
+in normal and ASan/UBSan configurations with every resource slot returned.
+
+The x86 normal and ASan/UBSan 30-second Screen soaks each balance about 3.84 million
+submitted, executed and destroyed commands with zero errors or watchdogs. The ARM
+normal run is 3/3 with 3,135,804 balanced commands. ARM full Vulkan remains a
+separate performance/correctness gate: instrumented initial stress frames took
+roughly 95 and 86 seconds, so the previous 1800-second timeout cannot be represented
+as a completed run. ANGLE/pbuffer GLES mounting is still being validated with real
+EGL and pixel readback. Physical GPU, native Vulkan surface, QNX TSan, native OS
+clipboard/IME and hardware cursor are not claimed by these results. See
+`docs/qnx_compat.md` for the current evidence levels and pending merge gates.
+
+## QNX validation follow-up (2026-11-02)
+
+The resumed candidate is not ready to commit or merge. Linux normal and
+ASan/UBSan/LSan each pass 234/234; the sanitizer run uses an explicit 32 MiB
+stack limit because the optimized test executables otherwise overflow the
+default 8 MiB stack. An exact instrumented Mesa build proved a real llvmpipe
+`lp_fence_signal`/`lp_fence_signalled` race, not an engine bug or an
+uninstrumented-driver false positive. A local Mesa-only mutex fix passes the
+full Linux TSan suite 234/234 and the ordinary complete graphics scenario.
+The system Mesa is deliberately unchanged and still has the defect; the green
+result applies only to the explicitly selected experimental driver and needs
+upstream Mesa review, not an engine `glFinish` workaround or TSan suppression.
+
+The Screen event queue now uses a mutex and detaches bounded FIFO batches for
+out-of-lock dispatch. The unthrottled watchdog failure is retained as a red
+receipt. The full normal QNX stability test passes 3/3, including 500 complete
+lifecycles and a 30-second four-producer soak, with zero watchdogs. The latest
+full normal run returns about 242–267 microseconds after the deadline callback;
+the concurrency suite also covers post-destroy delivery and nested wakeups and
+passes 3/3. These are bounded virtual-machine results, not absolute real-time
+or performance guarantees.
+
+The true instrumented ANGLE build is complete, but QNX cannot load it because
+`__sanitizer_annotate_double_ended_contiguous_container` is missing from the
+current SDP ASan runtime. Its test reports 1/5 functional cases plus leaks;
+these are not accepted as GLES results. The correctly enabled myui Vulkan ASan
+test executes all 11 functional cases, then LSan reports 13 allocations totalling
+945152 bytes in the ICD loading path. Isolated loader probes are still running;
+the earlier LargeMmap failure did not recur in this run, which is not proof that
+its root cause is fixed.
+
+The first current ARM deployment completed 184/192 headless commands. Eight
+failures are retained: six missing `libshaderc_shared.so.1` loads and two
+Khronos configuration/ICD failures. The complete
+`test_vulkan` is graphics-labelled and was not part of this 192-command manifest;
+it remains a separate mandatory ARM gate.
+
+Current x86 default and Vulkan manifests pass 191/191 and 192/192 with the
+explicit software runtime. The ARM closure redeploy passed the original missing
+library cases, then exhausted all 12000 inodes and finished 172/192 despite free
+bytes. Deployment now includes only the 185 distinct command programs plus the
+full `test_vulkan`, excludes `CMakeFiles`, and is being retested on a fresh
+30000-inode VM; the old failed deployment is preserved. An opt-in ASan target
+lock has red/green coverage and the Python deployment/suite tests pass 17/17.
+
+ANGLE GLES now passes 5/5 with a distinct QNX ASan toolchain, but still reports
+2205 bytes in 40 allocations. The pixel probe also reproduced LargeMmap while
+another sanitizer probe was active, so a strict single-sanitizer run and target
+lock are required before assigning a root cause. The C++ emergency-pool probe
+is still separating the test TLS helper from the QNX runtime. These open gates
+still prohibit any push or master merge.

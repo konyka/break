@@ -114,12 +114,12 @@ bool engine_frame(Engine *e) {
     if (e->delta_time > 0.1) e->delta_time = 0.1;
     e->last_frame_us = now_us;
     e->frame_count++;
-    e->fps_accum += e->delta_time;
+    e->fps_accum += e->raw_delta_time;
     e->fps_frames++;
 
     if (e->fps_accum >= 0.5) {
         e->fps = (f64)e->fps_frames / e->fps_accum;
-        LOG_INFO("Frame %llu | %.0f FPS | %.3f ms/frame",
+        LOG_INFO("Frame %llu | %.2f FPS | %.3f ms/frame",
                  (unsigned long long)e->frame_count, e->fps,
                  e->fps_accum * 1000.0 / (f64)e->fps_frames);
         e->fps_accum = 0.0;

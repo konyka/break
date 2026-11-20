@@ -1,4 +1,5 @@
 #include "test_framework.h"
+#include "test_qnx_spawn.h"
 #include <script/break_lua.h>
 #include <script/break_lua_test_hooks.h>
 #include <core/platform_thread.h>
@@ -278,24 +279,25 @@ TEST(batch_create_capacity_validation)
     break_lua_ecs_batch_destroy(NULL); /* NULL destroy is a no-op */
 }
 
+static int batch_double_destroy_child_main(void)
+{
+    BreakLuaEcsBatch *b = break_lua_ecs_batch_create(8u);
+    if (!b) return 2;
+    break_lua_ecs_batch_destroy(b);
+    break_lua_ecs_batch_destroy(b);
+    return 0;
+}
+
 TEST(batch_double_destroy_aborts_in_test_builds)
 {
 #if !defined(_WIN32)
-    pid_t pid = fork();
-    if (pid == 0) {
-        BreakLuaEcsBatch *b = break_lua_ecs_batch_create(8u);
-        if (!b) {
-            _exit(2); /* create itself failed: not the path under test */
-        }
-        break_lua_ecs_batch_destroy(b);
-        break_lua_ecs_batch_destroy(b); /* contract violation: must abort */
-        _exit(0); /* reached only if double destroy was NOT rejected */
-    }
+    pid_t pid = test_qnx_spawn_death_child(batch_double_destroy_child_main);
     ASSERT_TRUE(pid > 0);
     {
         int status = 0;
         ASSERT_EQ(waitpid(pid, &status, 0), pid);
         ASSERT_TRUE(WIFSIGNALED(status));
+        ASSERT_EQ(WTERMSIG(status), SIGABRT);
     }
     /* The parent registry is unaffected: normal lifecycle still works. */
     {
@@ -1431,7 +1433,7 @@ TEST(budget_trip_count_tracks_and_reload_recovers)
     break_lua_runtime_destroy(rt);
 }
 
-TEST_MAIN_BEGIN()
+TEST_QNX_SPAWN_MAIN_BEGIN(batch_double_destroy_child_main)
     RUN_TEST(batch_create_capacity_validation);
     RUN_TEST(batch_double_destroy_aborts_in_test_builds);
     RUN_TEST(batch_allocation_failure_injection_is_bounded);

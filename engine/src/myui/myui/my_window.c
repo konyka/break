@@ -633,26 +633,97 @@ static my_ret_t window_enable_gpu_soft(my_window_t* win) {
 }
 
 /* ---------------- vulkan present adapter (M25b) ----------------
- * Mounts my_vgcanvas_vulkan_present() as the GL-adapter swap_buffers so
- * the window's present protocol (make_current -> paint -> swap) works
- * unchanged. */
+ * Windowed canvases present through Vulkan. An explicitly surfaceless PAL
+ * instead presents an offscreen canvas by copying its RGBA readback to the LCD. */
 
 typedef struct vk_present_adapter_t {
   my_pal_gl_t base;
   my_vgcanvas_t* vg;    /**< borrowed (owned by the window) */
-  my_pal_window_t* win; /**< borrowed (for get_size) */
+  my_pal_window_t* win; /**< borrowed (for get_size and the LCD) */
   my_pal_t* pal;        /**< borrowed (for the current display scale) */
   const my_allocator_t* allocator;
+  uint8_t* staging;
+  int32_t width;
+  int32_t height;
   float scale;
+  bool offscreen;
+  bool readback_ready;
 } vk_present_adapter_t;
+
+static bool vk_adapter_size_valid(int32_t width, int32_t height) {
+  return width > 0 && height > 0 && width <= INT32_MAX / 4 &&
+         (size_t)(uint32_t)height <=
+             SIZE_MAX / ((size_t)(uint32_t)width * 4u);
+}
+
+static my_ret_t vk_adapter_scaled_size(int32_t logical_w, int32_t logical_h,
+                                       float scale, int32_t* w, int32_t* h) {
+  double scaled_w = (double)logical_w * (double)scale + 0.5;
+  double scaled_h = (double)logical_h * (double)scale + 0.5;
+  int32_t drawable_w;
+  int32_t drawable_h;
+  if (scaled_w != scaled_w || scaled_h != scaled_h || scaled_w < 1.0 ||
+      scaled_h < 1.0 || scaled_w > (double)INT32_MAX ||
+      scaled_h > (double)INT32_MAX) {
+    return MY_RET_FAIL;
+  }
+  drawable_w = (int32_t)scaled_w;
+  drawable_h = (int32_t)scaled_h;
+  if (!vk_adapter_size_valid(drawable_w, drawable_h)) {
+    return MY_RET_FAIL;
+  }
+  if (w != NULL) *w = drawable_w;
+  if (h != NULL) *h = drawable_h;
+  return MY_RET_OK;
+}
+
+static bool vk_adapter_is_surfaceless(
+    const my_pal_vulkan_instance_extensions_t* extensions) {
+  return extensions->count == 2u &&
+         strcmp(extensions->names[0], "VK_KHR_surface") == 0 &&
+         strcmp(extensions->names[1], "VK_EXT_headless_surface") == 0;
+}
 
 static my_ret_t vk_adapter_make_current(my_pal_gl_t* gl) {
   (void)gl; /* no-op: the vulkan backend needs no current context */
   return MY_RET_OK;
 }
 
+static my_ret_t vk_adapter_present_offscreen(vk_present_adapter_t* adapter) {
+  my_lcd_t* lcd;
+  my_ret_t result;
+  my_ret_t end_result;
+  if (adapter->staging == NULL ||
+      !vk_adapter_size_valid(adapter->width, adapter->height)) {
+    return MY_RET_FAIL;
+  }
+  if (!adapter->readback_ready) {
+    result = my_vgcanvas_vulkan_readback(adapter->vg, adapter->staging,
+                                         adapter->width, adapter->height);
+    if (result != MY_RET_OK) return result;
+    adapter->readback_ready = true;
+  }
+  lcd = my_pal_window_get_lcd(adapter->win);
+  if (lcd == NULL || my_lcd_get_width(lcd) != (uint32_t)adapter->width ||
+      my_lcd_get_height(lcd) != (uint32_t)adapter->height) {
+    return MY_RET_FAIL;
+  }
+  result = my_lcd_begin_frame(lcd, NULL);
+  if (result != MY_RET_OK) return result;
+  result = my_lcd_draw_pixels(lcd, adapter->staging, 0, 0,
+                              (uint32_t)adapter->width,
+                              (uint32_t)adapter->height);
+  end_result = my_lcd_end_frame(lcd);
+  if (result != MY_RET_OK) return result;
+  if (end_result != MY_RET_OK) return end_result;
+  adapter->readback_ready = false;
+  return MY_RET_OK;
+}
+
 static my_ret_t vk_adapter_swap(my_pal_gl_t* gl) {
-  return my_vgcanvas_vulkan_present(((vk_present_adapter_t*)gl)->vg);
+  vk_present_adapter_t* adapter = (vk_present_adapter_t*)gl;
+  return adapter->offscreen ? vk_adapter_present_offscreen(adapter)
+                            : my_vgcanvas_vulkan_present(adapter->vg);
 }
 
 static my_ret_t vk_adapter_get_size(my_pal_gl_t* gl, int32_t* w, int32_t* h) {
@@ -670,13 +741,7 @@ static my_ret_t vk_adapter_get_size(my_pal_gl_t* gl, int32_t* w, int32_t* h) {
       scale = current_scale;
     }
   }
-  if (w != NULL) {
-    *w = (int32_t)((float)logical_w * scale + 0.5f);
-  }
-  if (h != NULL) {
-    *h = (int32_t)((float)logical_h * scale + 0.5f);
-  }
-  return MY_RET_OK;
+  return vk_adapter_scaled_size(logical_w, logical_h, scale, w, h);
 }
 
 static bool vk_adapter_has_multisample(my_pal_gl_t* gl) {
@@ -691,9 +756,38 @@ static bool vk_adapter_has_multisample(my_pal_gl_t* gl) {
   return caps.active_antialias_level > 0u;
 }
 
+static my_ret_t vk_adapter_resize(vk_present_adapter_t* adapter, int32_t width,
+                                  int32_t height) {
+  uint8_t* staging;
+  my_ret_t result;
+  if (!vk_adapter_size_valid(width, height)) return MY_RET_INVALID_PARAMS;
+  if (!adapter->offscreen) {
+    return my_vgcanvas_vulkan_resize(adapter->vg, width, height);
+  }
+  if (adapter->width == width && adapter->height == height) {
+    return my_vgcanvas_vulkan_resize(adapter->vg, width, height);
+  }
+  staging = (uint8_t*)my_mem_alloc(
+      adapter->allocator, (size_t)(uint32_t)width * (size_t)(uint32_t)height *
+                              4u);
+  if (staging == NULL) return MY_RET_OOM;
+  result = my_vgcanvas_vulkan_resize(adapter->vg, width, height);
+  if (result != MY_RET_OK) {
+    my_mem_free(adapter->allocator, staging);
+    return result;
+  }
+  my_mem_free(adapter->allocator, adapter->staging);
+  adapter->staging = staging;
+  adapter->width = width;
+  adapter->height = height;
+  adapter->readback_ready = false;
+  return MY_RET_OK;
+}
+
 static void vk_adapter_destroy(my_pal_gl_t* gl) {
   vk_present_adapter_t* a = (vk_present_adapter_t*)gl;
   if (a != NULL) {
+    my_mem_free(a->allocator, a->staging);
     my_mem_free(a->allocator, a); /* the vgcanvas is NOT ours */
   }
 }
@@ -704,13 +798,14 @@ static const my_pal_gl_vtable_t VK_ADAPTER_VTABLE = {
 
 static my_ret_t window_enable_gpu_vulkan(my_window_t* win) {
   void* inst;
-  void* surf;
+  void* surf = NULL;
   my_pal_vulkan_instance_extensions_t instance_extensions;
   const char* extension_names[MYUI_VULKAN_MAX_INSTANCE_EXTENSIONS];
   uint32_t extension_index;
   my_vgcanvas_t* vg;
   vk_present_adapter_t* ad;
   int32_t w = 0, h = 0;
+  bool offscreen;
   if (win->gpu_backend == MY_GPU_VULKAN && win->gl != NULL &&
       win->vg != NULL) {
     return MY_RET_OK;
@@ -732,34 +827,55 @@ static my_ret_t window_enable_gpu_vulkan(my_window_t* win) {
   if (inst == NULL) {
     return MY_RET_NOT_SUPPORTED;
   }
-  surf = my_pal_window_vk_create_surface(win->pal_window, inst);
-  if (surf == NULL) {
-    my_vgcanvas_vulkan_instance_release();
-    return MY_RET_NOT_SUPPORTED;
+  offscreen = vk_adapter_is_surfaceless(&instance_extensions);
+  if (!offscreen) {
+    surf = my_pal_window_vk_create_surface(win->pal_window, inst);
+    if (surf == NULL) {
+      my_vgcanvas_vulkan_instance_release();
+      return MY_RET_NOT_SUPPORTED;
+    }
   }
-  my_pal_window_get_size(win->pal_window, &w, &h);
-  w = (int32_t)((float)w * win->scale + 0.5f);
-  h = (int32_t)((float)h * win->scale + 0.5f);
-  vg = my_vgcanvas_vulkan_create(win->allocator, surf, w > 0 ? w : 1,
-                                 h > 0 ? h : 1);
+  if (my_pal_window_get_size(win->pal_window, &w, &h) != MY_RET_OK ||
+      vk_adapter_scaled_size(w, h, win->scale, &w, &h) != MY_RET_OK) {
+    if (surf != NULL) my_vgcanvas_vulkan_destroy_surface(surf);
+    my_vgcanvas_vulkan_instance_release();
+    return MY_RET_FAIL;
+  }
+  ad = (vk_present_adapter_t*)my_mem_calloc(win->allocator, 1,
+                                            sizeof(vk_present_adapter_t));
+  if (ad == NULL) {
+    if (surf != NULL) my_vgcanvas_vulkan_destroy_surface(surf);
+    my_vgcanvas_vulkan_instance_release();
+    return MY_RET_OOM;
+  }
+  ad->base.vtable = &VK_ADAPTER_VTABLE;
+  ad->win = win->pal_window;
+  ad->pal = win->pal;
+  ad->allocator = win->allocator;
+  ad->width = w;
+  ad->height = h;
+  ad->scale = win->scale;
+  ad->offscreen = offscreen;
+  if (offscreen) {
+    ad->staging = (uint8_t*)my_mem_alloc(
+        win->allocator, (size_t)(uint32_t)w * (size_t)(uint32_t)h * 4u);
+    if (ad->staging == NULL) {
+      my_mem_free(win->allocator, ad);
+      my_vgcanvas_vulkan_instance_release();
+      return MY_RET_OOM;
+    }
+  }
+  vg = offscreen ? my_vgcanvas_vulkan_create_offscreen(win->allocator, w, h)
+                 : my_vgcanvas_vulkan_create(win->allocator, surf, w, h);
   if (vg == NULL) {
-    my_vgcanvas_vulkan_destroy_surface(surf);
+    my_mem_free(win->allocator, ad->staging);
+    my_mem_free(win->allocator, ad);
+    if (surf != NULL) my_vgcanvas_vulkan_destroy_surface(surf);
     my_vgcanvas_vulkan_instance_release();
     return MY_RET_FAIL;
   }
   my_vgcanvas_vulkan_instance_release();
-  ad = (vk_present_adapter_t*)my_mem_calloc(win->allocator, 1,
-                                            sizeof(vk_present_adapter_t));
-  if (ad == NULL) {
-    my_vgcanvas_destroy(vg); /* destroys the surface with it */
-    return MY_RET_OOM;
-  }
-  ad->base.vtable = &VK_ADAPTER_VTABLE;
   ad->vg = vg;
-  ad->win = win->pal_window;
-  ad->pal = win->pal;
-  ad->allocator = win->allocator;
-  ad->scale = win->scale;
   window_release_gpu_resources(win);
   win->vg = vg;
   win->vg_owned = true;
@@ -1064,6 +1180,9 @@ void my_window_paint(my_window_t* win) {
     my_rect_union(&dirty_bounds, my_dirty_rects_get(&win->dirty, i),
                   &dirty_bounds);
   }
+  if (win->gl != NULL && my_pal_gl_make_current(win->gl) != MY_RET_OK) {
+    goto done;
+  }
   if (my_vgcanvas_begin_frame(vg, &dirty_bounds) != MY_RET_OK) {
     goto done;
   }
@@ -1077,8 +1196,8 @@ void my_window_paint(my_window_t* win) {
     my_window_restore_dirty(win, &frame_dirty);
     goto done;
   }
-  if (win->gl != NULL) {
-    my_pal_gl_swap_buffers(win->gl);
+  if (win->gl != NULL && my_pal_gl_swap_buffers(win->gl) != MY_RET_OK) {
+    my_window_restore_dirty(win, &frame_dirty);
   }
 done:
   my_widget_unref((my_widget_t*)held_win);
@@ -1326,6 +1445,7 @@ my_ret_t my_window_on_pal_event(my_window_t* win, const my_event_t* event) {
   my_window_t* held_win;
   int32_t drawable_w;
   int32_t drawable_h;
+  my_ret_t result = MY_RET_OK;
   if (win == NULL || event == NULL) {
     return MY_RET_INVALID_PARAMS;
   }
@@ -1356,7 +1476,8 @@ my_ret_t my_window_on_pal_event(my_window_t* win, const my_event_t* event) {
           drawable_h = event->u.resize.h;
         }
         if (win->gpu_backend == MY_GPU_VULKAN) {
-          my_vgcanvas_vulkan_resize(win->vg, drawable_w, drawable_h);
+          result = vk_adapter_resize((vk_present_adapter_t*)win->gl,
+                                     drawable_w, drawable_h);
         } else {
           my_pal_gl_make_current(win->gl);
           my_vgcanvas_gles2_resize(win->vg, drawable_w, drawable_h);
@@ -1390,5 +1511,5 @@ my_ret_t my_window_on_pal_event(my_window_t* win, const my_event_t* event) {
    * pointer motion) then cost at most one repaint per frame instead of one
    * full repaint per event. */
   my_widget_unref((my_widget_t*)held_win);
-  return MY_RET_OK;
+  return result;
 }

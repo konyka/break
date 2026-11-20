@@ -6,7 +6,7 @@ per runnable headless test, rewritten for the on-target deployment layout:
 
   - keeps tests whose command[0] is a built ELF binary (drops cmake -P
     script tests, which need the host CMake runtime)
-  - drops graphics/fuzz-labelled tests
+  - drops graphics/fuzz-labelled tests and host_tools-only checks
   - prefixes WILL_FAIL tests with EXPECT_FAIL (run_target_suite.sh treats a
     nonzero exit as the pass condition for those)
   - rewrites the build dir to '.' (run from the binary directory) and the
@@ -31,14 +31,14 @@ def main():
     build, repo, target_root, out_path = sys.argv[1:5]
 
     info = json.loads(subprocess.run(
-        ["ctest", "--test-dir", build, "-N", "-LE", "graphics|fuzz",
+        ["ctest", "--test-dir", build, "-N", "-LE", "graphics|fuzz|host_tools",
          "--show-only", "json-v1"],
         capture_output=True, text=True, check=True).stdout)
 
     lines = []
     for t in info["tests"]:
         labels = [l for l in t.get("labels", []) if l not in ("headless",)]
-        if any(l in ("graphics", "fuzz") for l in labels):
+        if any(l in ("graphics", "fuzz", "host_tools") for l in labels):
             continue
         cmd = t.get("command") or []
         if not cmd:

@@ -2,6 +2,7 @@
 
 #include "platform/platform.h"
 #include "rhi/rhi.h"
+#include "rhi/rhi_backend_internal.h"
 
 #include <X11/Xlib.h>
 
@@ -151,6 +152,50 @@ TEST(x11_gl_f16_cubemap_roundtrip)
     platform_destroy(platform);
 }
 
+TEST(x11_gl_depth_cubemap_lifecycle_releases_all_slots)
+{
+    const PlatformConfig config = {.width = 320, .height = 240,
+                                   .title = "Break GL depth cube lifecycle"};
+    Platform *platform = platform_create(&config);
+    RHIDevice *device = NULL;
+    u32 drawable_width = 0u, drawable_height = 0u;
+    u32 used = 0u, capacity = 0u;
+    u32 iteration;
+
+    if (platform == NULL) {
+        printf("  FAIL: platform_create returned NULL\n");
+        g_test_fail++;
+        return;
+    }
+    platform_get_drawable_size(platform, &drawable_width, &drawable_height);
+    device = rhi_device_create(RHI_BACKEND_OPENGL,
+                               platform_window_native(platform),
+                               platform_display_native(platform),
+                               drawable_width, drawable_height);
+    if (device == NULL) {
+        g_runtime_skip = true;
+        platform_destroy(platform);
+        return;
+    }
+    ASSERT_TRUE(rhi_device_resource_usage(device, &used, &capacity));
+    ASSERT_EQ(used, 0u);
+    for (iteration = 0u; iteration < 32u; ++iteration) {
+        RHICubemapDepthFBO fbo = rhi_cubemap_depth_fbo_create(device, 4u);
+        RHIHandle depth;
+        ASSERT_TRUE(rhi_handle_valid(fbo.fb));
+        ASSERT_TRUE(rhi_handle_valid(fbo.depth_tex));
+        depth = fbo.depth_tex;
+        rhi_cubemap_depth_fbo_destroy(device, &fbo);
+        ASSERT_FALSE(rhi_handle_valid(fbo.fb));
+        ASSERT_FALSE(rhi_handle_valid(fbo.depth_tex));
+        ASSERT_TRUE(rhi_device_resource_usage(device, &used, NULL));
+        ASSERT_EQ(used, 0u);
+        ASSERT_FALSE(device->slots[depth.index].alive);
+    }
+    rhi_device_destroy(device);
+    platform_destroy(platform);
+}
+
 int main(void)
 {
     if (!x11_runtime_available()) {
@@ -160,6 +205,7 @@ int main(void)
     printf("=== Running Tests ===\n");
     RUN_TEST(x11_glx_damage_frame_lifecycle);
     RUN_TEST(x11_gl_f16_cubemap_roundtrip);
+    RUN_TEST(x11_gl_depth_cubemap_lifecycle_releases_all_slots);
     if (g_runtime_skip && g_test_fail == 0) {
         printf("SKIP: OpenGL/GLX runtime is unavailable\n");
         return 77;

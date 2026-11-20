@@ -38,6 +38,14 @@
 #include <signal.h>
 #endif
 
+#if defined(__QNXNTO__)
+#define TEST_QNX_SPAWN_HELPERS_ONLY
+#include "test_qnx_spawn.h"
+#undef TEST_QNX_SPAWN_HELPERS_ONLY
+#include <errno.h>
+#include <spawn.h>
+#endif
+
 #ifndef __has_feature
 #define __has_feature(x) 0
 #endif
@@ -1872,7 +1880,7 @@ TEST(upload_retention_overflow_removes_sidecar) {
     rm_tree(root);
 }
 
-/* ---- Task 2: signal capture (fork + waitpid; children die by signal) ---- */
+/* ---- Task 2: signal capture (child process + waitpid; children die by signal) ---- */
 
 #if !defined(_WIN32)
 
@@ -1901,7 +1909,7 @@ static void blob_pattern_fill(u8 *out, usize n) {
 }
 
 /* Child bodies: plain code + _exit only (never ASSERT, never return into the
- * test main, never stdio — fork duplicated the parent's buffers). Distinct
+ * test main, never stdio — keep harness output out of crash records). Distinct
  * exit codes pinpoint the failed step; 90 = body returned without dying. */
 
 static void child_segv_null(const char *root) {
@@ -2006,14 +2014,101 @@ static void child_uninstalled_segv(const char *root) {
     _exit(43);
 }
 
-static pid_t spawn_child(void (*fn)(const char *), const char *root) {
+typedef void (*CrashChildFn)(const char *root);
+
+static const char *crash_program_path;
+
+static int crash_child_dispatch(const char *mode, const char *root) {
+    CrashChildFn fn = NULL;
+    if (strcmp(mode, "segv") == 0) fn = child_segv_null;
+    else if (strcmp(mode, "abrt") == 0) fn = child_abrt;
+    else if (strcmp(mode, "blob") == 0) fn = child_blob_segv;
+    else if (strcmp(mode, "double-install") == 0) fn = child_double_install;
+    else if (strcmp(mode, "uninstalled") == 0) fn = child_uninstalled_segv;
+    if (!fn) return 91;
+    fn(root);
+    return 90;
+}
+
+#if defined(__QNXNTO__)
+static const char *crash_child_mode(CrashChildFn fn) {
+    if (fn == child_segv_null) return "segv";
+    if (fn == child_abrt) return "abrt";
+    if (fn == child_blob_segv) return "blob";
+    if (fn == child_double_install) return "double-install";
+    if (fn == child_uninstalled_segv) return "uninstalled";
+    return NULL;
+}
+#endif
+
+static pid_t spawn_child(CrashChildFn fn, const char *root) {
+    fflush(NULL);
+#if defined(__QNXNTO__)
+    const char *mode = crash_child_mode(fn);
+    const char *path;
+    posix_spawnattr_t attributes;
+    char *arguments[5];
+    char **child_envp;
+    pid_t pid = -1;
+    int result;
+    if (!mode) {
+        printf("\n  unknown crash child mode\n");
+        rm_tree(root);
+        return -1;
+    }
+    path = getenv("BREAK_QNX_DEATH_CHILD");
+    if (!path || !path[0]) path = crash_program_path;
+    result = posix_spawnattr_init(&attributes);
+    if (result != 0) {
+        printf("\n  posix_spawnattr_init failed: error=%d (%s)\n",
+               result, strerror(result));
+        rm_tree(root);
+        return -1;
+    }
+    result = posix_spawnattr_setaslr(&attributes, POSIX_SPAWN_ASLR_DISABLE);
+    if (result != 0) {
+        printf("\n  posix_spawnattr_setaslr failed: error=%d (%s)\n",
+               result, strerror(result));
+        (void)posix_spawnattr_destroy(&attributes);
+        rm_tree(root);
+        return -1;
+    }
+    arguments[0] = (char *)path;
+    arguments[1] = (char *)"--qnx-crash-child";
+    arguments[2] = (char *)mode;
+    arguments[3] = (char *)root;
+    arguments[4] = NULL;
+    child_envp = test_qnx_spawn_child_envp(getenv("BREAK_QNX_DEATH_CHILD"));
+    if (child_envp == NULL) {
+        result = ENOMEM;
+    } else {
+        result = posix_spawn(&pid, path, NULL, &attributes, arguments, child_envp);
+    }
+    test_qnx_spawn_child_envp_destroy(child_envp);
+    (void)posix_spawnattr_destroy(&attributes);
+    if (result != 0) {
+        printf("\n  posix_spawn(%s) failed: error=%d (%s)\n",
+               path, result, strerror(result));
+        rm_tree(root);
+        return -1;
+    }
+    return pid;
+#else
     pid_t pid = fork();
     if (pid == 0) {
         fn(root);
         _exit(90);
     }
     return pid;
+#endif
 }
+
+#define CRASH_TEST_MAIN_BEGIN() int main(int argc, char **argv) { \
+    crash_program_path = argv[0]; \
+    if (argc == 4 && strcmp(argv[1], "--qnx-crash-child") == 0) { \
+        _exit(crash_child_dispatch(argv[2], argv[3])); \
+    } \
+    printf("=== Running Tests ===\n");
 
 static int wait_status(pid_t pid) {
     int st = 0;
@@ -2133,9 +2228,9 @@ TEST(crash_segv_captures_record) {
     break_crash_record_destroy(r);
     /* privacy-by-omission pin: the argv/env strings block at the top of the
      * initial stack must NOT appear in the window — HOME is an original
-     * stack-zone env string of this very process tree (fork-inherited by
-     * the child), so without the zone clamp its hex encoding would be in
-     * the record here. Skipped when HOME is absent/short. */
+     * stack-zone env string inherited through the child process environment,
+     * so without the zone clamp its hex encoding would be in the record here.
+     * Skipped when HOME is absent/short. */
     const char *home = getenv("HOME");
     if (home) {
         ASSERT_FALSE(raw_contains_hex_of(rec, (usize)rlen, home));
@@ -2308,7 +2403,7 @@ TEST(crash_recovery_upload_end_to_end) {
 
 /* -------------------------------------------------------------------------- */
 
-TEST_MAIN_BEGIN()
+CRASH_TEST_MAIN_BEGIN()
     RUN_TEST(roundtrip_golden_bytes);
     RUN_TEST(defaults_minimal_record);
     RUN_TEST(parse_scalars_max);

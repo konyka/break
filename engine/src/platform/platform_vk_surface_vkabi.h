@@ -1,7 +1,7 @@
 #pragma once
 #include <core/types.h>
 
-/* 六个 WSI surface create-info 的最小 ABI 声明。sType 数值与字段布局由
+/* 七个 WSI surface create-info 的最小 ABI 声明。sType 数值与字段布局由
  * engine/tests/test_platform_vk_surface_abi.c 对照真实 <vulkan/vulkan.h>
  * 逐字段钉死；任何漂移在编译期/测试期失败，而不是在 GPU 上出错。 */
 #define PVK_STYPE_XLIB_SURFACE_CREATE_INFO_KHR    1000004000u
@@ -9,6 +9,7 @@
 #define PVK_STYPE_ANDROID_SURFACE_CREATE_INFO_KHR 1000008000u
 #define PVK_STYPE_WIN32_SURFACE_CREATE_INFO_KHR   1000009000u
 #define PVK_STYPE_METAL_SURFACE_CREATE_INFO_EXT   1000217000u
+#define PVK_STYPE_HEADLESS_SURFACE_CREATE_INFO_EXT 1000256000u
 /* VK_STRUCTURE_TYPE_SCREEN_SURFACE_CREATE_INFO_QNX（QNX SDP 8.0
  * <vulkan/vulkan_core.h>:1000378000，ABI 测试在 qnx 交叉构建上钉死）。 */
 #define PVK_STYPE_SCREEN_SURFACE_CREATE_INFO_QNX  1000378000u
@@ -35,6 +36,9 @@ typedef struct PVkScreenSurfaceCreateInfo {
      * window=screen_window_t（两者本身均为指针，LP64 同宽）。 */
     u32 sType; const void *pNext; u32 flags; void *context; void *window;
 } PVkScreenSurfaceCreateInfo;
+typedef struct PVkHeadlessSurfaceCreateInfo {
+    u32 sType; const void *pNext; u32 flags;
+} PVkHeadlessSurfaceCreateInfo;
 
 /* 各平台 vkCreate*Surface* 共享同一签名形状：(instance, create_info,
  * allocator, out_surface)，VkResult 为 i32。 */

@@ -1,4 +1,5 @@
 #include "test_framework.h"
+#include "test_qnx_spawn.h"
 #include <runtime/runtime_reload.h>
 #include <runtime/runtime_profiler.h>
 #include <runtime/runtime_thread.h>
@@ -1493,35 +1494,34 @@ TEST(reload_shutdown_during_inflight_commit_retains_ownership)
     vfs_destroy(vfs);
 }
 
+static int reload_destroy_without_shutdown_child_main(void)
+{
+    VFS *vfs = fixture_setup();
+    BreakRuntimeReloadConfig config;
+    BreakRuntimeReload *reload = NULL;
+    if (!vfs) return 2;
+    probe_reset();
+    config = probe_config(vfs);
+    if (break_runtime_reload_create(&config, &reload) == BREAK_RUNTIME_OK) {
+        break_runtime_reload_destroy(reload);
+    }
+    vfs_destroy(vfs);
+    return 42;
+}
+
 #if !defined(_WIN32)
 TEST(reload_destroy_requires_shutdown_aborts)
 {
     VFS *vfs = fixture_setup();
+    pid_t pid;
+    int status = 0;
     ASSERT_NOT_NULL(vfs);
-
-    /* fork child: create a facade and destroy it WITHOUT shutdown — a
-     * contract violation the test build fail-stops on. */
     fflush(stdout);
-    {
-        pid_t pid = fork();
-        if (pid == 0) {
-            BreakRuntimeReloadConfig config;
-            BreakRuntimeReload *reload = NULL;
-            probe_reset();
-            config = probe_config(vfs);
-            if (break_runtime_reload_create(&config, &reload) ==
-                BREAK_RUNTIME_OK) {
-                break_runtime_reload_destroy(reload); /* must abort */
-            }
-            _exit(42); /* reached only if the contract was NOT enforced */
-        }
-        {
-            int status = 0;
-            ASSERT_TRUE(pid > 0);
-            ASSERT_EQ(waitpid(pid, &status, 0), pid);
-            ASSERT_TRUE(WIFSIGNALED(status)); /* SIGABRT expected */
-        }
-    }
+    pid = test_qnx_spawn_death_child(reload_destroy_without_shutdown_child_main);
+    ASSERT_TRUE(pid > 0);
+    ASSERT_EQ(waitpid(pid, &status, 0), pid);
+    ASSERT_TRUE(WIFSIGNALED(status));
+    ASSERT_EQ(WTERMSIG(status), SIGABRT);
     vfs_destroy(vfs);
 }
 #endif
@@ -2047,7 +2047,7 @@ TEST(profiler_collect_owner_enforced)
     break_runtime_profiler_destroy(profiler);
 }
 
-TEST_MAIN_BEGIN()
+TEST_QNX_SPAWN_MAIN_BEGIN(reload_destroy_without_shutdown_child_main)
     RUN_TEST(reload_create_validation_and_oom);
     RUN_TEST(reload_request_validation);
     RUN_TEST(reload_enum_ordinals_and_names);

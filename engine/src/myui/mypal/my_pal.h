@@ -108,7 +108,9 @@ typedef struct my_pal_media_provider_t {
 
 #define MY_PAL_MEDIA_PROVIDER_ABI_VERSION 1u
 
-/** @brief Versioned optional Vulkan WSI extension provider. */
+/** @brief Versioned optional Vulkan WSI extension provider.
+ * The exact VK_KHR_surface + VK_EXT_headless_surface pair explicitly selects
+ * a surfaceless configuration; it does not create a headless VkSurfaceKHR. */
 typedef my_ret_t (*my_pal_vulkan_instance_extensions_fn)(
     void* context, my_pal_window_t* window, const char* const** names,
     uint32_t* count);
@@ -221,8 +223,9 @@ typedef struct my_pal_window_vtable_t {
   /**
    * @brief Create a Vulkan surface for this window (M25b). vk_instance
    * is a VkInstance and the return a VkSurfaceKHR — both as void* so
-   * this header stays free of Vulkan types. NULL slot or NULL return =
-   * the port has no Vulkan support (dummy, linux_fb).
+   * this header stays free of Vulkan types. NULL slot or NULL return means
+   * no native surface; an explicit surfaceless provider may still support
+   * offscreen rendering and LCD presentation.
   */
   void* (*vk_create_surface)(my_pal_window_t* win, void* vk_instance);
 } my_pal_window_vtable_t;
@@ -367,9 +370,10 @@ static inline my_pal_gl_t* my_pal_window_gl_enable_api(my_pal_window_t* win,
 }
 
 /**
- * @brief Create a Vulkan surface (VkSurfaceKHR as void*) for this window
- * on the given instance (VkInstance as void*), NULL when unsupported
- * (M25b; ownership passes to the caller).
+ * @brief Create a native Vulkan surface (VkSurfaceKHR as void*) on the given
+ * instance (VkInstance as void*), or NULL when no native surface is available
+ * (M25b; a non-NULL result is owned by the caller). Surfaceless LCD mounts do
+ * not call this wrapper.
  */
 static inline void* my_pal_window_vk_create_surface(my_pal_window_t* win,
                                                     void* vk_instance) {

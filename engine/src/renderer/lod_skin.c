@@ -61,11 +61,12 @@ typedef struct {
     u32 *cell_start;       /* [cells + 1] */
     u32 *cell_tris;
     u32 *stamp;            /* [tri_count] */
+    f32 *bounds;           /* xyz min/max, 6 floats per triangle */
     u32 epoch;
 } SkinGrid;
 
 static void grid_free(SkinGrid *g) {
-    free(g->cell_start); free(g->cell_tris); free(g->stamp);
+    free(g->cell_start); free(g->cell_tris); free(g->stamp); free(g->bounds);
     memset(g, 0, sizeof(*g));
 }
 
@@ -76,10 +77,22 @@ static u32 grid_coord(const SkinGrid *g, f32 x, u32 axis) {
     return (u32)c;
 }
 
+static bool skin_allocation_overflow(u32 count, usize size) {
+#if SIZE_MAX <= UINT32_MAX
+    return size != 0u && count > SIZE_MAX / size;
+#else
+    (void)count;
+    (void)size;
+    return false;
+#endif
+}
+
 static bool grid_build(SkinGrid *g, const f32 *pos, const u32 *tri, u32 index_count) {
     memset(g, 0, sizeof(*g));
     g->pos = pos; g->tri = tri; g->tri_count = index_count / 3u;
-    if (g->tri_count == 0u) return false;
+    if (g->tri_count == 0u || skin_allocation_overflow(g->tri_count, 6u * sizeof(f32))) return false;
+    g->bounds = (f32 *)malloc((usize)g->tri_count * 6u * sizeof(f32));
+    if (!g->bounds) return false;
     f32 lo[3] = { 3.0e38f, 3.0e38f, 3.0e38f }, hi[3] = { -3.0e38f, -3.0e38f, -3.0e38f };
     f64 edge_sum = 0.0;
     for (u32 t = 0; t < g->tri_count; t++) {
@@ -96,6 +109,8 @@ static bool grid_build(SkinGrid *g, const f32 *pos, const u32 *tri, u32 index_co
             if (tlo[a] < lo[a]) lo[a] = tlo[a];
             if (thi[a] > hi[a]) hi[a] = thi[a];
             if (thi[a] - tlo[a] > ext) ext = thi[a] - tlo[a];
+            g->bounds[(usize)t * 6u + a] = tlo[a];
+            g->bounds[(usize)t * 6u + 3u + a] = thi[a];
         }
         edge_sum += ext;
     }
@@ -154,25 +169,34 @@ static bool grid_build(SkinGrid *g, const f32 *pos, const u32 *tri, u32 index_co
     return true;
 }
 
-static void grid_visit_cell(SkinGrid *g, const f32 *p, u32 x, u32 y, u32 z, f32 *best) {
+static void grid_visit_cell(SkinGrid *g, const f32 *p, u32 x, u32 y, u32 z,
+                            f32 *best, f32 ceiling) {
     usize cell = ((usize)z * g->dim[1] + y) * g->dim[0] + x;
     for (u32 k = g->cell_start[cell]; k < g->cell_start[cell + 1u]; k++) {
         u32 t = g->cell_tris[k];
         if (g->stamp[t] == g->epoch) continue;
         g->stamp[t] = g->epoch;
+        const f32 *b = g->bounds + (usize)t * 6u;
+        f32 box_d2 = 0.0f;
+        for (u32 a = 0; a < 3u; a++) {
+            f32 d = p[a] < b[a] ? b[a] - p[a] : (p[a] > b[a + 3u] ? p[a] - b[a + 3u] : 0.0f);
+            box_d2 += d * d;
+        }
+        if (box_d2 >= *best) continue;
         const u32 *i = g->tri + (usize)t * 3u;
         f32 d2 = lod_point_triangle_d2(p, g->pos + (usize)i[0] * 3u, g->pos + (usize)i[1] * 3u,
                                        g->pos + (usize)i[2] * 3u);
         if (d2 < *best) *best = d2;
+        if (*best < 3.0e38f && *best <= ceiling) return;
     }
 }
 
-/* Exact squared distance from p to the nearest grid triangle. After shell r
- * (cells at Chebyshev index distance <= r from p's clamped cell) every
- * unvisited triangle lies outside the visited cell box, so the search stops
- * once best is within the distance from p to that box's open faces (faces
- * on the grid boundary have nothing behind them). */
-static f32 grid_nearest_d2(SkinGrid *g, const f32 *p) {
+/* After shell r (cells at Chebyshev index distance <= r from p's clamped cell)
+ * every unvisited triangle lies outside the visited cell box, so the search
+ * stops once best is within the distance from p to that box's open faces (faces
+ * on the grid boundary have nothing behind them). A candidate at or below
+ * ceiling proves that the query cannot increase the caller's running maximum. */
+static f32 grid_nearest_d2(SkinGrid *g, const f32 *p, f32 ceiling) {
     if (++g->epoch == 0u) {
         memset(g->stamp, 0, (usize)g->tri_count * sizeof(u32));
         g->epoch = 1u;
@@ -193,12 +217,19 @@ static f32 grid_nearest_d2(SkinGrid *g, const f32 *p) {
             for (i32 y = lo[1]; y <= hi[1]; y++) {
                 bool face = z == c[2] - r || z == c[2] + r || y == c[1] - r || y == c[1] + r;
                 if (face) {
-                    for (i32 x = lo[0]; x <= hi[0]; x++)
-                        grid_visit_cell(g, p, (u32)x, (u32)y, (u32)z, &best);
+                    for (i32 x = lo[0]; x <= hi[0]; x++) {
+                        grid_visit_cell(g, p, (u32)x, (u32)y, (u32)z, &best, ceiling);
+                        if (best < 3.0e38f && best <= ceiling) return best;
+                    }
                 } else {
-                    if (c[0] - r >= 0) grid_visit_cell(g, p, (u32)(c[0] - r), (u32)y, (u32)z, &best);
-                    if (r > 0 && c[0] + r < (i32)g->dim[0])
-                        grid_visit_cell(g, p, (u32)(c[0] + r), (u32)y, (u32)z, &best);
+                    if (c[0] - r >= 0) {
+                        grid_visit_cell(g, p, (u32)(c[0] - r), (u32)y, (u32)z, &best, ceiling);
+                        if (best < 3.0e38f && best <= ceiling) return best;
+                    }
+                    if (r > 0 && c[0] + r < (i32)g->dim[0]) {
+                        grid_visit_cell(g, p, (u32)(c[0] + r), (u32)y, (u32)z, &best, ceiling);
+                        if (best < 3.0e38f && best <= ceiling) return best;
+                    }
                 }
             }
         f32 reach = 3.0e38f;
@@ -213,26 +244,45 @@ static f32 grid_nearest_d2(SkinGrid *g, const f32 *p) {
             }
         }
         if (reach < 0.0f) reach = 0.0f;
-        if (reach >= 3.0e38f || best <= reach * reach) break;
+        if ((best < 3.0e38f && best <= ceiling) || reach >= 3.0e38f || best <= reach * reach) break;
     }
     return best;
+}
+
+typedef struct { u32 v[3]; } SkinTriKey;
+
+static SkinTriKey skin_tri_key(const u32 *i) {
+    SkinTriKey k = { { i[0], i[1], i[2] } };
+    if (k.v[0] > k.v[1]) { u32 t = k.v[0]; k.v[0] = k.v[1]; k.v[1] = t; }
+    if (k.v[1] > k.v[2]) { u32 t = k.v[1]; k.v[1] = k.v[2]; k.v[2] = t; }
+    if (k.v[0] > k.v[1]) { u32 t = k.v[0]; k.v[0] = k.v[1]; k.v[1] = t; }
+    return k;
+}
+
+static int skin_tri_key_cmp(const void *a, const void *b) {
+    const SkinTriKey *ka = (const SkinTriKey *)a, *kb = (const SkinTriKey *)b;
+    for (u32 i = 0; i < 3u; i++) {
+        if (ka->v[i] < kb->v[i]) return -1;
+        if (ka->v[i] > kb->v[i]) return 1;
+    }
+    return 0;
 }
 
 /* Deviation of LODn from LOD0 in one pose: every LOD0 vertex that LODn
  * drops (used0[v] == 1; 2 = kept, distance 0) against the LODn surface, and LODn centroids / edge midpoints against LOD0 (LODn's own
  * vertices are LOD0 vertices, at distance 0). Returns -1 on failure. */
 static f32 pose_deviation(SkinGrid *g0, const f32 *pos, const u8 *used0, u32 vertex_count,
-                          const u32 *li, u32 lic) {
+                          const u32 *li, u32 lic, const u8 *on_lod0, f32 worst) {
     SkinGrid gl;
     if (!grid_build(&gl, pos, li, lic)) return -1.0f;
-    f32 worst = 0.0f;
     for (u32 v = 0; v < vertex_count; v++) {
         if (used0[v] != 1u) continue;
-        f32 d2 = grid_nearest_d2(&gl, pos + (usize)v * 3u);
+        f32 d2 = grid_nearest_d2(&gl, pos + (usize)v * 3u, worst);
         if (d2 > worst) worst = d2;
     }
     grid_free(&gl);
     for (u32 t = 0; t < lic / 3u; t++) {
+        if (on_lod0 && on_lod0[t]) continue;
         const f32 *a = pos + (usize)li[t * 3u] * 3u;
         const f32 *b = pos + (usize)li[t * 3u + 1u] * 3u;
         const f32 *c = pos + (usize)li[t * 3u + 2u] * 3u;
@@ -244,7 +294,7 @@ static f32 pose_deviation(SkinGrid *g0, const f32 *pos, const u8 *used0, u32 ver
             q[3][k] = 0.5f * (c[k] + a[k]);
         }
         for (u32 s = 0; s < 4u; s++) {
-            f32 d2 = grid_nearest_d2(g0, q[s]);
+            f32 d2 = grid_nearest_d2(g0, q[s], worst);
             if (d2 > worst) worst = d2;
         }
     }
@@ -315,6 +365,7 @@ void lod_generate_levels_skinned(const f32 *vertices, u32 vertex_count,
     f32 *pos = (f32 *)malloc((usize)vertex_count * 3u * sizeof(f32));
     u8 *used0 = (u8 *)calloc(vertex_count, LOD_GEN_MAX_LEVELS - 1u);
     u8 *lock = NULL;
+    u8 *on_lod0[LOD_GEN_MAX_LEVELS] = { NULL };
     if (!attrs || !pos || !used0) goto done;
     for (u32 v = 0; v < vertex_count; v++) {
         const f32 *src = vertices + (usize)v * SKIN_VF;
@@ -351,6 +402,24 @@ void lod_generate_levels_skinned(const f32 *vertices, u32 vertex_count,
         for (u32 i = 0; i < index_count; i++) mask[indices[i]] = 1u;
         for (u32 i = 0; i < out->index_count[l]; i++) mask[out->indices[l][i]] = 2u;
     }
+    u32 tri_count = index_count / 3u;
+    SkinTriKey *keys = !skin_allocation_overflow(tri_count, sizeof(SkinTriKey))
+        ? (SkinTriKey *)malloc((usize)tri_count * sizeof(SkinTriKey)) : NULL;
+    if (keys) {
+        for (u32 t = 0; t < tri_count; t++) keys[t] = skin_tri_key(indices + (usize)t * 3u);
+        qsort(keys, tri_count, sizeof(SkinTriKey), skin_tri_key_cmp);
+        for (u32 l = 1; l < out->level_count; l++) {
+            u32 count = out->index_count[l] / 3u;
+            on_lod0[l] = (u8 *)calloc(count, 1u);
+            if (!on_lod0[l]) continue;
+            for (u32 t = 0; t < count; t++) {
+                SkinTriKey key = skin_tri_key(out->indices[l] + (usize)t * 3u);
+                if (bsearch(&key, keys, tri_count, sizeof(SkinTriKey), skin_tri_key_cmp))
+                    on_lod0[l][t] = 1u;
+            }
+        }
+        free(keys);
+    }
     f32 err[LOD_GEN_MAX_LEVELS] = { 0.0f };
     for (u32 s = 0; s <= sample_count; s++) {
         const Mat4 *mats = s == 0u ? NULL : poses + (usize)sample[s - 1u] * joint_count;
@@ -358,8 +427,10 @@ void lod_generate_levels_skinned(const f32 *vertices, u32 vertex_count,
         SkinGrid g0;
         if (!grid_build(&g0, pos, indices, index_count)) { fallback_levels(out, index_count); goto done; }
         for (u32 l = 1; l < out->level_count; l++) {
+            f32 ceiling = err[l] * err[l];
+            if (!isfinite(ceiling)) ceiling = 0.0f;
             f32 d = pose_deviation(&g0, pos, used0 + (usize)(l - 1u) * vertex_count, vertex_count,
-                                   out->indices[l], out->index_count[l]);
+                                   out->indices[l], out->index_count[l], on_lod0[l], ceiling);
             if (d < 0.0f) { grid_free(&g0); fallback_levels(out, index_count); goto done; }
             if (d > err[l]) err[l] = d;
         }
@@ -370,6 +441,7 @@ void lod_generate_levels_skinned(const f32 *vertices, u32 vertex_count,
         out->rel_error[l] = rel > out->rel_error[l - 1u] ? rel : out->rel_error[l - 1u];
     }
 done:
+    for (u32 l = 1; l < LOD_GEN_MAX_LEVELS; l++) free(on_lod0[l]);
     free(attrs); free(pos); free(used0); free(lock);
 }
 

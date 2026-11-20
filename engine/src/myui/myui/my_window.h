@@ -26,7 +26,7 @@ typedef enum my_gpu_backend_t {
   MY_GPU_SOFT,     /**< CPU rasterizer (always available) */
   MY_GPU_GLES2,    /**< OpenGL ES 2.0 (most mature GL path) */
   MY_GPU_OPENGL,   /**< desktop OpenGL (compat profile, GLSL 1.20) */
-  MY_GPU_VULKAN    /**< Vulkan WSI canvas (requires PAL + Vulkan build) */
+  MY_GPU_VULKAN    /**< Vulkan WSI or explicit surfaceless LCD readback */
 } my_gpu_backend_t;
 
 /** @brief Top-level window (IS-A widget: embed as first member). */

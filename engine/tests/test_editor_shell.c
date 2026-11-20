@@ -994,6 +994,10 @@ extern int setenv(const char *name, const char *value, int overwrite);
 extern int unsetenv(const char *name);
 #endif
 
+#if defined(__QNXNTO__)
+static char *shader_env_owned;
+#endif
+
 typedef struct {
     char *value;
 } EditorShaderEnv;
@@ -1016,6 +1020,21 @@ static bool shader_env_save(EditorShaderEnv *env) {
 static bool shader_env_set(const char *value) {
 #if defined(_WIN32)
     return _putenv_s("BREAK_SHADER_DIR", value) == 0;
+#elif defined(__QNXNTO__)
+    static const char name[] = "BREAK_SHADER_DIR=";
+    size_t size = sizeof(name) + strlen(value);
+    char *entry = (char *)malloc(size);
+    if (entry == NULL) {
+        return false;
+    }
+    snprintf(entry, size, "%s%s", name, value);
+    if (putenv(entry) != 0) {
+        free(entry);
+        return false;
+    }
+    free(shader_env_owned);
+    shader_env_owned = entry;
+    return true;
 #else
     return setenv("BREAK_SHADER_DIR", value, 1) == 0;
 #endif
@@ -1030,6 +1049,10 @@ static void shader_env_restore(EditorShaderEnv *env) {
         (void)_putenv_s("BREAK_SHADER_DIR", "");
 #else
         (void)unsetenv("BREAK_SHADER_DIR");
+#if defined(__QNXNTO__)
+        free(shader_env_owned);
+        shader_env_owned = NULL;
+#endif
 #endif
     }
     env->value = NULL;

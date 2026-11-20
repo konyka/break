@@ -125,6 +125,12 @@ static void render_frame(app_t* app);
 static void randomize(app_t* app);
 static app_t* app_create(const char* font_path);
 
+static my_ret_t attach_child(my_widget_t* parent, my_widget_t* child) {
+  my_ret_t result = my_widget_add_child(parent, child);
+  if (result == MY_RET_OK) my_widget_unref(child);
+  return result;
+}
+
 static void place(my_widget_t* w, int32_t x, int32_t y, int32_t cw,
                   int32_t ch) {
   w->rect.x = x;
@@ -311,15 +317,15 @@ static app_t* app_create(const char* font_path) {
     app->mode_buttons[i] = my_button_create(NULL, k_modes[i].short_name);
     place(app->mode_buttons[i], PANEL_X + 8 + (int32_t)(i % 8) * 36,
           PANEL_Y + 30 + (int32_t)(i / 8) * 32, 34, 28);
-    (void)my_widget_add_child(app->panel, app->mode_buttons[i]);
+    (void)attach_child(app->panel, app->mode_buttons[i]);
   }
   {
     my_widget_t* cap1 = my_label_create(NULL, "data scale");
     my_widget_t* cap2 = my_label_create(NULL, "animation");
     place(cap1, PANEL_X + 8, PANEL_Y + 100, 120, 18);
     place(cap2, PANEL_X + 8, PANEL_Y + 170, 120, 18);
-    (void)my_widget_add_child(app->panel, cap1);
-    (void)my_widget_add_child(app->panel, cap2);
+    (void)attach_child(app->panel, cap1);
+    (void)attach_child(app->panel, cap2);
   }
   app->scale_slider = my_slider_create(NULL);
   place(app->scale_slider, PANEL_X + 8, PANEL_Y + 122, 280, 24);
@@ -350,18 +356,18 @@ static app_t* app_create(const char* font_path) {
   place(app->progress, PANEL_X + 8, PANEL_Y + 336, 280, 18);
   app->status = my_label_create(NULL, "line");
   place(app->status, PANEL_X + 8, PANEL_Y + 370, 290, 60);
-  (void)my_widget_add_child(app->panel, app->scale_slider);
-  (void)my_widget_add_child(app->panel, app->anim_slider);
-  (void)my_widget_add_child(app->panel, app->stacked_box);
-  (void)my_widget_add_child(app->panel, app->labels_box);
-  (void)my_widget_add_child(app->panel, app->legend_box);
-  (void)my_widget_add_child(app->panel, app->random_button);
-  (void)my_widget_add_child(app->panel, app->play_button);
-  (void)my_widget_add_child(app->panel, app->zoom_in);
-  (void)my_widget_add_child(app->panel, app->zoom_out);
-  (void)my_widget_add_child(app->panel, app->json_button);
-  (void)my_widget_add_child(app->panel, app->progress);
-  (void)my_widget_add_child(app->panel, app->status);
+  (void)attach_child(app->panel, app->scale_slider);
+  (void)attach_child(app->panel, app->anim_slider);
+  (void)attach_child(app->panel, app->stacked_box);
+  (void)attach_child(app->panel, app->labels_box);
+  (void)attach_child(app->panel, app->legend_box);
+  (void)attach_child(app->panel, app->random_button);
+  (void)attach_child(app->panel, app->play_button);
+  (void)attach_child(app->panel, app->zoom_in);
+  (void)attach_child(app->panel, app->zoom_out);
+  (void)attach_child(app->panel, app->json_button);
+  (void)attach_child(app->panel, app->progress);
+  (void)attach_child(app->panel, app->status);
   apply_state(app);
   return app;
 }
@@ -705,7 +711,11 @@ static int run_selftest(const char* dir, const char* font_path) {
     failures++;
   }
   printf(failures == 0u ? "selftest frames written\n" : "selftest FAILED\n");
-  return failures == 0u ? 0 : 1;
+  {
+    int result = failures == 0u ? 0 : 1;
+    ex_app_destroy(app);
+    return result;
+  }
 }
 
 static void gl_paint(app_t* app, my_vgcanvas_t* vg) {
@@ -729,7 +739,15 @@ app_t* ex_app_create(void) {
 }
 
 void ex_app_destroy(app_t* app) {
-  (void)app;  /* process-lifetime app; freed by OS exit */
+  if (app == NULL) return;
+  my_echart_adapter_destroy(app->adapter);
+  (void)my_widget_unref(app->chart);
+  (void)my_widget_unref(app->panel);
+  my_vgcanvas_destroy(app->gl_vg);
+  my_vgcanvas_destroy(app->vg);
+  my_lcd_destroy(app->lcd);
+  my_font_destroy(app->font);
+  free(app);
 }
 
 void ex_frame_soft(app_t* app) {
@@ -829,7 +847,11 @@ static int run_glshot(const char* path, const char* font_path) {
   gl_paint(app, vg);
   rgba = (uint8_t*)malloc((size_t)EX_W * EX_H * 4u);
   rgb = (uint8_t*)malloc((size_t)EX_W * EX_H * 3u);
-  if (rgba == NULL || rgb == NULL) return 1;
+  int result = 0;
+  if (rgba == NULL || rgb == NULL) {
+    result = 1;
+    goto cleanup;
+  }
   glReadPixels(0, 0, EX_W, EX_H, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
   for (y = 0u; y < EX_H; y++) {
     uint32_t src = EX_H - 1u - y; /* GL origin is bottom-left */
@@ -844,15 +866,24 @@ static int run_glshot(const char* path, const char* font_path) {
   }
   {
     FILE* f = fopen(path, "wb");
-    if (f == NULL) return 1;
+    if (f == NULL) {
+      result = 1;
+      goto cleanup;
+    }
     (void)fprintf(f, "P6\n%d %d\n255\n", EX_W, EX_H);
     (void)fwrite(rgb, 1u, (size_t)EX_W * EX_H * 3u, f);
     (void)fclose(f);
   }
   printf("glshot written: %s\n", path);
+cleanup:
   free(rgba);
   free(rgb);
-  return 0;
+  my_vgcanvas_destroy(vg);
+  ex_app_destroy(app);
+  eglDestroyContext(display, context);
+  eglDestroySurface(display, surface);
+  eglTerminate(display);
+  return result;
 }
 #endif /* EX_EXPLORER_GLSHOT_OK */
 
@@ -927,6 +958,7 @@ static int run_pal(app_t* app, int gl) {
   my_pal_window_t* win;
   if (pal == NULL) {
     printf("my_pal_create failed\n");
+    ex_app_destroy(app);
     return 1;
   }
   memset(&g_pal, 0, sizeof(g_pal));
@@ -938,6 +970,7 @@ static int run_pal(app_t* app, int gl) {
                                 : "MyUI explorer [pal/soft]");
   if (win == NULL) {
     my_pal_destroy(pal);
+    ex_app_destroy(app);
     return 1;
   }
   g_pal.win = win;
@@ -953,13 +986,24 @@ static int run_pal(app_t* app, int gl) {
     g_pal.soft_vg = my_vgcanvas_soft_create(NULL, g_pal.lcd);
   }
   g_pal_loop = my_pal_main_loop_create(pal);
-  if (g_pal_loop == NULL) return 1;
+  if (g_pal_loop == NULL) {
+    my_vgcanvas_destroy(g_pal.soft_vg);
+    ex_app_destroy(app);
+    my_pal_window_destroy(win);
+    my_pal_destroy(pal);
+    return 1;
+  }
   (void)my_pal_main_loop_add_timer(g_pal_loop, pal_timer, NULL, 16u);
   while (!app->closing) {
     if (my_pal_main_loop_run(g_pal_loop) != MY_RET_OK) break;
   }
+  my_pal_main_loop_destroy(g_pal_loop);
+  g_pal_loop = NULL;
+  my_vgcanvas_destroy(g_pal.soft_vg);
+  ex_app_destroy(app);
   my_pal_window_destroy(win);
   my_pal_destroy(pal);
+  memset(&g_pal, 0, sizeof(g_pal));
   return 0;
 }
 #endif
@@ -973,14 +1017,25 @@ static int run_palshot(const char* path, const char* font_path) {
   my_vgcanvas_t* vg;
   if (pal == NULL) {
     printf("palshot: my_pal_create failed\n");
+    ex_app_destroy(app);
     return 1;
   }
   win = my_pal_window_create(pal, EX_W, EX_H, "palshot");
-  if (win == NULL) return 1;
+  if (win == NULL) {
+    my_pal_destroy(pal);
+    ex_app_destroy(app);
+    return 1;
+  }
   (void)my_pal_window_show(win);
   lcd = my_pal_window_get_lcd(win);
   vg = my_vgcanvas_soft_create(NULL, lcd);
-  if (vg == NULL || lcd == NULL) return 1;
+  if (vg == NULL || lcd == NULL) {
+    my_vgcanvas_destroy(vg);
+    my_pal_window_destroy(win);
+    my_pal_destroy(pal);
+    ex_app_destroy(app);
+    return 1;
+  }
   advance_animation(app);
   (void)my_vgcanvas_begin_frame(vg, NULL);
   my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0xF0F2F5FFu));
@@ -1000,6 +1055,7 @@ static int run_palshot(const char* path, const char* font_path) {
   my_vgcanvas_destroy(vg);
   my_pal_window_destroy(win);
   my_pal_destroy(pal);
+  ex_app_destroy(app);
   return 0;
 }
 #endif
@@ -1076,6 +1132,7 @@ int main(int argc, char** argv) {
       render_frame(app);
       dump_ppm(my_lcd_mem_get_buffer(app->lcd), argv[i + 1]);
       printf("shot written: %s\n", argv[i + 1]);
+      ex_app_destroy(app);
       return 0;
     }
     if (strcmp(argv[i], "--glshot") == 0 && i + 1 < argc) {

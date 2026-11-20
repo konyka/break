@@ -511,6 +511,7 @@ TEST(lifecycle_results_cover_busy_sync_and_frame_sequence)
     ASSERT_TRUE(rhi_test_frame_owner_is_current(device));
     rhi_test_frame_owner_release(device);
     ASSERT_EQ(rhi_device_destroy_ex(device), RHI_RESULT_OK);
+    rhi_test_device_destroy(device);
     rhi_test_device_destroy(other);
 }
 

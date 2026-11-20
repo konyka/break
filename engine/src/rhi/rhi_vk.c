@@ -8,6 +8,9 @@
 #include "rhi/rhi_rollout.h"
 #include <platform/platform_vk_surface.h>
 #include <platform/time.h>
+#if defined(ENGINE_PLATFORM_QNX) && defined(ENGINE_QNX_SCREEN)
+#include "rhi_vk_screen_post.h"
+#endif
 #if defined(ENGINE_PLATFORM_ANDROID) && defined(ENGINE_ANDROID_NATIVE_WINDOW)
 /* vk_shutdown keeps the ANativeWindow_release half of the reference pair
  * (the acquire moved into platform_vk_surface.c); this header declares it. */
@@ -541,6 +544,9 @@ typedef struct {
      * submission (vk_queue_submit) instead of one submit + idle wait each. */
     VkCommandBuffer layout_cb;
     RHIVkSyncCounters sync_counters;
+#if defined(ENGINE_PLATFORM_QNX) && defined(ENGINE_QNX_SCREEN)
+    VKQnxScreenPost qnx_screen_post;
+#endif
 } VKBackend;
 
 static bool vk_blas_buffer_address(VKBackend *vk, RHIDevice *dev,
@@ -592,11 +598,11 @@ static RHIResult vk_lifecycle_result(VkResult result) {
  * 10 s bound plus a single retry tolerates extreme load, and a second
  * timeout means the GPU is gone (TDR detection itself takes 2-8 s), so the
  * device is latched lost rather than risk an unbounded hang. */
-static VkResult vk_wait_fence(VKBackend *vk, VkFence fence) {
+static VkResult vk_wait_fence_with_timeout(VKBackend *vk, VkFence fence,
+                                           u64 bound_ns) {
     if (vk->device_lost) return VK_ERROR_DEVICE_LOST;
-    const u64 bound_ns = 10ull * 1000ull * 1000ull * 1000ull;
     VkResult r = vkWaitForFences(vk->device, 1, &fence, VK_TRUE, bound_ns);
-    if (r == VK_TIMEOUT)
+    if (bound_ns != UINT64_MAX && r == VK_TIMEOUT)
         r = vkWaitForFences(vk->device, 1, &fence, VK_TRUE, bound_ns);
     if (r == VK_TIMEOUT) {
         LOG_ERROR("VK: fence unsignaled after 20 s — treating device as lost (R578)");
@@ -605,6 +611,10 @@ static VkResult vk_wait_fence(VKBackend *vk, VkFence fence) {
     }
     vk_note_result(vk, r);
     return r;
+}
+
+static VkResult vk_wait_fence(VKBackend *vk, VkFence fence) {
+    return vk_wait_fence_with_timeout(vk, fence, 10ull * 1000ull * 1000ull * 1000ull);
 }
 
 static void vk_mip_upload_reclaim(VKBackend *vk) {
@@ -715,9 +725,11 @@ RHIDevice *rhi_test_gl_cache_owner(void) {
 }
 #endif
 
-static void vk_wait_frames(VKBackend *vk) {
-    /* R578: sequential bounded waits — never block forever on a dead device. */
+static VkResult vk_wait_frames_with_timeout(VKBackend *vk, u64 bound_ns) {
+    /* R578: sequential waits for in-flight frames, with the caller's bound. */
     for (u32 i = 0; i < VK_MAX_FRAMES; i++) {
+        if (vk->fence_done[i] || vk->fence_serial[i] <= vk->completed_serial)
+            continue;
         /* R588: never wait on the fence of the frame that is currently being
          * RECORDED — rhi_frame_begin reset it and it will not be submitted
          * until rhi_frame_end, so the wait can never succeed: it burns the
@@ -727,12 +739,18 @@ static void vk_wait_frames(VKBackend *vk) {
          * execute after any immediately-submitted work by queue order. */
         if (vk->frame_started && i == vk->current_frame)
             continue;
-        if (vk_wait_fence(vk, vk->fences[i]) != VK_SUCCESS) {
+        VkResult result = vk_wait_fence_with_timeout(vk, vk->fences[i], bound_ns);
+        if (result != VK_SUCCESS) {
             LOG_WARN("VK: vkWaitForFences failed in wait_frames");
-            return;
+            return result;
         }
         vk->fence_done[i] = true;
     }
+    return VK_SUCCESS;
+}
+
+static VkResult vk_wait_frames(VKBackend *vk) {
+    return vk_wait_frames_with_timeout(vk, 10ull * 1000ull * 1000ull * 1000ull);
 }
 
 /* ---- FS6: fence-retired deferred destruction ---- */
@@ -2075,6 +2093,22 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         vk->native_window = (struct ANativeWindow *)window_native;
 #endif
     }
+#if defined(ENGINE_PLATFORM_QNX) && defined(ENGINE_QNX_SCREEN)
+    const char *headless_surface = getenv("BREAK_VK_HEADLESS_SURFACE");
+    if (headless_surface != NULL && strcmp(headless_surface, "1") == 0) {
+        const char *screen_post = getenv("BREAK_VK_SCREEN_POST");
+        if (screen_post != NULL && strcmp(screen_post, "1") == 0) {
+            if (!vk_qnx_screen_post_init(&vk->qnx_screen_post, window_native, display_native)) {
+                LOG_ERROR("VK: failed to initialize CPU readback + Screen post");
+                vk_init_cleanup(dev, vk);
+                return false;
+            }
+            LOG_INFO("VK: headless surface with CPU readback + Screen post");
+        } else {
+            LOG_INFO("VK: headless surface enabled; offscreen only, no QNX Screen presentation");
+        }
+    }
+#endif
     vk_startup_phase(startup_timing, startup_t0, "surface_create");
 
     u32 gpu_count = 0;
@@ -2904,6 +2938,9 @@ static void vk_shutdown(RHIDevice *dev) {
     if (!vk) return;
     if (vk->device != VK_NULL_HANDLE && vk_device_wait_idle(vk) != VK_SUCCESS)
         LOG_WARN("VK: vkDeviceWaitIdle failed in shutdown");
+#if defined(ENGINE_PLATFORM_QNX) && defined(ENGINE_QNX_SCREEN)
+    vk_qnx_screen_post_shutdown(&vk->qnx_screen_post);
+#endif
     /* R175: Device idle — free deferred mip-upload resources without waiting. */
     if (vk->device != VK_NULL_HANDLE && !vk_mip_upload_owned_by_other(vk))
         vk_mip_upload_reclaim(vk);
@@ -3453,10 +3490,11 @@ bool rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h,
     }
 
     /* Wait for all frames to complete before reading back. */
-    if (vk_device_wait_idle(vk) != VK_SUCCESS) {
-        LOG_WARN("VK: vkDeviceWaitIdle failed in screenshot");
+    if (vk_wait_frames_with_timeout(vk, UINT64_MAX) != VK_SUCCESS) {
+        LOG_WARN("VK: frame fence wait failed in screenshot");
         return false;
     }
+    vk_retire_poll(vk);
 
     /* Create a host-visible staging buffer. */
     VkDeviceSize buf_size = (VkDeviceSize)w * h * 4u;
@@ -3570,15 +3608,28 @@ bool rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h,
     submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &cmd;
-    if (vk_queue_submit(vk, 1, &submit, VK_NULL_HANDLE) != VK_SUCCESS) {
-        LOG_FATAL("VK: failed to submit screenshot command buffer");
+    VkFenceCreateInfo fence_ci = {0};
+    fence_ci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    VkFence readback_fence = VK_NULL_HANDLE;
+    if (vkCreateFence(vk->device, &fence_ci, NULL, &readback_fence) != VK_SUCCESS) {
+        LOG_WARN("VK: failed to create screenshot fence");
         vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &cmd);
         vkDestroyBuffer(vk->device, staging_buf, NULL);
         vkFreeMemory(vk->device, staging_mem, NULL);
         return false;
     }
-    if (vk_queue_wait_idle(vk, vk->graphics_queue) != VK_SUCCESS) {
-        LOG_WARN("VK: vkQueueWaitIdle failed in screenshot");
+    if (vk_queue_submit(vk, 1, &submit, readback_fence) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to submit screenshot command buffer");
+        vkDestroyFence(vk->device, readback_fence, NULL);
+        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &cmd);
+        vkDestroyBuffer(vk->device, staging_buf, NULL);
+        vkFreeMemory(vk->device, staging_mem, NULL);
+        return false;
+    }
+    VkResult wait_result = vk_wait_fence_with_timeout(vk, readback_fence, UINT64_MAX);
+    vkDestroyFence(vk->device, readback_fence, NULL);
+    if (wait_result != VK_SUCCESS) {
+        LOG_WARN("VK: screenshot fence wait failed");
         vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &cmd);
         vkDestroyBuffer(vk->device, staging_buf, NULL);
         vkFreeMemory(vk->device, staging_mem, NULL);
@@ -3789,6 +3840,15 @@ void rhi_present(RHIDevice *dev) {
         return;
     }
 
+    bool screen_post_ok = true;
+#if defined(ENGINE_PLATFORM_QNX) && defined(ENGINE_QNX_SCREEN)
+    if (vk->qnx_screen_post.enabled &&
+        !vk_qnx_screen_post_present(&vk->qnx_screen_post, dev)) {
+        LOG_ERROR("VK: CPU readback + Screen post failed");
+        screen_post_ok = false;
+    }
+#endif
+
     VkPresentInfoKHR pi = {0};
     pi.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
     pi.waitSemaphoreCount = 1;
@@ -3798,20 +3858,24 @@ void rhi_present(RHIDevice *dev) {
     pi.pImageIndices = &vk->image_index;
 
     VkResult res = vkQueuePresentKHR(vk->present_queue, &pi);
+    RHIResult result;
     if (res == VK_ERROR_DEVICE_LOST) {
-        rhi_device_set_lifecycle_result(dev, RHI_RESULT_DEVICE_LOST);
+        result = RHI_RESULT_DEVICE_LOST;
     } else if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR) {
-        rhi_device_set_lifecycle_result(dev, RHI_RESULT_OUT_OF_DATE);
+        result = RHI_RESULT_OUT_OF_DATE;
     } else if (res != VK_SUCCESS) {
-        rhi_device_set_lifecycle_result(dev, RHI_RESULT_ERROR);
+        result = RHI_RESULT_ERROR;
     } else {
-        rhi_device_set_lifecycle_result(dev, RHI_RESULT_OK);
+        result = RHI_RESULT_OK;
     }
     if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR) {
         RHIResult recreate_result = vk_recreate_swapchain(vk, dev->width, dev->height);
         if (recreate_result != RHI_RESULT_OK)
-            rhi_device_set_lifecycle_result(dev, recreate_result);
+            result = recreate_result;
     }
+    if (!screen_post_ok && result != RHI_RESULT_DEVICE_LOST)
+        result = RHI_RESULT_ERROR;
+    rhi_device_set_lifecycle_result(dev, result);
 
     vk->current_frame = (vk->current_frame + 1) % VK_MAX_FRAMES;
     vk->frame_submitted = false;

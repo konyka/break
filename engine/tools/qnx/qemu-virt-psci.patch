@@ -1,0 +1,21 @@
+diff --git a/src/hardware/startup/boards/qemu-virt/smp.c b/src/hardware/startup/boards/qemu-virt/smp.c
+--- a/src/hardware/startup/boards/qemu-virt/smp.c
++++ b/src/hardware/startup/boards/qemu-virt/smp.c
+@@ -3,6 +3,7 @@
+  */
+ 
+ #include <startup.h>
++#include <aarch64/psci.h>
+ 
+ unsigned board_smp_num_cpu(void)
+ {
+@@ -17,7 +18,8 @@ void board_smp_init(struct smp_entry *smp, const unsigned num_cpus)
+ 
+ int board_smp_start(const unsigned cpu, void (*start)(void))
+ {
+-    return 1;
++    psci_call = psci_hvc;
++    return psci_smp_start(cpu, start);
+ }
+ 
+ unsigned board_smp_adjust_num(const unsigned cpu)

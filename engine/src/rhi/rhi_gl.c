@@ -4104,7 +4104,7 @@ void rhi_cubemap_depth_fbo_destroy(RHIDevice *dev, RHICubemapDepthFBO *fbo) {
      * via rhi_texture_destroy if needed; for simplicity we also clean it. */
     if (rhi_handle_valid(fbo->depth_tex)) {
         GLTextureData *td = (GLTextureData *)rhi_get_resource_typed(
-            dev, fbo->depth_tex, RHI_RES_TEXTURE);
+            dev, fbo->depth_tex, RHI_RES_CUBEMAP);
         if (td) {
             for (u32 i = 0; i < 16; i++) {
                 if (g_tex_cache[i] == td->gl_tex) g_tex_cache[i] = 0;

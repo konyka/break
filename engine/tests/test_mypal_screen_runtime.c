@@ -789,6 +789,31 @@ TEST(screen_native_close_has_source_window)
   ASSERT_EQ(g_timer_fires, 0);
 }
 
+#if !defined(MYUI_HAS_GLES2)
+TEST(screen_gles_unavailable_is_fail_closed_and_balanced)
+{
+  my_allocator_t* debug = my_allocator_debug_create(NULL);
+  my_pal_t* pal;
+  my_pal_window_t* window;
+  my_pal_gl_t* gl;
+  ASSERT_NOT_NULL(debug);
+  pal = my_pal_create(debug);
+  ASSERT_NOT_NULL(pal);
+  window = my_pal_window_create(pal, 64, 48, "myui GLES unavailable");
+  ASSERT_NOT_NULL(window);
+  gl = my_pal_window_gl_enable(window);
+  ASSERT_TRUE(gl == NULL);
+  ASSERT_TRUE(my_pal_window_gl_enable_api(window, MY_PAL_GL_API_GLES2) == NULL);
+  ASSERT_TRUE(my_pal_window_gl_enable_api(window, MY_PAL_GL_API_OPENGL) == NULL);
+  my_pal_gl_destroy(gl);
+  my_pal_gl_destroy(gl);
+  my_pal_window_destroy(window);
+  my_pal_destroy(pal);
+  ASSERT_EQ(my_allocator_debug_leak_count(debug), 0);
+  my_allocator_debug_destroy(debug);
+}
+#endif
+
 int main(void) {
   setvbuf(stdout, NULL, _IONBF, 0);
   g_pal = my_pal_create(NULL);
@@ -830,6 +855,9 @@ int main(void) {
   RUN_TEST(screen_native_close_has_source_window);
   cleanup_loop();
   cleanup_window();
+#if !defined(MYUI_HAS_GLES2)
+  RUN_TEST(screen_gles_unavailable_is_fail_closed_and_balanced);
+#endif
   my_pal_destroy(g_pal);
   printf("\n=== Results: %d passed, %d failed, %d total ===\n",
          g_test_pass, g_test_fail, g_test_count);

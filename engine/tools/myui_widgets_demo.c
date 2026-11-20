@@ -78,8 +78,15 @@ static void render_widget(my_widget_t* widget, const char* dir,
       g_colored++;
   (void)snprintf(path, sizeof(path), "%s/%s.ppm", dir, name);
   dump_ppm(pixels, 320u, 180u, my_lcd_mem_get_stride(lcd), path);
+  (void)my_widget_unref(widget);
   my_vgcanvas_destroy(canvas);
   my_lcd_destroy(lcd);
+}
+
+static my_ret_t attach_child(my_widget_t* parent, my_widget_t* child) {
+  my_ret_t result = my_widget_add_child(parent, child);
+  if (result == MY_RET_OK) my_widget_unref(child);
+  return result;
 }
 
 static my_widget_t* host_with(my_widget_t* child, int32_t x, int32_t y,
@@ -90,7 +97,7 @@ static my_widget_t* host_with(my_widget_t* child, int32_t x, int32_t y,
   child->rect.y = y;
   child->rect.w = w;
   child->rect.h = h;
-  if (my_widget_add_child(host, child) != MY_RET_OK) exit(1);
+  if (attach_child(host, child) != MY_RET_OK) exit(1);
   return host;
 }
 
@@ -109,9 +116,9 @@ static void scene_button_variants(const char* dir) {
   b->rect.x = 20; b->rect.y = 60; b->rect.w = 200; b->rect.h = 30;
   c->rect.x = 20; c->rect.y = 100; c->rect.w = 120; c->rect.h = 30;
   (void)my_button_set_cooldown(c, 3000u);
-  (void)my_widget_add_child(host, a);
-  (void)my_widget_add_child(host, b);
-  (void)my_widget_add_child(host, c);
+  (void)attach_child(host, a);
+  (void)attach_child(host, b);
+  (void)attach_child(host, c);
   render_widget(host, dir, "02_button_variants");
 }
 
@@ -142,9 +149,9 @@ static void scene_label_align(const char* dir) {
   (void)my_label_set_align(left, MY_TEXT_ALIGN_LEFT);
   (void)my_label_set_align(center, MY_TEXT_ALIGN_CENTER);
   (void)my_label_set_align(right, MY_TEXT_ALIGN_RIGHT);
-  (void)my_widget_add_child(host, left);
-  (void)my_widget_add_child(host, center);
-  (void)my_widget_add_child(host, right);
+  (void)attach_child(host, left);
+  (void)attach_child(host, center);
+  (void)attach_child(host, right);
   render_widget(host, dir, "04_label_align");
 }
 
@@ -167,9 +174,9 @@ static void scene_checkbox(const char* dir) {
   c->rect.x = 30; c->rect.y = 126; c->rect.w = 200; c->rect.h = 24;
   (void)my_checkbox_set_checked(b, true);
   (void)my_checkbox_set_mixed(c, true);
-  (void)my_widget_add_child(host, a);
-  (void)my_widget_add_child(host, b);
-  (void)my_widget_add_child(host, c);
+  (void)attach_child(host, a);
+  (void)attach_child(host, b);
+  (void)attach_child(host, c);
   render_widget(host, dir, "06_checkbox_states");
 }
 
@@ -185,8 +192,8 @@ static void scene_slider(const char* dir) {
   (void)my_slider_set_range(b, 0.0f, 1.0f);
   (void)my_slider_set_step(b, 0.25f);
   (void)my_slider_set_value(b, 0.75f);
-  (void)my_widget_add_child(host, a);
-  (void)my_widget_add_child(host, b);
+  (void)attach_child(host, a);
+  (void)attach_child(host, b);
   render_widget(host, dir, "07_slider");
 }
 
@@ -203,7 +210,7 @@ static void scene_progress(const char* dir) {
     bars[i]->rect.w = 280;
     bars[i]->rect.h = 18;
     (void)my_progress_bar_set_value(bars[i], values[i]);
-    (void)my_widget_add_child(host, bars[i]);
+    (void)attach_child(host, bars[i]);
   }
   render_widget(host, dir, "08_progress_bar");
 }
@@ -236,9 +243,9 @@ static void scene_edit(const char* dir) {
   (void)my_edit_set_hint(hinted, "search...");
   (void)my_edit_set_text(secret, "hunter2");
   (void)my_edit_set_password(secret, true);
-  (void)my_widget_add_child(host, plain);
-  (void)my_widget_add_child(host, hinted);
-  (void)my_widget_add_child(host, secret);
+  (void)attach_child(host, plain);
+  (void)attach_child(host, hinted);
+  (void)attach_child(host, secret);
   render_widget(host, dir, "10_edit");
 }
 
@@ -264,8 +271,8 @@ static void scene_scroll_bar(const char* dir) {
   (void)my_scroll_bar_set_value(half, 0.4f);
   (void)my_scroll_bar_set_page_size(full, 30.0f);
   (void)my_scroll_bar_set_value(full, 1.0f);
-  (void)my_widget_add_child(host, half);
-  (void)my_widget_add_child(host, full);
+  (void)attach_child(host, half);
+  (void)attach_child(host, full);
   render_widget(host, dir, "12_scroll_bar");
 }
 
@@ -333,11 +340,11 @@ static void scene_mix(const char* dir) {
   progress->rect.x = 20; progress->rect.y = 130; progress->rect.w = 280;
   progress->rect.h = 16;
   (void)my_progress_bar_set_value(progress, 0.8f);
-  (void)my_widget_add_child(host, title);
-  (void)my_widget_add_child(host, button);
-  (void)my_widget_add_child(host, check);
-  (void)my_widget_add_child(host, slider);
-  (void)my_widget_add_child(host, progress);
+  (void)attach_child(host, title);
+  (void)attach_child(host, button);
+  (void)attach_child(host, check);
+  (void)attach_child(host, slider);
+  (void)attach_child(host, progress);
   render_widget(host, dir, "15_widget_mix");
 }
 
@@ -402,8 +409,10 @@ int main(int argc, char** argv) {
   }
   if (failures != 0u) {
     printf("%zu scene(s) FAILED\n", failures);
+    my_font_destroy(g_font);
     return 1;
   }
   printf("all widget scenes rendered\n");
+  my_font_destroy(g_font);
   return 0;
 }

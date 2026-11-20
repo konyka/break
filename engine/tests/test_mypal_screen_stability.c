@@ -43,6 +43,74 @@ typedef struct native_stats_t {
 
 static native_stats_t g_native;
 
+typedef struct native_call_diag_t {
+  atomic_ullong calls;
+  atomic_ullong errors;
+  atomic_ullong would_block;
+  atomic_ullong total_us;
+  atomic_ullong max_us;
+  atomic_int last_error;
+} native_call_diag_t;
+
+static native_call_diag_t g_send_diag;
+static native_call_diag_t g_post_diag;
+static native_call_diag_t g_dequeue_diag;
+static native_call_diag_t g_get_event_diag;
+
+static void native_diag_record(native_call_diag_t* diag, int result, int error,
+                               uint64_t elapsed_us) {
+  uint64_t previous;
+  atomic_fetch_add_explicit(&diag->calls, 1ull, memory_order_relaxed);
+  atomic_fetch_add_explicit(&diag->total_us, elapsed_us, memory_order_relaxed);
+  previous = atomic_load_explicit(&diag->max_us, memory_order_relaxed);
+  while (elapsed_us > previous &&
+         !atomic_compare_exchange_weak_explicit(&diag->max_us, &previous,
+                                                elapsed_us,
+                                                memory_order_relaxed,
+                                                memory_order_relaxed)) {
+  }
+  if (result != 0) {
+    atomic_fetch_add_explicit(&diag->errors, 1ull, memory_order_relaxed);
+    if (error == EWOULDBLOCK) {
+      atomic_fetch_add_explicit(&diag->would_block, 1ull, memory_order_relaxed);
+    }
+    atomic_store_explicit(&diag->last_error, error, memory_order_relaxed);
+  }
+  errno = error;
+}
+
+static void native_diag_reset(native_call_diag_t* diag) {
+  atomic_store_explicit(&diag->calls, 0ull, memory_order_relaxed);
+  atomic_store_explicit(&diag->errors, 0ull, memory_order_relaxed);
+  atomic_store_explicit(&diag->would_block, 0ull, memory_order_relaxed);
+  atomic_store_explicit(&diag->total_us, 0ull, memory_order_relaxed);
+  atomic_store_explicit(&diag->max_us, 0ull, memory_order_relaxed);
+  atomic_store_explicit(&diag->last_error, 0, memory_order_relaxed);
+}
+
+static void native_diag_reset_all(void) {
+  native_diag_reset(&g_send_diag);
+  native_diag_reset(&g_post_diag);
+  native_diag_reset(&g_dequeue_diag);
+  native_diag_reset(&g_get_event_diag);
+}
+
+static void native_diag_print(const char* name, native_call_diag_t* diag) {
+  printf("screen_stress_native_call,name=%s,calls=%llu,errors=%llu,"
+         "would_block=%llu,total_us=%llu,max_us=%llu,last_error=%d\n", name,
+         (unsigned long long)atomic_load_explicit(&diag->calls,
+                                                  memory_order_relaxed),
+         (unsigned long long)atomic_load_explicit(&diag->errors,
+                                                  memory_order_relaxed),
+         (unsigned long long)atomic_load_explicit(&diag->would_block,
+                                                  memory_order_relaxed),
+         (unsigned long long)atomic_load_explicit(&diag->total_us,
+                                                  memory_order_relaxed),
+         (unsigned long long)atomic_load_explicit(&diag->max_us,
+                                                  memory_order_relaxed),
+         atomic_load_explicit(&diag->last_error, memory_order_relaxed));
+}
+
 static int native_count_success(int result, uint64_t* counter) {
   int error = errno;
   if (result == 0) (*counter)++;
@@ -105,10 +173,56 @@ int __wrap_screen_destroy_window_buffers(screen_window_t window) {
 
 int __wrap_screen_post_window(screen_window_t window, screen_buffer_t buffer,
                               int count, const int* rects, int flags) {
-  return native_count_success(
+  uint64_t started_us = time_microseconds();
+  int result = native_count_success(
       __real_screen_post_window(window, buffer, count, rects, flags),
       &g_native.posts_accepted);
+  int error = errno;
+  native_diag_record(&g_post_diag, result, error,
+                     time_microseconds() - started_us);
+  return result;
 }
+
+#ifdef SCREEN_STABILITY_NATIVE_DIAG
+int __real_screen_send_event(screen_context_t context, screen_event_t event,
+                             pid_t pid);
+int __real_screen_dequeue_window_render_buffer(screen_buffer_t* buffer,
+                                               screen_window_t window,
+                                               int flags);
+int __real_screen_get_event(screen_context_t context, screen_event_t event,
+                            uint64_t timeout);
+
+int __wrap_screen_send_event(screen_context_t context, screen_event_t event,
+                             pid_t pid) {
+  uint64_t started_us = time_microseconds();
+  int result = __real_screen_send_event(context, event, pid);
+  int error = errno;
+  native_diag_record(&g_send_diag, result, error,
+                     time_microseconds() - started_us);
+  return result;
+}
+
+int __wrap_screen_dequeue_window_render_buffer(screen_buffer_t* buffer,
+                                               screen_window_t window,
+                                               int flags) {
+  uint64_t started_us = time_microseconds();
+  int result = __real_screen_dequeue_window_render_buffer(buffer, window, flags);
+  int error = errno;
+  native_diag_record(&g_dequeue_diag, result, error,
+                     time_microseconds() - started_us);
+  return result;
+}
+
+int __wrap_screen_get_event(screen_context_t context, screen_event_t event,
+                            uint64_t timeout) {
+  uint64_t started_us = time_microseconds();
+  int result = __real_screen_get_event(context, event, timeout);
+  int error = errno;
+  native_diag_record(&g_get_event_diag, result, error,
+                     time_microseconds() - started_us);
+  return result;
+}
+#endif
 
 static native_stats_t native_since(native_stats_t before) {
   native_stats_t delta;
@@ -554,6 +668,15 @@ struct stress_state_t {
   uint64_t deadline_us;
   uint64_t run_elapsed_us;
   uint64_t total_elapsed_us;
+  uint64_t deadline_notice_us;
+  uint64_t deadline_quit_done_us;
+  uint64_t watchdog_fire_us;
+  uint64_t watchdog_quit_done_us;
+  uint64_t first_run_returned_us;
+  uint64_t second_run_elapsed_us;
+  my_ret_t deadline_quit_result;
+  my_ret_t first_run_result;
+  my_ret_t second_run_result;
   uint8_t next_shade;
   bool deadline_reached;
   uint32_t setup_errors;
@@ -581,8 +704,11 @@ static my_ret_t stress_frame_timer(void* context) {
   stress_state_t* state = (stress_state_t*)context;
   frame_result_t result;
   if (time_microseconds() >= state->deadline_us) {
+    state->deadline_notice_us = time_microseconds();
     state->deadline_reached = true;
-    stress_record_quit(state, my_pal_main_loop_quit(state->loop));
+    state->deadline_quit_result = my_pal_main_loop_quit(state->loop);
+    state->deadline_quit_done_us = time_microseconds();
+    stress_record_quit(state, state->deadline_quit_result);
     return MY_RET_FAIL;
   }
   result = draw_frame(&state->frames, state->lcd, &s_dirty, state->next_shade,
@@ -717,9 +843,11 @@ static PLATFORM_THREAD_RET stress_watchdog_run(PLATFORM_THREAD_ARG argument) {
     platform_mutex_unlock(&state->watchdog_mutex);
   }
   if (fire) {
+    state->watchdog_fire_us = time_microseconds();
     state->watchdog_fired = true;
     atomic_store_explicit(&state->stop_producers, true, memory_order_release);
     state->watchdog_quit_result = my_pal_main_loop_quit(state->loop);
+    state->watchdog_quit_done_us = time_microseconds();
   }
   return PLATFORM_THREAD_RETURN;
 }
@@ -788,7 +916,9 @@ static void stress_run(stress_state_t* state) {
 
   run_started_us = time_microseconds();
   run_result = my_pal_main_loop_run(state->loop);
-  state->run_elapsed_us = time_microseconds() - run_started_us;
+  state->first_run_result = run_result;
+  state->first_run_returned_us = time_microseconds();
+  state->run_elapsed_us = state->first_run_returned_us - run_started_us;
   if (run_result != MY_RET_OK) state->run_errors++;
   stress_record_quit(state, my_pal_main_loop_quit(state->loop));
   atomic_store_explicit(&state->stop_producers, true, memory_order_release);
@@ -796,7 +926,10 @@ static void stress_run(stress_state_t* state) {
   for (i = 0u; i < state->threads_created; ++i) {
     platform_thread_join(state->producers[i].thread);
   }
+  run_started_us = time_microseconds();
   run_result = my_pal_main_loop_run(state->loop);
+  state->second_run_result = run_result;
+  state->second_run_elapsed_us = time_microseconds() - run_started_us;
   if (run_result != MY_RET_OK) state->run_errors++;
 }
 
@@ -806,6 +939,10 @@ static void stress_setup_error(stress_state_t* state, const char* stage) {
 }
 
 static uint32_t g_stress_duration_ms = SCREEN_DEFAULT_STRESS_MS;
+
+static uint64_t stress_time_delta(uint64_t later, uint64_t earlier) {
+  return earlier != 0u && later >= earlier ? later - earlier : 0u;
+}
 
 static void run_four_producer_frame_soak(uint32_t duration_ms, bool throttled)
 {
@@ -886,6 +1023,7 @@ static void run_four_producer_frame_soak(uint32_t duration_ms, bool throttled)
     stress_setup_error(&state, "two distinct prime buffers");
     setup_ok = false;
   }
+  native_diag_reset_all();
   if (setup_ok) stress_run(&state);
 
   if (state.window != NULL) {
@@ -952,6 +1090,41 @@ static void run_four_producer_frame_soak(uint32_t duration_ms, bool throttled)
   total_errors = state.setup_errors + state.run_errors + state.control_errors +
                  state.handler_errors + state.validation_errors +
                  state.frames.errors + failed + fifo_errors;
+  printf("screen_stress_error_detail,setup=%u,run=%u,control=%u,handler=%u,"
+         "validation=%u,frame=%llu,begin_timeouts=%llu,producer_failed=%llu,"
+         "fifo=%llu\n",
+         state.setup_errors, state.run_errors, state.control_errors,
+         state.handler_errors, state.validation_errors,
+         (unsigned long long)state.frames.errors,
+         (unsigned long long)state.frames.begin_timeouts,
+         (unsigned long long)failed, (unsigned long long)fifo_errors);
+  printf("screen_stress_schedule,deadline_reached=%d,deadline_quit_result=%d,"
+         "deadline_notice_us=%llu,deadline_quit_us=%llu,watchdog_fired=%d,"
+         "watchdog_quit_result=%d,watchdog_fire_delay_us=%llu,"
+         "watchdog_quit_us=%llu,first_run_result=%d,"
+         "first_return_delay_us=%llu,second_run_result=%d,"
+         "second_run_elapsed_us=%llu\n",
+         state.deadline_reached ? 1 : 0, state.deadline_quit_result,
+         (unsigned long long)stress_time_delta(state.deadline_notice_us,
+                                               state.started_us),
+         (unsigned long long)stress_time_delta(state.deadline_quit_done_us,
+                                               state.deadline_notice_us),
+         state.watchdog_fired ? 1 : 0, state.watchdog_quit_result,
+         (unsigned long long)stress_time_delta(state.watchdog_fire_us,
+                                               state.deadline_notice_us),
+         (unsigned long long)stress_time_delta(state.watchdog_quit_done_us,
+                                               state.watchdog_fire_us),
+         state.first_run_result,
+         (unsigned long long)stress_time_delta(state.first_run_returned_us,
+                                               state.deadline_notice_us),
+         state.second_run_result,
+         (unsigned long long)state.second_run_elapsed_us);
+  native_diag_print("post", &g_post_diag);
+#ifdef SCREEN_STABILITY_NATIVE_DIAG
+  native_diag_print("send", &g_send_diag);
+  native_diag_print("dequeue", &g_dequeue_diag);
+  native_diag_print("get_event", &g_get_event_diag);
+#endif
   printf("screen_command_frame_soak,mode=%s,requested_ms=%u,elapsed_us=%llu,"
          "run_elapsed_us=%llu,threads=%u,frames=%llu,prime_frames=%llu,"
          "dirty_frames=%llu,pending=%llu,posts=%u,native_posts=%llu,"

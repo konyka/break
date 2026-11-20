@@ -85,7 +85,15 @@ Platform *platform_create(const PlatformConfig *cfg)
     int format = SCREEN_FORMAT_RGBA8888;
     int usage = SCREEN_USAGE_READ | SCREEN_USAGE_WRITE;
 #if defined(ENGINE_VULKAN)
-    usage |= SCREEN_USAGE_VULKAN;
+    const char *headless_surface = getenv("BREAK_VK_HEADLESS_SURFACE");
+    if (headless_surface != NULL && strcmp(headless_surface, "1") == 0) {
+        const char *screen_post = getenv("BREAK_VK_SCREEN_POST");
+        if (screen_post != NULL && strcmp(screen_post, "1") == 0) {
+            usage |= SCREEN_USAGE_NATIVE;
+        }
+    } else {
+        usage |= SCREEN_USAGE_VULKAN;
+    }
 #endif
     if (screen_set_window_property_iv(p->win, SCREEN_PROPERTY_SIZE, size) != 0 ||
         screen_set_window_property_iv(p->win, SCREEN_PROPERTY_FORMAT, &format) != 0 ||

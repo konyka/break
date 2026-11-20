@@ -13,7 +13,7 @@
 #endif
 
 /* ---- Constants ---- */
-#define ASYNC_HEAP_SIZE        256   /* Pending request heap capacity */
+#define ASYNC_HEAP_SIZE        1024  /* Pending request heap capacity */
 /* R165-A: Queue capacity must match max requests to prevent MPSC ring-buffer
  * overflow. With ASYNC_QUEUE_SIZE=256 and ASYNC_MAX_REQUESTS=1024, if more than
  * 256 completions are enqueued before the consumer drains them, older entries
@@ -364,7 +364,7 @@ static void io_worker_run(void) {
                 req->data = NULL;
                 req->size = 0;
                 async_finalize(slot_idx, ASSET_FAILED);
-                LOG_WARN("Async load failed: %s", req->path);
+                LOG_DEBUG("Async load failed: %s", req->path);
             }
         }
     }

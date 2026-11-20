@@ -71,3 +71,7 @@ draw_bench.csv
 
 # ctest output when run from the repository root
 Testing/
+
+# Python tool caches
+__pycache__/
+*.pyc

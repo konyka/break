@@ -536,6 +536,7 @@ TEST(async_loader_completion_burst)
 
     const int N = 1200;
     char path[64];
+    u64 submit_start = test_now_us();
     for (int i = 0; i < N; i++) {
         snprintf(path, sizeof(path), "async_burst_%d.bin", i);
         while (async_loader_request(path, burst_cb, NULL) == 0) {
@@ -546,7 +547,8 @@ TEST(async_loader_completion_burst)
     }
 
     /* Wait for the burst to drain - poll until done or the deadline expires */
-    u64 deadline = test_wait_deadline();
+    u64 wait_start = test_now_us();
+    u64 deadline = wait_start + TEST_WAIT_BUDGET_US;
     for (;;) {
         async_loader_tick();
         if (atomic_load(&g_burst_cb_count) >= N &&
@@ -556,6 +558,11 @@ TEST(async_loader_completion_burst)
         for (volatile int j = 0; j < 5000; j++) { (void)j; }
     }
 
+    u64 wait_end = test_now_us();
+    printf("(completion_burst callbacks %d/%d pending %u submit %.1f ms drain %.1f ms) ",
+           atomic_load(&g_burst_cb_count), N, async_loader_pending_count(),
+           (double)(wait_start - submit_start) / 1000.0,
+           (double)(wait_end - wait_start) / 1000.0);
     ASSERT_EQ(atomic_load(&g_burst_cb_count), N);
 
     async_loader_shutdown();

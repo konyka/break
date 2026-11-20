@@ -217,22 +217,57 @@ typedef struct {
 } EnvSnapshot;
 static const char *const k_env_names[4] = {"BREAK_LANG", "LC_ALL",
                                            "LC_MESSAGES", "LANG"};
+#if defined(__QNXNTO__)
+static char *env_owned[4];
+#endif
+
+static void env_unset(int i) {
+    (void)unsetenv(k_env_names[i]);
+#if defined(__QNXNTO__)
+    free(env_owned[i]);
+    env_owned[i] = NULL;
+#endif
+}
+
+static int env_set(int i, const char *value) {
+#if defined(__QNXNTO__)
+    size_t name_len = strlen(k_env_names[i]);
+    size_t value_len = strlen(value);
+    size_t size = name_len + value_len + 2u;
+    char *entry = (char *)malloc(size);
+    if (entry == NULL) {
+        return -1;
+    }
+    memcpy(entry, k_env_names[i], name_len);
+    entry[name_len] = '=';
+    memcpy(entry + name_len + 1u, value, value_len + 1u);
+    if (putenv(entry) != 0) {
+        free(entry);
+        return -1;
+    }
+    free(env_owned[i]);
+    env_owned[i] = entry;
+    return 0;
+#else
+    return setenv(k_env_names[i], value, 1);
+#endif
+}
 
 static void env_save(EnvSnapshot *s) {
     for (int i = 0; i < 4; i++) {
         const char *v = getenv(k_env_names[i]);
         s->had[i] = v != NULL;
         s->saved[i] = v != NULL ? strdup(v) : NULL;
-        unsetenv(k_env_names[i]);
+        env_unset(i);
     }
 }
 
 static void env_restore(EnvSnapshot *s) {
     for (int i = 0; i < 4; i++) {
         if (s->had[i]) {
-            setenv(k_env_names[i], s->saved[i], 1);
+            (void)env_set(i, s->saved[i]);
         } else {
-            unsetenv(k_env_names[i]);
+            env_unset(i);
         }
         free(s->saved[i]);
     }
@@ -247,18 +282,18 @@ TEST(lang_from_env_follows_priority_and_skips_unparseable)
     EnvSnapshot snap;
     env_save(&snap);
     ASSERT_EQ(break_editor_i18n_lang_from_env(), BREAK_EDITOR_LANG_EN_US);
-    setenv("LANG", "zh_CN.UTF-8", 1);
+    (void)env_set(3, "zh_CN.UTF-8");
     ASSERT_EQ(break_editor_i18n_lang_from_env(), BREAK_EDITOR_LANG_ZH_CN);
-    setenv("LC_MESSAGES", "en_US.UTF-8", 1);
+    (void)env_set(2, "en_US.UTF-8");
     ASSERT_EQ(break_editor_i18n_lang_from_env(), BREAK_EDITOR_LANG_EN_US);
-    setenv("LC_ALL", "zh_CN.UTF-8", 1);
+    (void)env_set(1, "zh_CN.UTF-8");
     ASSERT_EQ(break_editor_i18n_lang_from_env(), BREAK_EDITOR_LANG_ZH_CN);
-    setenv("BREAK_LANG", "en", 1);
+    (void)env_set(0, "en");
     ASSERT_EQ(break_editor_i18n_lang_from_env(), BREAK_EDITOR_LANG_EN_US);
     /* an unsupported higher-priority value does not mask a usable lower one */
-    setenv("BREAK_LANG", "fr", 1);
+    (void)env_set(0, "fr");
     ASSERT_EQ(break_editor_i18n_lang_from_env(), BREAK_EDITOR_LANG_ZH_CN);
-    setenv("BREAK_LANG", "", 1);
+    (void)env_set(0, "");
     ASSERT_EQ(break_editor_i18n_lang_from_env(), BREAK_EDITOR_LANG_ZH_CN);
     env_restore(&snap);
 #endif

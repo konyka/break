@@ -6625,6 +6625,26 @@ int main(int argc, char **argv) {
         return psh_only ? 0 : 1;
     }
 
+    /* Opt-in focused rerun of the draw-parameter material paths; the default
+     * suite and all assertions remain unchanged. */
+    if (getenv("TV_ONLY_MATERIAL_ARRAY")) {
+        u32 maw = 0, mah = 0;
+        platform_get_drawable_size(engine.platform, &maw, &mah);
+        bool matarr_only = tv_test_material_array(&render, maw, mah, false);
+        bool dfi_only = tv_test_material_array(&render, maw, mah, true);
+        bool defarr_only = tv_test_deferred_gbuffer_array(&render);
+        LOG_INFO("RESULT: MATERIAL ARRAY SINGLE-EXECUTE TEST %s", matarr_only ? "PASSED ✓" : "FAILED");
+        LOG_INFO("RESULT: DIRECT DRAW FIRST_INSTANCE TEST %s", dfi_only ? "PASSED ✓" : "FAILED");
+        LOG_INFO("RESULT: DEFERRED GBUFFER ARRAY SINGLE-EXECUTE TEST %s", defarr_only ? "PASSED ✓" : "FAILED");
+        bool only_ok = matarr_only && dfi_only && defarr_only;
+        LOG_INFO("FINAL RESULT: %s", only_ok ? "ALL PASSED ✓" : "FAILED");
+        if (rhi_handle_valid(ibo)) rhi_buffer_destroy(render.device, ibo);
+        if (rhi_handle_valid(vbo)) rhi_buffer_destroy(render.device, vbo);
+        test_render_shutdown(&render);
+        engine_shutdown(&engine);
+        return only_ok ? 0 : 1;
+    }
+
     /* R580: TV_ONLY_GBUFFER runs ONLY the deferred G-Buffer tests (TEST 12
      * array path + TEST 12b factor channel + TEST 12c emissive lighting +
      * TEST 12d HDR emissive, R584)
@@ -6984,21 +7004,25 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
     u32 target_frames = 500;
     u32 frame_count = 0;
     u32 error_count = 0;
-    f64 total_time = 0.0;
-    f64 min_dt = 999.0, max_dt = 0.0;
+    f64 simulation_time = 0.0;
+    f64 min_wall_dt = 999.0, max_wall_dt = 0.0;
+    bool frame_timing = getenv("BREAK_TEST_TIMING") != NULL;
+    u64 stress_wall_t0 = time_microseconds();
 
     while (engine_frame(&engine) && frame_count < target_frames) {
+        u64 frame_t0 = time_microseconds();
         frame_count++;
         platform_get_drawable_size(engine.platform, &w, &h);
         camera_update(&camera, platform_input(engine.platform), (f32)engine.delta_time);
-        total_time += engine.delta_time;
-        if (engine.delta_time < min_dt) min_dt = engine.delta_time;
-        if (engine.delta_time > max_dt) max_dt = engine.delta_time;
+        simulation_time += engine.delta_time;
+        if (engine.raw_delta_time < min_wall_dt) min_wall_dt = engine.raw_delta_time;
+        if (engine.raw_delta_time > max_wall_dt) max_wall_dt = engine.raw_delta_time;
 
         Mat4 view = camera_view(&camera);
         Mat4 proj = camera_projection(&camera);
 
         RHICmdBuffer *cmd = rhi_frame_begin(render.device);
+        u64 record_t0 = time_microseconds();
         if (!cmd) { error_count++; continue; }
 
         rhi_cmd_clear_color(cmd, 0.1f, 0.1f, 0.15f, 1.0f);
@@ -7059,24 +7083,43 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
             rhi_cmd_draw_indexed(cmd, 3, 1);
         }
 
+        u64 submit_t0 = time_microseconds();
         rhi_frame_end(render.device);
+        u64 present_t0 = time_microseconds();
         rhi_present(render.device);
+        u64 frame_done = time_microseconds();
 
+        if (frame_timing && (frame_count <= 10u || frame_count % 25u == 0u)) {
+            LOG_INFO("TIMING: stress frame=%u begin_ms=%.3f record_ms=%.3f submit_ms=%.3f present_ms=%.3f body_ms=%.3f raw_delta_ms=%.3f",
+                     frame_count,
+                     (double)(record_t0 - frame_t0) / 1000.0,
+                     (double)(submit_t0 - record_t0) / 1000.0,
+                     (double)(present_t0 - submit_t0) / 1000.0,
+                     (double)(frame_done - present_t0) / 1000.0,
+                     (double)(frame_done - frame_t0) / 1000.0,
+                     engine.raw_delta_time * 1000.0);
+        }
         if (frame_count % 100 == 0) {
             LOG_INFO("Frame %u: %.1f FPS, %.2f ms/frame, errors=%u",
-                     frame_count, engine.fps, engine.delta_time * 1000.0, error_count);
+                     frame_count, engine.fps, engine.raw_delta_time * 1000.0, error_count);
         }
     }
 
+    u64 stress_wall_end = time_microseconds();
+    f64 total_time = (f64)(stress_wall_end - stress_wall_t0) / 1e6;
+    LOG_INFO("PHASE: stress_500 elapsed_ms=%.3f frames=%u",
+             total_time * 1000.0, frame_count);
     LOG_INFO("============================================");
     LOG_INFO("Test Results");
     LOG_INFO("============================================");
     LOG_INFO("Frames rendered: %u / %u target", frame_count, target_frames);
     LOG_INFO("Total time: %.2f seconds", total_time);
-    /* R486: total_time is 0.0 when no frame ran — guard the inf log line. */
+    /* R486: wall time is 0.0 when no frame ran — guard the inf log line. */
     LOG_INFO("Average FPS: %.1f", total_time > 0.0 ? (f64)frame_count / total_time : 0.0);
+    LOG_INFO("Simulation time: %.2f seconds", simulation_time);
     LOG_INFO("Frame errors: %u", error_count);
-    LOG_INFO("Frame time: min=%.2f ms, max=%.2f ms", min_dt * 1000.0, max_dt * 1000.0);
+    LOG_INFO("Wall frame time: min=%.2f ms, max=%.2f ms",
+             min_wall_dt * 1000.0, max_wall_dt * 1000.0);
 
     bool stress_pass = (error_count == 0 && frame_count >= target_frames);
     if (stress_pass) {

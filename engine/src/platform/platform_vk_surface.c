@@ -1,13 +1,32 @@
 #include <platform/platform_vk_surface.h>
 #include "platform_vk_surface_vkabi.h"
+#include <stdlib.h>
 #include <string.h>
 
 #if defined(ENGINE_PLATFORM_ANDROID) && defined(ENGINE_ANDROID_NATIVE_WINDOW)
 #include <android/native_window.h>
 #endif
 
+#if defined(ENGINE_PLATFORM_QNX) && defined(ENGINE_QNX_SCREEN)
+static bool platform_vk_headless_surface_requested(void) {
+    const char *value = getenv("BREAK_VK_HEADLESS_SURFACE");
+    return value != NULL && strcmp(value, "1") == 0;
+}
+#endif
+
 u32 platform_vk_required_instance_extensions(Platform *p, const char **out,
                                              u32 capacity) {
+#if defined(ENGINE_PLATFORM_QNX) && defined(ENGINE_QNX_SCREEN)
+    if (platform_vk_headless_surface_requested()) {
+        static const char *const headless_extensions[] = {
+            "VK_KHR_surface", "VK_EXT_headless_surface"
+        };
+        if (out == NULL || capacity < 2u) return 2u;
+        out[0] = headless_extensions[0];
+        out[1] = headless_extensions[1];
+        return 2u;
+    }
+#endif
     static const char *const extensions[] = {
         "VK_KHR_surface",
 #if defined(ENGINE_PLATFORM_WINDOWS)
@@ -155,6 +174,21 @@ u64 platform_vk_create_surface_handles(void *surface_native,
     return PLATFORM_VK_SURFACE_ERROR_UNAVAILABLE;
 #endif
 #elif defined(ENGINE_PLATFORM_QNX) && defined(ENGINE_QNX_SCREEN)
+    if (platform_vk_headless_surface_requested()) {
+        PVkHeadlessSurfaceCreateInfo ci;
+        (void)surface_native;
+        (void)display_native;
+        ci.sType = PVK_STYPE_HEADLESS_SURFACE_CREATE_INFO_EXT;
+        ci.pNext = NULL;
+        ci.flags = 0u;
+        create = pvk_resolve(vk_instance, vk_get_proc_addr, "vkCreateHeadlessSurfaceEXT");
+        if (create == NULL) return PLATFORM_VK_SURFACE_ERROR_PROC_MISSING;
+        if (create(vk_instance, &ci, NULL, out_surface) != 0) {
+            *out_surface = 0u;
+            return PLATFORM_VK_SURFACE_ERROR_CREATE_FAILED;
+        }
+        return PLATFORM_VK_SURFACE_OK;
+    }
     {
         PVkScreenSurfaceCreateInfo ci;
         if (surface_native == NULL || display_native == NULL)

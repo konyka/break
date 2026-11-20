@@ -866,6 +866,15 @@ TEST(loop_stress_throughput)
             }
         }
     }
+    if (sent != NET_LOOP_STRESS_DATAGRAMS ||
+        received != NET_LOOP_STRESS_DATAGRAMS) {
+        printf("loop_stress_throughput mismatch: sent=%u received=%u target=%u\n",
+               sent, received, NET_LOOP_STRESS_DATAGRAMS);
+        net_loop_destroy(loop);
+        net_close(recv_s);
+        net_close(send_s);
+        net_shutdown();
+    }
     ASSERT_EQ(sent, NET_LOOP_STRESS_DATAGRAMS);
     ASSERT_EQ(received, NET_LOOP_STRESS_DATAGRAMS);
 

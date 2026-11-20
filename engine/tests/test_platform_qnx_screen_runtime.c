@@ -162,6 +162,45 @@ cleanup:
     platform_destroy(platform);
 }
 
+#if defined(ENGINE_VULKAN)
+static bool qnx_screen_cpu_usage(const char *post, int *out_usage)
+{
+    const PlatformConfig config = {
+        .width = 64, .height = 64, .title = "Break QNX CPU presentation"
+    };
+    Platform *platform;
+    screen_window_t window;
+    bool ok;
+    if (setenv("BREAK_VK_HEADLESS_SURFACE", "1", 1) != 0) return false;
+    if (post != NULL) {
+        if (setenv("BREAK_VK_SCREEN_POST", post, 1) != 0) return false;
+    } else {
+        (void)unsetenv("BREAK_VK_SCREEN_POST");
+    }
+    platform = platform_create(&config);
+    (void)unsetenv("BREAK_VK_HEADLESS_SURFACE");
+    (void)unsetenv("BREAK_VK_SCREEN_POST");
+    if (platform == NULL) return false;
+    window = (screen_window_t)platform_surface_native(platform);
+    ok = window != NULL &&
+         screen_get_window_property_iv(window, SCREEN_PROPERTY_USAGE, out_usage) == 0;
+    platform_destroy(platform);
+    return ok;
+}
+
+TEST(qnx_screen_cpu_post_usage)
+{
+    int usage = -1;
+    ASSERT_TRUE(qnx_screen_cpu_usage(NULL, &usage));
+    ASSERT_EQ(usage & (SCREEN_USAGE_VULKAN | SCREEN_USAGE_NATIVE), 0);
+    ASSERT_TRUE(qnx_screen_cpu_usage("1", &usage));
+    ASSERT_EQ(usage & SCREEN_USAGE_VULKAN, 0);
+    ASSERT_EQ(usage & SCREEN_USAGE_NATIVE, SCREEN_USAGE_NATIVE);
+    ASSERT_EQ(usage & (SCREEN_USAGE_READ | SCREEN_USAGE_WRITE),
+              SCREEN_USAGE_READ | SCREEN_USAGE_WRITE);
+}
+#endif
+
 TEST(qnx_screen_monitor_enumeration_matches_native_displays)
 {
     const PlatformConfig config = {
@@ -350,7 +389,10 @@ int main(void)
     const PlatformConfig probe = {
         .width = 64, .height = 64, .title = "Break QNX Screen probe"
     };
-    Platform *platform = platform_create(&probe);
+    Platform *platform;
+    (void)unsetenv("BREAK_VK_HEADLESS_SURFACE");
+    (void)unsetenv("BREAK_VK_SCREEN_POST");
+    platform = platform_create(&probe);
     if (platform == NULL) {
         printf("SKIP: no usable QNX Screen service\n");
         return getenv("BREAK_QNX_SCREEN_REQUIRED") != NULL ? 1 : 77;
@@ -360,6 +402,9 @@ int main(void)
     RUN_TEST(qnx_screen_native_window_lifecycle);
     RUN_TEST(qnx_screen_monitor_enumeration_matches_native_displays);
     RUN_TEST(qnx_screen_initialization_failure_cleans_up);
+#if defined(ENGINE_VULKAN)
+    RUN_TEST(qnx_screen_cpu_post_usage);
+#endif
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",
            g_test_pass, g_test_fail, g_test_count);
     return g_test_fail > 0 ? 1 : 0;

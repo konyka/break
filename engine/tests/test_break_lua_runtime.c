@@ -1,4 +1,5 @@
 #include "test_framework.h"
+#include "test_qnx_spawn.h"
 #include <script/break_lua.h>
 #include <script/break_lua_test_hooks.h>
 #include <core/platform_thread.h>
@@ -164,26 +165,25 @@ TEST(owner_thread_enforcement_probe)
     ASSERT_EQ(break_lua_runtime_effective_config(NULL, &out), BREAK_LUA_INVALID);
 }
 
+static int double_destroy_child_main(void)
+{
+    BreakLuaRuntime *rt = break_lua_runtime_create(NULL);
+    if (!rt) return 2;
+    break_lua_runtime_destroy(rt);
+    break_lua_runtime_destroy(rt);
+    return 0;
+}
+
 TEST(double_destroy_aborts_in_test_builds)
 {
 #if !defined(_WIN32)
-    pid_t pid = fork();
-    if (pid == 0) {
-        BreakLuaRuntime *rt = break_lua_runtime_create(NULL);
-        if (!rt) {
-            _exit(2); /* create itself failed: not the path under test */
-        }
-        break_lua_runtime_destroy(rt);
-        break_lua_runtime_destroy(rt); /* contract violation: must abort */
-        _exit(0); /* reached only if double destroy was NOT rejected */
-    }
+    pid_t pid = test_qnx_spawn_death_child(double_destroy_child_main);
     ASSERT_TRUE(pid > 0);
     {
         int status = 0;
         ASSERT_EQ(waitpid(pid, &status, 0), pid);
-        /* abort() terminates by signal; a clean exit means the double
-         * destroy slipped through. */
         ASSERT_TRUE(WIFSIGNALED(status));
+        ASSERT_EQ(WTERMSIG(status), SIGABRT);
     }
     /* The parent registry is unaffected: normal lifecycle still works. */
     {
@@ -245,7 +245,7 @@ TEST(error_name_strings)
     ASSERT_STR_EQ(break_lua_error_name((BreakLuaError)999), "UNKNOWN");
 }
 
-TEST_MAIN_BEGIN()
+TEST_QNX_SPAWN_MAIN_BEGIN(double_destroy_child_main)
     RUN_TEST(create_with_null_config_uses_documented_defaults);
     RUN_TEST(create_explicit_config_within_caps_is_kept);
     RUN_TEST(config_over_hard_cap_fails_closed);

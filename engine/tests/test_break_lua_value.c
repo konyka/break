@@ -1,4 +1,5 @@
 #include "test_framework.h"
+#include "test_qnx_spawn.h"
 #include <script/break_lua.h>
 #include <script/break_lua_test_hooks.h>
 #include <core/platform_thread.h>
@@ -763,29 +764,28 @@ static PLATFORM_THREAD_RET frame_begin_probe_worker(PLATFORM_THREAD_ARG arg)
 }
 #endif
 
+static int frame_non_owner_child_main(void)
+{
+    BreakLuaRuntime *rt = break_lua_runtime_create(NULL);
+    PlatformThread t;
+    if (!rt) return 2;
+    g_probe_rt = rt;
+    if (platform_thread_create(&t, frame_begin_probe_worker, NULL)) {
+        platform_thread_join(t);
+    }
+    return 0;
+}
+
 TEST(frame_dispatch_rejects_non_owner_thread_with_abort)
 {
 #if !defined(_WIN32)
-    pid_t pid = fork();
-    if (pid == 0) {
-        /* begin_frame/end_frame return void: a non-owner call is a contract
-         * violation that fail-stops in test builds (destroy precedent). */
-        BreakLuaRuntime *rt = break_lua_runtime_create(NULL);
-        PlatformThread t;
-        if (!rt) {
-            _exit(2);
-        }
-        g_probe_rt = rt;
-        if (platform_thread_create(&t, frame_begin_probe_worker, NULL)) {
-            platform_thread_join(t);
-        }
-        _exit(0); /* reached only when the violation was NOT fail-stopped */
-    }
+    pid_t pid = test_qnx_spawn_death_child(frame_non_owner_child_main);
     ASSERT_TRUE(pid > 0);
     {
         int status = 0;
         ASSERT_EQ(waitpid(pid, &status, 0), pid);
         ASSERT_TRUE(WIFSIGNALED(status));
+        ASSERT_EQ(WTERMSIG(status), SIGABRT);
     }
     /* Parent-side normal usage is unaffected. */
     {
@@ -1467,7 +1467,7 @@ TEST(fnref_ref_function_oom_is_bounded)
     break_lua_runtime_destroy(rt);
 }
 
-TEST_MAIN_BEGIN()
+TEST_QNX_SPAWN_MAIN_BEGIN(frame_non_owner_child_main)
     RUN_TEST(call_round_trips_mixed_args_and_returns);
     RUN_TEST(call_return_nil_padding_and_extra_discard);
     RUN_TEST(call_zero_return_capacity_needs_no_buffer);

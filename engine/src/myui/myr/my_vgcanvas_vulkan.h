@@ -7,8 +7,9 @@
  * a VkSurfaceKHR (my_pal_window_vk_create_surface, void*-typed) and
  * hands it to my_vgcanvas_vulkan_create(); frames are presented via
  * my_vgcanvas_vulkan_present() (the window mounts it as its GL-adapter
- * swap_buffers). Offscreen path (tests): no surface, renders into a
- * private image, my_vgcanvas_vulkan_readback() copies it to host memory.
+ * swap_buffers). Offscreen path (tests and explicitly surfaceless PAL LCD
+ * mounts): no surface, renders into a private image, and
+ * my_vgcanvas_vulkan_readback() copies it to host memory.
  *
  * Built only with MYUI_HAS_VULKAN; otherwise every entry point returns
  * NULL/MY_RET_NOT_SUPPORTED.
@@ -59,12 +60,12 @@ my_vgcanvas_t* my_vgcanvas_vulkan_create(const my_allocator_t* allocator,
 /** @brief Destroy a surface NOT consumed by a successful create. */
 void my_vgcanvas_vulkan_destroy_surface(void* vk_surface);
 
-/** @brief Create the surface-less offscreen backend (tests, M25b). */
+/** @brief Create the surface-less offscreen backend (tests and LCD mounts). */
 my_vgcanvas_t* my_vgcanvas_vulkan_create_offscreen(
     const my_allocator_t* allocator, int32_t width, int32_t height);
 
-/** @brief Notify a physical drawable resize (swapchain is rebuilt lazily).
- * The caller converts logical window dimensions before calling. */
+/** @brief Notify a physical drawable resize (target/swapchain is rebuilt
+ * lazily). The caller converts logical window dimensions before calling. */
 my_ret_t my_vgcanvas_vulkan_resize(my_vgcanvas_t* vg, int32_t width,
                                    int32_t height);
 

@@ -183,6 +183,18 @@ endif()
 option(ENGINE_USE_ASAN "Enable AddressSanitizer" OFF)
 option(ENGINE_USE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
 option(ENGINE_USE_TSAN "Enable ThreadSanitizer" OFF)
+option(ENGINE_QNX_TLS_INTERPOSE "Enable opt-in QNX SDP 8.0 x86_64 ASan TLS interposition tests" OFF)
+if(ENGINE_QNX_TLS_INTERPOSE)
+    if(NOT ENGINE_PLATFORM STREQUAL "qnx" OR NOT ENGINE_USE_ASAN OR
+       NOT QNX_ARCH STREQUAL "x86_64")
+        message(FATAL_ERROR
+            "ENGINE_QNX_TLS_INTERPOSE requires QNX x86_64 with ENGINE_USE_ASAN=ON")
+    endif()
+    if(NOT ENGINE_BUILD_TESTS OR NOT BREAK_ENABLE_CRYPTO)
+        message(FATAL_ERROR
+            "ENGINE_QNX_TLS_INTERPOSE requires ENGINE_BUILD_TESTS=ON and BREAK_ENABLE_CRYPTO=ON")
+    endif()
+endif()
 # ENGINE_RHI_BACKEND=auto defaults to Vulkan on Linux and Windows (maintainer
 # decision 2026-10-26). The legacy ENGINE_VULKAN switch only counts as an
 # explicit user choice when its cache entry predates this file's own default;
@@ -1145,7 +1157,7 @@ endif()
 
 if(ENGINE_VULKAN OR (ENGINE_PLATFORM STREQUAL "macos" AND
    NOT ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "metal"))
-    add_library(engine_rhi_vulkan STATIC EXCLUDE_FROM_ALL src/rhi/rhi_vk.c)
+    add_library(engine_rhi_vulkan STATIC EXCLUDE_FROM_ALL src/rhi/rhi_vk.c src/rhi/rhi_vk_screen_post.c)
     target_include_directories(engine_rhi_vulkan PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/external)
     if(SHADERC_INCLUDE_DIR)
@@ -1527,6 +1539,7 @@ set(MYUI_CORE_SOURCES
     src/myui/mymvvm/my_navigator.c
     src/myui/mymvvm_myui/my_widget_target.c
     src/myui/mymvvm_myui/my_mvvm.c
+    src/myui/mypal/screen/my_pal_screen_cursor.c
 )
 
 if(MYUI_BIDI)
@@ -1555,6 +1568,15 @@ elseif(MYUI_PAL STREQUAL "cocoa" AND APPLE)
         src/myui/mypal/cocoa/my_pal_cocoa.m)
 elseif(MYUI_PAL STREQUAL "screen" AND ENGINE_PLATFORM STREQUAL "qnx" AND
        ENGINE_QNX_SCREEN)
+    find_path(ENGINE_QNX_SCREEN_INCLUDE_DIR screen/screen.h REQUIRED)
+    find_library(ENGINE_QNX_SCREEN_LIBRARY screen REQUIRED)
+    if(MYUI_GLES2)
+        find_path(QNX_EGL_INCLUDE_DIR EGL/egl.h REQUIRED)
+        find_path(QNX_GLES2_INCLUDE_DIR GLES2/gl2.h REQUIRED)
+        find_library(QNX_EGL_LIBRARY NAMES EGL REQUIRED)
+        find_library(QNX_GLES2_LIBRARY NAMES GLESv2 REQUIRED)
+        list(APPEND MYUI_CORE_SOURCES src/myui/mypal/screen/my_pal_screen_gl.c)
+    endif()
     list(APPEND MYUI_CORE_SOURCES src/myui/mypal/my_pal.c
         src/myui/mypal/dummy/my_pal_dummy.c
         src/myui/mypal/screen/my_pal_screen.c src/platform/time.c)
@@ -1612,6 +1634,13 @@ elseif(MYUI_PAL STREQUAL "screen" AND ENGINE_PLATFORM STREQUAL "qnx" AND
     target_compile_definitions(myui_core PUBLIC MYUI_PAL_SCREEN=1)
     target_include_directories(myui_core PUBLIC ${ENGINE_QNX_SCREEN_INCLUDE_DIR})
     target_link_libraries(myui_core PUBLIC ${ENGINE_QNX_SCREEN_LIBRARY})
+    if(MYUI_GLES2)
+        target_compile_definitions(myui_core PUBLIC MYUI_HAS_GLES2=1)
+        target_include_directories(myui_core PUBLIC
+            ${QNX_EGL_INCLUDE_DIR} ${QNX_GLES2_INCLUDE_DIR})
+        target_link_libraries(myui_core PUBLIC
+            ${QNX_GLES2_LIBRARY} ${QNX_EGL_LIBRARY})
+    endif()
 elseif(MYUI_PAL STREQUAL "wayland")
     target_compile_definitions(myui_core PUBLIC MYUI_PAL_WAYLAND=1)
     target_include_directories(myui_core PUBLIC ${CMAKE_CURRENT_BINARY_DIR}
@@ -2566,12 +2595,6 @@ add_test(NAME myui_explorer_selftest_deterministic
         -DRUN_B=${CMAKE_CURRENT_BINARY_DIR}/explorer-det-b
         -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/explorer_determinism_check.cmake)
 
-# The demo/explorer tools are process-lifetime by design (resources held
-# until OS exit); keep LeakSanitizer from reading that as a failure.
-set_tests_properties(myui_widgets_demo_smoke myui_explorer_selftest
-    myui_explorer_selftest_deterministic
-    PROPERTIES ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0")
-
 # Strict, bounded verifier for versioned SA dictionary golden corpora.
 add_executable(verify_myui_sa_dictionary tools/verify_myui_sa_dictionary.c)
 target_include_directories(verify_myui_sa_dictionary PRIVATE
@@ -2582,6 +2605,15 @@ target_link_libraries(verify_myui_sa_dictionary PRIVATE myui_core)
 # --- Unit Tests ---
 if(ENGINE_BUILD_TESTS)
     enable_testing()
+
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME test_qnx_arm_runtime_builder
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_qnx_arm_runtime.py)
+        set_tests_properties(test_qnx_arm_runtime_builder PROPERTIES LABELS "headless;host_tools")
+    else()
+        message(STATUS "Python3 not found; ARM runtime generator test is not registered")
+    endif()
 
     set(TEST_INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/external)
 
@@ -2804,10 +2836,18 @@ if(ENGINE_BUILD_TESTS)
     target_include_directories(test_platform_display_media PRIVATE ${TEST_INCLUDE_DIRS})
     add_test(NAME test_platform_display_media COMMAND test_platform_display_media)
 
-    add_executable(test_engine_lifecycle tests/test_engine_lifecycle.c)
+    add_executable(test_engine_lifecycle tests/test_engine_lifecycle.c src/engine.c)
     target_include_directories(test_engine_lifecycle PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_engine_lifecycle PRIVATE engine m)
     engine_link_rhi_backend(test_engine_lifecycle)
+    if(NOT WIN32 AND NOT APPLE)
+        target_compile_definitions(test_engine_lifecycle PRIVATE
+            ENGINE_TEST_TIME_WRAPPERS=1)
+        target_link_options(test_engine_lifecycle PRIVATE
+            "-Wl,--wrap=time_microseconds"
+            "-Wl,--wrap=platform_poll"
+            "-Wl,--wrap=platform_input")
+    endif()
     add_test(NAME test_engine_lifecycle COMMAND test_engine_lifecycle)
 
     add_executable(test_platform_null_safety tests/test_platform_null_safety.c)
@@ -2957,6 +2997,98 @@ if(ENGINE_BUILD_TESTS)
         LABELS "graphics;platform_runtime" SKIP_RETURN_CODE 77)
 endif()
 
+add_executable(test_mypal_screen_cursor tests/test_mypal_screen_cursor.c)
+target_include_directories(test_mypal_screen_cursor PRIVATE
+    ${TEST_INCLUDE_DIRS} ${ENGINE_QNX_SCREEN_INCLUDE_DIR})
+target_link_libraries(test_mypal_screen_cursor PRIVATE myui_core m)
+add_test(NAME test_mypal_screen_cursor COMMAND test_mypal_screen_cursor)
+if(MYUI_PAL STREQUAL "screen")
+    target_link_libraries(test_mypal_screen_cursor PRIVATE
+        ${ENGINE_QNX_SCREEN_LIBRARY} Threads::Threads)
+    target_link_options(test_mypal_screen_cursor PRIVATE
+        "-Wl,--wrap=screen_post_window")
+    set_tests_properties(test_mypal_screen_cursor PROPERTIES
+        LABELS "graphics;platform_runtime" SKIP_RETURN_CODE 77)
+else()
+    set_tests_properties(test_mypal_screen_cursor PROPERTIES
+        LABELS "headless;platform_contract" SKIP_RETURN_CODE 77)
+endif()
+
+if(ENGINE_PLATFORM STREQUAL "qnx" AND MYUI_PAL STREQUAL "screen" AND MYUI_GLES2)
+    add_executable(test_mypal_screen_gles tests/test_mypal_screen_gles.c)
+    target_include_directories(test_mypal_screen_gles PRIVATE
+        ${TEST_INCLUDE_DIRS} ${ENGINE_QNX_SCREEN_INCLUDE_DIR}
+        ${QNX_EGL_INCLUDE_DIR} ${QNX_GLES2_INCLUDE_DIR})
+    target_link_libraries(test_mypal_screen_gles PRIVATE myui_core m
+        ${QNX_GLES2_LIBRARY} ${QNX_EGL_LIBRARY}
+        ${ENGINE_QNX_SCREEN_LIBRARY} Threads::Threads)
+    target_link_options(test_mypal_screen_gles PRIVATE
+        "-Wl,--wrap=screen_post_window"
+        "-Wl,--wrap=eglCreatePbufferSurface")
+    add_test(NAME test_mypal_screen_gles COMMAND test_mypal_screen_gles)
+    set_tests_properties(test_mypal_screen_gles PROPERTIES
+        LABELS "graphics;platform_runtime" SKIP_RETURN_CODE 77 TIMEOUT 60)
+endif()
+
+if(ENGINE_PLATFORM STREQUAL "linux" OR ENGINE_PLATFORM STREQUAL "qnx")
+    add_library(mypal_screen_ipc STATIC
+        src/myui/mypal/screen/my_pal_screen_ipc.c)
+    target_include_directories(mypal_screen_ipc PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)
+    target_link_libraries(mypal_screen_ipc PUBLIC myui_core Threads::Threads)
+    if(ENGINE_PLATFORM STREQUAL "qnx")
+        target_link_libraries(mypal_screen_ipc PUBLIC socket)
+    endif()
+    add_executable(test_mypal_screen_ipc tests/test_mypal_screen_ipc.c)
+    target_link_libraries(test_mypal_screen_ipc PRIVATE mypal_screen_ipc)
+    add_test(NAME test_mypal_screen_ipc COMMAND test_mypal_screen_ipc)
+    set_tests_properties(test_mypal_screen_ipc PROPERTIES
+        LABELS "headless;platform_contract" TIMEOUT 60)
+endif()
+
+if(ENGINE_PLATFORM STREQUAL "qnx" AND ENGINE_QNX_SCREEN)
+    add_executable(test_rhi_vk_screen_post tests/test_rhi_vk_screen_post.c
+        src/rhi/rhi_vk_screen_post.c src/core/log.c)
+    target_compile_definitions(test_rhi_vk_screen_post PRIVATE
+        ENGINE_PLATFORM_QNX=1 ENGINE_QNX_SCREEN=1)
+    target_include_directories(test_rhi_vk_screen_post PRIVATE
+        ${TEST_INCLUDE_DIRS} ${ENGINE_QNX_SCREEN_INCLUDE_DIR})
+    target_link_libraries(test_rhi_vk_screen_post PRIVATE ${ENGINE_QNX_SCREEN_LIBRARY})
+    foreach(_post_wrap IN ITEMS screen_dequeue_window_render_buffer
+            screen_get_buffer_property_pv screen_get_buffer_property_iv
+            screen_post_window screen_enqueue_render_buffer
+            screen_create_window_buffers screen_destroy_window_buffers
+            screen_set_window_property_iv
+            screen_create_pixmap screen_destroy_pixmap
+            screen_set_pixmap_property_iv screen_create_pixmap_buffer
+            screen_get_pixmap_property_pv screen_read_window)
+        target_link_options(test_rhi_vk_screen_post PRIVATE "-Wl,--wrap=${_post_wrap}")
+    endforeach()
+    add_test(NAME test_rhi_vk_screen_post COMMAND test_rhi_vk_screen_post)
+    set_tests_properties(test_rhi_vk_screen_post PROPERTIES
+        LABELS "headless;platform_contract" TIMEOUT 30)
+endif()
+
+if(ENGINE_PLATFORM STREQUAL "qnx" AND ENGINE_VULKAN AND
+   ENGINE_QNX_SCREEN AND ENGINE_QNX_SCREEN_LIBRARY)
+    add_executable(test_rhi_vk_present_recovery
+        tests/test_rhi_vk_present_recovery.c)
+    target_include_directories(test_rhi_vk_present_recovery PRIVATE
+        ${TEST_INCLUDE_DIRS} ${ENGINE_QNX_SCREEN_INCLUDE_DIR})
+    target_link_libraries(test_rhi_vk_present_recovery PRIVATE engine m)
+    engine_link_rhi_backend(test_rhi_vk_present_recovery)
+    foreach(_present_wrap IN ITEMS vk_qnx_screen_post_present
+            vkAcquireNextImageKHR vkQueuePresentKHR)
+        target_link_options(test_rhi_vk_present_recovery PRIVATE
+            "-Wl,--wrap=${_present_wrap}")
+    endforeach()
+    add_test(NAME test_rhi_vk_present_recovery
+        COMMAND test_rhi_vk_present_recovery)
+    set_tests_properties(test_rhi_vk_present_recovery PROPERTIES
+        LABELS "graphics;platform_runtime" TIMEOUT 60
+        ENVIRONMENT "BREAK_VK_HEADLESS_SURFACE=1;BREAK_VK_SCREEN_POST=1")
+endif()
+
 if(MYUI_PAL STREQUAL "screen")
     add_executable(test_mypal_screen_runtime tests/test_mypal_screen_runtime.c)
     target_include_directories(test_mypal_screen_runtime PRIVATE
@@ -2966,6 +3098,26 @@ if(MYUI_PAL STREQUAL "screen")
     add_test(NAME test_mypal_screen_runtime COMMAND test_mypal_screen_runtime)
     set_tests_properties(test_mypal_screen_runtime PROPERTIES
         LABELS "graphics;platform_runtime" SKIP_RETURN_CODE 77)
+
+    add_executable(test_mypal_screen_vulkan tests/test_mypal_screen_vulkan.c)
+    target_include_directories(test_mypal_screen_vulkan PRIVATE
+        ${TEST_INCLUDE_DIRS} ${ENGINE_QNX_SCREEN_INCLUDE_DIR})
+    target_link_libraries(test_mypal_screen_vulkan PRIVATE myui_core m
+        ${ENGINE_QNX_SCREEN_LIBRARY} Threads::Threads)
+    if(MYUI_VULKAN_ENABLED)
+        target_link_libraries(test_mypal_screen_vulkan PRIVATE Vulkan::Vulkan)
+    endif()
+    foreach(_screen_vulkan_wrap IN ITEMS
+            screen_create_context screen_destroy_context
+            screen_create_window screen_destroy_window
+            screen_dequeue_window_render_buffer screen_post_window)
+        target_link_options(test_mypal_screen_vulkan PRIVATE
+            "-Wl,--wrap=${_screen_vulkan_wrap}")
+    endforeach()
+    add_test(NAME test_mypal_screen_vulkan COMMAND test_mypal_screen_vulkan)
+    set_tests_properties(test_mypal_screen_vulkan PROPERTIES
+        LABELS "graphics;platform_runtime;myui;vulkan"
+        SKIP_RETURN_CODE 77 TIMEOUT 120)
 
     add_executable(test_mypal_screen_failures tests/test_mypal_screen_failures.c)
     target_include_directories(test_mypal_screen_failures PRIVATE
@@ -3065,10 +3217,29 @@ endif()
     target_include_directories(test_platform_time PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_platform_time PRIVATE Threads::Threads)
     if(NOT WIN32 AND NOT APPLE)
-        target_link_options(test_platform_time PRIVATE "-Wl,--wrap=nanosleep")
+        if(ENGINE_PLATFORM STREQUAL "qnx")
+            target_link_options(test_platform_time PRIVATE
+                "-Wl,--wrap=clock_gettime" "-Wl,--wrap=clock_nanosleep")
+        else()
+            target_link_options(test_platform_time PRIVATE "-Wl,--wrap=nanosleep")
+        endif()
     endif()
     add_test(NAME test_platform_time COMMAND test_platform_time)
     set_tests_properties(test_platform_time PROPERTIES LABELS "headless;platform_contract")
+
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        add_executable(test_platform_time_qnx
+            tests/test_platform_time.c src/platform/time.c)
+        target_include_directories(test_platform_time_qnx PRIVATE ${TEST_INCLUDE_DIRS})
+        target_compile_definitions(test_platform_time_qnx PRIVATE
+            ENGINE_PLATFORM_TIME_QNX_TEST=1 _POSIX_C_SOURCE=200809L)
+        target_link_libraries(test_platform_time_qnx PRIVATE Threads::Threads)
+        target_link_options(test_platform_time_qnx PRIVATE
+            "-Wl,--wrap=clock_gettime" "-Wl,--wrap=clock_nanosleep")
+        add_test(NAME test_platform_time_qnx COMMAND test_platform_time_qnx)
+        set_tests_properties(test_platform_time_qnx PROPERTIES
+            LABELS "headless;platform_contract")
+    endif()
 
     add_executable(test_myui_timer_stress tests/test_myui_timer_stress.c src/platform/time.c)
     target_include_directories(test_myui_timer_stress PRIVATE ${TEST_INCLUDE_DIRS})
@@ -3404,7 +3575,7 @@ endif()
         # variant of the Vulkan backend (plain single-backend shape, no
         # namespace), so the shipped engine_rhi_vulkan never carries it.
         add_library(engine_rhi_vulkan_alloc_fault STATIC EXCLUDE_FROM_ALL
-            src/rhi/rhi_vk.c)
+            src/rhi/rhi_vk.c src/rhi/rhi_vk_screen_post.c)
         target_include_directories(engine_rhi_vulkan_alloc_fault PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/external)
         if(SHADERC_INCLUDE_DIR)
@@ -5122,6 +5293,73 @@ endif()
         target_include_directories(test_break_update_client PRIVATE ${TEST_INCLUDE_DIRS})
         target_link_libraries(test_break_update_client PRIVATE break_update m)
         add_test(NAME test_break_update_client COMMAND test_break_update_client)
+
+        # SDP 8.0 ASan/libc can reenter its TLS context while growing keydata.
+        # Test-only main-thread capacity reservation; not a product/runtime patch
+        # or a generic worker-thread solution. All allocator checks stay enabled.
+        if(ENGINE_PLATFORM STREQUAL "qnx" AND ENGINE_USE_ASAN)
+            # Only the exit adapter stays uninstrumented so it cannot alter
+            # sanitizer finalization. Every test executable keeps its checks.
+            add_library(qnx_sanitizer_cleanup SHARED tests/qnx_sanitizer_cleanup.c)
+            set_target_properties(qnx_sanitizer_cleanup PROPERTIES LINK_LIBRARIES "")
+            target_compile_options(qnx_sanitizer_cleanup PRIVATE
+                -fno-sanitize=address -fno-sanitize=undefined)
+            target_link_options(qnx_sanitizer_cleanup PRIVATE
+                -fno-sanitize=address -fno-sanitize=undefined)
+            if(QNX_ARCH STREQUAL "aarch64le")
+                add_executable(test_qnx_sanitizer_leak tests/test_qnx_sanitizer_leak.c)
+                add_test(NAME test_qnx_sanitizer_leak COMMAND test_qnx_sanitizer_leak)
+                set_tests_properties(test_qnx_sanitizer_leak PROPERTIES
+                    LABELS "headless;platform_contract" WILL_FAIL TRUE)
+            endif()
+            target_sources(test_break_crypto PRIVATE tests/qnx_asan_tls_capacity.c)
+            target_sources(test_break_update PRIVATE tests/qnx_asan_tls_capacity.c)
+            target_sources(test_break_update_client PRIVATE tests/qnx_asan_tls_capacity.c)
+            if(TARGET OpenSSL::Crypto)
+                add_executable(test_qnx_asan_tls_capacity tests/qnx_asan_tls_capacity.c)
+                target_compile_definitions(test_qnx_asan_tls_capacity PRIVATE
+                    QNX_ASAN_TLS_CAPACITY_TEST=1)
+                target_link_libraries(test_qnx_asan_tls_capacity PRIVATE
+                    OpenSSL::Crypto Threads::Threads)
+                add_test(NAME test_qnx_asan_tls_capacity COMMAND test_qnx_asan_tls_capacity)
+                set_tests_properties(test_qnx_asan_tls_capacity PROPERTIES
+                    LABELS "headless;crypto;platform_contract" TIMEOUT 30)
+            endif()
+        endif()
+
+        # Optional per-process interposition for the same SDP 8.0 x86_64 ASan
+        # TLS defect. This does not replace the bounded shim above or alter
+        # product libc. The runner keeps test_qnx_asan_tls_capacity on that
+        # legacy scoped path; these probes exercise the independent hook.
+        if(ENGINE_QNX_TLS_INTERPOSE)
+            find_library(QNX_TLS_GENERAL_STDCXX_LIBRARY
+                NAMES libstdc++.so.6.0.30 stdc++ REQUIRED)
+            add_library(qnx_tls_general_interpose SHARED
+                tests/qnx_tls_general_interpose.c)
+            set_property(TARGET qnx_tls_general_interpose PROPERTY C_STANDARD 11)
+            target_link_libraries(qnx_tls_general_interpose PRIVATE Threads::Threads)
+            foreach(_part IN ITEMS order cancel stress)
+                set(_target test_qnx_tls_general_${_part})
+                add_executable(${_target} tests/test_qnx_tls_general_${_part}.c)
+                target_link_libraries(${_target} PRIVATE OpenSSL::Crypto Threads::Threads)
+                add_dependencies(${_target} qnx_tls_general_interpose)
+                add_test(NAME ${_target} COMMAND ${_target})
+                set_tests_properties(${_target} PROPERTIES
+                    LABELS "headless;crypto;platform_contract" TIMEOUT 30)
+            endforeach()
+            target_link_libraries(test_qnx_tls_general_order PRIVATE
+                ${QNX_TLS_GENERAL_STDCXX_LIBRARY})
+            set_tests_properties(test_qnx_tls_general_stress PROPERTIES TIMEOUT 120)
+            foreach(_part IN ITEMS overflow leak)
+                set(_target test_qnx_tls_general_${_part})
+                add_executable(${_target} tests/test_qnx_tls_general_${_part}.c)
+                add_dependencies(${_target} qnx_tls_general_interpose)
+                add_test(NAME ${_target} COMMAND ${_target})
+                set_tests_properties(${_target} PROPERTIES
+                    LABELS "headless;crypto;platform_contract" TIMEOUT 30
+                    WILL_FAIL TRUE)
+            endforeach()
+        endif()
 
         # Sanitizer trees propagate their flags to the contract's
         # system-compiler link test (the crypto contract precedent).

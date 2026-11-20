@@ -24,6 +24,23 @@ bool my_pal_screen_clipboard_is_process_local(void);
 /* Screen has no native preedit/surrounding/spot protocol in this port. */
 bool my_pal_screen_has_native_ime(void);
 
+typedef struct my_pal_screen_software_cursor_state_t {
+  my_cursor_t shape;
+  int32_t x;
+  int32_t y;
+  bool enabled;
+  bool has_position;
+  bool visible;
+} my_pal_screen_software_cursor_state_t;
+
+/* Opt in to an application-composited cursor on this window's software LCD.
+ * Changes appear on the next software, CPU GLES readback, or Vulkan readback
+ * frame. The native pointer-session path is unchanged. */
+my_ret_t my_pal_screen_software_cursor_set_enabled(my_pal_window_t* win,
+                                                   bool enabled);
+my_ret_t my_pal_screen_test_software_cursor_state(
+    my_pal_window_t* win, my_pal_screen_software_cursor_state_t* out);
+
 void* my_pal_screen_test_native_pointer_session(my_pal_window_t* win);
 /* surrounding is borrowed until the next IME setter or window destruction. */
 my_ret_t my_pal_screen_test_ime_state(my_pal_window_t* win,

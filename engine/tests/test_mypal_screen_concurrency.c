@@ -367,6 +367,76 @@ TEST(screen_nested_commands_share_pending_wakeup)
   ASSERT_EQ(atomic_load_explicit(&screen_wake_count, memory_order_relaxed), 2);
 }
 
+static my_ret_t screen_destroy_batch_parent_execute(void* context) {
+  nested_command_state_t* state = (nested_command_state_t*)context;
+  state->parent_executed++;
+  my_pal_main_loop_destroy(state->loop);
+  state->loop = NULL;
+  return MY_RET_OK;
+}
+
+static my_ret_t screen_destroy_batch_child_execute(void* context) {
+  nested_command_state_t* state = (nested_command_state_t*)context;
+  state->child_executed++;
+  return MY_RET_OK;
+}
+
+TEST(screen_destroy_discards_detached_successors)
+{
+  my_pal_t* pal = my_pal_create(NULL);
+  my_ui_command_t* parent;
+  my_ui_command_t* child;
+  nested_command_state_t state;
+  my_ret_t parent_submit;
+  my_ret_t child_submit;
+  ASSERT_NOT_NULL(pal);
+  memset(&state, 0, sizeof(state));
+  state.loop = my_pal_main_loop_create(pal);
+  if (state.loop == NULL) my_pal_destroy(pal);
+  ASSERT_NOT_NULL(state.loop);
+  (void)my_pal_set_event_handler(pal, screen_stress_event, NULL);
+  if (my_pal_main_loop_add_timer(state.loop, screen_nested_timeout, &state,
+                                 1000u) == 0u) {
+    my_pal_main_loop_destroy(state.loop);
+    my_pal_destroy(pal);
+    ASSERT_TRUE(false);
+    return;
+  }
+  parent = my_ui_command_create(NULL, screen_destroy_batch_parent_execute,
+                                &state, screen_nested_parent_destroy);
+  child = my_ui_command_create(NULL, screen_destroy_batch_child_execute,
+                               &state, screen_nested_child_destroy);
+  if (parent == NULL || child == NULL) {
+    my_ui_command_unref(parent);
+    my_ui_command_unref(child);
+    my_pal_main_loop_destroy(state.loop);
+    my_pal_destroy(pal);
+    ASSERT_TRUE(false);
+    return;
+  }
+  parent_submit = my_ui_command_submit(state.loop, parent);
+  child_submit = my_ui_command_submit(state.loop, child);
+  my_ui_command_unref(parent);
+  my_ui_command_unref(child);
+  state.run_result = my_pal_main_loop_run(state.loop);
+  if (state.loop != NULL) my_pal_main_loop_destroy(state.loop);
+  my_pal_destroy(pal);
+  printf("screen_destroy_batch,parent_submit=%d,child_submit=%d,run_result=%d,"
+         "parent_executed=%d,child_executed=%d,parent_destroyed=%d,"
+         "child_destroyed=%d,timed_out=%d\n",
+         parent_submit, child_submit, state.run_result, state.parent_executed,
+         state.child_executed, state.parent_destroyed, state.child_destroyed,
+         state.timed_out ? 1 : 0);
+  ASSERT_EQ(parent_submit, MY_RET_OK);
+  ASSERT_EQ(child_submit, MY_RET_OK);
+  ASSERT_EQ(state.run_result, MY_RET_OK);
+  ASSERT_EQ(state.parent_executed, 1);
+  ASSERT_EQ(state.child_executed, 0);
+  ASSERT_EQ(state.parent_destroyed, 1);
+  ASSERT_EQ(state.child_destroyed, 1);
+  ASSERT_FALSE(state.timed_out);
+}
+
 int main(void)
 {
   my_pal_t* probe;
@@ -382,6 +452,7 @@ int main(void)
   printf("=== Running Tests ===\n");
   RUN_TEST(screen_command_timer_concurrency);
   RUN_TEST(screen_nested_commands_share_pending_wakeup);
+  RUN_TEST(screen_destroy_discards_detached_successors);
   printf("\n=== Results: %d passed, %d failed, %d total ===\n",
          g_test_pass, g_test_fail, g_test_count);
   return g_test_fail > 0 ? 1 : 0;

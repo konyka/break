@@ -259,7 +259,7 @@ f64   time_delta_since(u64 last_us);    // 计算距 last_us 的秒数
 void  time_sleep_us(u64 microseconds);  // 高精度休眠
 ```
 
-基于 `clock_gettime(CLOCK_MONOTONIC)` 实现，精度达纳秒级。
+单调时钟读取，公开微秒 API；睡眠和定时回调精度受系统 tick、事件循环负载及线程调度影响。
 
 ### 2.4 文件监视 (`filewatch.h` / `filewatch.c` / `filewatch_backend.c`)
 

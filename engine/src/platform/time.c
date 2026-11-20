@@ -81,12 +81,27 @@ f64 time_delta_since(u64 last_us) {
 }
 
 void time_sleep_us(u64 microseconds) {
+#if defined(__QNXNTO__) || defined(ENGINE_PLATFORM_TIME_QNX_TEST)
+    struct timespec deadline;
+    int result;
+    if (clock_gettime(CLOCK_MONOTONIC, &deadline) != 0) return;
+    deadline.tv_sec += (time_t)(microseconds / 1000000u);
+    deadline.tv_nsec += (long)((microseconds % 1000000u) * 1000u);
+    if (deadline.tv_nsec >= 1000000000L) {
+        deadline.tv_sec++;
+        deadline.tv_nsec -= 1000000000L;
+    }
+    while ((result = clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME,
+                                     &deadline, NULL)) == EINTR) {
+    }
+#else
     struct timespec ts = {
         .tv_sec  = (time_t)(microseconds / 1000000),
         .tv_nsec = (long)((microseconds % 1000000) * 1000),
     };
     while (nanosleep(&ts, &ts) != 0 && errno == EINTR) {
     }
+#endif
 }
 
 #endif
