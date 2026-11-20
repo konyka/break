@@ -51,7 +51,7 @@ Append `test_core_app_network` and `core_app` to the build command. Add the
 single regex alternative:
 
 ```text
-test_core_app_network(_offline)?
+test_core_app_network($|_offline)
 ```
 
 It selects exactly the unit and offline tests in both native and cross trees,
@@ -69,7 +69,7 @@ skip, dependency, retry, filter, or status mask is added.
    direct execution and no new skip.
 3. Run the cross focused two before editing CI; require unit 25/25, deterministic
    offline traces, no-network symbol scan, and two-test CTest success.
-4. Before CI editing, require the two new targets, exact `(_offline)?`
+4. Before CI editing, require the two new targets, exact `$|_offline`
    alternative, and actual native selection previous 31 + exactly two = 33;
    observe RED on the old build command.
 5. Apply only build/regex changes and rerun for GREEN. Confirm native loopback

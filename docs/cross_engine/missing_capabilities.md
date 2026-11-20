@@ -373,3 +373,5 @@
 - **第 10 节（音频）/第 12 节（编辑器）追加**：2026-11-20 编辑器音频波形新增 dB 网格（每泳道 -6/-12/-18/-24 dBFS 对称网格线，随幅度缩放移动）。见 [`docs/design/audio_extended.md`](../design/audio_extended.md)「离线音频编辑」。「波形上的 dB 网格」由此交付；2026-11-20 网格线另带级别标注（泳道过窄时只画线不标注），显示幅度倍数按泳道独立设置并可各自按峰值适配；电平读数另含 4 倍过采样的真峰值（dBTP）和门控整体响度（LUFS，K 加权 + 双门，系数按素材采样率推导）。另含末尾 3 秒的短期响度与 EBU R128 响度范围（LRA）。另可一键归一化到 -23 LUFS（增益按峰值余量封顶，不削波，可撤销）。波形上另画有随时间的响度曲线。另可一键把真峰值压到 -1 dBTP（整段缩放，可撤销）。另有前瞻式动态限幅（逐样本增益，不让单个瞬态压低整段）。另有过采样域动态限幅（所需增益取自 4 倍重建，约束采样间峰值）。仍缺：真实听测。
 
 - **第 6 节（网络）追加**：2026-11-20 arm64 lane 新增 online aspect 12 例、aspect replication 9 例和 replication fragment 12 例，统一选择达到三十一项。未修改 QEMU 树三项全通过，无嵌套工具或新增 skip；Snowflake 适配器/会话/TLS、core_app 网络驱动、QUIC 和生产部署仍为独立边界。
+
+- **第 6 节（网络）追加**：2026-11-20 arm64 lane 新增 core_app network 单元 25 例与 offline 确定性/无网络符号契约，统一选择达到三十三项。`CORE_APP_RUNNER` 只启动 core_app，精确正则排除 loopback/voice/start-failure/net-transport；这些 Snowflake 场景与 QUIC 仍未覆盖，未计为跳过或通过。

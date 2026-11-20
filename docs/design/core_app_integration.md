@@ -1776,3 +1776,10 @@ loopback 测试：对端 A、A2、F（late_auth 模式下为 G）各自恰好收
   - **TSan 超时**：漂移用例在 TSan 下约需 97 秒，`test_core_app_voice` 的 ctest 超时由 60 秒改为 300 秒。
 
 仍缺：Opus、真实声学验证（真实设备上的回声消除深度尚未测量）。
+
+
+## 补充（2026-11-20）：arm64 core_app 网络单元与离线证据
+
+arm64 lane 新增 `test_core_app_network`（25/25）和 `test_core_app_network_offline`，统一选择达到三十三项。离线 driver 通过可选 `CORE_APP_RUNNER` 启动真实 core_app；原生为空直接执行，交叉使用既有 QEMU emulator。`NETWORK_TRANSPORT=OFF` 时目标 `aarch64-linux-gnu-nm` 的无网络符号扫描和两次确定性 trace 契约均实际通过，没有 skip 77。
+
+选择使用 `test_core_app_network($|_offline)`，只包含单元和 offline，不包含 Snowflake 依赖的 loopback、single-session、late-auth、voice、start-failure 或 net-transport。NM、NET_CLIENT、trace 工具与宿主 CMake 不使用 core_app runner；这些后续传输场景仍需独立 Snowflake 依赖项目。
