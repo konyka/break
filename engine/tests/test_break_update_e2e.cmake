@@ -21,7 +21,7 @@ file(REMOVE_RECURSE "${WORK}")
 file(MAKE_DIRECTORY "${WORK}")
 
 function(run expect_ok)
-    execute_process(COMMAND ${ARGN} RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err)
+    execute_process(COMMAND ${TARGET_RUNNER} ${ARGN} RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err)
     if(expect_ok AND NOT rc EQUAL 0)
         message(FATAL_ERROR "${ARGN} failed (${rc}): ${out}${err}")
     endif()
@@ -60,6 +60,11 @@ endfunction()
 # ------------------------------------------------------------------- servers
 # start_server(<tag> <root> <extra server args...>) sets <tag>_PORT / <tag>_LOG
 function(start_server tag root)
+    set(target_runner_text "")
+    foreach(target_runner_arg IN LISTS TARGET_RUNNER)
+        string(REPLACE "'" "'\"'\"'" quoted_target_runner_arg "${target_runner_arg}")
+        string(APPEND target_runner_text "'${quoted_target_runner_arg}' ")
+    endforeach()
     set(port_file "${WORK}/${tag}.port")
     set(pid_file "${WORK}/${tag}.pid")
     set(log "${WORK}/${tag}.log")
@@ -69,7 +74,7 @@ function(start_server tag root)
         set(extra "'${extra}'")
     endif()
     execute_process(COMMAND sh -c
-        "'${SERVER}' --root '${root}' --cert '${CERT}' --key '${KEY}' --port 0 --print-port --log '${log}' ${extra} > '${port_file}' 2> '${WORK}/${tag}.err' & echo $! > '${pid_file}'"
+        "${target_runner_text}'${SERVER}' --root '${root}' --cert '${CERT}' --key '${KEY}' --port 0 --print-port --log '${log}' ${extra} > '${port_file}' 2> '${WORK}/${tag}.err' & echo $! > '${pid_file}'"
         RESULT_VARIABLE rc)
     if(NOT rc EQUAL 0)
         message(FATAL_ERROR "could not start the server for ${tag}")
@@ -103,7 +108,7 @@ endfunction()
 
 # client(<outvar> <rcvar> <root> <port> <ca|-> <step> [args...])
 function(client outvar rcvar root port ca step)
-    execute_process(COMMAND "${CLIENT}" "${root}" "https://localhost:${port}" "${ca}" "${PUB}" "${step}" ${ARGN}
+    execute_process(COMMAND ${TARGET_RUNNER} "${CLIENT}" "${root}" "https://localhost:${port}" "${ca}" "${PUB}" "${step}" ${ARGN}
         RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err)
     set(${outvar} "${out}${err}" PARENT_SCOPE)
     set(${rcvar} "${rc}" PARENT_SCOPE)

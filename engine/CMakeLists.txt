@@ -2822,6 +2822,7 @@ if(BREAK_ENABLE_CRYPTO AND TARGET break_update AND NOT WIN32)
             COMMAND ${CMAKE_COMMAND}
                 -DTOOL=$<TARGET_FILE:break_manifest_tool>
                 -DVERIFY=$<TARGET_FILE:break_manifest_verify>
+                "-DTARGET_RUNNER=${CMAKE_CROSSCOMPILING_EMULATOR}"
                 -DWORK=${CMAKE_CURRENT_BINARY_DIR}/break-manifest-tool
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_manifest_tool.cmake)
         set_tests_properties(test_break_manifest_tool PROPERTIES LABELS "headless;security;update")
@@ -7131,6 +7132,8 @@ endif()
                 -DUPDATE_CONTRACT_ARCHIVE=$<TARGET_FILE:break_update>
                 -DUPDATE_CONTRACT_CRYPTO_ARCHIVE=$<TARGET_FILE:break_crypto>
                 -DUPDATE_CONTRACT_CC=${CMAKE_C_COMPILER}
+                -DUPDATE_CONTRACT_NM=${CMAKE_NM}
+                "-DUPDATE_CONTRACT_RUNNER=${CMAKE_CROSSCOMPILING_EMULATOR}"
                 -DUPDATE_CONTRACT_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/src
                 -DUPDATE_CONTRACT_WORK=${CMAKE_CURRENT_BINARY_DIR}/update_contract_tmp
                 -DUPDATE_CONTRACT_SAN=${BREAK_UPDATE_CONTRACT_SAN}
@@ -8174,6 +8177,7 @@ endif()
         add_test(NAME test_break_http_target_contract
             COMMAND ${CMAKE_COMMAND}
                 -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+                -DNM=${CMAKE_NM}
                 -DHTTP_ARCHIVE=$<TARGET_FILE:break_http>
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_http_target_contract.cmake)
         set_tests_properties(test_break_http_target_contract PROPERTIES
@@ -8220,6 +8224,7 @@ endif()
                 -DVERIFY=$<TARGET_FILE:break_manifest_verify>
                 -DSERVER=$<TARGET_FILE:break_update_server>
                 -DCLIENT=$<TARGET_FILE:break_update_e2e>
+                "-DTARGET_RUNNER=${CMAKE_CROSSCOMPILING_EMULATOR}"
                 -DCERT=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ssl/break_test_cert.pem
                 -DKEY=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ssl/break_test_key.pem
                 -DWORK=${CMAKE_CURRENT_BINARY_DIR}/break-update-e2e

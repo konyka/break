@@ -17,7 +17,7 @@ file(WRITE "${WORK}/rel/data/base.pak" "beta-beta")
 file(WRITE "${WORK}/rel/a.txt" "")
 
 function(run expect_ok)
-    execute_process(COMMAND ${ARGN} RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err)
+    execute_process(COMMAND ${TARGET_RUNNER} ${ARGN} RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err)
     if(expect_ok AND NOT rc EQUAL 0)
         message(FATAL_ERROR "${ARGN} failed (${rc}): ${out}${err}")
     endif()
