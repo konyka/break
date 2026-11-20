@@ -393,3 +393,6 @@
 
 
 - **渲染/RHI 验证追加**：2026-11-20 arm64 lane 新增 RHI dispatch 44 项检查、capabilities 59 例、error contract 7 例、frame lifecycle 5 例和 render graph 22 例，统一选择达到六十一项。未修改 QEMU 树五项全通过，无新增 skip；运行时 rollout、WSI、shader 工具、真实 OpenGL/Vulkan 和画面一致性仍需独立覆盖。
+
+
+- **诊断/远程调试验证追加**：2026-11-20 arm64 lane 新增 profiler 28 例、clock offset 8 例、trace core 15 例、trace merge 5 例及真实 trace_merge 工具契约，统一选择达到六十六项。`TRACE_MERGE_RUNNER` 仅启动目标工具，空参数 shell 路径也实际通过；实时远程会话、生产授权和其他 arm64 子系统仍需独立覆盖。

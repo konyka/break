@@ -233,3 +233,10 @@ arm64 lane 新增 `test_runtime_core`（9 例）与 `test_runtime_core_target_co
 arm64 lane 新增 `test_runtime_facade`（18 例）、`test_runtime_io`（16 例）与 `test_runtime_reload`（34 例），统一选择达到三十八项。三项均为直接可执行目标，使用既有 QEMU emulator；原生与交叉 focused 均为 3/3、18/16/34，无新增 skip 或运行器适配。
 
 覆盖消息/队列/任务交接、线程与异步 VFS IO、热加载所有权/提交/取消/关闭及 profiler 记录/导出/窗口行为。`test_runtime_(facade|io|reload)$` 精确限定三项，不外推为 Lua/ECS、编辑器、渲染或全量 arm64 覆盖。
+
+
+## 补充（2026-11-20）：arm64 profiler/trace 验证
+
+arm64 lane 新增 profiler 28 例、clock offset 8 例、trace core 15 例、trace merge 5 例及真实 trace_merge 工具契约，统一选择达到六十六项。四个单元测试使用既有 QEMU 命令；工具驱动新增可选 `TRACE_MERGE_RUNNER`，只启动目标工具，不模拟宿主 CMake 或 `/bin/sh`。
+
+原生与交叉 focused 均为 5/5，工具契约包含空参数、时钟偏移、多会话和错误输入。runner 的 shell 前缀逐项 POSIX 单引号转义，并由含空格/单引号路径的包装器实际验证。本项不构成实时远程会话或生产调试授权证据。

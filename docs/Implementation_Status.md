@@ -1,3 +1,10 @@
+## arm64 profiler/trace 工具与六十六项 CTest（2026-11-20）
+
+- **最小场景**：新增 profiler 28 例、clock offset 8 例、trace core 15 例、trace merge 5 例和真实 trace_merge 工具契约。前四项由既有 QEMU 命令直接执行。
+- **RED 与运行器**：未修改交叉树四项通过，工具契约因宿主直接执行 arm64 trace_merge 而失败。新增专用 `TRACE_MERGE_RUNNER` 覆盖共享 helper、三个直接 clock/session 启动点及特殊空参数 shell 用例；宿主 CMake 和 `/bin/sh` 不模拟，runner 元素逐项 POSIX 单引号转义，所有断言与超时不变。
+- **验证与精确选择**：修正后原生/交叉均为 5/5、28/8/15/5 和 `trace_merge tool contract passed`，CTest 0.05/0.74 秒。路径同时含空格和单引号的原生包装器也通过完整工具契约。CI 旧构建命令按预期 RED，加入目标和局部结尾锚定表达式后，真实选择为既有六十一项加五项，共六十六项；未来派生前缀被拒绝。
+- **验证状态**：原生全量、最终干净容器、独立评审及远端 job 在实际完成后补记。实时远程会话、生产调试授权、渲染、Snowflake/QUIC、GPU 与物理设备仍不在本次覆盖内。
+
 ## arm64 RenderGraph/RHI 核心与六十一项 CTest（2026-11-20）
 
 - **最小场景**：新增 RHI dispatch 44 项检查、capabilities 59 例、error contract 7 例、frame lifecycle 5 例和 render graph 22 例。五个直接可执行目标均由既有 QEMU 命令启动，使用 headless/stub 路径。
