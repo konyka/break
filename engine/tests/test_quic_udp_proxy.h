@@ -14,6 +14,7 @@ typedef struct TestQuicUdpProxyStats {
     u64 dropped;
     u64 delayed;
     u64 reordered;
+    u64 jittered;
     u32 queued;
 } TestQuicUdpProxyStats;
 
@@ -29,6 +30,12 @@ u16 test_quic_udp_proxy_port(const TestQuicUdpProxySet *set, u32 channel);
 void test_quic_udp_proxy_set_impairment(TestQuicUdpProxySet *set, bool enabled,
                                         u32 drop_every, u32 delay_ms,
                                         bool reorder_first);
+/* Seeded xorshift32 impairment, independent per channel and direction. Each
+ * surviving packet gets an integer delay in [0, jitter_max_ms]. Set enabled=
+ * false to return to the deterministic rules above. */
+void test_quic_udp_proxy_set_random(TestQuicUdpProxySet *set, bool enabled,
+                                    u32 seed, u32 drop_percent,
+                                    u32 jitter_max_ms);
 bool test_quic_udp_proxy_set_step(TestQuicUdpProxySet *set, u32 timeout_ms);
 void test_quic_udp_proxy_set_stats(const TestQuicUdpProxySet *set, u32 channel,
                                    TestQuicUdpProxyStats *out);

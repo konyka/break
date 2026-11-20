@@ -38,6 +38,8 @@ typedef struct {
     u64 dropped;
     u64 delayed;
     u64 reordered;
+    u64 jittered;
+    u32 random_state[TEST_QUIC_UDP_PROXY_STATS_DIRS];
     ProxyPacket queue[PROXY_QUEUE_CAPACITY];
 } ProxyChannel;
 
@@ -48,10 +50,22 @@ struct TestQuicUdpProxySet {
     bool enabled;
     bool reorder_first;
     bool failed;
+    bool random_enabled;
+    u32 random_drop_percent;
+    u32 random_jitter_max_ms;
     u32 drop_every;
     u32 delay_ms;
     u64 now_ns; /* current owner-thread monotonic clock */
 };
+
+static u32 proxy_random(ProxyChannel *channel, u32 direction) {
+    u32 state = channel->random_state[direction];
+    state ^= state << 13;
+    state ^= state >> 17;
+    state ^= state << 5;
+    channel->random_state[direction] = state;
+    return state;
+}
 
 static bool proxy_address_equal(const SnowTransportDatagramAddress *a,
                                 const SnowTransportDatagramAddress *b) {
@@ -179,7 +193,15 @@ static bool proxy_queue(ProxyChannel *channel, u32 direction,
         return true;
     }
     u64 delay_ns = (u64)channel->set->delay_ms * UINT64_C(1000000);
-    if (channel->set->reorder_first && channel->received[direction] == 1u) {
+    if (channel->set->random_enabled) {
+        u32 delay_ms = proxy_random(channel, direction) %
+                       (channel->set->random_jitter_max_ms + 1u);
+        delay_ns = (u64)delay_ms * UINT64_C(1000000);
+        if (delay_ms != 0u) {
+            channel->jittered++;
+        }
+    } else if (channel->set->reorder_first &&
+               channel->received[direction] == 1u) {
         delay_ns *= 2u;
     }
     free_packet->used = true;
@@ -224,6 +246,11 @@ static void proxy_receive(SnowUdpEngine *engine, SnowSocketFd fd,
     }
 
     channel->received[direction]++;
+    if (set->random_enabled &&
+        proxy_random(channel, direction) % 100u < set->random_drop_percent) {
+        channel->dropped++;
+        return;
+    }
     if (set->drop_every != 0u &&
         channel->received[direction] % set->drop_every == 0u) {
         channel->dropped++;
@@ -350,6 +377,26 @@ void test_quic_udp_proxy_set_impairment(TestQuicUdpProxySet *set, bool enabled,
     set->reorder_first = reorder_first;
 }
 
+void test_quic_udp_proxy_set_random(TestQuicUdpProxySet *set, bool enabled,
+                                    u32 seed, u32 drop_percent,
+                                    u32 jitter_max_ms) {
+    if (set == NULL) {
+        return;
+    }
+    set->random_enabled = enabled;
+    set->random_drop_percent = drop_percent > 100u ? 100u : drop_percent;
+    set->random_jitter_max_ms = jitter_max_ms;
+    for (u32 i = 0u; i < set->channel_count; ++i) {
+        for (u32 direction = 0u; direction < TEST_QUIC_UDP_PROXY_STATS_DIRS;
+             ++direction) {
+            u32 stream = i * TEST_QUIC_UDP_PROXY_STATS_DIRS + direction + 1u;
+            u32 state = seed ^ (0x9E3779B9u * stream);
+            set->channels[i].random_state[direction] =
+                state != 0u ? state : 0xA341316Cu;
+        }
+    }
+}
+
 bool test_quic_udp_proxy_set_step(TestQuicUdpProxySet *set, u32 timeout_ms) {
     if (set == NULL || set->failed) {
         return false;
@@ -373,6 +420,7 @@ void test_quic_udp_proxy_set_stats(const TestQuicUdpProxySet *set, u32 channel,
     out->dropped = proxy->dropped;
     out->delayed = proxy->delayed;
     out->reordered = proxy->reordered;
+    out->jittered = proxy->jittered;
     for (u32 i = 0u; i < PROXY_QUEUE_CAPACITY; ++i) {
         if (proxy->queue[i].used) {
             out->queued++;

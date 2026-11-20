@@ -1070,6 +1070,37 @@ static bool conference_step(BreakNetQuicServer *server,
     return proxies == NULL || test_quic_udp_proxy_set_step(proxies, 0u);
 }
 
+static bool conference_client_send_voice(BreakNetQuicServer *server,
+                                         ConferenceClient clients[CONFERENCE_CLIENTS],
+                                         TestQuicUdpProxySet *proxies, u32 index,
+                                         const BreakVoiceFrame *frame) {
+    for (u32 round = 0u; round < 2500u; ++round) {
+        if (break_voice_quic_send(clients[index].client, frame, false)) {
+            return true;
+        }
+        if (!conference_step(server, clients, proxies)) {
+            return false;
+        }
+    }
+    return false;
+}
+
+static bool conference_server_send_voice(BreakNetQuicServer *server,
+                                         ConferenceClient clients[CONFERENCE_CLIENTS],
+                                         TestQuicUdpProxySet *proxies,
+                                         BreakNetQuicConn *conn,
+                                         const BreakVoiceFrame *frame) {
+    for (u32 round = 0u; round < 2500u; ++round) {
+        if (break_voice_quic_send_server(server, conn, frame, false)) {
+            return true;
+        }
+        if (!conference_step(server, clients, proxies)) {
+            return false;
+        }
+    }
+    return false;
+}
+
 static bool conference_direction_drained(TestQuicUdpProxySet *proxies,
                                          u32 direction, u32 sent_per_client) {
     if (proxies == NULL) {
@@ -1085,7 +1116,7 @@ static bool conference_direction_drained(TestQuicUdpProxySet *proxies,
     return true;
 }
 
-static bool run_voice_conference(bool impaired) {
+static bool run_voice_conference(bool impaired, bool random) {
     BreakNetQuicServerConfig server_config;
     memset(&server_config, 0, sizeof(server_config));
     server_config.cert_file = kCert;
@@ -1176,15 +1207,19 @@ static bool run_voice_conference(bool impaired) {
     ASSERT_EQ_U(conference.connection_count, CONFERENCE_CLIENTS);
     ASSERT_EQ_U(break_net_quic_conn_id(NULL), 0u);
 
-    /* Impair only post-auth traffic: every fourth packet per direction drops,
-     * other packets wait 15 ms, and the first packet waits 30 ms to reorder. */
-    const u32 frame_count = impaired ? 4u : 1u;
-    if (impaired) {
+    /* Impair only post-auth traffic. Deterministic mode drops every fourth
+     * packet and uses 15/30 ms delays; random mode drops 25% with 0..20 ms
+     * jitter from a fixed xorshift32 seed. */
+    const u32 frame_count = !impaired ? 1u : (random ? 6u : 4u);
+    if (random) {
+        test_quic_udp_proxy_set_impairment(proxies, true, 0u, 0u, false);
+        test_quic_udp_proxy_set_random(proxies, true, 0xB5EED123u, 25u, 20u);
+    } else if (impaired) {
         test_quic_udp_proxy_set_impairment(proxies, true, 4u, 15u, true);
     }
 
-    /* Each participant contributes constant PCM: 1000, 2000, or 3000. The
-     * weak-net run sends four frames so loss and reordering affect real BRV1. */
+    /* Each participant contributes constant PCM: 1000, 2000, or 3000. Weak-net
+     * runs send multiple frames so packet impairments affect real BRV1 data. */
     for (u32 sequence = 1u; sequence <= frame_count; ++sequence) {
         for (u32 i = 0u; i < CONFERENCE_CLIENTS; ++i) {
             BreakVoiceFrame frame;
@@ -1196,7 +1231,8 @@ static bool run_voice_conference(bool impaired) {
             for (u32 sample = 0u; sample < 160u; ++sample) {
                 frame.samples[sample] = (i16)((i + 1u) * 1000u);
             }
-            ASSERT_TRUE(break_voice_quic_send(clients[i].client, &frame, false));
+            ASSERT_TRUE(conference_client_send_voice(server, clients, proxies,
+                                                     i, &frame));
         }
         ASSERT_TRUE(conference_step(server, clients, proxies));
         conference.now_ms += 1u;
@@ -1243,8 +1279,8 @@ static bool run_voice_conference(bool impaired) {
     for (u32 frame = 0u; frame < frame_count; ++frame) {
         output.sequence = mixed.sequence + frame;
         for (u32 i = 0u; i < CONFERENCE_CLIENTS; ++i) {
-            ASSERT_TRUE(break_voice_quic_send_server(
-                server, conference.connections[i], &output, false));
+            ASSERT_TRUE(conference_server_send_voice(
+                server, clients, proxies, conference.connections[i], &output));
         }
         ASSERT_TRUE(conference_step(server, clients, proxies));
         conference.now_ms += 1u;
@@ -1286,14 +1322,25 @@ static bool run_voice_conference(bool impaired) {
     }
 
     if (impaired) {
+        u64 total_dropped = 0u;
+        u64 total_jittered = 0u;
         for (u32 i = 0u; i < CONFERENCE_CLIENTS; ++i) {
             TestQuicUdpProxyStats stats;
             test_quic_udp_proxy_set_stats(proxies, i, &stats);
             ASSERT_TRUE(stats.received[0] >= frame_count);
             ASSERT_TRUE(stats.received[1] >= frame_count);
-            ASSERT_TRUE(stats.dropped >= 2u);   /* uplink + downlink loss */
-            ASSERT_TRUE(stats.delayed >= 6u);   /* surviving conference frames */
-            ASSERT_TRUE(stats.reordered >= 2u); /* both directions reordered */
+            if (random) {
+                total_dropped += stats.dropped;
+                total_jittered += stats.jittered;
+            } else {
+                ASSERT_TRUE(stats.dropped >= 2u);   /* uplink + downlink loss */
+                ASSERT_TRUE(stats.delayed >= 6u);   /* surviving frames */
+                ASSERT_TRUE(stats.reordered >= 2u); /* both directions */
+            }
+        }
+        if (random) {
+            ASSERT_TRUE(total_dropped > 0u);
+            ASSERT_TRUE(total_jittered > 0u);
         }
     }
 
@@ -1308,11 +1355,15 @@ static bool run_voice_conference(bool impaired) {
 }
 
 static bool test_voice_conference(void) {
-    return run_voice_conference(false);
+    return run_voice_conference(false, false);
 }
 
 static bool test_voice_conference_weak_network(void) {
-    return run_voice_conference(true);
+    return run_voice_conference(true, false);
+}
+
+static bool test_voice_conference_seeded_weak_network(void) {
+    return run_voice_conference(true, true);
 }
 
 /* ---- runner --------------------------------------------------------------- */
@@ -1345,6 +1396,7 @@ int main(void) {
         {"lobby_quic_auth_source", test_lobby_quic_auth_source},
         {"voice_conference", test_voice_conference},
         {"voice_conference_weak_network", test_voice_conference_weak_network},
+        {"voice_conference_seeded_weak_network", test_voice_conference_seeded_weak_network},
     };
     size_t passed = 0;
     size_t total = sizeof(tests) / sizeof(tests[0]);
