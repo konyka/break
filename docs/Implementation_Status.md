@@ -1,10 +1,12 @@
 ## arm64 音频与一百三十一项 CTest（2026-11-20）
 
-- **最小场景**：新增二十三项音频测试：二十二个直接可执行目标共 356 个分项（voice playback 4、audio 47、audio extended 129、dsp 10、hrtf 9、capture 13、agc 8、noise gate 8、echo canceller 9、delay estimator 21、fft 8、noise suppressor 8、residual echo suppressor 8、delay tracker 8、gcc-phat 8、drift estimator 8、drift resampler 12、drift compensator 8、edit 6、voice processor 3、voice aligner 6、wav 7），以及宿主 `cmake -P` 的 realtime 契约。均不使用音频设备，采集与播放走进程内 sink。
-- **未修改基线与 focused 复验**：改动前干净容器交叉 23/23，CTest 16.57 秒，最慢的 delay tracker 3.66 秒，远低于既有 20/30 秒单项超时和 lane 的 300 秒上限；分项数与原生一致。改动后原生以完整新 `-R` 复跑 23/23，无 skip。无需修改产品或测试源码。
+- **最小场景**：新增二十三项音频测试：二十二个直接可执行目标共 348 个分项（voice playback 4、audio 47、audio extended 129、dsp 10、hrtf 9、capture 13、agc 8、noise gate 8、echo canceller 9、delay estimator 21、fft 8、noise suppressor 8、residual echo suppressor 8、delay tracker 8、gcc-phat 8、drift estimator 8、drift resampler 12、drift compensator 8、edit 6、voice processor 3、voice aligner 6、wav 7），以及宿主 `cmake -P` 的 realtime 契约。用例使用 FAKE 后端或 miniaudio Null 设备；其中三个用例（`test_audio.c:827`、`test_audio_capture.c:416/537`）打开 `AUDIO_BACKEND_DEFAULT`，会先经 dlopen 尝试 PulseAudio/ALSA/JACK 再回落 Null，容器内无 arm64 声音库所以回落 Null。这不是真实设备证据，镜像若加入 arm64 声音库该行为会改变。
+- **未修改基线与 focused 复验**：改动前干净容器交叉 23/23，CTest 16.57 秒，最慢的 delay tracker 3.66 秒，voice playback 与 capture 设有 20/30 秒单项超时，其余项由 lane 的 300 秒上限约束；分项数与原生一致。改动后原生以完整新 `-R` 复跑 23/23，无 skip。无需修改产品或测试源码。
 - **RED 与精确选择**：旧 workflow 因缺少二十二个构建目标按预期 RED。新增独立的 `test_audio(_(extended|dsp|hrtf|capture|agc|noise_gate|echo_canceller|delay_estimator|fft|noise_suppressor|residual_echo_suppressor|delay_tracker|gcc_phat|drift_estimator|drift_resampler|drift_compensator|edit|voice_processor|voice_aligner|wav|realtime_contract))?$|test_voice_playback$`，未改动既有表达式；真实选择为既有一百零八项加二十三项，共一百三十一项。派生名称与同带 `audio` 标签的 `test_core_app_voice`、`test_core_app_voice_lane`、`test_editor_audio_sink`（及 `test_editor_audio`）被拒绝。
 - **覆盖缺口**：realtime 契约只检查源码中的实时路径约束，不代表 arm64 行为；QEMU 下通过只说明同一 arm64 构建内 DSP 管线自洽，不证明跨架构逐位一致，也不代表真机实时期限。
-- **验证状态**：原生全量、最终干净容器、独立评审及远端 job 在实际完成后补记。真实音频设备、core_app 语音通道、编辑器音频、Snowflake/QUIC、GPU 与物理设备仍不在本次覆盖内。
+- **本地验证（2026-11-20 20:36 CST）**：原生全量 455 项零失败，4 个既有平台用例跳过，CTest 154.67 秒。最终干净 Ubuntu 24.04 容器按 workflow 原始步骤完成构建、对象检查与一百三十一项 CTest，131/131、CTest 135.16 秒；二十二个音频分项数逐项与表一致（合计 348），全部既有分项/契约/e2e 成功，既有 ptrace 设置 skip 恰好一次，无新增跳过。`git diff --check` 通过。
+- **独立评审**：只读评审逐名确认 108→131、差集恰为二十三项、派生名称及四个排除测试被拒绝、两处 regex 与构建列表字节一致、Build_Guide 只有一个「当前」计数。采纳 Important：「不使用音频设备」改为如实说明三个用例走默认后端链、在容器内回落 Null；采纳 Minor：超时表述、`network.c` 链接与 core_app 设备测试的显式排除。合计分项数经日志与算术复核为 348（初稿误写 356，评审亦沿用 356，已更正）。
+- **验证边界**：远端 job 在实际完成后补记。真实音频设备、core_app 语音与设备测试（`test_core_app_audio_device`、`test_core_app_voice_device`、`test_core_app_voice_null`）、core_app 语音通道、编辑器音频、Snowflake/QUIC、GPU 与物理设备仍不在本次覆盖内。
 
 ## arm64 AI 与一百零八项 CTest（2026-11-20）
 

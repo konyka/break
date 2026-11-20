@@ -21,12 +21,12 @@
 - [x] **Step 1:** Run `build-core-app-net/audio_selection_contract.py` on the old workflow; expected FAIL at `missing audio build targets`.
 - [x] **Step 2:** Append the twenty-two targets and the alternative in `.github/workflows/ci.yml` and `docs/Build_Guide.md`.
 - [x] **Step 3:** Re-run the contract; expected `exact 131-test audio selection and anchor contract passed`; confirm byte-identical regex.
-- [x] **Step 4:** Focused native with the new `-R` (23/23) and unmodified cross baseline (23/23, 356 cases).
+- [x] **Step 4:** Focused native with the new `-R` (23/23) and unmodified cross baseline (23/23, 348 cases).
 - [x] **Step 5:** Append status, design, and missing-capability evidence. Commit as `ci: run arm64 audio tests`.
 
 ### Task 2: Final verification and remote proof
 
-- [ ] **Step 1:** Native full regression; require 455, zero failures, four established skips.
-- [ ] **Step 2:** Clean-container workflow; require 131/131 and exactly one ptrace setup skip.
-- [ ] **Step 3:** Read-only review; fix adopted findings. Fetch/rebase if needed and push.
+- [x] **Step 1:** Native full regression; require 455, zero failures, four established skips.
+- [x] **Step 2:** Clean-container workflow; require 131/131 and exactly one ptrace setup skip.
+- [x] **Step 3:** Read-only review; fix adopted findings. Fetch/rebase if needed and push.
 - [ ] **Step 4:** `build-core-app-net/assert_arm64_log.py <log> 131` with all twenty-two `NAME=COUNT` pairs from the spec table. Record URLs, commit `docs: record arm64 audio CI results`, push.

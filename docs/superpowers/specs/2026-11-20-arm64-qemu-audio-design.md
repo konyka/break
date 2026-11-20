@@ -20,8 +20,13 @@ slice adds exactly those twenty-three for a 131-test selection.
 
 Twenty-two direct executable registrations (`engine/CMakeLists.txt:6666` and
 `7247-7403`) link audio sources with `m`, `Threads::Threads`, `dl`, or
-`break_online` (`test_voice_playback`). They use no audio device: capture and
-playback run against in-process sinks. `test_audio_realtime_contract`
+`break_online` (`test_voice_playback`, which also compiles `network.c`). Cases
+use the FAKE backend or miniaudio's Null device. Three cases
+(`test_audio.c:827`, `test_audio_capture.c:416`, `test_audio_capture.c:537`)
+open `AUDIO_BACKEND_DEFAULT`, which tries PulseAudio, ALSA, and JACK via dlopen
+before Null; in the container no arm64 sound libraries exist, so they reach Null.
+This is not real-device evidence, and it would change if arm64 sound libraries
+were added to the image. `test_audio_realtime_contract`
 (`engine/CMakeLists.txt:7407`) runs a host `cmake -P` script over the audio
 sources.
 
@@ -41,10 +46,11 @@ Case counts (native and unmodified cross agree):
 | `test_audio_delay_estimator` | 21 | `test_audio_voice_aligner` | 6 |
 | `test_audio_fft` | 8 | `test_audio_wav` | 7 |
 
-That is 356 cases. Unmodified cross focused execution in a clean Ubuntu 24.04
+That is 348 cases. Unmodified cross focused execution in a clean Ubuntu 24.04
 container passes 23/23 in 16.57 seconds; the slowest test is
-`test_audio_delay_tracker` at 3.66 seconds, well inside the existing 20/30-second
-per-test timeouts and the lane's 300-second limit. No product or test-source
+`test_audio_delay_tracker` at 3.66 seconds, `test_voice_playback` and
+`test_audio_capture` set 20- and 30-second timeouts; the rest are bounded by the
+lane's 300-second limit. No product or test-source
 change is needed.
 
 ## CI Change
@@ -74,7 +80,8 @@ The `$` binds the whole optional suffix group, so derived names are rejected.
 ## Boundaries
 
 A selected 131-test suite, not full arm64 CTest. Real audio devices (PipeWire,
-ALSA, WASAPI, CoreAudio), core_app voice lanes, editor audio, and
+ALSA, WASAPI, CoreAudio), core_app voice and device tests
+(`test_core_app_audio_device`, `test_core_app_voice_device`, `test_core_app_voice_null`), editor audio, and
 cross-architecture bit-exact DSP output remain outside it. Passing under QEMU
 shows the DSP pipeline is self-consistent within one arm64 build; QEMU timing
 is not representative of real-time deadlines on arm64 hardware.
