@@ -6,7 +6,8 @@
 - **覆盖缺口**：nav follow、perception、behavior、steer 各只有一个用例；两项契约只检查源码与目标接线，不代表 arm64 行为。
 - **本地验证（2026-11-20 20:15 CST）**：原生全量 455 项零失败，4 个既有平台用例跳过，CTest 146.05 秒。最终干净 Ubuntu 24.04 容器按 workflow 原始步骤完成构建、对象检查与一百零八项 CTest，108/108、CTest 121.67 秒；十二项 AI 分项 3/3/2/1/1/1/1/6/6/2/5/3、两项宿主契约及全部既有分项/契约/e2e 成功，既有 ptrace 设置 skip 恰好一次，无新增跳过。`git diff --check` 通过。
 - **独立评审**：只读评审逐名确认 94→108、差集恰为 `engine/CMakeLists.txt:5690-5705` 注册的十四项、`test_core_style_prototype` 与派生名称被拒绝、两处 regex 与构建列表字节一致、Build_Guide 只有一个「当前」计数。采纳 Important：spec 中单用例可执行目标数由五改为四；采纳 Minor：design 文档的 focused 表述与本节一致。记录但未采纳：选择契约与日志校验脚本位于被忽略的构建目录，未纳入仓库（与既有切片一致）。
-- **验证边界**：远端 job 在实际完成后补记。真实关卡 navmesh、大规模群体性能、编辑器 AI 工具、Snowflake/QUIC、GPU 与物理设备仍不在本次覆盖内。
+- **远端验证**：[CI run 44732478045](https://github.com/konyka/break/actions/runs/44732478045) 的 [arm64 job 136275476404](https://github.com/konyka/break/actions/runs/44732478045/job/136275476404) 在提交 `5b94fee5` 上全部步骤成功。原始日志断言确认精确一百零八项、`0 tests failed out of 108`、日志中无任何失败分项、十二项 AI 分项 3/3/2/1/1/1/1/6/6/2/5/3、全部既有契约/e2e，既有 ptrace 设置 skip 恰好一次。
+- **验证边界**：真实关卡 navmesh、大规模群体性能、编辑器 AI 工具、Snowflake/QUIC、GPU 与物理设备仍不在本次覆盖内。
 
 ## arm64 动画与九十四项 CTest（2026-11-20）
 
