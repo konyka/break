@@ -115,7 +115,7 @@ Mach-O 用例在测试里逐字节构造镜像，不需要 Apple SDK：dylib 与
 
 ## 7. 没有做的
 
-- minidump / PE 格式、Windows SEH/VEH（`_WIN32` 仍是编译期 stub）；Windows 与 macOS lane 未运行（新库只在 `UNIX AND NOT APPLE` 下构建，服务与工具只在 POSIX 下构建）。Mach-O 只读符号表。2026-11-20：帧恢复不再是 x86-64 专用——AAPCS64 的帧记录与 x86-64 同为 `[fp]`/`[fp+8]` 布局，同一套遍历两者通用，用例 `the_walker_follows_an_arm64_frame_pointer_chain_too` 以 arm64 形状的链验证；信号处理器在 `__aarch64__ && __linux__` 下读 `uc_mcontext.pc`/`.sp`/`.regs[29]`（x29 即帧指针）而不再写零。字段名已对照内核的 aarch64 `asm/sigcontext.h`（`regs[31]`/`sp`/`pc`，`regs[29]` 即 x29 帧指针）编译验证通过；2026-11-20 另加 `engine/toolchain-aarch64-linux.cmake` 与 CI 的 `lane-cross-aarch64-linux`（仅构建，不在 x86-64 runner 上假称跑过 arm64 测试）。本机没有交叉编译器，整体 arm64 构建与链接由该 lane 验证。没有验证 macOS 客户端生成的真实崩溃记录。
+- minidump / PE 格式、Windows SEH/VEH（`_WIN32` 仍是编译期 stub）；Windows 与 macOS lane 未运行（新库只在 `UNIX AND NOT APPLE` 下构建，服务与工具只在 POSIX 下构建）。Mach-O 只读符号表。2026-11-20：帧恢复不再是 x86-64 专用——AAPCS64 的帧记录与 x86-64 同为 `[fp]`/`[fp+8]` 布局，同一套遍历两者通用，用例 `the_walker_follows_an_arm64_frame_pointer_chain_too` 以 arm64 形状的链验证；信号处理器在 `__aarch64__ && __linux__` 下读 `uc_mcontext.pc`/`.sp`/`.regs[29]`（x29 即帧指针）而不再写零。字段名已对照内核的 aarch64 `asm/sigcontext.h`（`regs[31]`/`sp`/`pc`，`regs[29]` 即 x29 帧指针）编译验证通过；`engine/toolchain-aarch64-linux.cmake` 与 CI 的 `lane-cross-aarch64-linux` 持续检查整体构建。Ubuntu 24.04 multiarch 容器中 `break_crash` 与 `engine` 的 176 个构建步骤已完成，目标对象确认为 aarch64；这仍只是编译/链接证据，未在 arm64 上执行测试。没有验证 macOS 客户端生成的真实崩溃记录。
 - DWARF CFI 展开；内联帧；无帧指针代码的可靠调用栈。
 - 生产服务：认证上传者、按客户端限速、记录本身的存储与保留、符号库管理与发布流程、统计的数据库、仪表板、告警。
 - GPU/RHI/网络/输入摘要的自动采集（仍由应用经 context-blob 接缝接入）。

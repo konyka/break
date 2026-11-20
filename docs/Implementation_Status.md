@@ -2,9 +2,9 @@
 
 - **交付（寄存器）**：崩溃处理器原先只在 `__x86_64__ && __linux__` 下读寄存器，其他架构写零——Linux arm64 的记录因此没有寄存器、没有栈窗口（窗口从 `rsp` 起）、没有帧（`rip` 为 0 时 `break_crash_symbolize_record` 返回 0）。现在在 `__aarch64__ && __linux__` 下读 `uc_mcontext.pc`/`.sp`/`.regs[29]`（x29 即 AAPCS64 帧指针），记录字段名仍是 `rip/rsp/rbp`（格式已钉死，三者角色相同）。
 - **帧遍历无需改动，且已用测试钉住**：AAPCS64 的帧记录与 x86-64 同为 `[fp]` 存调用者 fp、`[fp+8]` 存返回地址（LR），字长与字节序也一致，因此同一套遍历通用。新增用例 `the_walker_follows_an_arm64_frame_pointer_chain_too` 以 arm64 形状的链（fp = sp+0x40、三条记录、末条 fp 为 0）验证恢复出 pc 加三个 LR；把末条 LR 改成 0 即判红，说明用例不空转。
-- **交付（lane）**：新增 `engine/toolchain-aarch64-linux.cmake`（交叉工具链，`CMAKE_FIND_ROOT_PATH_MODE_*` 指向 sysroot 以免链到主机 x86-64 库，支持 `AARCH64_SYSROOT` 覆盖）与 CI 的 `lane-cross-aarch64-linux`：装交叉 gcc、以 headless RHI 配置、构建 `break_crash` 与 `engine`，并用 `objdump -f` 确认目标文件确实是 aarch64。**只构建不跑 ctest**——在 x86-64 runner 上声称跑过 arm64 测试是假证据。`docs/Build_Guide.md` 新增 1.5 节说明用法。
-- **本机验证到什么程度**：没有 aarch64 交叉编译器（`dnf` 里有包但安装需要密码），所以 lane 本身未在本机跑过。路径检查先以相对的 `--toolchain engine/toolchain-aarch64-linux.cmake` 复现 `Could not find toolchain file`，再改为绝对路径，确认工具链被读取、失败点推进到预期的 `aarch64-linux-gnu-gcc` 不在 `PATH`；CI 与示例因此都使用绝对路径。**字段名也已验证**：本机一个 zig 发行版带有内核的 aarch64 `asm/sigcontext.h`（`__u64 regs[31]; __u64 sp; __u64 pc;`），针对它编译一个使用这三个字段的翻译单元通过——这是编译器接受真实头文件，而不是照 ABI 文档推断。
-- **TDD**：`test_break_crash_symbolize` 44/44、`test_break_crash` 37/37，全量 455/455，ASan 树干净。
+- **交付（lane）**：新增 `engine/toolchain-aarch64-linux.cmake`（交叉工具链，目标查找根与 `CMAKE_FIND_ROOT_PATH_MODE_*` 防止误用宿主 x86-64 库，支持 `AARCH64_SYSROOT` 覆盖）与 CI 的 `lane-cross-aarch64-linux`：Ubuntu 24.04 multiarch 安装真实的 arm64 Wayland/xkbcommon/OpenGL/OpenSSL 开发包，主机提供协议生成工具，以显式 `opengl` 配置构建 `break_crash` 与 `engine`，并用 `objdump -f` 确认目标文件确实是 aarch64。**只构建不跑 ctest**——在 x86-64 runner 上声称跑过 arm64 测试是假证据。`docs/Build_Guide.md` 新增 1.5 节说明用法。
+- **验证边界与实测**：宿主 Fedora 没有交叉编译器，因此用 Ubuntu 24.04 容器按 CI 同一 multiarch 布局验证。先分别复现相对工具链路径的 `Could not find toolchain file`、错误 `/usr/aarch64-linux-gnu` sysroot 的三条 libc 重复前缀错误，再逐项修正；最终完整构建 176/176 步完成，生成 `libengine.a`，`break_crash.c.o` 经 `objdump` 确认为 `elf64-littleaarch64`。这证明编译与链接，不证明 arm64 运行。**字段名也已验证**：本机一个 zig 发行版带有内核的 aarch64 `asm/sigcontext.h`（`__u64 regs[31]; __u64 sp; __u64 pc;`），针对它编译一个使用这三个字段的翻译单元通过。
+- **TDD**：`test_break_crash_symbolize` 44/44、`test_break_crash` 37/37，全量 455/455，ASan 树干净；工具链路径与 sysroot 均先取得失败证据，再以容器完整构建转绿。
 
 ## loopback 对端写出自己的 trace（2026-11-20）
 

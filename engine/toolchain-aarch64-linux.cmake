@@ -7,7 +7,7 @@
 #
 #   cmake -S engine -B build-arm64 \
 #       --toolchain /absolute/path/to/engine/toolchain-aarch64-linux.cmake \
-#       -DENGINE_RHI_BACKEND=headless
+#       -DENGINE_RHI_BACKEND=opengl
 set(CMAKE_SYSTEM_NAME Linux)
 set(CMAKE_SYSTEM_PROCESSOR aarch64)
 
@@ -16,16 +16,19 @@ set(CMAKE_CXX_COMPILER aarch64-linux-gnu-g++)
 set(CMAKE_AR aarch64-linux-gnu-ar)
 set(CMAKE_RANLIB aarch64-linux-gnu-ranlib)
 
-# A distro that puts the cross libc elsewhere can point at it without
-# editing this file.
+# An explicit sysroot is opt-in for toolchains that need one. Debian and
+# Ubuntu's cross GCC already knows its target libc: /usr/aarch64-linux-gnu is
+# a CMake find root there, not a compiler sysroot. Passing it to --sysroot
+# makes the linker prefix the absolute paths in libc.so a second time.
 if(DEFINED ENV{AARCH64_SYSROOT})
-    set(CMAKE_SYSROOT $ENV{AARCH64_SYSROOT})
+    set(CMAKE_SYSROOT "$ENV{AARCH64_SYSROOT}")
+    set(CMAKE_FIND_ROOT_PATH "$ENV{AARCH64_SYSROOT}")
 elseif(EXISTS /usr/aarch64-linux-gnu)
-    set(CMAKE_SYSROOT /usr/aarch64-linux-gnu)
+    set(CMAKE_FIND_ROOT_PATH /usr/aarch64-linux-gnu)
 endif()
 
-# Programs come from the host, everything else from the sysroot: without
-# this CMake finds the host's /usr/lib and links x86-64 objects.
+# Programs come from the host, everything else from the target find root:
+# without this CMake finds the host's /usr/lib and links x86-64 objects.
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)

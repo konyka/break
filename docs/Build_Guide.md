@@ -1418,12 +1418,18 @@ sips -s format png \
 
 `engine/toolchain-aarch64-linux.cmake` 用 `aarch64-linux-gnu-` 工具链交叉编译到 Linux arm64，目的只是让 `__aarch64__` 分支（崩溃处理器的寄存器捕获、Mach-O 读取器的 arm64 slice、平台层的 arm64 分支）得到类型检查与链接验证；产物不能在 x86-64 主机上运行，因此 CI 的 `lane-cross-aarch64-linux` 只构建不跑 `ctest`——在 x86-64 runner 上声称跑过 arm64 测试会是假证据。
 
+完整 `engine` 在 Linux 上仍需要 Wayland、xkbcommon、OpenGL/EGL 与默认启用的 OpenSSL；`ENGINE_RHI_BACKEND=headless` 不是 Linux 的合法选择，所以这里显式选择 `opengl`，只编译而不运行图形路径。Ubuntu 24.04 的参考依赖布局是 multiarch：主机包提供 `wayland-scanner` 和协议 XML，arm64 包提供目标头文件与库。完整的 ports 源配置和安装命令见 `.github/workflows/ci.yml` 的 **Install the host and arm64 build dependencies** 步骤；目标包包括 `libwayland-dev:arm64`、`libxkbcommon-dev:arm64`、`libgl-dev:arm64`、`libegl-dev:arm64`、`libopengl-dev:arm64`、`libssl-dev:arm64`。
+
+依赖安装后，从仓库根目录执行：
+
 ```sh
-sudo dnf install gcc-aarch64-linux-gnu gcc-c++-aarch64-linux-gnu   # 或 apt 的同名包
+# 仅适用于上述 Ubuntu multiarch 布局；其他发行版应填自己的真实 sysroot。
+export AARCH64_SYSROOT=/
+export PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/aarch64-linux-gnu/lib/pkgconfig:/usr/share/pkgconfig
 cmake -S engine -B build-arm64 -G Ninja \
     --toolchain "$PWD/engine/toolchain-aarch64-linux.cmake" \
-    -DCMAKE_BUILD_TYPE=Debug -DENGINE_RHI_BACKEND=headless
+    -DCMAKE_BUILD_TYPE=Debug -DENGINE_RHI_BACKEND=opengl
 cmake --build build-arm64 --parallel --target break_crash engine
 ```
 
-从仓库根目录执行，并给 `--toolchain` 传绝对路径；相对路径不会按仓库根目录解析，会在读取工具链之前报 `Could not find toolchain file`。交叉 libc 不在 `/usr/aarch64-linux-gnu` 时，设 `AARCH64_SYSROOT` 指向它。没装交叉编译器时，configure 会在成功读取工具链后报告 `aarch64-linux-gnu-gcc` 不在 `PATH`，这是预期的失败形式。
+`--toolchain` 必须传绝对路径；相对路径不会按仓库根目录解析，会在读取工具链之前报 `Could not find toolchain file`。不要把 `/usr/aarch64-linux-gnu` 单独当编译器 sysroot，否则链接器会重复添加交叉 libc 链接脚本中的绝对路径前缀。没装交叉编译器时，configure 会在成功读取工具链后报告 `aarch64-linux-gnu-gcc` 不在 `PATH`，这是预期的失败形式。

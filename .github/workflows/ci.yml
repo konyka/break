@@ -166,18 +166,43 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install the cross toolchain
+      - name: Install the host and arm64 build dependencies
         run: |
+          # Ubuntu's archive hosts do not serve arm64. Keep the existing
+          # archive/security stanzas on amd64 and add the ports archive only
+          # for arm64 before enabling the foreign architecture.
+          sudo sed -i '/^Types: deb$/a Architectures: amd64' /etc/apt/sources.list.d/ubuntu.sources
+          . /etc/os-release
+          cat <<EOF | sudo tee /etc/apt/sources.list.d/arm64.sources >/dev/null
+          Types: deb
+          URIs: http://ports.ubuntu.com/ubuntu-ports/
+          Suites: ${VERSION_CODENAME} ${VERSION_CODENAME}-updates ${VERSION_CODENAME}-security
+          Components: main universe
+          Architectures: arm64
+          Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+          EOF
+          sudo dpkg --add-architecture arm64
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu ninja-build
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu ninja-build \
+            pkg-config python3 file libwayland-dev wayland-protocols \
+            libwayland-dev:arm64 libxkbcommon-dev:arm64 \
+            libgl-dev:arm64 libegl-dev:arm64 libopengl-dev:arm64 \
+            libssl-dev:arm64
           aarch64-linux-gnu-gcc --version
 
       - name: Configure
         run: |
+          # Multiarch installs the target under /usr/lib/aarch64-linux-gnu,
+          # so / is the real sysroot. /usr/aarch64-linux-gnu alone would
+          # double-prefix the absolute paths in the cross libc linker script.
+          export AARCH64_SYSROOT=/
+          export PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/aarch64-linux-gnu/lib/pkgconfig:/usr/share/pkgconfig
+          # Linux has no ENGINE_RHI_BACKEND=headless selector. Compile the
+          # explicit OpenGL path against real arm64 packages; run nothing.
           cmake -S engine -B build-arm64 -G Ninja \
             --toolchain "$GITHUB_WORKSPACE/engine/toolchain-aarch64-linux.cmake" \
-            -DCMAKE_BUILD_TYPE=Debug -DENGINE_RHI_BACKEND=headless
+            -DCMAKE_BUILD_TYPE=Debug -DENGINE_RHI_BACKEND=opengl
 
       # The targets that carry architecture-specific code, plus the common
       # libraries so a type error anywhere in them fails here too.
