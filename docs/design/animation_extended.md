@@ -101,4 +101,4 @@ flags 仅定义 loop 与 playing 位，其余位必须为零。CRC32 依次覆�
 
 ## 补充（2026-11-20）：arm64 动画验证
 
-arm64 lane 新增八项动画测试（37/2/10/8/13/1/1/1 例），统一选择达到九十四项，所有已注册动画测试均在 arm64 QEMU 下运行。原生与交叉 focused 均为 8/8，无新增 skip。arm64 通过只证明 CPU 路径在 arm64 构建内自洽，不证明跨架构逐位一致的动画回放，也不覆盖 GPU 蒙皮。locomotion、socket、aim 各只有单个用例。
+arm64 lane 新增八项动画测试（37/2/10/8/13/1/1/1 例），统一选择达到九十四项，所有以动画模块为主体的已注册测试均在 arm64 QEMU 下运行（仅链接动画源码的 `test_asset_gltf`、`test_core_style_prototype` 与 core_app lifecycle locomotion/facial 测试除外）。原生与交叉 focused 均为 8/8，无新增 skip。arm64 通过只证明 CPU 路径在 arm64 构建内自洽，不证明跨架构逐位一致的动画回放，也不覆盖 GPU 蒙皮。locomotion、socket、aim 各只有单个用例。

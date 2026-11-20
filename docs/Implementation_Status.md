@@ -1,10 +1,12 @@
 ## arm64 动画与九十四项 CTest（2026-11-20）
 
 - **最小场景**：新增八个直接可执行动画目标：animation 37 例、pose authority 2、morph 10、facial 8、compression 13、locomotion 1、skeleton socket 1、aim 1，共 73 个分项，只链接动画、数学、日志和 LOD CPU 源码（morph 另链接 `meshopt_c`）。
-- **未修改基线与 focused 复验**：原生与干净容器交叉均为 8/8，分项数一致，交叉 focused CTest 0.17 秒，无 skip。无需修改产品或测试源码。
+- **未修改基线与 focused 复验**：改动前原生与干净容器交叉均为 8/8，分项数一致，交叉 focused CTest 0.17 秒（交叉运行已使用最终的 alternative）；改动后原生 focused 以完整新 `-R` 复跑 8/8，无 skip。无需修改产品或测试源码。
 - **RED 与精确选择**：旧 workflow 因缺少八个构建目标按预期 RED。新增独立的 `test_(animation|anim_(pose_authority|morph|facial|compression|locomotion|aim)|skeleton_socket)$`，未改动既有表达式；真实选择为既有八十六项加八项，共九十四项，`*_extra`、`test_anim_morph2` 与 `test_myui_echart_animation` 被拒绝。
 - **覆盖缺口**：locomotion、socket、aim 各只有一个用例，其内部首个失败会让汇总只报 1 例。
-- **验证状态**：原生全量、最终干净容器、独立评审及远端 job 在实际完成后补记。GPU 蒙皮、渲染、跨架构逐位动画回放、Snowflake/QUIC、GPU 与物理设备仍不在本次覆盖内。
+- **本地验证（2026-11-20 19:58 CST）**：原生全量 455 项零失败，4 个既有平台用例跳过，CTest 146.53 秒。最终干净 Ubuntu 24.04 容器按 workflow 原始步骤完成构建、对象检查与九十四项 CTest，94/94、CTest 121.41 秒；八项动画 37/2/10/8/13/1/1/1 及全部既有分项/契约/e2e 成功，既有 ptrace 设置 skip 恰好一次，无新增跳过。`git diff --check` 通过。
+- **独立评审**：只读评审逐名确认 86→94、差集恰为八项、派生名称与 `test_myui_echart_animation` 被拒绝、两处 regex 与构建列表字节一致。采纳 Important：Build_Guide 1.5 同时出现八十六与九十四两个「当前」计数，改为八十六项标注为历史基线并更新小节标题；采纳 Minor：说法限定为以动画模块为主体的测试，远端日志校验传入全部八个分项数。
+- **验证边界**：远端 job 在实际完成后补记。GPU 蒙皮、渲染、跨架构逐位动画回放、Snowflake/QUIC、GPU 与物理设备仍不在本次覆盖内。
 
 ## arm64 扩展物理、角色控制与八十六项 CTest（2026-11-20）
 
