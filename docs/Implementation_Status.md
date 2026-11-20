@@ -1,3 +1,10 @@
+## arm64 Asset/VFS/热加载与五十六项 CTest（2026-11-20）
+
+- **最小场景**：新增 async loader 17 例、hotreload 7 例、VFS 36 例、filewatch backend 26 例，共 86 个分项、四个直接可执行目标。均由既有 QEMU 命令执行，无嵌套工具、资产路径翻译或宿主 driver 修改。
+- **未修改基线与 focused 复验**：原生和交叉均为 4/4、17/7/36/26；最新 focused CTest 为 0.04/0.30 秒，无 skip。无需修改产品或测试源码。
+- **RED 与精确选择**：旧 workflow 因缺少四个构建目标按预期 RED。加入 `test_(vfs|async_loader|filewatch_backend|hotreload)$` 后，真实原生选择为既有五十二项加四项，共五十六项；未来派生前缀被拒绝，显式集合断言通过。
+- **验证状态**：原生全量、最终干净容器、独立评审及远端 job 在实际完成后补记。材质/场景纹理、glTF、world streaming、编辑器/渲染、LuaJIT、Snowflake/QUIC、GPU 与物理设备仍不在本次覆盖内。
+
 ## arm64 Lua Runtime 与五十二项 CTest（2026-11-20）
 
 - **最小场景**：新增九个 Stage 3 Lua 可执行测试与目标契约，共 126 个分项。覆盖运行时/模块热加载/值与帧/宿主绑定/稳定句柄/有界表/调试/内核集成/ECS 应用；契约仅由宿主 CMake 检查正式目标和测试钩子隔离。

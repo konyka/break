@@ -313,3 +313,10 @@ request handle 是 stream/reload instance 内唯一的 opaque `u64` token，实�
 - VFS/async loader 的静态上限解决了无界分配的一部分风险，但 queue saturation、cancel 与 callback user-data 生命周期仍需统一合同。
 - Lua、editor、online update、安全策略尚未实现；任何把“文件变化”描述为可执行 logic/editor/remote update 的设计都越过当前边界。
 - 跨平台 filewatch backend（inotify/kqueue/FSEvents/Win32）事件语义不同，当前 macOS/非 Linux 的 runtime evidence 不能由 Linux focused test 推断。
+
+
+## 补充（2026-11-20）：arm64 hotreload 验证
+
+arm64 lane 新增 `test_hotreload`（7 例），与 VFS、异步加载和 filewatch backend 共同纳入五十六项精选测试。原生与交叉 focused 均为 4/4、17/7/36/26；`test_(vfs|async_loader|filewatch_backend|hotreload)$` 使用局部结尾锚点，不纳入未来派生测试。
+
+这些用例验证有界资源读取和热加载校验，使用测试存根，不构成真实 GPU 纹理热替换或渲染效果证据。

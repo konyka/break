@@ -378,3 +378,10 @@ Asset/HotReload formal facade 统一映射到 `BreakRuntimeError`：`OK`、`INVA
 - **跨平台验证风险**：当前 adapter stop timeout 非 Linux lane 尚未完整验证；PAL/Thread queue 的 Windows/macOS/Wayland 差异必须分别跑 ASan/TSan 可用矩阵，不能由 Linux 结果推断。
 - **Lua/editor 反向依赖风险**：若先暴露 raw asset pointers 或同步 `force_level`，会把 frame budget、shutdown 和 owner 纪律泄漏给上层；必须坚持异步 handle/status/command API。
 - **安全与更新范围风险**：本文不实现签名、加密、在线更新、A/B rollback、反作弊或 crash upload；后续文档必须保持这些能力的独立验收，不得把 local VFS streaming 证据升级为生产更新安全证据。
+
+
+## 补充（2026-11-20）：arm64 VFS 与异步加载验证
+
+arm64 lane 新增 `test_vfs`（36 例）、`test_async_loader`（17 例）和 `test_filewatch_backend`（26 例），与 hotreload 七例共同使统一选择达到五十六项。原生与交叉 focused 均为 4/4，直接经 QEMU 执行，无新增 skip 或路径适配。
+
+覆盖挂载/路径规范化/遍历拒绝、异步请求生命周期/取消/失败/关闭和文件事件路径安全。本项证据不包含 glTF、材质/场景纹理集成或完整 world streaming。

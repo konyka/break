@@ -387,3 +387,6 @@
 
 
 - **脚本/Lua 验证追加**：2026-11-20 arm64 lane 新增九个 Stage 3 Lua 可执行测试与目标契约，共 126 个分项，统一选择达到五十二项。未修改 QEMU 树十项全通过，无新增 skip；LuaJIT、旧版 `test_script_lua` 兼容层、编辑器/渲染和其他 arm64 子系统仍需独立覆盖。
+
+
+- **资源/热加载验证追加**：2026-11-20 arm64 lane 新增 async loader 17 例、hotreload 7 例、VFS 36 例和 filewatch backend 26 例，统一选择达到五十六项。未修改 QEMU 树四项全通过，无新增 skip；材质/场景纹理、glTF、world streaming 和真实 GPU 热替换仍需独立覆盖。
