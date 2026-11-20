@@ -1,3 +1,11 @@
+## arm64 无头 world 与一百七十九项 CTest（2026-11-20）
+
+- **最小场景**：新增全部十五项 `headless;world` 测试，均为直接 QEMU 可执行目标，共 29 个分项：vegetation、time_of_day、visarea、world_stream、decal、voxel、road、mesh_stage 各 1；mesh_buffer 3；mesh_gpu 1（链接 `engine_rhi_headless`）；world_mesh_fake 4、world_presenter_fake 5（`tests/world_fake_rhi.c`）；world_presentation 5；world_stream_job 1（一个 worker 的任务系统）；world_stream_world 2（在 `test_tmp()` 根下写文件）。均不 fork、不用 GPU 或设备。
+- **未修改基线与 focused 复验**：原生分项数一致；改动前干净容器交叉 15/15、CTest 0.29 秒。改动后原生以完整新 `-R` 复跑 15/15，无 skip。无需修改产品或测试源码。
+- **RED 与精确选择**：旧 workflow 因缺少十五个构建目标按预期 RED。新增独立的 `test_(vegetation|time_of_day|visarea|decal|voxel|road)$|test_world_(stream(_job|_world)?|mesh_fake|presentation|presenter_fake)$|test_mesh_(stage|buffer|gpu)$`，未改动既有表达式；真实选择为既有一百六十四项加十五项，共一百七十九项。需要 GPU 的 `test_mesh_gpu_gl`、`test_world_presentation_gl` 及派生名称被拒绝。
+- **覆盖缺口**：十五个可执行目标中十个只有一个用例；GPU 呈现与真实设备渲染不在覆盖内。
+- **验证状态**：原生全量、最终干净容器、独立评审及远端 job 在实际完成后补记。
+
 ## arm64 kernel/flow 与一百六十四项 CTest（2026-11-20）
 
 - **最小场景**：新增 `engine/CMakeLists.txt:4944-4981` 注册的十二项：八个直接链接 `break_kernel`（其依赖 `break_ecs_replication`）的可执行目标（actor 6、items 5、weapons 16、actions 1、move 1、level 1、area 2、flow 4）、宿主 `cmake -P` 的 kernel target 契约，以及三个只链接 `break_flow` 的可执行目标（graph 8、serial 6、runtime 12），十一个可执行目标共 62 个分项。`test_break_kernel_level` 只在 per-process 的 `test_tmp()` 路径旁写一个侧车文件并在结束时删除；均不 fork、不起线程、不用设备。

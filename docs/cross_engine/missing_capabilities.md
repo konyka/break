@@ -414,3 +414,4 @@
 - **fork 子进程截止等待追加**：2026-11-20 两个 fork 后 abort 的用例改用 `tests/test_fork.h` 的 30 秒有界等待（io 例的阶段管道读与两例的 waitpid 都已限定），QEMU 挂起时会以本用例失败结束并给出诊断，不再拖垮整条 lane。根因仍未定位。
 - **macOS Cocoa + MoltenVK 偶发构建失败记录**：最近 39 次 CI 中该 job 失败 4 次（`7ae28b5b`、`e1944152`、`753765ff`、`60aeae9d`），其中前三次都是 `clang: error: unable to execute command: posix_spawn failed: Resource temporarily unavailable`，即 `cmake --build build --parallel`（未限定并发数）在 macOS 15 runner 上耗尽进程资源；`60aeae9d` 那次是 `test_fork_deadline` 的 `snprintf` 声明问题，已修。待评估给该 job 的两处 `--parallel` 设定上限。
 - **kernel/flow 验证追加**：2026-11-20 arm64 lane 新增 kernel 八项、kernel target 契约与 flow 三项（62 个分项），统一选择达到一百六十四项。仍缺：kernel actions/move/level 各只有一个用例；Flow 侧车格式的跨架构逐位一致性未验证。
+- **无头 world 验证追加**：2026-11-20 arm64 lane 新增十五项 `headless;world` 测试（29 个分项），统一选择达到一百七十九项。仍缺：GPU 呈现（`*_gl`）与真实设备渲染的 arm64 验证；十项只有单个用例。

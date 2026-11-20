@@ -31,7 +31,7 @@ The arm64 lane selects exactly 164 tests. All fifteen tests labelled
 | `test_world_stream_job` | 1 | task system (one worker), `pthread m` |
 | `test_world_stream_world` | 2 | `pthread m`; writes files under its `test_tmp()` root |
 
-That is 30 cases. None fork or use a GPU or device. Native focused passes all
+That is 29 cases. None fork or use a GPU or device. Native focused passes all
 fifteen with these counts. Unmodified cross focused in a clean Ubuntu 24.04
 container passes 15/15 with the same counts in 0.29 seconds. No product or
 test-source change is needed.
@@ -62,5 +62,5 @@ The `$` on each part rejects `test_mesh_gpu_gl` and
 ## Boundaries
 
 A selected 179-test suite, not full arm64 CTest. GPU presentation
-(`*_gl`) and real-device rendering remain outside it. Eleven of the fifteen
+(`*_gl`) and real-device rendering remain outside it. Ten of the fifteen
 executables have a single case, so a failure inside one reports as one case.

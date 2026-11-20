@@ -60,3 +60,7 @@ CPU/fake 合同严格先添加会失败的测试，再实现：
 - 回归：focused normal、ASan+UBSan、TSan 的构建均使用 `-j3`；运行现有 mesh/world/RHI 测试和可用 graphics 测试。
 
 至少对材质光照、可见性过滤、LOD 选择和流式同源提交做变异检查：临时破坏实现，确认对应测试变红，再恢复并重新变绿。报告记录每条命令、结果、图形设备/跳过原因和未验证平台。
+
+## arm64 验证（2026-11-20）
+
+arm64 lane 新增全部十五项 `headless;world` 测试（29 例），统一选择达到一百七十九项。改动前干净容器交叉基线与改动后原生 focused 均为 15/15。mesh_gpu 用 headless RHI，两个 fake 测试用 `tests/world_fake_rhi.c`，因此 QEMU 下通过只说明 CPU 侧的网格分阶段、流式与呈现逻辑在同一 arm64 构建内自洽；`test_mesh_gpu_gl` 与 `test_world_presentation_gl` 需要 GPU，仍不在 arm64 选择内。
