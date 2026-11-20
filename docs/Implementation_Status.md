@@ -6,7 +6,8 @@
 - **覆盖缺口**：realtime 契约只检查源码中的实时路径约束，不代表 arm64 行为；QEMU 下通过只说明同一 arm64 构建内 DSP 管线自洽，不证明跨架构逐位一致，也不代表真机实时期限。
 - **本地验证（2026-11-20 20:36 CST）**：原生全量 455 项零失败，4 个既有平台用例跳过，CTest 154.67 秒。最终干净 Ubuntu 24.04 容器按 workflow 原始步骤完成构建、对象检查与一百三十一项 CTest，131/131、CTest 135.16 秒；二十二个音频分项数逐项与表一致（合计 348），全部既有分项/契约/e2e 成功，既有 ptrace 设置 skip 恰好一次，无新增跳过。`git diff --check` 通过。
 - **独立评审**：只读评审逐名确认 108→131、差集恰为二十三项、派生名称及四个排除测试被拒绝、两处 regex 与构建列表字节一致、Build_Guide 只有一个「当前」计数。采纳 Important：「不使用音频设备」改为如实说明三个用例走默认后端链、在容器内回落 Null；采纳 Minor：超时表述、`network.c` 链接与 core_app 设备测试的显式排除。合计分项数经日志与算术复核为 348（初稿误写 356，评审亦沿用 356，已更正）。
-- **验证边界**：远端 job 在实际完成后补记。真实音频设备、core_app 语音与设备测试（`test_core_app_audio_device`、`test_core_app_voice_device`、`test_core_app_voice_null`）、core_app 语音通道、编辑器音频、Snowflake/QUIC、GPU 与物理设备仍不在本次覆盖内。
+- **远端验证**：[CI run 44734554688](https://github.com/konyka/break/actions/runs/44734554688) 的 [arm64 job 136282543282](https://github.com/konyka/break/actions/runs/44734554688/job/136282543282) 在提交 `3f5e1ed0` 上全部步骤成功。原始日志断言确认精确一百三十一项、`0 tests failed out of 131`、日志中无任何失败分项、二十二个音频分项数逐项一致、全部既有契约/e2e，既有 ptrace 设置 skip 恰好一次。
+- **验证边界**：真实音频设备、core_app 语音与设备测试（`test_core_app_audio_device`、`test_core_app_voice_device`、`test_core_app_voice_null`）、core_app 语音通道、编辑器音频、Snowflake/QUIC、GPU 与物理设备仍不在本次覆盖内。
 
 ## arm64 AI 与一百零八项 CTest（2026-11-20）
 

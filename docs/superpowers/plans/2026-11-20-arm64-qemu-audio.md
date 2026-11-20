@@ -29,4 +29,4 @@
 - [x] **Step 1:** Native full regression; require 455, zero failures, four established skips.
 - [x] **Step 2:** Clean-container workflow; require 131/131 and exactly one ptrace setup skip.
 - [x] **Step 3:** Read-only review; fix adopted findings. Fetch/rebase if needed and push.
-- [ ] **Step 4:** `build-core-app-net/assert_arm64_log.py <log> 131` with all twenty-two `NAME=COUNT` pairs from the spec table. Record URLs, commit `docs: record arm64 audio CI results`, push.
+- [x] **Step 4:** `build-core-app-net/assert_arm64_log.py <log> 131` with all twenty-two `NAME=COUNT` pairs from the spec table. Record URLs, commit `docs: record arm64 audio CI results`, push.
