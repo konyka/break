@@ -443,7 +443,7 @@ configure 时真实探测 `GLES2/gl2.h` 与导入库，stock Windows 无 SDK 时
 参数，固定名称还会让并行构建树互相删除文件。`test_world_stream_world` 在 2026-11-02
 按此约定修复，真实 VFS 和文件内容断言不变。
 
-fork 子进程的测试在 POSIX 上应包含 `tests/test_fork.h`，用 `test_waitpid_deadline(pid, &status, timeout_ms)` 代替无界 `waitpid(pid, &status, 0)`：子进程超过期限仍未结束时会被 `SIGKILL` 并回收，函数返回 0 并打印 `CHILD TIMEOUT after <ms> ms (killed)`，超时时 `*status` 被清零，调用方必须先断言返回值等于 `pid` 再看 `*status`。父进程若还要从子进程写的管道读数据，用 `test_read_deadline(fd, buf, len, timeout_ms)`，超时返回 -2 并打印 `PIPE TIMEOUT after <ms> ms`。这样挂起会变成本用例的明确失败，而不是拖到外层 CTest 守护超时。包含者在严格 C11 下需要 `_POSIX_C_SOURCE >= 199309L`。该头文件独立于 `test_framework.h`，后者的其余包含者不受影响。
+fork 子进程的测试在 POSIX 上应包含 `tests/test_fork.h`，用 `test_waitpid_deadline(pid, &status, timeout_ms)` 代替无界 `waitpid(pid, &status, 0)`：子进程超过期限仍未结束时会被 `SIGKILL` 并回收，函数返回 0 并打印 `CHILD TIMEOUT after <ms> ms (killed)`，超时时 `*status` 被清零，调用方必须先断言返回值等于 `pid` 再看 `*status`。父进程若还要从子进程写的管道读数据，用 `test_read_deadline(fd, buf, len, timeout_ms)`，超时返回 -2 并打印 `PIPE TIMEOUT after <ms> ms`。这样挂起会变成本用例的明确失败，而不是拖到外层 CTest 守护超时。在 glibc 严格 C11 下包含者需要 `_POSIX_C_SOURCE >= 199309L`；macOS 上不要定义它，否则会降低 `__DARWIN_C_LEVEL` 并隐藏 `test_framework.h` 用到的 `snprintf`，默认级别已声明所需函数。该头文件独立于 `test_framework.h`，后者的其余包含者不受影响。
 
 `core_app` 的 11 个正式资产由真实 baker 生成并逐字节比较；其中 Lua、scenario 和
 `actors.sidecar` 在 `.gitattributes` 固定为 LF，避免 `core.autocrlf=true` 将工作树检出为

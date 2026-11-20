@@ -6484,7 +6484,9 @@ endif()
 
     if(NOT WIN32)
         add_executable(test_fork_deadline tests/test_fork_deadline.c)
-        target_compile_definitions(test_fork_deadline PRIVATE _POSIX_C_SOURCE=199309L)
+        if(ENGINE_PLATFORM STREQUAL "linux")
+            target_compile_definitions(test_fork_deadline PRIVATE _POSIX_C_SOURCE=199309L)
+        endif()
         add_test(NAME test_fork_deadline COMMAND test_fork_deadline)
         set_tests_properties(test_fork_deadline PROPERTIES
             LABELS "headless" TIMEOUT 30)

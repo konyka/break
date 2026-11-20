@@ -12,8 +12,11 @@
 #include <unistd.h>
 /* Bounded waits for fork-based tests. A child stuck under an emulator
  * would otherwise block the parent forever and the whole run would die on
- * an outer timeout without naming the case. Includers need
- * _POSIX_C_SOURCE >= 199309L (nanosleep, kill) under strict C11.
+ * an outer timeout without naming the case. On glibc under strict C11,
+ * includers need _POSIX_C_SOURCE >= 199309L (nanosleep, kill). Do not set
+ * it on Darwin: there it lowers __DARWIN_C_LEVEL and hides snprintf, which
+ * test_framework.h uses; the default Darwin level already declares all of
+ * these.
  *
  * test_waitpid_deadline returns pid with *status set, 0 when the deadline
  * passed (the child is SIGKILLed and reaped, and *status is zeroed so an

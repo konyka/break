@@ -7,6 +7,7 @@
 - **交叉 focused（首版）**：干净容器重新配置 `build-arm64` 后，QEMU 下 `test_fork_deadline` 3/3（含卡死子进程 200 ms 被杀并回收）、`test_runtime_io` 16/16、`test_runtime_reload` 34/34。管道读修正后在干净容器复跑：`test_fork_deadline` 5/5（含管道超时后以 0 ms 期限立即杀掉子进程）、io 16/16、reload 34/34。
 - **原生全量**：首版提交 `1ee8a5cf` 上 456 项零失败（新增 `test_fork_deadline` 3 例），CTest 178.48 秒；管道读修正 `dbd7b44d` 上再跑 456 项零失败（`test_fork_deadline` 5 例），4 个既有平台用例跳过，CTest 176.06 秒。提交前的一次运行中 `test_core_app_contract_compat` 与 `test_core_app_ctest_config_contract` 失败，原因是这两个契约以 `git archive HEAD` 打包源码再配置，未提交的 `test_fork_deadline.c` 不在包内（`Cannot find source file`）；提交后两项通过。
 - **独立评审**：首轮指出 Important：io 例的实测挂起点是 waitpid 之前的阶段管道 `read()`，首版没有限定它，文档也描述错了阻塞点；已新增 `test_read_deadline` 并以两个新用例先 RED 后 GREEN，故障注入确认该例 30 秒内具名失败。采纳 Minor：超时清零 `*status`、注明特性宏要求、去掉过时的包含者计数。复审未发现 Critical/Important；确认 `poll` 与 POLL* 常量在 glibc 与 macOS 上无特性宏守卫，EOF 返回 0 而非 -2。未采纳的 Minor：把轮询改为 `poll(fd, 1, 10)` 与单调时钟期限（当前 30 秒/200 ms 调用方不受影响）。
+- **macOS 构建修正**：推送 `60aeae9d` 后远端 arm64 job 通过（152 项，io 16、reload 34），但两个 macOS job 编译 `test_fork_deadline` 失败：`test_framework.h:53 call to undeclared library function 'snprintf'`。原因是 CMake 对该目标无条件定义 `_POSIX_C_SOURCE=199309L`，在 Darwin 上把 `__DARWIN_C_LEVEL` 降到 200112L 以下，`snprintf` 声明被隐藏。改为与 `test_runtime_io` 一致，只在 `ENGINE_PLATFORM STREQUAL "linux"` 时定义；`test_fork.h` 与 Build_Guide 的特性宏说明同步改正。
 - **验证状态**：远端 job 在实际完成后补记。`test_fork_deadline` 本切片不加入 arm64 选择；QEMU 挂起根因仍为待办。
 
 ## arm64 lane 外层时间预算（2026-11-20）
