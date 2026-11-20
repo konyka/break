@@ -9,6 +9,7 @@
 #include "network/break_online_lobby.h"
 #include "network/break_online_session_quic.h"
 #include "network/break_voice_mixer.h"
+#include "test_quic_udp_proxy.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -916,7 +917,35 @@ static bool conference_receive_voice(BreakNetQuicConn *conn, u8 type,
            BREAK_RUNTIME_OK;
 }
 
-static bool test_voice_conference(void) {
+static bool conference_step(BreakNetQuicServer *server,
+                            ConferenceClient clients[CONFERENCE_CLIENTS],
+                            TestQuicUdpProxySet *proxies) {
+    if (proxies != NULL && !test_quic_udp_proxy_set_step(proxies, 0u)) {
+        return false;
+    }
+    break_net_quic_server_step(server, 1u);
+    for (u32 i = 0u; i < CONFERENCE_CLIENTS; ++i) {
+        break_net_quic_client_step(clients[i].client, 1u);
+    }
+    return proxies == NULL || test_quic_udp_proxy_set_step(proxies, 0u);
+}
+
+static bool conference_direction_drained(TestQuicUdpProxySet *proxies,
+                                         u32 direction, u32 sent_per_client) {
+    if (proxies == NULL) {
+        return true;
+    }
+    for (u32 i = 0u; i < CONFERENCE_CLIENTS; ++i) {
+        TestQuicUdpProxyStats stats;
+        test_quic_udp_proxy_set_stats(proxies, i, &stats);
+        if (stats.received[direction] < sent_per_client || stats.queued != 0u) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool run_voice_conference(bool impaired) {
     BreakNetQuicServerConfig server_config;
     memset(&server_config, 0, sizeof(server_config));
     server_config.cert_file = kCert;
@@ -928,6 +957,11 @@ static bool test_voice_conference(void) {
     ASSERT_TRUE(server != NULL);
     ASSERT_TRUE(break_net_quic_server_set_auth(server, test_key_fn,
                                                (void *)k_test_psk, 0u));
+    TestQuicUdpProxySet *proxies = NULL;
+    if (impaired) {
+        ASSERT_TRUE(test_quic_udp_proxy_set_create(
+            break_net_quic_server_port(server), CONFERENCE_CLIENTS, &proxies));
+    }
 
     BreakVoiceMixerConfig mixer_config;
     memset(&mixer_config, 0, sizeof(mixer_config));
@@ -954,7 +988,8 @@ static bool test_voice_conference(void) {
         BreakNetQuicClientConfig client_config;
         memset(&client_config, 0, sizeof(client_config));
         client_config.host = "127.0.0.1";
-        client_config.port = break_net_quic_server_port(server);
+        client_config.port = impaired ? test_quic_udp_proxy_port(proxies, i)
+                                      : break_net_quic_server_port(server);
         client_config.server_name = "localhost";
         client_config.trust_store_file = kCert;
         client_config.cert_file = kCert;
@@ -971,10 +1006,9 @@ static bool test_voice_conference(void) {
     /* Authenticate all clients and retain the three server-side connections.
      * Authenticate can return false until CHALLENGE arrives, so keep polling. */
     for (u32 round = 0u; round < 6000u; ++round) {
-        break_net_quic_server_step(server, 1u);
+        ASSERT_TRUE(conference_step(server, clients, proxies));
         bool all_auth_sent = true;
         for (u32 i = 0u; i < CONFERENCE_CLIENTS; ++i) {
-            break_net_quic_client_step(clients[i].client, 1u);
             if (!clients[i].auth_sent &&
                 break_net_quic_client_handshake_done(clients[i].client)) {
                 clients[i].auth_sent = break_net_quic_client_authenticate(
@@ -1002,35 +1036,51 @@ static bool test_voice_conference(void) {
     ASSERT_EQ_U(conference.connection_count, CONFERENCE_CLIENTS);
     ASSERT_EQ_U(break_net_quic_conn_id(NULL), 0u);
 
-    /* Each participant contributes one constant PCM frame: 1000, 2000, 3000. */
-    for (u32 i = 0u; i < CONFERENCE_CLIENTS; ++i) {
-        BreakVoiceFrame frame;
-        memset(&frame, 0, sizeof(frame));
-        frame.sequence = 1u;
-        frame.sample_rate = 16000u;
-        frame.channels = 1u;
-        frame.sample_count = 160u;
-        for (u32 sample = 0u; sample < 160u; ++sample) {
-            frame.samples[sample] = (i16)((i + 1u) * 1000u);
+    /* Impair only post-auth traffic: every fourth packet per direction drops,
+     * other packets wait 15 ms, and the first packet waits 30 ms to reorder. */
+    const u32 frame_count = impaired ? 4u : 1u;
+    if (impaired) {
+        test_quic_udp_proxy_set_impairment(proxies, true, 4u, 15u, true);
+    }
+
+    /* Each participant contributes constant PCM: 1000, 2000, or 3000. The
+     * weak-net run sends four frames so loss and reordering affect real BRV1. */
+    for (u32 sequence = 1u; sequence <= frame_count; ++sequence) {
+        for (u32 i = 0u; i < CONFERENCE_CLIENTS; ++i) {
+            BreakVoiceFrame frame;
+            memset(&frame, 0, sizeof(frame));
+            frame.sequence = sequence;
+            frame.sample_rate = 16000u;
+            frame.channels = 1u;
+            frame.sample_count = 160u;
+            for (u32 sample = 0u; sample < 160u; ++sample) {
+                frame.samples[sample] = (i16)((i + 1u) * 1000u);
+            }
+            ASSERT_TRUE(break_voice_quic_send(clients[i].client, &frame, false));
         }
-        ASSERT_TRUE(break_voice_quic_send(clients[i].client, &frame, false));
+        ASSERT_TRUE(conference_step(server, clients, proxies));
+        conference.now_ms += 1u;
     }
 
     BreakVoiceMixerStats mixer_stats;
     memset(&mixer_stats, 0, sizeof(mixer_stats));
-    for (u32 round = 0u;
-         round < 5000u && mixer_stats.accepted < CONFERENCE_CLIENTS; ++round) {
-        break_net_quic_server_step(server, 1u);
-        for (u32 i = 0u; i < CONFERENCE_CLIENTS; ++i) {
-            break_net_quic_client_step(clients[i].client, 1u);
-        }
+    for (u32 round = 0u; round < 5000u; ++round) {
+        ASSERT_TRUE(conference_step(server, clients, proxies));
         conference.now_ms += 1u;
         ASSERT_TRUE(break_voice_mixer_stats(conference.mixer, &mixer_stats) ==
                     BREAK_RUNTIME_OK);
+        if (mixer_stats.accepted >= CONFERENCE_CLIENTS &&
+            conference_direction_drained(proxies, 0u, frame_count)) {
+            break;
+        }
     }
     ASSERT_EQ_U(mixer_stats.sources, CONFERENCE_CLIENTS);
-    ASSERT_EQ_U(mixer_stats.accepted, CONFERENCE_CLIENTS);
+    ASSERT_TRUE(mixer_stats.accepted >= CONFERENCE_CLIENTS);
+    if (!impaired) {
+        ASSERT_EQ_U(mixer_stats.accepted, CONFERENCE_CLIENTS);
+    }
     ASSERT_EQ_U(mixer_stats.invalid, 0u);
+    ASSERT_TRUE(conference_direction_drained(proxies, 0u, frame_count));
 
     conference.now_ms += mixer_config.stream.jitter_delay_ms + 1u;
     BreakVoicePlayback mixed;
@@ -1046,22 +1096,25 @@ static bool test_voice_conference(void) {
 
     BreakVoiceFrame output;
     memset(&output, 0, sizeof(output));
-    output.sequence = mixed.sequence;
     output.sample_rate = 16000u;
     output.channels = 1u;
     output.sample_count = mixed.sample_count;
     memcpy(output.samples, mixed.samples, sizeof(output.samples));
-    for (u32 i = 0u; i < CONFERENCE_CLIENTS; ++i) {
-        ASSERT_TRUE(break_voice_quic_send_server(
-            server, conference.connections[i], &output, false));
+    for (u32 frame = 0u; frame < frame_count; ++frame) {
+        output.sequence = mixed.sequence + frame;
+        for (u32 i = 0u; i < CONFERENCE_CLIENTS; ++i) {
+            ASSERT_TRUE(break_voice_quic_send_server(
+                server, conference.connections[i], &output, false));
+        }
+        ASSERT_TRUE(conference_step(server, clients, proxies));
+        conference.now_ms += 1u;
     }
 
     bool all_received = false;
-    for (u32 round = 0u; round < 5000u && !all_received; ++round) {
-        break_net_quic_server_step(server, 1u);
+    for (u32 round = 0u; round < 5000u; ++round) {
+        ASSERT_TRUE(conference_step(server, clients, proxies));
         all_received = true;
         for (u32 i = 0u; i < CONFERENCE_CLIENTS; ++i) {
-            break_net_quic_client_step(clients[i].client, 1u);
             break_voice_receiver_pump(clients[i].receiver, 16u,
                                       conference.now_ms);
             BreakVoiceReceiverStats stats;
@@ -1070,8 +1123,13 @@ static bool test_voice_conference(void) {
             all_received = all_received && stats.accepted >= 1u;
         }
         conference.now_ms += 1u;
+        if (all_received &&
+            conference_direction_drained(proxies, 1u, frame_count)) {
+            break;
+        }
     }
     ASSERT_TRUE(all_received);
+    ASSERT_TRUE(conference_direction_drained(proxies, 1u, frame_count));
 
     conference.now_ms += mixer_config.stream.jitter_delay_ms + 1u;
     for (u32 i = 0u; i < CONFERENCE_CLIENTS; ++i) {
@@ -1087,13 +1145,34 @@ static bool test_voice_conference(void) {
         }
     }
 
+    if (impaired) {
+        for (u32 i = 0u; i < CONFERENCE_CLIENTS; ++i) {
+            TestQuicUdpProxyStats stats;
+            test_quic_udp_proxy_set_stats(proxies, i, &stats);
+            ASSERT_TRUE(stats.received[0] >= frame_count);
+            ASSERT_TRUE(stats.received[1] >= frame_count);
+            ASSERT_TRUE(stats.dropped >= 2u);   /* uplink + downlink loss */
+            ASSERT_TRUE(stats.delayed >= 6u);   /* surviving conference frames */
+            ASSERT_TRUE(stats.reordered >= 2u); /* both directions reordered */
+        }
+    }
+
     break_voice_mixer_destroy(conference.mixer);
     for (u32 i = 0u; i < CONFERENCE_CLIENTS; ++i) {
         break_voice_receiver_destroy(clients[i].receiver);
         break_net_quic_client_destroy(&clients[i].client);
     }
     break_net_quic_server_destroy(&server);
+    test_quic_udp_proxy_set_destroy(&proxies);
     return true;
+}
+
+static bool test_voice_conference(void) {
+    return run_voice_conference(false);
+}
+
+static bool test_voice_conference_weak_network(void) {
+    return run_voice_conference(true);
 }
 
 /* ---- runner --------------------------------------------------------------- */
@@ -1124,6 +1203,7 @@ int main(void) {
         {"voice_over_quic_datagram", test_voice_over_quic_datagram},
         {"lobby_quic_auth_source", test_lobby_quic_auth_source},
         {"voice_conference", test_voice_conference},
+        {"voice_conference_weak_network", test_voice_conference_weak_network},
     };
     size_t passed = 0;
     size_t total = sizeof(tests) / sizeof(tests[0]);

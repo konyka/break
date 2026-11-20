@@ -8190,7 +8190,8 @@ endif()
     # break_net_quic (docs/design/quic_transport.md): real UDP loopback
     # evidence, C API and C++20 wrapper in lockstep (dual-language policy).
     if(TARGET break_net_quic)
-        add_executable(test_break_net_quic tests/test_break_net_quic.c)
+        add_executable(test_break_net_quic tests/test_break_net_quic.c
+            tests/test_quic_udp_proxy.c)
         set_property(TARGET test_break_net_quic PROPERTY C_STANDARD 11)
         target_include_directories(test_break_net_quic PRIVATE ${TEST_INCLUDE_DIRS})
         target_compile_definitions(test_break_net_quic PRIVATE

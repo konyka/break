@@ -161,9 +161,10 @@ typedef enum BreakNetTransportClass {
 2. **尺寸边界**：`test_datagram_size_boundary` —— 1200 字节接受，1201 字节发送侧拒绝（不进入网络）
 3. **未认证门控**：`test_datagram_unauthenticated_dropped` —— 未认证连接的数据报被丢弃（server_cap.count == 0）
 4. **三方语音会议**：`test_voice_conference` —— 三个认证客户端分别发送 1000、2000、3000 的 PCM 帧，服务器按连接 ID 混音为每样本 6000，再回发；三个客户端都播放出相同的 160 样本混合帧
-5. **C++20 同步**：`test_break_net_quic_cpp20` —— 封装层 echo/auth/datagram 全链路验证，并检查 `Conn::Id()` 与 C 事件中的连接 ID 一致
+5. **会议弱网**：`test_voice_conference_weak_network` —— 每客户端上下行各四帧，每方向第四个 UDP 包丢弃，其余包延迟 15 ms，首包延迟 30 ms 形成乱序；三个客户端仍播放出逐样本为 6000 的混合帧
+6. **C++20 同步**：`test_break_net_quic_cpp20` —— 封装层 echo/auth/datagram 全链路验证，并检查 `Conn::Id()` 与 C 事件中的连接 ID 一致
 
-完整套件：`test_break_net_quic` 18/18（传输 8 + 会话 4 + 数据报 3 + 语音 2 + lobby 1），连续重复运行 5/5 通过；C++20 封装测试通过；非图形 CTest 414/414 通过（2026-11-20）。
+完整套件：`test_break_net_quic` 19/19（传输 8 + 会话 4 + 数据报 3 + 语音 3 + lobby 1），连续重复运行 5/5 通过；C++20 封装测试通过；非图形 CTest 414/414 通过（2026-11-20）。
 
 ## 12.1 语音路径已迁移到数据报通道
 
@@ -183,14 +184,24 @@ typedef enum BreakNetTransportClass {
 
 `test_voice_conference` 覆盖完整的会议往返：三个客户端完成 CHALLENGE/AUTH-v2 → 三路 BRV1 数据报进入各自混音源 → jitter delay 到期后求和且无削顶 → 服务器向三个已认证连接回发同一混合帧 → 三个客户端各自解码、播放并逐样本验证。
 
+## 12.3 确定性弱网代理
+
+`engine/tests/test_quic_udp_proxy.{h,c}` 是**仅测试使用**的 UDP 转发器，网络 I/O 复用 Snowflake `SnowUdpEngine`，不实现 QUIC、TLS 或丢包恢复协议。三个客户端各使用一个 port-0 代理通道，服务器因此仍看到三个独立源地址；认证完成后才启用故障注入。
+
+- 每通道固定 32 个待发包槽位，每包最多 `SNOW_QUIC_NGTCP2_MAX_PACKET` 字节；槽位耗尽即丢弃并计数
+- 延迟使用引擎 owner 线程的单调时钟与 service deadline，条件轮询驱动，无固定 sleep
+- 每方向独立按包计数，第四个包丢弃；首包双倍延迟，统计只在后序包实际先发送时增加 `reordered`
+- 测试断言每通道上下行均至少四个包、`dropped >= 2`、`delayed >= 6`、`reordered >= 2`，并验证丢包/乱序后的混合语音内容
+- 代理只进入 `test_break_net_quic` 测试目标，不改变生产网络 API 或 C++20 封装
+
 ## 13. NOT delivered（本切片明确不覆盖）
 
 - 数据报分片与重组（§6 解释了为什么不做）
 - 0-RTT 数据报的启用（依赖上游 0-RTT 接线；当前未启用）
 - 多流并行（语音与控制分流是数据报的职责，不需要多流）
 - Windows/IPv6 支持（与 break_net_quic v1 的平台边界一致）
-- WAN/弱网验证（loopback 证据不覆盖真实丢包/抖动环境）
-- 乱序/重复/过老数据报的显式测试（replay window 的单元测试在 `test_break_replay_window` 里已覆盖；集成路径的乱序注入需要测试侧代理，留作后续硬化）
+- 真实公网与运营商弱网验证（当前仅本机 UDP 代理的确定性丢包、延迟和乱序，不覆盖真实路径）
+- 重复/过老数据报的显式集成测试（replay window 的单元测试在 `test_break_replay_window` 里已覆盖；乱序集成路径已由 `test_voice_conference_weak_network` 覆盖）
 
 ## 14. 文档关系
 
