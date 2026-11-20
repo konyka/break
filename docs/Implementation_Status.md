@@ -6,7 +6,8 @@
 - **覆盖缺口**：五个扩展模块各只有一个测试场景，首个失败断言会提前返回并遮住后续检查，汇总只报 1 例；本切片如实记录，不扩充测试。
 - **本地验证（2026-11-20 19:41 CST）**：原生全量 455 项零失败，4 个既有平台用例跳过，CTest 151.21 秒；原生 focused 6/6（character 30/30）。最终干净 Ubuntu 24.04 容器按 workflow 原始步骤完成构建、对象检查与八十六项 CTest，86/86、CTest 120.40 秒；character 30/30 及全部既有分项/契约/e2e 成功，既有 ptrace 设置 skip 恰好一次，无新增跳过。`git diff --check` 通过。
 - **独立评审**：首轮评审确认 80→85 逐名正确，并指出 `test_character` 未纳入导致「全部物理测试」说法不成立；据此并入 character（先 RED 再 GREEN）。复审逐名确认 80→86、差集恰为六项、`test_character_extra`/`test_core_app_character` 被拒绝、两处 regex 字节一致；采纳其 Important（plan/spec 正文计数改为 80 + 6 = 86 与 6/6）和 Minor（说法限定为以物理模块为主体的测试；原生 focused 实测后再记录）。
-- **验证边界**：远端 job 在实际完成后补记。跨构建/跨架构确定性、渲染、Snowflake/QUIC、GPU 与物理设备仍不在本次覆盖内。
+- **远端验证**：[CI run 44729773653](https://github.com/konyka/break/actions/runs/44729773653) 的 [arm64 job 136266247276](https://github.com/konyka/break/actions/runs/44729773653/job/136266247276) 在提交 `8dec00e1` 上全部步骤成功。原始日志断言确认精确八十六项、`0 tests failed out of 86`、日志中无任何失败分项、character 30/30、全部既有契约/e2e，既有 ptrace 设置 skip 恰好一次。
+- **验证边界**：跨构建/跨架构确定性、渲染、Snowflake/QUIC、GPU 与物理设备仍不在本次覆盖内。
 
 ## arm64 物理与八十项 CTest（2026-11-20）
 

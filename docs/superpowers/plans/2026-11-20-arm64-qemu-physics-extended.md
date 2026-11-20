@@ -20,18 +20,18 @@
 
 ### Task 1: CI selection and documentation
 
-- [ ] **Step 1:** Run the selection contract against the old workflow. It requires the six targets after `test_vehicle`, the exact alternative, rejection of `*_extra` names, and an explicit previous-80 + six set. Expected: FAIL at `missing extended physics build targets`.
-- [ ] **Step 2:** Append the six targets and add the alternative in `.github/workflows/ci.yml` and the mirrored `docs/Build_Guide.md` command.
-- [ ] **Step 3:** Re-run the contract; expected `exact 86-test extended physics selection and anchor contract passed`. Confirm the guide regex is byte-identical to the workflow.
-- [ ] **Step 4:** Re-run focused native and cross: `ctest --verbose --no-tests=error -R '^test_(physics_slider|cloth|rope|soft_body|destructible|character)$'`; require 6/6 on both (character 30/30).
-- [ ] **Step 5:** Append status, design, and missing-capability evidence. Commit as `ci: run arm64 extended physics tests`.
+- [x] **Step 1:** Run the selection contract against the old workflow. It requires the six targets after `test_vehicle`, the exact alternative, rejection of `*_extra` names, and an explicit previous-80 + six set. Expected: FAIL at `missing extended physics build targets`.
+- [x] **Step 2:** Append the six targets and add the alternative in `.github/workflows/ci.yml` and the mirrored `docs/Build_Guide.md` command.
+- [x] **Step 3:** Re-run the contract; expected `exact 86-test extended physics selection and anchor contract passed`. Confirm the guide regex is byte-identical to the workflow.
+- [x] **Step 4:** Re-run focused native and cross: `ctest --verbose --no-tests=error -R '^test_(physics_slider|cloth|rope|soft_body|destructible|character)$'`; require 6/6 on both (character 30/30).
+- [x] **Step 5:** Append status, design, and missing-capability evidence. Commit as `ci: run arm64 extended physics tests`.
 
 ### Task 2: Final verification and remote proof
 
-- [ ] **Step 1:** Native full `cmake . && make -j6 && ctest -j4 --timeout 240 --output-on-failure` in `build-core-app-net`; require 455, zero failures, four established skips.
-- [ ] **Step 2:** Final clean-container workflow; require 86/86 and exactly one existing ptrace setup skip.
-- [ ] **Step 3:** Read-only review; fix adopted findings test-first. Fetch/rebase if needed and push without force.
-- [ ] **Step 4:** Run `build-core-app-net/assert_arm64_log.py <log> 86` on the exact-HEAD remote log. Record URLs, commit as `docs: record arm64 extended physics CI results`, and push.
+- [x] **Step 1:** Native full `cmake . && make -j6 && ctest -j4 --timeout 240 --output-on-failure` in `build-core-app-net`; require 455, zero failures, four established skips.
+- [x] **Step 2:** Final clean-container workflow; require 86/86 and exactly one existing ptrace setup skip.
+- [x] **Step 3:** Read-only review; fix adopted findings test-first. Fetch/rebase if needed and push without force.
+- [x] **Step 4:** Run `build-core-app-net/assert_arm64_log.py <log> 86` on the exact-HEAD remote log. Record URLs, commit as `docs: record arm64 extended physics CI results`, and push.
 
 
 ## Addendum: test_character
