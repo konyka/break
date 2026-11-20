@@ -1,3 +1,11 @@
+## arm64 物理与八十项 CTest（2026-11-20）
+
+- **最小场景**：新增刚体核心 83 例、replay 4 例、sync 13 例、hinge 3 例、cone-twist 8 例、identity 5 例、ragdoll 10 例、vehicle 9 例，共 135 个分项、八个直接可执行目标，均由既有 QEMU 命令执行。
+- **未修改基线与 focused 复验**：原生和交叉均为 8/8、83/4/13/3/8/5/10/9；focused CTest 0.02/0.28 秒，无 skip。无需修改产品或测试源码。
+- **RED 与精确选择**：旧 workflow 因缺少八个构建目标按预期 RED。加入 `test_(physics(_replay|_sync|_hinge|_cone_twist|_identity)?|ragdoll|vehicle)$` 后，真实原生选择为既有七十二项加八项，共八十项。`$` 覆盖整个可选后缀组，注册表中真实存在的同前缀测试 `test_physics_slider` 及未来派生名称均被拒绝。
+- **确定性边界**：replay 与 sync 在单进程、单架构内录制和比较，arm64 通过只说明 arm64 内部确定；不证明 x86-64 录制能在 arm64 上逐位回放，也不证明跨架构对端能保持 lockstep。
+- **验证状态**：原生全量、最终干净容器、独立评审及远端 job 在实际完成后补记。cloth/rope/soft-body/destructible/slider、跨架构确定性、渲染、Snowflake/QUIC、GPU 与物理设备仍不在本次覆盖内。
+
 ## arm64 PAL/Job System 与七十二项 CTest（2026-11-20）
 
 - **最小场景**：新增 platform config 10 例、null-safety 1 例、fs-write 11 例、size-semantics 3 例、task 16 例和 task-singleton 1 例，共 42 个分项、六个直接可执行目标。均由既有 QEMU 命令执行，无窗口系统或 X11 依赖。
