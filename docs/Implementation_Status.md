@@ -1,10 +1,12 @@
 ## fork 子进程截止等待（2026-11-20）
 
-- **问题**：`test_runtime_io` 第 15 例与 `test_runtime_reload` 第 23 例在 fork 子进程中启动 worker 线程并期待 abort；qemu-user 高负载下子进程偶发永不结束，父进程的 `waitpid(pid, &status, 0)` 无界阻塞，整条 arm64 lane 只能等外层 `timeout 600` 杀掉 CTest，日志不指明是哪一例。根因仍未定位，但无界等待本身就是测试缺陷。
-- **改动**：新增 `engine/tests/test_fork.h`，提供 `test_waitpid_deadline(pid, &status, timeout_ms)`：每 10 ms 以 `WNOHANG` 轮询，超时后 `SIGKILL`、回收（只对 `EINTR` 重试）、打印 `CHILD TIMEOUT after <ms> ms (killed)` 并返回 0。两例改用 30 秒期限，原有断言不变；挂起时现在以本用例 FAIL 结束。未放入 `test_framework.h`，以免其 318 个包含者引入新的头文件和特性宏要求。
-- **TDD**：新增 `test_fork_deadline`（3 例：正常退出码、SIGABRT、卡死子进程在 200 ms 期限后被杀并回收、第二次 `waitpid` 返回 `ECHILD`）。helper 不存在时编译失败（RED），实现后 3/3（GREEN）。`test_runtime_io` 16/16、`test_runtime_reload` 34/34。
-- **交叉 focused**：干净容器重新配置 `build-arm64` 后，QEMU 下 `test_fork_deadline` 3/3（含卡死子进程 200 ms 被杀并回收）、`test_runtime_io` 16/16、`test_runtime_reload` 34/34。
-- **验证状态**：原生全量与远端 job 在实际完成后补记。`test_fork_deadline` 本切片不加入 arm64 选择；QEMU 挂起根因仍为待办。
+- **问题**：`test_runtime_io` 第 15 例与 `test_runtime_reload` 第 23 例在 fork 子进程中启动 worker 线程并期待 abort；qemu-user 高负载下子进程偶发永不结束。io 例的父进程先阻塞在阶段管道 `read()`（子进程持有写端却未写入），reload 例阻塞在 `waitpid(pid, &status, 0)`；两处都无界，整条 arm64 lane 只能等外层 `timeout 600` 杀掉 CTest，日志不指明是哪一例。根因仍未定位，但无界等待本身就是测试缺陷。
+- **改动**：新增 `engine/tests/test_fork.h`，提供 `test_waitpid_deadline(pid, &status, timeout_ms)`：每 10 ms 以 `WNOHANG` 轮询，超时后 `SIGKILL`、回收（只对 `EINTR` 重试）、打印 `CHILD TIMEOUT after <ms> ms (killed)` 并返回 0（并把 `*status` 清零，防止“期望信号”检查因 SIGKILL 误过）；同文件的 `test_read_deadline` 以 `poll` 轮询管道，超时返回 -2 并打印 `PIPE TIMEOUT after <ms> ms`。io 例的管道读与 waitpid、reload 例的 waitpid 都改为 30 秒期限（io 例管道超时后以 0 期限立即杀掉子进程），原有断言不变；两处挂起现在都以本用例 FAIL 结束。未放入 `test_framework.h`，以免其余包含者引入新的头文件和 `_POSIX_C_SOURCE >= 199309L` 要求。
+- **TDD**：新增 `test_fork_deadline`（5 例：正常退出码、SIGABRT、卡死子进程在 200 ms 期限后被杀并回收且 `*status` 为 0、管道读到子进程写入的字节、写端不写时管道读在 200 ms 后返回 -2）。`test_waitpid_deadline` 与 `test_read_deadline` 各自在函数不存在时编译失败（RED），实现后 5/5（GREEN）。管道读这一处是独立评审指出的：首版只限定了 waitpid，而 io 例的实测挂起点在其之前的管道 `read()`。`test_runtime_io` 16/16、`test_runtime_reload` 34/34。
+- **故障注入验证**：临时让 io 例子进程在写阶段字节前 `pause()`，该例在 30.46 秒后以 `PIPE TIMEOUT after 30000 ms CHILD TIMEOUT after 0 ms (killed) FAIL: … wait_result != pid` 结束，其余 15 例照常通过；还原后 16/16。
+- **交叉 focused（首版）**：干净容器重新配置 `build-arm64` 后，QEMU 下 `test_fork_deadline` 3/3（含卡死子进程 200 ms 被杀并回收）、`test_runtime_io` 16/16、`test_runtime_reload` 34/34。管道读修正后的复跑在实际完成后补记。
+- **原生全量**：提交后 456 项零失败（新增 `test_fork_deadline`），4 个既有平台用例跳过，CTest 178.48 秒。提交前的一次运行中 `test_core_app_contract_compat` 与 `test_core_app_ctest_config_contract` 失败，原因是这两个契约以 `git archive HEAD` 打包源码再配置，未提交的 `test_fork_deadline.c` 不在包内（`Cannot find source file`）；提交后两项通过。
+- **验证状态**：远端 job 在实际完成后补记。`test_fork_deadline` 本切片不加入 arm64 选择；QEMU 挂起根因仍为待办。
 
 ## arm64 lane 外层时间预算（2026-11-20）
 

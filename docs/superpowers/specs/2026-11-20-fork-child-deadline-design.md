@@ -7,13 +7,14 @@ and expect the child to abort on a contract violation:
 `test_runtime_io` case 15 (`io_request_double_release_aborts`) and
 `test_runtime_reload` case 23 (`reload_destroy_requires_shutdown_aborts`).
 Under qemu-user 8.2.2 on a loaded host, the child occasionally never finishes:
-both of its threads sit in futex waits and the parent blocks forever in
-`waitpid(pid, &status, 0)`. The lane then fails only when the outer
+both of its threads sit in futex waits. In the io case the parent blocks
+forever in a stage-pipe `read()` (the child holds the write end and never
+writes); in the reload case it blocks in `waitpid(pid, &status, 0)`. The lane then fails only when the outer
 `timeout 600` kills the whole CTest run, with no message naming the case. The
 root cause is not yet isolated; minimal fork/thread/abort reproductions and the
 upstream QEMU issue 358 program do not hang.
 
-The parent's unbounded wait is a defect in the tests regardless of the cause:
+The parent's unbounded waits are a defect in the tests regardless of the cause:
 a stuck child must fail its own case quickly and name what happened.
 
 ## Approaches
@@ -29,7 +30,7 @@ a stuck child must fail its own case quickly and name what happened.
 ## Design
 
 `engine/tests/test_fork.h` (POSIX only; kept out of `test_framework.h` so the
-318 files that include it see no new headers or feature-macro requirements)
+other files that include it see no new headers or feature-macro requirements)
 provides:
 
 ```c
@@ -40,8 +41,11 @@ static inline pid_t test_waitpid_deadline(pid_t pid, int *status,
 ```
 
 It polls every 10 ms with `nanosleep`. On deadline it calls `kill(pid,
-SIGKILL)`, then a blocking `waitpid` to reap, prints
-`CHILD TIMEOUT after <ms> ms (killed)`, and returns 0. Both cases use it with a
+SIGKILL)`, then a blocking `waitpid` to reap, zeroes `*status`, prints
+`CHILD TIMEOUT after <ms> ms (killed)`, and returns 0. A companion
+`test_read_deadline(fd, buf, len, timeout_ms)` polls the pipe the same way and
+returns -2 with `PIPE TIMEOUT after <ms> ms` when no byte arrives; the io case
+then reaps the child with a zero deadline so it is killed at once. Both cases use it with a
 30-second deadline, far above their native (<1 s) and QEMU (~1 s) durations,
 and assert the return equals `pid`, so a hang becomes a named case failure.
 
@@ -50,8 +54,10 @@ and assert the return equals `pid`, so a hang becomes a named case failure.
 A new `test_fork_deadline` executable checks the helper:
 1. A child that exits 7 returns `pid` with `WEXITSTATUS == 7`.
 2. A child that aborts returns `pid` with `WTERMSIG == SIGABRT`.
-3. A child that sleeps forever returns 0 within the deadline plus slack, and the
-   child is reaped (a second `waitpid` fails with `ECHILD`).
+3. A child that sleeps forever returns 0 within the deadline plus slack, the
+   child is reaped (a second `waitpid` fails with `ECHILD`), and `*status` is 0.
+4. A pipe read returns the child's byte.
+5. A pipe read whose writer never writes returns -2 after the deadline.
 It fails to compile before the helper exists (RED), then passes (GREEN). The
 two abort cases switch to the helper; their existing assertions are unchanged.
 

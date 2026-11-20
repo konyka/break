@@ -1070,11 +1070,11 @@ TEST(io_request_double_release_aborts)
         int wait_result;
         ssize_t stage_read;
         unsigned char stage = 0u;
-        do {
-            stage_read = read(stage_pipe[0], &stage, 1u);
-        } while (stage_read < 0 && errno == EINTR);
+        stage_read = test_read_deadline(stage_pipe[0], &stage, 1u, 30000u);
         close_read_result = close(stage_pipe[0]);
-        wait_result = test_waitpid_deadline(pid, &status, 30000u);
+        wait_result = test_waitpid_deadline(pid, &status,
+                                            stage_read == (ssize_t)-2 ? 0u
+                                                                      : 30000u);
         ASSERT_EQ(close_write_result, 0);
         ASSERT_EQ(close_read_result, 0);
         ASSERT_EQ(wait_result, pid);
