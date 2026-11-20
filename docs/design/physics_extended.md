@@ -160,3 +160,10 @@ void ragdoll_write_pose(const Ragdoll *rd, const PhysicsWorld *pw, Skeleton *sk)
 arm64 lane 新增刚体核心、replay、sync、hinge、cone-twist、identity、ragdoll、vehicle 八项，共 135 例（83/4/13/3/8/5/10/9），统一选择达到八十项。原生与交叉 focused 均为 8/8，无新增 skip。
 
 replay 与 sync 在单进程内比较两个世界或同一录制，因此 arm64 通过只说明同一 arm64 构建在单进程内自洽，不代表不同构建/编译器之间、或 x86-64 与 arm64 之间可逐位回放或保持 lockstep。物理源码当前未使用 `-ffp-contract=off`，编译器可能按构建不同融合乘加；跨架构确定性需要交换录制的专门测试，并很可能需要固定浮点收缩策略。cloth、rope、soft-body、destructible 与 slider 尚未纳入 arm64 选择。
+
+
+## 补充（2026-11-20）：arm64 扩展物理验证
+
+arm64 lane 新增 slider、cloth、rope、soft-body、destructible 五项，统一选择达到八十五项，所有已注册物理测试至此均在 arm64 运行。原生与交叉 focused 均为 5/5，无新增 skip。
+
+五个模块各只有一个测试场景（断言数 12/24/10/15/30）。场景覆盖了主路径：绳索链接与满世界拒绝、布料钉住顶行后回拉、破坏仅在超过阈值后发生、滑块消除垂直偏移并遵守限位、软体在高刚度下恢复偏移。边界与失败路径的覆盖偏少，属于已知缺口。
