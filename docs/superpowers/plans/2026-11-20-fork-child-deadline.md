@@ -15,4 +15,4 @@
 - [x] **Step 4b (review fix):** Add `test_read_deadline` (RED: two new `test_fork_deadline` cases fail to compile), bound the io case's stage-pipe read, zero `*status` on timeout; `test_fork_deadline` 5/5.
 - [x] **Step 5:** Native full regression: 456 tests, zero failures, four established skips.
 - [x] **Step 6:** Cross focused run of the three executables in a clean container.
-- [ ] **Step 7:** Read-only review, push, confirm the exact-HEAD arm64 job (152) and record.
+- [x] **Step 7:** Read-only review, push, confirm the exact-HEAD arm64 job (152) and record.

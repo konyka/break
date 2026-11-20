@@ -412,3 +412,4 @@
 - **QEMU 偶发挂起记录**：`test_runtime_io` 的 fork 子进程在 qemu-user 下创建线程时于高宿主负载下偶发死锁（12 路并行 180 次中 5 次），原生不复现；待评估在 QEMU 用户态下改用不在 fork 子进程中起线程的等价断言。 2026-11-20 又在 `test_runtime_reload` 的同类用例（fork 子进程建 worker 线程后期待 abort）观察到一次；最小复现与 QEMU 上游 issue 358 复现程序均未触发，根因未定位。
 - **arm64 lane 时间预算追加**：2026-11-20 外层守护由 300 秒放宽到 600 秒（实测 171 秒）。仍缺：`test_break_http` 在 QEMU 下比原生慢约 6 倍，若后续继续扩选，需要评估拆分 lane。
 - **fork 子进程截止等待追加**：2026-11-20 两个 fork 后 abort 的用例改用 `tests/test_fork.h` 的 30 秒有界等待（io 例的阶段管道读与两例的 waitpid 都已限定），QEMU 挂起时会以本用例失败结束并给出诊断，不再拖垮整条 lane。根因仍未定位。
+- **macOS Cocoa + MoltenVK 偶发构建失败记录**：最近 39 次 CI 中该 job 失败 4 次（`7ae28b5b`、`e1944152`、`753765ff`、`60aeae9d`），其中前三次都是 `clang: error: unable to execute command: posix_spawn failed: Resource temporarily unavailable`，即 `cmake --build build --parallel`（未限定并发数）在 macOS 15 runner 上耗尽进程资源；`60aeae9d` 那次是 `test_fork_deadline` 的 `snprintf` 声明问题，已修。待评估给该 job 的两处 `--parallel` 设定上限。

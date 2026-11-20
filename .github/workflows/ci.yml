@@ -962,7 +962,7 @@ jobs:
       - name: Build Break myui demo
         run: |
           set -o pipefail
-          cmake --build build --target dxx_break --parallel 2>&1 | tee /tmp/macos_build.log || {
+          cmake --build build --target dxx_break --parallel "$(sysctl -n hw.ncpu)" 2>&1 | tee /tmp/macos_build.log || {
             echo "::error::macOS dxx_break build failed; first diagnostics:"
             grep -m 5 -E "error:|fatal error:|No rule to make target|Cannot find|ld: " /tmp/macos_build.log \
               | while IFS= read -r line; do echo "::error::${line}"; done
@@ -975,7 +975,7 @@ jobs:
           # Full build: the headless suite below runs every non-graphics test,
           # so all test executables must exist (the dxx_break-only build above
           # leaves ctest with "(Not Run)" entries for every other test).
-          cmake --build build --parallel -- VERBOSE=1 2>&1 | tee /tmp/macos_full.log || {
+          cmake --build build --parallel "$(sysctl -n hw.ncpu)" -- VERBOSE=1 2>&1 | tee /tmp/macos_full.log || {
             # ld warnings match "ld: " and would eat the -m budget, so
             # compiler errors are surfaced first.
             grep -m 8 -E "error:|fatal error:" /tmp/macos_full.log \

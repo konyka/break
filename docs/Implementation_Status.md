@@ -1,3 +1,10 @@
+## macOS Cocoa lane 构建并发上限（2026-11-20）
+
+- **问题**：`macOS Cocoa + MoltenVK (Clang)` 在最近 39 次 CI 中失败 4 次。其中 3 次（`7ae28b5b`、`e1944152`、`753765ff`）都是 `clang: error: unable to execute command: posix_spawn failed: Resource temporarily unavailable`，随后 `make[2]: *** wait: No child processes.  Stop.`。该 lane 用默认 Unix Makefiles 生成器，两处 `cmake --build ... --parallel` 不带数字，CMake 传给 make 的是不限并发的 `-j`，完整构建 909 个目标文件时耗尽 runner 的进程上限。第 4 次（`60aeae9d`）是 `test_fork_deadline` 的 `snprintf` 声明问题，已另行修复。
+- **改动**：该 lane 两处构建改为 `--parallel "$(sysctl -n hw.ncpu)"`。未切换到 Ninja（会改变该 lane 一直验证的构建图并需额外安装）；也未用 `CMAKE_BUILD_PARALLEL_LEVEL`（命令行上的裸 `--parallel` 会覆盖它）。其余用 Makefiles 生成器的 lane 都在 Linux 上，未出现此失败，记录为候选，本次不改。
+- **TDD**：契约要求该 lane 恰有两处 `cmake --build`、都不含裸 `--parallel`、都使用 `--parallel "$(sysctl -n hw.ncpu)"`、且仍未改用 Ninja；旧 workflow 在 `dxx_break` 那一处 RED，改动后 GREEN。
+- **验证状态**：远端 job 在实际完成后补记。本地无 macOS，无法复现资源耗尽本身。
+
 ## fork 子进程截止等待（2026-11-20）
 
 - **问题**：`test_runtime_io` 第 15 例与 `test_runtime_reload` 第 23 例在 fork 子进程中启动 worker 线程并期待 abort；qemu-user 高负载下子进程偶发永不结束。io 例的父进程先阻塞在阶段管道 `read()`（子进程持有写端却未写入），reload 例阻塞在 `waitpid(pid, &status, 0)`；两处都无界，整条 arm64 lane 只能等外层 `timeout 600` 杀掉 CTest，日志不指明是哪一例。根因仍未定位，但无界等待本身就是测试缺陷。
@@ -8,7 +15,8 @@
 - **原生全量**：首版提交 `1ee8a5cf` 上 456 项零失败（新增 `test_fork_deadline` 3 例），CTest 178.48 秒；管道读修正 `dbd7b44d` 上再跑 456 项零失败（`test_fork_deadline` 5 例），4 个既有平台用例跳过，CTest 176.06 秒。提交前的一次运行中 `test_core_app_contract_compat` 与 `test_core_app_ctest_config_contract` 失败，原因是这两个契约以 `git archive HEAD` 打包源码再配置，未提交的 `test_fork_deadline.c` 不在包内（`Cannot find source file`）；提交后两项通过。
 - **独立评审**：首轮指出 Important：io 例的实测挂起点是 waitpid 之前的阶段管道 `read()`，首版没有限定它，文档也描述错了阻塞点；已新增 `test_read_deadline` 并以两个新用例先 RED 后 GREEN，故障注入确认该例 30 秒内具名失败。采纳 Minor：超时清零 `*status`、注明特性宏要求、去掉过时的包含者计数。复审未发现 Critical/Important；确认 `poll` 与 POLL* 常量在 glibc 与 macOS 上无特性宏守卫，EOF 返回 0 而非 -2。未采纳的 Minor：把轮询改为 `poll(fd, 1, 10)` 与单调时钟期限（当前 30 秒/200 ms 调用方不受影响）。
 - **macOS 构建修正**：推送 `60aeae9d` 后远端 arm64 job 通过（152 项，io 16、reload 34），但两个 macOS job 编译 `test_fork_deadline` 失败：`test_framework.h:53 call to undeclared library function 'snprintf'`。原因是 CMake 对该目标无条件定义 `_POSIX_C_SOURCE=199309L`，在 Darwin 上把 `__DARWIN_C_LEVEL` 降到 200112L 以下，`snprintf` 声明被隐藏。改为与 `test_runtime_io` 一致，只在 `ENGINE_PLATFORM STREQUAL "linux"` 时定义；`test_fork.h` 与 Build_Guide 的特性宏说明同步改正。
-- **验证状态**：远端 job 在实际完成后补记。`test_fork_deadline` 本切片不加入 arm64 选择；QEMU 挂起根因仍为待办。
+- **远端验证**：修正后的 [CI run 44749177923](https://github.com/konyka/break/actions/runs/44749177923) 在提交 `77172aa3` 上整体成功，两个 macOS job 与全部 Linux/Windows job 均通过；[arm64 job 136332297823](https://github.com/konyka/break/actions/runs/44749177923/job/136332297823) 日志断言确认精确一百五十二项、io 16、reload 34、ptrace skip 恰好一次。
+- **边界**：`test_fork_deadline` 本切片不加入 arm64 选择；QEMU 挂起根因仍为待办。
 
 ## arm64 lane 外层时间预算（2026-11-20）
 
