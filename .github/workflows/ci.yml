@@ -152,6 +152,45 @@ jobs:
           name: evidence-receipt-headless-linux-gcc-asan
           path: receipt.json
 
+  # Build only: the binaries cannot run on an x86-64 runner, so this lane's
+  # statement is "the __aarch64__ paths compile and link" — which nothing
+  # else in CI checks. Needed because the crash handler's arm64 register
+  # capture would otherwise ship untyped.
+  lane-cross-aarch64-linux:
+    name: Linux arm64 cross-build (GCC, build-only)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install the cross toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu ninja-build
+          aarch64-linux-gnu-gcc --version
+
+      - name: Configure
+        run: |
+          cmake -S engine -B build-arm64 -G Ninja \
+            --toolchain "$GITHUB_WORKSPACE/engine/toolchain-aarch64-linux.cmake" \
+            -DCMAKE_BUILD_TYPE=Debug -DENGINE_RHI_BACKEND=headless
+
+      # The targets that carry architecture-specific code, plus the common
+      # libraries so a type error anywhere in them fails here too.
+      - name: Build the arm64 targets
+        run: |
+          cmake --build build-arm64 --parallel --target break_crash engine
+
+      - name: Confirm the objects really are arm64
+        run: |
+          file build-arm64/libengine.a | tee /dev/stderr | grep -q 'current ar archive'
+          aarch64-linux-gnu-objdump -f build-arm64/CMakeFiles/break_crash.dir/src/crash/break_crash.c.o \
+            | tee /dev/stderr | grep -q 'aarch64'
+
   lane-libfuzzer-linux-clang:
     name: Linux + Clang-18 (libFuzzer, coverage-guided)
     runs-on: ubuntu-24.04

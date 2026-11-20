@@ -1413,3 +1413,17 @@ sips -s format png \
   删除 gate，也不宣称真机 GPU_RUNTIME。
 - `METAL_DEVICE_WRAPPER_TYPE=1 ./engine_demo --frames 3` 开 Metal validation
   取证（encoder-state 类缺陷的唯一可靠观测，计划 C Task 11 方法学）。
+
+### 1.5 Linux arm64 交叉构建（仅构建）
+
+`engine/toolchain-aarch64-linux.cmake` 用 `aarch64-linux-gnu-` 工具链交叉编译到 Linux arm64，目的只是让 `__aarch64__` 分支（崩溃处理器的寄存器捕获、Mach-O 读取器的 arm64 slice、平台层的 arm64 分支）得到类型检查与链接验证；产物不能在 x86-64 主机上运行，因此 CI 的 `lane-cross-aarch64-linux` 只构建不跑 `ctest`——在 x86-64 runner 上声称跑过 arm64 测试会是假证据。
+
+```sh
+sudo dnf install gcc-aarch64-linux-gnu gcc-c++-aarch64-linux-gnu   # 或 apt 的同名包
+cmake -S engine -B build-arm64 -G Ninja \
+    --toolchain "$PWD/engine/toolchain-aarch64-linux.cmake" \
+    -DCMAKE_BUILD_TYPE=Debug -DENGINE_RHI_BACKEND=headless
+cmake --build build-arm64 --parallel --target break_crash engine
+```
+
+从仓库根目录执行，并给 `--toolchain` 传绝对路径；相对路径不会按仓库根目录解析，会在读取工具链之前报 `Could not find toolchain file`。交叉 libc 不在 `/usr/aarch64-linux-gnu` 时，设 `AARCH64_SYSROOT` 指向它。没装交叉编译器时，configure 会在成功读取工具链后报告 `aarch64-linux-gnu-gcc` 不在 `PATH`，这是预期的失败形式。
