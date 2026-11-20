@@ -4,7 +4,9 @@
 - **新增八项**：packet 20 例、network 18 例、online lobby 10 例、online NAT 23 例、online voice 16 例、voice mixer 11 例、replay window 5 例、message rate 4 例。均为可执行目标，无嵌套编译或宿主驱动，未修改产品/测试源码。
 - **未修改 QEMU 基线**：八项 8/8，分项 20/18/10/23/16/11/5/4，CTest 1.68 秒；证明无需适配即可复用现有 emulator。Snowflake adapter/session/TLS/replication 与 QUIC 不在本次范围内。
 - **CI 契约**：先在旧构建命令处 RED，追加八个目标并扩展正则后 GREEN；真实原生选择集合为既有二十项加八项，共二十八项。emulator、环境、300 秒超时、job key 与对象检查不变，没有新依赖或新 skip。
-- **本地验证**：原生全量 455 项零失败，4 个既有平台用例跳过。最终干净容器二十八项 28/28，CTest 147.93 秒；新增八项 20/18/10/23/16/11/5/4 与全部既有分项、契约、e2e 成功，既有 integrity ptrace 设置 skip 仍恰好一次，无新增 skip。远端 job 结果在实际完成后补记。生产网络服务、Snowflake/QUIC、其他 arm64 子系统、GPU 与物理设备仍不在本次覆盖内。
+- **本地验证**：原生全量 455 项零失败，4 个既有平台用例跳过。最终干净容器二十八项 28/28，CTest 147.93 秒；新增八项 20/18/10/23/16/11/5/4 与全部既有分项、契约、e2e 成功，既有 integrity ptrace 设置 skip 仍恰好一次，无新增 skip。生产网络服务、Snowflake/QUIC、其他 arm64 子系统、GPU 与物理设备仍不在本次覆盖内。
+- **远端验证**：[CI run 44675450873](https://github.com/konyka/break/actions/runs/44675450873) 的 [arm64 job 136086068670](https://github.com/konyka/break/actions/runs/44675450873/job/136086068670) 在提交 `b75d219d` 上全部步骤成功。日志断言确认 `0 tests failed out of 28`、新增 20/18/10/23/16/11/5/4、全部既有汇总/工具/e2e，既有 ptrace 设置 skip 恰好一次，无新增跳过。
+- **集成与评审**：远端新增 `f729a7a6`（QUIC 三客户端语音会议）时已无冲突 rebase；其 QUIC 文件不在当前二十八项选择内，不改变本切片的原生/QEMU 证据。独立只读评审未发现任何 Critical/Important/Minor 问题。
 
 ## arm64 服务/安全二十项 CTest（2026-11-20）
 
