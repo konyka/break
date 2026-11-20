@@ -219,3 +219,10 @@ full CTest 的失败必须分类为 code、environment、skipped/not-built；fuz
 本设计的完成标准不是“已有文件很多”，而是：ECS/network focused APIs 的正式与测试 target 边界可由 CMake 和文档同时证明；LogicThread、worker、IO、network callback、Lua 和 C++ framework 的所有权不重叠；每个队列有容量和可观察 backpressure；shutdown/failure 不造成资源悬挂；normal/ASan/TSan 测试在实际 target 上通过。
 
 只有 Phase A 的 formal-vs-focused target contract、snapshot publication、wire/schema/fragment scheduler 边界被单独评审并验收后，才进入 Phase B Runtime Core 的 PAL/Thread/Task/Message/IO/VFS/Profiler 实现。本文没有实现这些目标，也没有修改源码或 CMake。
+
+
+## 补充（2026-11-20）：arm64 runtime_core 验证
+
+arm64 lane 新增 `test_runtime_core`（9 例）与 `test_runtime_core_target_contract`，统一选择达到三十五项。未修改树的原生与交叉 focused 均为 2/2；单元测试由现有 QEMU emulator 执行，目标契约保持宿主 CMake 源码结构检查，不引入目标工具前缀。
+
+选择使用 `test_runtime_core($|_target_contract)`，不包含 runtime IO、reload、facade 或其他 runtime 前缀测试。本项证据限于生命周期协调器与目标归属；其他运行时子系统仍需独立切片。

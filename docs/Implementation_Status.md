@@ -1,3 +1,10 @@
+## arm64 runtime_core 与三十五项 CTest（2026-11-20）
+
+- **最小场景**：新增 runtime_core 生命周期协调器 9 例和既有目标结构契约。单元测试链接正式 `runtime_core` 库并由现有 emulator 执行；目标契约仅由宿主 CMake 检查源码结构，不执行目标程序。
+- **未修改基线**：原生与交叉 focused 均为 2/2、9/9、`runtime_core target contract passed`，CTest 各 0.02/0.04 秒，无 skip。无需修改产品或测试源码。
+- **RED 与精确选择**：旧 workflow 因缺少 `test_runtime_core` 构建目标按预期 RED。追加该目标和 `test_runtime_core($|_target_contract)` 后，真实原生选择为既有三十三项加两项，共三十五项；runtime IO/reload/facade 和其他 runtime 前缀测试均未混入。
+- **验证状态**：原生全量、最终干净容器、独立评审及远端 job 在实际完成后补记。Lua/ECS、其他 runtime 子系统、Snowflake loopback/voice、QUIC、GPU 与物理设备仍不在本次覆盖内。
+
 ## arm64 core_app offline 与三十三项 CTest（2026-11-20）
 
 - **最小场景**：新增 core_app network 单元 25 例和 network offline 确定性/无网络符号契约。当前交叉配置 Snowflake OFF，loopback/voice/start-failure/net-transport 未注册，不计为通过或跳过。

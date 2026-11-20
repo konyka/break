@@ -375,3 +375,6 @@
 - **第 6 节（网络）追加**：2026-11-20 arm64 lane 新增 online aspect 12 例、aspect replication 9 例和 replication fragment 12 例，统一选择达到三十一项。未修改 QEMU 树三项全通过，无嵌套工具或新增 skip；Snowflake 适配器/会话/TLS、core_app 网络驱动、QUIC 和生产部署仍为独立边界。
 
 - **第 6 节（网络）追加**：2026-11-20 arm64 lane 新增 core_app network 单元 25 例与 offline 确定性/无网络符号契约，统一选择达到三十三项。`CORE_APP_RUNNER` 只启动 core_app，精确正则排除 loopback/voice/start-failure/net-transport；这些 Snowflake 场景与 QUIC 仍未覆盖，未计为跳过或通过。
+
+
+- **运行时/架构验证追加**：2026-11-20 arm64 lane 新增 runtime_core 生命周期协调器 9 例与目标结构契约，统一选择达到三十五项。两项在未修改 QEMU 树直接通过，无新增 skip；runtime IO/reload/facade、Lua/ECS 和其他 arm64 子系统仍需独立覆盖。
