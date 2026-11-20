@@ -157,6 +157,9 @@ bool break_net_quic_server_poll_event(BreakNetQuicServer *server,
  * NULL for stale/unknown ids. */
 BreakNetQuicConn *break_net_quic_server_conn(BreakNetQuicServer *server,
                                              u32 conn_id);
+/* Stable connection id for datagram dispatch and application session keys.
+ * 0 for NULL. The id is nonzero for every live server-side connection. */
+u32 break_net_quic_conn_id(const BreakNetQuicConn *conn);
 /* Copies the inbox message out (cap-bounded) and reopens flow-control
  * credit. Returns false when the inbox is empty or cap is too small. */
 bool break_net_quic_conn_read(BreakNetQuicServer *server, BreakNetQuicConn *conn,

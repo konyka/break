@@ -8,6 +8,7 @@
 #include "network/break_online_voice_quic.h"
 #include "network/break_online_lobby.h"
 #include "network/break_online_session_quic.h"
+#include "network/break_voice_mixer.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -882,6 +883,219 @@ static bool test_lobby_quic_auth_source(void) {
     return true;
 }
 
+/* ---- three-client voice conference over QUIC ------------------------------ */
+
+#define CONFERENCE_CLIENTS 3u
+
+typedef struct {
+    BreakNetQuicClient *client;
+    BreakVoiceReceiver *receiver;
+    bool auth_sent;
+} ConferenceClient;
+
+typedef struct {
+    BreakVoiceMixer *mixer;
+    BreakNetQuicConn *connections[CONFERENCE_CLIENTS];
+    u32 connection_count;
+    u64 now_ms;
+} ConferenceServer;
+
+/* The server has one global datagram callback. Route each authenticated voice
+ * datagram directly into the mixer, keyed by its stable connection id. */
+static bool conference_receive_voice(BreakNetQuicConn *conn, u8 type,
+                                     u64 sequence, const u8 *payload,
+                                     u32 payload_len, void *user) {
+    ConferenceServer *conference = (ConferenceServer *)user;
+    (void)sequence;
+    if (type != BREAK_VOICE_QUIC_MSG_TYPE) {
+        return true;
+    }
+    return break_voice_mixer_push(conference->mixer,
+                                  break_net_quic_conn_id(conn), payload,
+                                  payload_len, conference->now_ms) ==
+           BREAK_RUNTIME_OK;
+}
+
+static bool test_voice_conference(void) {
+    BreakNetQuicServerConfig server_config;
+    memset(&server_config, 0, sizeof(server_config));
+    server_config.cert_file = kCert;
+    server_config.key_file = kKey;
+    server_config.alpn = kAlpn;
+    server_config.port = 0u;
+    server_config.max_connections = CONFERENCE_CLIENTS;
+    BreakNetQuicServer *server = break_net_quic_server_create(&server_config);
+    ASSERT_TRUE(server != NULL);
+    ASSERT_TRUE(break_net_quic_server_set_auth(server, test_key_fn,
+                                               (void *)k_test_psk, 0u));
+
+    BreakVoiceMixerConfig mixer_config;
+    memset(&mixer_config, 0, sizeof(mixer_config));
+    mixer_config.stream.sample_rate = 16000u;
+    mixer_config.stream.channels = 1u;
+    mixer_config.stream.sample_count = 160u;
+    mixer_config.stream.jitter_delay_ms = 20u;
+    mixer_config.stream.jitter_capacity = 8u;
+    mixer_config.stream.queue_capacity = 16u;
+    mixer_config.max_sources = CONFERENCE_CLIENTS;
+    mixer_config.idle_timeout_ms = 1000u;
+
+    ConferenceServer conference;
+    memset(&conference, 0, sizeof(conference));
+    conference.now_ms = 1000u;
+    ASSERT_TRUE(break_voice_mixer_create(&mixer_config, &conference.mixer) ==
+                BREAK_RUNTIME_OK);
+    break_net_quic_server_set_datagram_handler(server, conference_receive_voice,
+                                               &conference);
+
+    ConferenceClient clients[CONFERENCE_CLIENTS];
+    memset(clients, 0, sizeof(clients));
+    for (u32 i = 0u; i < CONFERENCE_CLIENTS; ++i) {
+        BreakNetQuicClientConfig client_config;
+        memset(&client_config, 0, sizeof(client_config));
+        client_config.host = "127.0.0.1";
+        client_config.port = break_net_quic_server_port(server);
+        client_config.server_name = "localhost";
+        client_config.trust_store_file = kCert;
+        client_config.cert_file = kCert;
+        client_config.key_file = kKey;
+        client_config.alpn = kAlpn;
+        clients[i].client = break_net_quic_client_create(&client_config);
+        ASSERT_TRUE(clients[i].client != NULL);
+        ASSERT_TRUE(break_voice_receiver_create(NULL, &mixer_config.stream,
+                                                &clients[i].receiver) ==
+                    BREAK_RUNTIME_OK);
+        break_voice_quic_attach_receiver(clients[i].client, clients[i].receiver);
+    }
+
+    /* Authenticate all clients and retain the three server-side connections.
+     * Authenticate can return false until CHALLENGE arrives, so keep polling. */
+    for (u32 round = 0u; round < 6000u; ++round) {
+        break_net_quic_server_step(server, 1u);
+        bool all_auth_sent = true;
+        for (u32 i = 0u; i < CONFERENCE_CLIENTS; ++i) {
+            break_net_quic_client_step(clients[i].client, 1u);
+            if (!clients[i].auth_sent &&
+                break_net_quic_client_handshake_done(clients[i].client)) {
+                clients[i].auth_sent = break_net_quic_client_authenticate(
+                    clients[i].client, k_test_key_id, k_test_psk);
+            }
+            all_auth_sent = all_auth_sent && clients[i].auth_sent;
+        }
+        conference.now_ms += 1u;
+        BreakNetQuicEvent event;
+        while (break_net_quic_server_poll_event(server, &event)) {
+            if (event.type == BREAK_NET_QUIC_EVENT_AUTHENTICATED &&
+                conference.connection_count < CONFERENCE_CLIENTS) {
+                BreakNetQuicConn *conn =
+                    break_net_quic_server_conn(server, event.conn_id);
+                ASSERT_TRUE(conn != NULL);
+                ASSERT_EQ_U(break_net_quic_conn_id(conn), event.conn_id);
+                conference.connections[conference.connection_count++] = conn;
+            }
+        }
+        if (all_auth_sent &&
+            conference.connection_count == CONFERENCE_CLIENTS) {
+            break;
+        }
+    }
+    ASSERT_EQ_U(conference.connection_count, CONFERENCE_CLIENTS);
+    ASSERT_EQ_U(break_net_quic_conn_id(NULL), 0u);
+
+    /* Each participant contributes one constant PCM frame: 1000, 2000, 3000. */
+    for (u32 i = 0u; i < CONFERENCE_CLIENTS; ++i) {
+        BreakVoiceFrame frame;
+        memset(&frame, 0, sizeof(frame));
+        frame.sequence = 1u;
+        frame.sample_rate = 16000u;
+        frame.channels = 1u;
+        frame.sample_count = 160u;
+        for (u32 sample = 0u; sample < 160u; ++sample) {
+            frame.samples[sample] = (i16)((i + 1u) * 1000u);
+        }
+        ASSERT_TRUE(break_voice_quic_send(clients[i].client, &frame, false));
+    }
+
+    BreakVoiceMixerStats mixer_stats;
+    memset(&mixer_stats, 0, sizeof(mixer_stats));
+    for (u32 round = 0u;
+         round < 5000u && mixer_stats.accepted < CONFERENCE_CLIENTS; ++round) {
+        break_net_quic_server_step(server, 1u);
+        for (u32 i = 0u; i < CONFERENCE_CLIENTS; ++i) {
+            break_net_quic_client_step(clients[i].client, 1u);
+        }
+        conference.now_ms += 1u;
+        ASSERT_TRUE(break_voice_mixer_stats(conference.mixer, &mixer_stats) ==
+                    BREAK_RUNTIME_OK);
+    }
+    ASSERT_EQ_U(mixer_stats.sources, CONFERENCE_CLIENTS);
+    ASSERT_EQ_U(mixer_stats.accepted, CONFERENCE_CLIENTS);
+    ASSERT_EQ_U(mixer_stats.invalid, 0u);
+
+    conference.now_ms += mixer_config.stream.jitter_delay_ms + 1u;
+    BreakVoicePlayback mixed;
+    bool mixed_ready = false;
+    ASSERT_TRUE(break_voice_mixer_pop(conference.mixer, conference.now_ms,
+                                      &mixed, &mixed_ready) == BREAK_RUNTIME_OK);
+    ASSERT_TRUE(mixed_ready);
+    ASSERT_FALSE(mixed.concealed);
+    ASSERT_EQ_U(mixed.sample_count, 160u);
+    for (u32 sample = 0u; sample < mixed.sample_count; ++sample) {
+        ASSERT_EQ_U(mixed.samples[sample], 6000);
+    }
+
+    BreakVoiceFrame output;
+    memset(&output, 0, sizeof(output));
+    output.sequence = mixed.sequence;
+    output.sample_rate = 16000u;
+    output.channels = 1u;
+    output.sample_count = mixed.sample_count;
+    memcpy(output.samples, mixed.samples, sizeof(output.samples));
+    for (u32 i = 0u; i < CONFERENCE_CLIENTS; ++i) {
+        ASSERT_TRUE(break_voice_quic_send_server(
+            server, conference.connections[i], &output, false));
+    }
+
+    bool all_received = false;
+    for (u32 round = 0u; round < 5000u && !all_received; ++round) {
+        break_net_quic_server_step(server, 1u);
+        all_received = true;
+        for (u32 i = 0u; i < CONFERENCE_CLIENTS; ++i) {
+            break_net_quic_client_step(clients[i].client, 1u);
+            break_voice_receiver_pump(clients[i].receiver, 16u,
+                                      conference.now_ms);
+            BreakVoiceReceiverStats stats;
+            ASSERT_TRUE(break_voice_receiver_stats(clients[i].receiver, &stats) ==
+                        BREAK_RUNTIME_OK);
+            all_received = all_received && stats.accepted >= 1u;
+        }
+        conference.now_ms += 1u;
+    }
+    ASSERT_TRUE(all_received);
+
+    conference.now_ms += mixer_config.stream.jitter_delay_ms + 1u;
+    for (u32 i = 0u; i < CONFERENCE_CLIENTS; ++i) {
+        BreakVoicePlayback playback;
+        bool ready = false;
+        ASSERT_TRUE(break_voice_receiver_pop(clients[i].receiver,
+                                             conference.now_ms, &playback,
+                                             &ready) == BREAK_RUNTIME_OK);
+        ASSERT_TRUE(ready);
+        ASSERT_EQ_U(playback.sample_count, 160u);
+        for (u32 sample = 0u; sample < playback.sample_count; ++sample) {
+            ASSERT_EQ_U(playback.samples[sample], 6000);
+        }
+    }
+
+    break_voice_mixer_destroy(conference.mixer);
+    for (u32 i = 0u; i < CONFERENCE_CLIENTS; ++i) {
+        break_voice_receiver_destroy(clients[i].receiver);
+        break_net_quic_client_destroy(&clients[i].client);
+    }
+    break_net_quic_server_destroy(&server);
+    return true;
+}
+
 /* ---- runner --------------------------------------------------------------- */
 
 typedef bool (*TestFn)(void);
@@ -909,6 +1123,7 @@ int main(void) {
         {"datagram_unauthenticated_dropped", test_datagram_unauthenticated_dropped},
         {"voice_over_quic_datagram", test_voice_over_quic_datagram},
         {"lobby_quic_auth_source", test_lobby_quic_auth_source},
+        {"voice_conference", test_voice_conference},
     };
     size_t passed = 0;
     size_t total = sizeof(tests) / sizeof(tests[0]);

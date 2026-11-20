@@ -59,6 +59,8 @@ int run_echo() {
     CHECK(ev->type == BREAK_NET_QUIC_EVENT_CONNECT);
     auto conn = server->GetConn(ev->conn_id);
     CHECK(conn.Valid());
+    CHECK(conn.Id() == ev->conn_id);
+    CHECK(bq::Conn().Id() == 0u);
 
     const char *ping = "ping";
     CHECK(client->Send(std::span<const u8>(

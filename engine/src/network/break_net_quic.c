@@ -1068,6 +1068,10 @@ BreakNetQuicConn *break_net_quic_server_conn(BreakNetQuicServer *s,
     return NULL;
 }
 
+u32 break_net_quic_conn_id(const BreakNetQuicConn *conn) {
+    return conn != NULL ? conn->conn_id : 0u;
+}
+
 bool break_net_quic_conn_read(BreakNetQuicServer *s, BreakNetQuicConn *conn,
                               u8 *out, u32 cap, u32 *out_len) {
     if (s == NULL || conn == NULL || conn->server != s || out == NULL) {

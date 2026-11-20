@@ -160,9 +160,10 @@ typedef enum BreakNetTransportClass {
 1. **数据报回声**：`test_datagram_echo` —— 认证后的 client/server 互发数据报，验证 type/sequence/payload 完整到达（server_cap.count、client_cap.count 均 ≥1）
 2. **尺寸边界**：`test_datagram_size_boundary` —— 1200 字节接受，1201 字节发送侧拒绝（不进入网络）
 3. **未认证门控**：`test_datagram_unauthenticated_dropped` —— 未认证连接的数据报被丢弃（server_cap.count == 0）
-4. **C++20 同步**：`test_break_net_quic_cpp20` 的 `run_datagram_echo` —— 封装层 `SendDatagram` / `SetDatagramHandler` 全链路验证
+4. **三方语音会议**：`test_voice_conference` —— 三个认证客户端分别发送 1000、2000、3000 的 PCM 帧，服务器按连接 ID 混音为每样本 6000，再回发；三个客户端都播放出相同的 160 样本混合帧
+5. **C++20 同步**：`test_break_net_quic_cpp20` —— 封装层 echo/auth/datagram 全链路验证，并检查 `Conn::Id()` 与 C 事件中的连接 ID 一致
 
-完整套件：`test_break_net_quic` 16/16（传输 8 + 会话 4 + 数据报 3 + 语音 1），C++20 封装 echo+auth+datagram 全过。
+完整套件：`test_break_net_quic` 18/18（传输 8 + 会话 4 + 数据报 3 + 语音 2 + lobby 1），连续重复运行 5/5 通过；C++20 封装测试通过；非图形 CTest 414/414 通过（2026-11-20）。
 
 ## 12.1 语音路径已迁移到数据报通道
 
@@ -175,6 +176,12 @@ typedef enum BreakNetTransportClass {
 - **尺寸**：BRV1 最大 976 字节、BRV2 更小，均在 1200 字节数据报载荷限制内
 
 测试 `test_voice_over_quic_datagram`：认证后客户端发语音帧（BRV1）→ 服务器接收器接受（inbox + pump + jitter buffer），服务器回发 → 客户端接受。
+
+## 12.2 多客户端会议接线
+
+服务器的 QUIC 数据报处理器是**每服务器一个**的全局回调，不是每连接回调。多路会议只注册一次处理器，通过 `break_net_quic_conn_id(conn)` 取得非零连接 ID，并把 BRV 数据报直接交给 `break_voice_mixer_push(mixer, conn_id, ...)`；C++20 使用对应的 `Conn::Id()`。不要为每个连接重复调用 `break_voice_quic_attach_receiver_server`，后注册的接收器会覆盖前一个。
+
+`test_voice_conference` 覆盖完整的会议往返：三个客户端完成 CHALLENGE/AUTH-v2 → 三路 BRV1 数据报进入各自混音源 → jitter delay 到期后求和且无削顶 → 服务器向三个已认证连接回发同一混合帧 → 三个客户端各自解码、播放并逐样本验证。
 
 ## 13. NOT delivered（本切片明确不覆盖）
 
