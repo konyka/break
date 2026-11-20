@@ -7,7 +7,7 @@
 - **原生全量**：456 项零失败，4 个既有平台用例跳过，CTest 170.35 秒。
 - **独立评审**：只读评审逐名确认 164→179、`headless;world` 标签集合恰为这十五项、未选的同名前缀（`test_meshopt_c`、`test_core_app_mesh`）与派生名称均被拒绝、两处 regex 与构建列表字节一致、29 合计与十个单用例经代码复核，无 Critical/Important。采纳 Minor：spec 链接表补注渲染器与 `rhi_validation.c` 源、`test_world_stream_world` 链接 `ecs.c`/`vfs.c` 但不起线程、点名 Vulkan 构建中的 `test_world_presentation_vk`。
 - **干净容器**：按 workflow 原始步骤完成一百七十九项 CTest，179/179、CTest 133.79 秒；十五个分项数逐项与表一致（合计 29），既有 ptrace 设置 skip 恰好一次，未出现 `CHILD TIMEOUT`/`PIPE TIMEOUT`。`git diff --check` 通过。
-- **验证状态**：远端 job 在实际完成后补记。
+- **远端验证**：[CI run 44757881025](https://github.com/konyka/break/actions/runs/44757881025) 的 [arm64 job 136362313861](https://github.com/konyka/break/actions/runs/44757881025/job/136362313861) 在提交 `5b3aa922` 上成功。原始日志断言确认精确一百七十九项、`0 tests failed out of 179`、日志中无任何失败分项、十五个分项数逐项一致、全部既有契约/e2e、ptrace skip 恰好一次；CTest 135.84 秒，占外层 600 秒守护的 23%。
 
 ## arm64 kernel/flow 与一百六十四项 CTest（2026-11-20）
 
