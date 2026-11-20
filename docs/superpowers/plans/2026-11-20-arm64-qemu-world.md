@@ -18,6 +18,6 @@
 - [x] **Step 2:** Append the fifteen targets and the alternative in `.github/workflows/ci.yml` and `docs/Build_Guide.md`.
 - [x] **Step 3:** Re-run the contract; expected `exact 179-test headless world selection and anchor contract passed`.
 - [x] **Step 4:** Focused native with the new `-R` (15/15) and unmodified cross baseline (15/15, 29 cases).
-- [ ] **Step 5:** Native full regression; require 456, zero failures, four established skips.
-- [ ] **Step 6:** Clean-container workflow; require 179/179 and exactly one ptrace setup skip.
+- [x] **Step 5:** Native full regression; require 456, zero failures, four established skips.
+- [x] **Step 6:** Clean-container workflow; require 179/179 and exactly one ptrace setup skip.
 - [ ] **Step 7:** Read-only review; push; `assert_arm64_log.py <log> 179` with all fifteen per-test counts; record.

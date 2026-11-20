@@ -18,6 +18,10 @@ The arm64 lane selects exactly 164 tests. All fifteen tests labelled
 
 ## Existing Behavior and Baseline
 
+The Links column names the notable dependency only; every test also compiles
+its own renderer sources, and the mesh and presentation tests compile
+`src/rhi/rhi_validation.c` (see `engine/CMakeLists.txt:5723-5860`).
+
 | Test | Cases | Links |
 |---|---|---|
 | `test_vegetation`, `test_time_of_day`, `test_visarea`, `test_world_stream` | 1 each | one renderer source + `math.c`, `m` (`engine/CMakeLists.txt:5723`) |
@@ -29,7 +33,7 @@ The arm64 lane selects exactly 164 tests. All fifteen tests labelled
 | `test_world_presentation` | 5 | `m` |
 | `test_world_presenter_fake` | 5 | fake RHI, `m` |
 | `test_world_stream_job` | 1 | task system (one worker), `pthread m` |
-| `test_world_stream_world` | 2 | `pthread m`; writes files under its `test_tmp()` root |
+| `test_world_stream_world` | 2 | `ecs.c`, `vfs.c`, `pthread m` (no threads started); writes four files under its `test_tmp()` directory and removes them |
 
 That is 29 cases. None fork or use a GPU or device. Native focused passes all
 fifteen with these counts. Unmodified cross focused in a clean Ubuntu 24.04
@@ -62,5 +66,7 @@ The `$` on each part rejects `test_mesh_gpu_gl` and
 ## Boundaries
 
 A selected 179-test suite, not full arm64 CTest. GPU presentation
-(`*_gl`) and real-device rendering remain outside it. Ten of the fifteen
+(`test_mesh_gpu_gl`, and `test_world_presentation_gl` or its Vulkan-build twin
+`test_world_presentation_vk`) and real-device rendering remain outside it; the
+new alternative rejects all three. Ten of the fifteen
 executables have a single case, so a failure inside one reports as one case.
