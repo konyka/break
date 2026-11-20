@@ -390,3 +390,6 @@
 
 
 - **资源/热加载验证追加**：2026-11-20 arm64 lane 新增 async loader 17 例、hotreload 7 例、VFS 36 例和 filewatch backend 26 例，统一选择达到五十六项。未修改 QEMU 树四项全通过，无新增 skip；材质/场景纹理、glTF、world streaming 和真实 GPU 热替换仍需独立覆盖。
+
+
+- **渲染/RHI 验证追加**：2026-11-20 arm64 lane 新增 RHI dispatch 44 项检查、capabilities 59 例、error contract 7 例、frame lifecycle 5 例和 render graph 22 例，统一选择达到六十一项。未修改 QEMU 树五项全通过，无新增 skip；运行时 rollout、WSI、shader 工具、真实 OpenGL/Vulkan 和画面一致性仍需独立覆盖。

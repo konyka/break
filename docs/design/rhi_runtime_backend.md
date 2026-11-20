@@ -100,3 +100,10 @@ Not verified: Windows and Wayland runtime fallback (no such host); CI. The `engi
 ## 9. Current platform boundary (2026-11-10)
 
 Linux is native Wayland-only in 2.0.0; the X11 delivery evidence in §8 is historical. On a real Wayland compositor, `test_rhi_runtime_fallback_{default,forced,env_opengl}` passed 3/3 with actual rendering/readback: default selected Vulkan, forced failure selected OpenGL, and the environment override selected OpenGL. Windows runtime fallback and the migrated CI workflow remain to be checked on their native runners; this update does not claim them.
+
+
+## 补充（2026-11-20）：arm64 RenderGraph/RHI 核心验证
+
+arm64 lane 新增 `test_rhi_dispatch`（44 项检查）、`test_rhi_capabilities`（59 例）、`test_rhi_error_contract`（7 例）、`test_rhi_frame_lifecycle_contract`（5 例）和 `test_render_graph`（22 例），统一选择达到六十一项。原生与交叉 focused 均为 5/5，无新增 skip。
+
+这些结果覆盖 dispatch、设备/帧所有权、资源与错误边界、生命周期和 RenderGraph 编译/执行，均使用 headless/stub 路径。选择表达式带局部结尾锚点；本项不构成运行时后端 rollout、真实 OpenGL/Vulkan、WSI、GPU 或画面一致性证据。

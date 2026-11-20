@@ -1,3 +1,10 @@
+## arm64 RenderGraph/RHI 核心与六十一项 CTest（2026-11-20）
+
+- **最小场景**：新增 RHI dispatch 44 项检查、capabilities 59 例、error contract 7 例、frame lifecycle 5 例和 render graph 22 例。五个直接可执行目标均由既有 QEMU 命令启动，使用 headless/stub 路径。
+- **未修改基线与 focused 复验**：原生和交叉均为 5/5、44 项 dispatch 检查及 59/7/5/22；最新 focused CTest 为 0.01/0.12 秒，无 skip。无需修改产品或测试源码。
+- **RED 与精确选择**：旧 workflow 因缺少五个构建目标按预期 RED。加入两个局部结尾锚定表达式后，真实原生选择为既有五十六项加五项，共六十一项；未来派生前缀被拒绝，显式集合断言通过。
+- **验证状态**：原生全量、最终干净容器、独立评审及远端 job 在实际完成后补记。运行时后端选择/rollout、WSI、shader 工具、真实 OpenGL/Vulkan、画面一致性、GPU 与物理设备仍不在本次覆盖内。
+
 ## arm64 Asset/VFS/热加载与五十六项 CTest（2026-11-20）
 
 - **最小场景**：新增 async loader 17 例、hotreload 7 例、VFS 36 例、filewatch backend 26 例，共 86 个分项、四个直接可执行目标。均由既有 QEMU 命令执行，无嵌套工具、资产路径翻译或宿主 driver 修改。
