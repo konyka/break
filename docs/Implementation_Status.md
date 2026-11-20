@@ -3,7 +3,10 @@
 - **最小场景**：新增 runtime_core 生命周期协调器 9 例和既有目标结构契约。单元测试链接正式 `runtime_core` 库并由现有 emulator 执行；目标契约仅由宿主 CMake 检查源码结构，不执行目标程序。
 - **未修改基线**：原生与交叉 focused 均为 2/2、9/9、`runtime_core target contract passed`，CTest 各 0.02/0.04 秒，无 skip。无需修改产品或测试源码。
 - **RED 与精确选择**：旧 workflow 因缺少 `test_runtime_core` 构建目标按预期 RED。追加该目标和 `test_runtime_core($|_target_contract)` 后，真实原生选择为既有三十三项加两项，共三十五项；runtime IO/reload/facade 和其他 runtime 前缀测试均未混入。
-- **验证状态**：原生全量、最终干净容器、独立评审及远端 job 在实际完成后补记。Lua/ECS、其他 runtime 子系统、Snowflake loopback/voice、QUIC、GPU 与物理设备仍不在本次覆盖内。
+- **本地验证（2026-11-20 15:49 CST）**：原生全量 455 项零失败，4 个既有平台用例跳过，CTest 158.00 秒。最终干净 Ubuntu 24.04 容器按 workflow 原始步骤完成目标构建、对象检查与三十五项 CTest，35/35、CTest 110.81 秒；runtime_core 9/9、目标契约、全部既有分项/契约/e2e 成功，既有 ptrace 设置 skip 恰好一次，无新增跳过。`git diff --check` 通过。
+- **独立评审**：只读评审未发现任何 Critical/Important/Minor 问题，确认精确 35 项选择、宿主/目标边界、原生兼容性、失败传播和文档范围。
+- **远端验证**：[CI run 44698338241](https://github.com/konyka/break/actions/runs/44698338241) 的 [arm64 job 136160386433](https://github.com/konyka/break/actions/runs/44698338241/job/136160386433) 在提交 `c2ba80e7` 上全部步骤成功。原始日志断言确认精确三十五项、`0 tests failed out of 35`、runtime_core 9/9 与目标契约、全部既有分项/契约/e2e，既有 ptrace 设置 skip 恰好一次；非 root 权限分支实际执行，两个真实 LLVM Mach-O 子检查仍按工具缺失条件跳过。
+- **验证边界**：Lua/ECS、其他 runtime 子系统、Snowflake loopback/voice、QUIC、GPU 与物理设备仍不在本次覆盖内。
 
 ## arm64 core_app offline 与三十三项 CTest（2026-11-20）
 
