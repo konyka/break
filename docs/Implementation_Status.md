@@ -6,7 +6,7 @@
 - **覆盖缺口**：kernel 的 actions、move、level 各只有一个用例，area 只有两个；target 契约只检查构建接线，不代表 arm64 行为。名称含 kernel/flow 但未选的只有 `test_core_app_lifecycle_script_flow` 与 `test_editor_flow`，分别属于 core_app 与编辑器测试族。
 - **本地验证（2026-11-20 22:32 CST）**：原生全量 456 项零失败，4 个既有平台用例跳过，CTest 172.04 秒。干净 Ubuntu 24.04 容器按 workflow 原始步骤完成一百六十四项 CTest，164/164、CTest 134.02 秒；十一个分项数逐项与表一致（合计 62）、kernel target 契约通过、既有 ptrace 设置 skip 恰好一次，未出现 `CHILD TIMEOUT`/`PIPE TIMEOUT`。`git diff --check` 通过。
 - **独立评审**：只读评审逐名确认 152→164、差集恰为十二项、`test_break_kernel_lua` 仍由原有表达式选中、派生名称被拒绝、两处 regex 与构建列表字节一致、62 合计与各源码 `RUN_TEST` 一致，无 Critical/Important。采纳 Minor：侧车写在 `test_tmp()` 路径旁而非目录内、`break_kernel` 依赖 `break_ecs_replication`、点名两个未选的 core_app/编辑器测试。
-- **验证状态**：远端 job 在实际完成后补记。
+- **远端验证**：[CI run 44755130339](https://github.com/konyka/break/actions/runs/44755130339) 的 [arm64 job 136352734436](https://github.com/konyka/break/actions/runs/44755130339/job/136352734436) 在提交 `11556ab1` 上成功。原始日志断言确认精确一百六十四项、`0 tests failed out of 164`、日志中无任何失败分项、十一个分项数逐项一致、全部既有契约/e2e、ptrace skip 恰好一次；CTest 135.61 秒，占外层 600 秒守护的 23%。
 
 ## macOS Cocoa lane 构建并发上限（2026-11-20）
 
