@@ -18,11 +18,16 @@ a 152-test selection.
 ## Existing Behavior and Baseline
 
 Every executable links only `rule_engine_core` (C99). Hiredis-backed code paths
-are compiled only when `RULE_ENGINE_ENABLE_REDIS` and hiredis are present; the
-arm64 tree has neither, so those paths are absent on both native and cross.
-`test_backward_machine_structure` reads engine source files through a
-compile-time `TEST_SOURCE_ROOT`; under QEMU the container mounts the same
-workspace path, so the reads succeed. `test_rule_engine_executor_stress` and
+are compiled only when `RULE_ENGINE_ENABLE_REDIS` is ON (default OFF,
+`engine/CMakeLists.txt:24`); both trees leave it OFF, so hiredis is never
+searched for and those paths are absent on native and cross. Ten
+`test_rule_engine_stream_ext` cases (nine `redis_provider_*` probes and
+`redis_roundtrip_when_service_available`) then only print `SKIP:` and count as
+passed, so 47 of its 57 cases, and 633 of the 643 below, carry assertions; the
+`RE_STATUS_NOT_SUPPORTED` boundary for Redis requests is still asserted.
+`test_backward_machine_structure` has four cases: two read engine sources
+through the configure-time `TEST_SOURCE_ROOT` (qemu-user runs on the host
+filesystem, so the absolute path resolves), and two run real queries. `test_rule_engine_executor_stress` and
 `rule_engine_fuzz_smoke` are out of scope (the former is not registered without
 `RULE_ENGINE_ENABLE_C11_PARALLEL`; the latter is a hardening fuzz smoke).
 
@@ -70,4 +75,5 @@ test_rule_engine(_(transactions|tms|grl_semantics|ir|forall_limits|rete_incremen
 A selected 152-test suite, not full arm64 CTest. Redis-backed paths, the C11
 parallel executor stress test, fuzzing, and large-rule-set performance remain
 outside it. `test_rule_engine_backward_deep_chain` has a single case.
-`test_backward_machine_structure` checks source structure, not arm64 behavior.
+Two `test_backward_machine_structure` cases check source structure, not arm64
+behavior. Ten Redis cases are vacuous without the Redis option.

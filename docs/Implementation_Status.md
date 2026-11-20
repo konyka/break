@@ -1,10 +1,13 @@
 ## arm64 规则引擎与一百五十二项 CTest（2026-11-20）
 
 - **最小场景**：新增 `engine/CMakeLists.txt:3123-3251` 注册的二十一项规则引擎测试，均只链接 `rule_engine_core`（C99），共 643 个分项：core 98、transactions 13、tms 19、grl semantics 26、ir 20、forall limits 5、rete incremental 19、agenda 45、backward 13、backward ext 55、grl surface 137、plugin parity 37、example coverage 3、query blocks 25、stream ext 57、stream grl 19、stream eval 22、backward deep chain 1、backward machine structure 4、backward machine context 4、backward bindings 21。
-- **未修改基线与 focused 复验**：原生 21/21；改动前干净容器交叉 21/21，分项数一致，CTest 2.86 秒，最慢的 backward deep chain 1.28 秒。改动后原生以完整新 `-R` 复跑 21/21，无 skip。无需修改产品或测试源码。
+- **未修改基线与 focused 复验**：原生 21/21；改动前干净容器交叉 21/21，分项数一致，CTest 2.86 秒，最慢的 backward deep chain 1.28 秒。改动后原生以完整新 `-R` 复跑 21/21。CTest 级无 skip；但 stream ext 57 例中 10 例（9 个 `redis_provider_*` 与 `redis_roundtrip_when_service_available`）在 Redis 未编译时只打印 `SKIP:` 并按通过计，643 例中有断言的是 633 例；Redis 请求返回 `RE_STATUS_NOT_SUPPORTED` 的边界仍有断言。无需修改产品或测试源码。
 - **RED 与精确选择**：旧 workflow 因缺少二十一个构建目标按预期 RED。新增独立的 `test_rule_engine(_(transactions|tms|grl_semantics|ir|forall_limits|rete_incremental|agenda|backward|backward_ext|grl_surface|plugin_parity|example_coverage|query_blocks|stream_ext|stream_grl|stream_eval|backward_deep_chain|backward_bindings))?$|test_backward_machine_(structure|context)$`，未改动既有表达式；真实选择为既有一百三十一项加二十一项，共一百五十二项。派生名称、`test_rule_engine_executor_stress` 与 `rule_engine_fuzz_smoke` 被拒绝。
-- **覆盖缺口**：arm64 树无 hiredis，Redis 路径在原生与交叉均未编译；backward deep chain 只有一个用例；backward machine structure 通过编译期 `TEST_SOURCE_ROOT` 读取源码，检查的是源码结构而非 arm64 行为。
-- **验证状态**：原生全量、最终干净容器、独立评审及远端 job 在实际完成后补记。Redis 路径、C11 并行执行器压力测试、fuzz、大规则集性能、Snowflake/QUIC、GPU 与物理设备仍不在本次覆盖内。
+- **覆盖缺口**：`RULE_ENGINE_ENABLE_REDIS` 默认关闭，Redis 路径在原生与交叉均未编译（与是否安装 hiredis 无关）；backward deep chain 只有一个用例；backward machine structure 四例中两例经配置期 `TEST_SOURCE_ROOT` 读取源码，检查源码结构而非 arm64 行为，另两例在 QEMU 下执行真实查询。
+- **既有 QEMU 偶发挂起（与本切片无关）**：首次干净容器运行与原生 `make -j6`/`ctest -j4` 并行，lane 内既有的 `test_runtime_io` 第 15 例 `io_request_double_release_aborts` 挂起，`timeout 300` 终止整个 CTest。复现：同一 arm64 二进制在 QEMU 8.2.2 下 12 路并行 180 次挂起 5 次，单独 60 次 0 次；原生 16 路并行 640 次 0 次。`-strace` 显示挂起点固定在 fork 出的子进程创建 worker 线程的 `clone(CLONE_VM|CLONE_THREAD...)` 未返回，子进程两个线程均停在 futex，父进程在阶段管道 `read` 上等待。判断为 qemu-user 在 fork 后创建线程的竞态，属于高负载宿主下的模拟器问题，而非产品缺陷；远端 job 历次均通过。不加重试、不屏蔽，验证改在空闲宿主上运行，后续可让该用例在 `BREAK_TEST_QEMU_USER=1` 时避免在 fork 子进程中启动线程。
+- **本地验证（2026-11-20 21:20 CST）**：原生全量 455 项零失败，4 个既有平台用例跳过，CTest 156.89 秒。空闲宿主上的干净 Ubuntu 24.04 容器按 workflow 原始步骤完成构建、对象检查与一百五十二项 CTest，152/152、CTest 180.02 秒；二十一个规则引擎分项数逐项与表一致（合计 643，其中 10 例为上述 Redis SKIP），全部既有分项/契约/e2e 成功，既有 ptrace 设置 skip 恰好一次。`git diff --check` 通过。
+- **独立评审**：只读评审逐名确认 131→152、差集恰为二十一项、派生名称与 executor stress/fuzz smoke 被拒绝、两处 regex 与构建列表字节一致、643 合计与各源码 `RUN_TEST` 数一致，hiredis 与 `TEST_SOURCE_ROOT` 说法成立。采纳 Important：「无 skip」改为如实说明 stream ext 中 10 例 Redis 用例只打印 SKIP；采纳 Minor：backward machine structure 四例的分工、Redis 未编译的真实原因（选项默认关闭）、`TEST_SOURCE_ROOT` 在 qemu-user 下可用的真实原因。
+- **验证边界**：远端 job 在实际完成后补记。Redis 路径、C11 并行执行器压力测试、fuzz、大规则集性能、Snowflake/QUIC、GPU 与物理设备仍不在本次覆盖内。
 
 ## arm64 音频与一百三十一项 CTest（2026-11-20）
 

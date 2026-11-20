@@ -1143,7 +1143,10 @@ complete.
 
 The arm64 QEMU lane now runs the twenty-one rule-engine tests registered at
 `engine/CMakeLists.txt:3123-3251` (643 cases), bringing the selection to 152.
-Native and cross focused runs both pass 21/21 with identical counts. This shows
+Native and cross focused runs both pass 21/21 with identical counts. With
+`RULE_ENGINE_ENABLE_REDIS` OFF (the default), ten `test_rule_engine_stream_ext`
+cases only print `SKIP:` and count as passed, so 633 of the 643 cases carry
+assertions; the `RE_STATUS_NOT_SUPPORTED` boundary is still asserted. This shows
 the C99 core is self-consistent inside one arm64 build. Redis-backed paths are
 not compiled in the arm64 tree, and the C11 parallel executor stress test,
 fuzzing, and large-rule-set performance are not covered.

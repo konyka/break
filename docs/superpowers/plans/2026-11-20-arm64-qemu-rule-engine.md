@@ -26,7 +26,7 @@
 
 ### Task 2: Final verification and remote proof
 
-- [ ] **Step 1:** Native full regression; require 455, zero failures, four established skips.
-- [ ] **Step 2:** Clean-container workflow; require 152/152, all twenty-one counts, and exactly one ptrace setup skip.
-- [ ] **Step 3:** Read-only review; fix adopted findings. Fetch/rebase if needed and push.
+- [x] **Step 1:** Native full regression; require 455, zero failures, four established skips.
+- [x] **Step 2:** Clean-container workflow; require 152/152, all twenty-one counts, and exactly one ptrace setup skip.
+- [x] **Step 3:** Read-only review; fix adopted findings. Fetch/rebase if needed and push.
 - [ ] **Step 4:** `build-core-app-net/assert_arm64_log.py <log> 152` with all twenty-one `NAME=COUNT` pairs from the spec table. Record URLs, commit `docs: record arm64 rule engine CI results`, push.
