@@ -406,3 +406,4 @@
 
 - **扩展物理验证追加**：2026-11-20 arm64 lane 新增 slider、cloth、rope、soft-body、destructible 五项和 character 30 例，统一选择达到八十六项，所有以物理模块为主体的已注册测试均纳入 arm64。仍缺：五个扩展模块各只有一个测试场景，首个失败断言会提前返回并遮住后续检查，汇总只报 1 例。
 - **动画验证追加**：2026-11-20 arm64 lane 新增八项动画测试（73 个分项），统一选择达到九十四项。仍缺：GPU 蒙皮、跨架构逐位回放验证；locomotion、socket、aim 各只有单个用例。
+- **AI 验证追加**：2026-11-20 arm64 lane 新增 `break_ai` 十四项，统一选择达到一百零八项。仍缺：真实关卡 navmesh、大规模群体性能、编辑器 AI 工具；nav follow、perception、behavior、steer 各只有单个用例。

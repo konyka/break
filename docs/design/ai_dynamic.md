@@ -170,3 +170,7 @@ BreakNavError break_ai_smart_object_owner(BreakAiRuntime *,
 ## 10. 限制
 
 本实现不承诺任意形状连续障碍的精确侵蚀；调用方需按 agent 半径烘焙基础 mesh，并用网格尺度合适的动态矩形。固定候选局部避障在极度拥挤时只能给出评分最优的有界速度，不是全局无死锁保证。编组不会自动为每个槽位规划独立 A* 路径。未运行 Windows 或真机图形验证；P3 的验证目标是确定性 CPU/headless 行为。
+
+## 补充（2026-11-20）：arm64 验证
+
+arm64 lane 新增 `break_ai` 块注册的十四项（十二个可执行目标共 34 个分项，加两项宿主 CMake 契约），统一选择达到一百零八项。原生与交叉 focused 均为 14/14，无新增 skip；nav query concurrent 在 QEMU 下运行真实线程。arm64 通过只证明确定性 CPU/headless 行为在 arm64 构建内成立，不证明跨架构逐位一致的寻路结果。

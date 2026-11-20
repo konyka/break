@@ -1,3 +1,11 @@
+## arm64 AI 与一百零八项 CTest（2026-11-20）
+
+- **最小场景**：新增 `break_ai` 块注册的十四项：十二个只链接 `break_ai` 的直接可执行目标，分项为 nav bake 3、nav query 3、nav query concurrent 2、nav follow 1、perception 1、behavior 1、steer 1、ai dynamic 6、steer velocity 6、ai agents 2、ai formation 5、ai smart object 3，共 34 个分项；另含宿主 `cmake -P` 的 target 与 hot-path 契约。
+- **未修改基线与 focused 复验**：改动前干净容器交叉十四项全部通过（CTest 0.37 秒，nav query concurrent 在 QEMU 下实际运行多线程）；改动后原生以完整新 `-R` 复跑 14/14，无 skip。无需修改产品或测试源码。
+- **RED 与精确选择**：旧 workflow 因缺少十二个构建目标按预期 RED。新增独立的 `test_break_(nav_(bake|query|query_concurrent|follow)|perception|behavior|steer(_velocity)?|ai_(dynamic|agents|formation|smart_object|target_contract|hot_path_contract))$`，未改动既有表达式；真实选择为既有九十四项加十四项，共一百零八项。派生名称与同标签的 `test_core_style_prototype` 被拒绝。
+- **覆盖缺口**：nav follow、perception、behavior、steer 各只有一个用例；两项契约只检查源码与目标接线，不代表 arm64 行为。
+- **验证状态**：原生全量、最终干净容器、独立评审及远端 job 在实际完成后补记。真实关卡 navmesh、大规模群体性能、编辑器 AI 工具、Snowflake/QUIC、GPU 与物理设备仍不在本次覆盖内。
+
 ## arm64 动画与九十四项 CTest（2026-11-20）
 
 - **最小场景**：新增八个直接可执行动画目标：animation 37 例、pose authority 2、morph 10、facial 8、compression 13、locomotion 1、skeleton socket 1、aim 1，共 73 个分项，只链接动画、数学、日志和 LOD CPU 源码（morph 另链接 `meshopt_c`）。
