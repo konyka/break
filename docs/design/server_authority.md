@@ -51,3 +51,10 @@ The contract test pins that the library is not linked into `engine`, `engine_dem
 - Matchmaking (threat model section 3 still lists it as a design goal only).
 - Wiring to `break_net` / `break_session`: the caller maps the connection's session to a `session_id` and feeds the payload to the decoder. That mapping is the part that must come from the authenticated transport.
 - Multi-thread use (one owner thread, like the other libraries).
+
+
+## 补充（2026-11-20）：Linux arm64 QEMU 验证
+
+`test_break_authority` 的 14 项和 `test_break_authority_target_contract` 已纳入 arm64 QEMU lane。意图解码、服务端余额/生命值、重放与速率限制、溢出拒绝和随机不变量在目标进程中执行；归档契约由宿主 CMake 和 `aarch64-linux-gnu-nm` 检查精确导出、禁链及 authority/integrity 信任边界，契约本身不模拟。
+
+统一选择还包含 integrity、crypto 和 keygen；integrity 的 QEMU ptrace 设置跳过见 `client_integrity.md`，不影响 authority 的任何断言。此结果不是生产服务端、持久化、凭证 provisioning 或物理设备证据，客户端完整性信号仍未接入权威判定。

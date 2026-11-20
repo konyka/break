@@ -41,3 +41,12 @@ The debugger test runs a real tracer: a forked child calls `PTRACE_TRACEME`, sto
 - Integration into the editor, demos or an application: nothing links this library (pinned by the contract test), so no running binary reports these signals.
 - A transport for the signals and the server-side risk scoring that would consume them.
 - Code-section or memory integrity checks, anti-injection, obfuscation, anything that resists an attacker with local code execution. By design none of that is claimed.
+
+
+## 补充（2026-11-20）：Linux arm64 QEMU 边界
+
+arm64 lane 将 `test_break_integrity` 纳入统一二十项 CTest。文件哈希、正常进程无 tracer、模块白名单和参数检查等七项在 QEMU 中实际执行；`a_traced_process_reports_the_debugger_bit` 的测试设置步骤依赖 `PTRACE_TRACEME`，而 QEMU user 实测返回 `ENOSYS`（errno 38），子进程按既有代码 exit 90。
+
+只有 exit 90 且显式设置 `BREAK_TEST_QEMU_USER=1` 时，该用例打印 `skipped (QEMU user has no PTRACE_TRACEME)` 后结束。exit 91（产品返回错误 debugger 信号）、后续 `PTRACE_CONT`/wait 断言和无显式环境值的原生运行都继续严格判红。原生 ptrace 正例实际执行且无 skip。
+
+因此 QEMU 的 integrity 8/8 不能解释为 ptrace 正向反调试证据；它只表示七项实际用例通过加上述一个明确设置跳过。客户端完整性信号仍只是辅助观察，不能作为授权或放行依据。

@@ -1,7 +1,7 @@
 # GCC cross-compiling to Linux arm64.
 #
 # The CI uses this toolchain for compile/link checks and explicitly runs
-# selected crash, HTTP, and online-update tests with QEMU. It type-checks the
+# selected headless service and security tests with QEMU. It type-checks the
 # __aarch64__ paths (the crash handler's register capture, the Mach-O
 # reader's arm64 slices, and the platform layer's arm64 branches).
 # See docs/superpowers/specs/2026-11-20-arm64-build-lane-design.md.
