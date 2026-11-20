@@ -3,14 +3,16 @@
 ## Context
 
 The arm64 lane currently selects exactly 80 tests, including eight rigid-body
-physics tests. Five registered extended-physics tests remain outside it:
-`test_physics_slider`, `test_cloth`, `test_rope`, `test_soft_body`, and
-`test_destructible`. This slice adds exactly those five and produces an 86-test
-selection. It completes arm64 coverage of every registered physics test.
+physics tests. Six registered physics-module tests remain outside it:
+`test_physics_slider`, `test_cloth`, `test_rope`, `test_soft_body`,
+`test_destructible`, and `test_character`. This slice adds exactly those six and
+produces an 86-test selection. It completes arm64 coverage of every dedicated
+physics-module test; scene, script, and core_app tests that merely link physics
+sources stay out.
 
 ## Approaches
 
-1. Extend the existing lane with the five direct executable tests. This reuses
+1. Extend the existing lane with the six direct executable tests. This reuses
    generated QEMU commands and is the recommended minimal change.
 2. Widen the existing physics alternative to a broad `physics` prefix. This is
    rejected: it would change an already-verified alternative and admit future
@@ -19,8 +21,9 @@ selection. It completes arm64 coverage of every registered physics test.
 
 ## Existing Behavior and Baseline
 
-All five tests have direct executable-target registrations
-(`engine/CMakeLists.txt:5800-5828`) and generated QEMU commands. They need no GPU,
+All six tests have direct executable-target registrations
+(`engine/CMakeLists.txt:5800-5828` for the five extended modules,
+`engine/CMakeLists.txt:7562-7566` for `test_character`) and generated QEMU commands. They need no GPU,
 window system, or physical device.
 
 Each test registers exactly one `RUN_TEST`, so every summary reads `1 passed`.
@@ -34,24 +37,28 @@ That count understates the content. Each case is a multi-assertion scenario:
 | `test_physics_slider` | kills perpendicular offset, respects the limit | 12 |
 | `test_soft_body` | restores offsets when stiff | 15 |
 
+The assertion column counts static assertion sites; loops run more checks.
+`test_character` instead registers 30 separate `RUN_TEST` cases.
+
 Unmodified native focused execution passes 5/5 in 0.01 seconds; unmodified cross
-focused execution passes 5/5 in 0.15 seconds. No product or test-source change
+focused execution passes 5/5 in 0.15 seconds (these baselines cover the five
+extended modules; `test_character` was measured later at 30/30 under QEMU). No product or test-source change
 is needed. A single scenario per module is thin coverage; this slice records that
 fact and does not widen the tests.
 
 ## CI Change
 
-Append these five targets to the existing arm64 build command:
+Append these six targets to the existing arm64 build command:
 
 ```text
-test_physics_slider test_cloth test_rope test_soft_body test_destructible
+test_physics_slider test_cloth test_rope test_soft_body test_destructible test_character
 ```
 
 Add a new locally end-anchored alternative instead of editing the verified
 rigid-body alternative:
 
 ```text
-test_(physics_slider|cloth|rope|soft_body|destructible)$
+test_(physics_slider|cloth|rope|soft_body|destructible|character)$
 ```
 
 The registry contains no other name matching these stems, and the `$` keeps
@@ -62,12 +69,12 @@ relaxation is introduced.
 
 ## TDD and Verification
 
-1. Run the selection contract against the old workflow: require the five build
+1. Run the selection contract against the old workflow: require the six build
    targets, the exact alternative, rejection of `*_extra` names, and previous 80
-   plus exactly these five = 86. Observe RED on the old build command.
+   plus exactly these six = 86. Observe RED on the old build command.
 2. Apply only the build-list and selection-regex edits; require GREEN against an
    explicit 86-name set.
-3. Re-run native and cross focused tests; require 5/5 and no new skips.
+3. Re-run native and cross focused tests; require 6/6 (character 30/30) and no new skips.
 4. Run native full regression; require 455 tests, zero failures, and only the
    four established platform skips.
 5. Execute the final workflow run blocks in a clean Ubuntu 24.04 container.

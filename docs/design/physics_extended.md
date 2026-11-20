@@ -164,6 +164,6 @@ replay 与 sync 在单进程内比较两个世界或同一录制，因此 arm64 
 
 ## 补充（2026-11-20）：arm64 扩展物理验证
 
-arm64 lane 新增 slider、cloth、rope、soft-body、destructible 五项和 character（30 例），统一选择达到八十六项，所有已注册物理测试至此均在 arm64 运行。原生与交叉 focused 均为 6/6，无新增 skip。
+arm64 lane 新增 slider、cloth、rope、soft-body、destructible 五项和 character（30 例），统一选择达到八十六项，所有以物理模块为主体的已注册测试至此均在 arm64 运行。原生与交叉 focused 均为 6/6，无新增 skip。
 
 五个扩展模块各只有一个测试场景（静态断言点 12/24/10/15/30，含循环）。场景覆盖了主路径：绳索链接与满世界拒绝、布料钉住顶行后回拉、破坏仅在超过阈值后发生、滑块消除垂直偏移并遵守限位、软体在高刚度下恢复偏移。已知缺口：单场景内首个失败断言会提前返回并遮住后续检查，CTest 汇总只报 1 例。
