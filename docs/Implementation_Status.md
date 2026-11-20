@@ -1,3 +1,11 @@
+## arm64 核心网络与二十八项 CTest（2026-11-20）
+
+- **QUIC 边界勘察**：原生与 arm64 树均 `BREAK_ENABLE_QUIC=OFF`；当前 arm64 multiarch OpenSSL 为 3.0.13，且未配置 Snowflake，无法满足 QUIC 的 Snowflake + OpenSSL≥3.5 门控。仓库无可复用 QUIC CI 依赖 lane，本次不降低版本要求、不声称 QUIC C/C++20 覆盖，该依赖项目单独保留。
+- **新增八项**：packet 20 例、network 18 例、online lobby 10 例、online NAT 23 例、online voice 16 例、voice mixer 11 例、replay window 5 例、message rate 4 例。均为可执行目标，无嵌套编译或宿主驱动，未修改产品/测试源码。
+- **未修改 QEMU 基线**：八项 8/8，分项 20/18/10/23/16/11/5/4，CTest 1.68 秒；证明无需适配即可复用现有 emulator。Snowflake adapter/session/TLS/replication 与 QUIC 不在本次范围内。
+- **CI 契约**：先在旧构建命令处 RED，追加八个目标并扩展正则后 GREEN；真实原生选择集合为既有二十项加八项，共二十八项。emulator、环境、300 秒超时、job key 与对象检查不变，没有新依赖或新 skip。
+- **本地验证**：原生全量 455 项零失败，4 个既有平台用例跳过。最终干净容器二十八项 28/28，CTest 147.93 秒；新增八项 20/18/10/23/16/11/5/4 与全部既有分项、契约、e2e 成功，既有 integrity ptrace 设置 skip 仍恰好一次，无新增 skip。远端 job 结果在实际完成后补记。生产网络服务、Snowflake/QUIC、其他 arm64 子系统、GPU 与物理设备仍不在本次覆盖内。
+
 ## arm64 服务/安全二十项 CTest（2026-11-20）
 
 - **新增范围**：在十四项基础上加入 crypto 20 例、crypto 契约、keygen、integrity 8 例、authority 14 例和 authority/integrity 契约，共六项；统一选择当前二十项，包含全部 security 标签测试及额外核心/契约，不是全量 arm64 `ctest`。

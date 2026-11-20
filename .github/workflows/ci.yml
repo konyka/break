@@ -209,7 +209,7 @@ jobs:
       # libraries so a type error anywhere in them fails here too.
       - name: Build the arm64 targets
         run: |
-          cmake --build build-arm64 --parallel --target break_crash engine test_break_crash test_break_crash_symbolize test_break_crash_cluster test_break_crash_upload_http break_crash_server break_crash_report break_crash_e2e test_break_update test_break_update_client test_break_http break_manifest_tool break_manifest_verify break_update_server break_update_e2e test_break_crypto test_break_integrity test_break_authority break_keygen
+          cmake --build build-arm64 --parallel --target break_crash engine test_break_crash test_break_crash_symbolize test_break_crash_cluster test_break_crash_upload_http break_crash_server break_crash_report break_crash_e2e test_break_update test_break_update_client test_break_http break_manifest_tool break_manifest_verify break_update_server break_update_e2e test_break_crypto test_break_integrity test_break_authority break_keygen test_packet test_network test_break_online_lobby test_break_online_nat test_break_online_voice test_break_voice_mixer test_break_replay_window test_break_msg_rate
 
       - name: Confirm the objects really are arm64
         run: |
@@ -226,7 +226,7 @@ jobs:
           BREAK_TEST_RUNNER='qemu-aarch64 -L /' \
           BREAK_TEST_QEMU_USER=1 \
           timeout 300 ctest --test-dir build-arm64 --verbose --no-tests=error \
-            -R '^(test_break_crash|test_break_update|test_break_http|test_break_manifest_tool|test_break_crypto|test_break_keygen|test_break_integrity|test_break_authority)'
+            -R '^(test_break_crash|test_break_update|test_break_http|test_break_manifest_tool|test_break_crypto|test_break_keygen|test_break_integrity|test_break_authority|test_packet|test_network|test_break_online_lobby|test_break_online_nat|test_break_online_voice|test_break_voice_mixer|test_break_replay_window|test_break_msg_rate)'
 
   lane-libfuzzer-linux-clang:
     name: Linux + Clang-18 (libFuzzer, coverage-guided)

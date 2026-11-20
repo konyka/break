@@ -344,3 +344,12 @@ Stage 2 网络边界只有在以下条件同时满足后才能标记“formal ru
 ## 补充（2026-11-15）：Session AUTH 回复回带关联 ID
 
 客户端 session 层收到 CHALLENGE 后自动生成 AUTH v2 回复。该回复现在复制 CHALLENGE 的 `correlation_id`，CHALLENGE 未带关联扩展时回复也不带。session handler 收到的 `BreakNetOwnedMessage` 本来就含 `correlation_id`，业务 handler 需要回带时自行调用 `break_net_reactor_send_correlated`。测试注入辅助 `break_net_reactor_enqueue_correlated_message_for_test` 仅在 `BREAK_NET_TESTING` 下可用。
+
+
+## 补充（2026-11-20）：Linux arm64 QEMU 核心网络证据
+
+arm64 lane 在既有二十项服务/安全测试上新增八项无 Snowflake 依赖的网络测试，统一为二十八项 CTest：packet 20/20、network 18/18、online lobby 10/10、online NAT 23/23、online voice 16/16、voice mixer 11/11、replay window 5/5、message rate 4/4。未修改的 emulator 交叉树八项全部通过，focused CTest 1.68 秒；全部是直接可执行目标，没有嵌套工具或新 skip。
+
+QUIC 勘察保留独立边界：当前 arm64 multiarch OpenSSL 为 3.0.13，且未配置 Snowflake，不能满足 `BREAK_ENABLE_QUIC=ON` 所需的 Snowflake + OpenSSL≥3.5。Snowflake adapter/session/TLS/replication 与 QUIC C/C++20 均未纳入本次，不降低版本门槛、不把缺依赖记为通过。它们需要独立的 pinned 依赖交叉构建项目。
+
+本结果是选定 QEMU 目标进程证据，不是生产网络部署、全量 arm64 CTest、GPU 或物理设备验证。
