@@ -353,3 +353,10 @@ arm64 lane 在既有二十项服务/安全测试上新增八项无 Snowflake 依
 QUIC 勘察保留独立边界：当前 arm64 multiarch OpenSSL 为 3.0.13，且未配置 Snowflake，不能满足 `BREAK_ENABLE_QUIC=ON` 所需的 Snowflake + OpenSSL≥3.5。Snowflake adapter/session/TLS/replication 与 QUIC C/C++20 均未纳入本次，不降低版本门槛、不把缺依赖记为通过。它们需要独立的 pinned 依赖交叉构建项目。
 
 本结果是选定 QEMU 目标进程证据，不是生产网络部署、全量 arm64 CTest、GPU 或物理设备验证。
+
+
+## 补充（2026-11-20）：aspect 与分片复制 arm64 证据
+
+统一 arm64 选择新增 `test_break_online_aspect`（12/12）、`test_break_online_aspect_replication`（9/9）和 `test_break_replication_fragment`（12/12），总计达到三十一项。未修改 emulator 树的 focused CTest 为 0.26 秒，三项均为直接目标进程，无嵌套工具或新 skip。
+
+覆盖原子变更与 epoch 冲突、预算/重试、分片重组、离开/重入、乱序与重复分片、校验和、容量边界及 supersession。Snowflake 适配器/会话/TLS、core_app 网络驱动、QUIC 和生产部署仍未纳入；QUIC 依赖门控不变。

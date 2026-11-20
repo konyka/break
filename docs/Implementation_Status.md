@@ -1,3 +1,10 @@
+## arm64 aspect/replication 与三十一项 CTest（2026-11-20）
+
+- **新增三项**：online aspect 12 例、online aspect replication 9 例、replication fragment 12 例。均为直接可执行目标，无嵌套工具、无 Snowflake 依赖，未修改产品或测试源码。
+- **未修改 QEMU 基线**：三项 3/3，分项 12/9/12，focused CTest 0.26 秒；aspect 覆盖原子变更/epoch/休眠状态，aspect replication 覆盖预算/重试/分片/离开重入，fragment 覆盖乱序/冲突/校验/ supersession 与容量边界。
+- **CI 契约**：先在旧构建命令处 RED，追加三个目标并加入 aspect 前缀和 fragment 正则后 GREEN；真实原生选择为既有二十八项加三项，共三十一项。其他 workflow 输入不变，无新增依赖或 skip。
+- **本地验证**：原生全量 455 项零失败，4 个既有平台用例跳过。最终干净容器三十一项 31/31，CTest 118.55 秒；新增 12/9/12 与全部既有汇总/契约/e2e 成功，既有 ptrace 设置 skip 恰好一次，无新增跳过。远端 job 结果在实际完成后补记。Snowflake 适配器/会话/TLS、core_app 网络驱动、QUIC、生产部署、其他 arm64 子系统、GPU 与物理设备仍不在本次覆盖内。
+
 ## arm64 核心网络与二十八项 CTest（2026-11-20）
 
 - **QUIC 边界勘察**：原生与 arm64 树均 `BREAK_ENABLE_QUIC=OFF`；当前 arm64 multiarch OpenSSL 为 3.0.13，且未配置 Snowflake，无法满足 QUIC 的 Snowflake + OpenSSL≥3.5 门控。仓库无可复用 QUIC CI 依赖 lane，本次不降低版本要求、不声称 QUIC C/C++20 覆盖，该依赖项目单独保留。
