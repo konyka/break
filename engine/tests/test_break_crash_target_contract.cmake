@@ -392,16 +392,26 @@ int main(void) {
 ")
 
 set(link_exe "${CRASH_CONTRACT_WORK}/crash_link_check")
+get_filename_component(crash_contract_cc_name "${CRASH_CONTRACT_CC}" NAME)
+string(TOLOWER "${crash_contract_cc_name}" crash_contract_cc_name)
+if(crash_contract_cc_name MATCHES "^(cl|clang-cl)(\\.exe)?$")
+    set(link_exe "${link_exe}.exe")
+    set(crash_contract_compile_flags /nologo /std:c11)
+    set(crash_contract_output_flags "/Fe${link_exe}")
+else()
+    set(crash_contract_compile_flags -std=c11)
+    set(crash_contract_output_flags -o "${link_exe}")
+endif()
 separate_arguments(crash_contract_san_flags UNIX_COMMAND "${CRASH_CONTRACT_SAN}")
 execute_process(
-    COMMAND ${CRASH_CONTRACT_CC} -std=c11 ${crash_contract_san_flags}
+    COMMAND ${CRASH_CONTRACT_CC} ${crash_contract_compile_flags} ${crash_contract_san_flags}
             -I${CRASH_CONTRACT_INCLUDE}
             "-DCRASH_LINK_WORK=\"${CRASH_CONTRACT_WORK}\""
             "${link_main}"
             "${CRASH_CONTRACT_INCLUDE}/platform/platform_fs.c"
             "${CRASH_CONTRACT_INCLUDE}/core/break_version.c"
             "${CRASH_CONTRACT_ARCHIVE}"
-            -o "${link_exe}"
+            ${crash_contract_output_flags}
     RESULT_VARIABLE link_rc
     OUTPUT_VARIABLE link_out
     ERROR_VARIABLE link_err)

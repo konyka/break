@@ -344,16 +344,26 @@ else()
     set(update_contract_libcrypto -lcrypto)
 endif()
 set(link_exe "${UPDATE_CONTRACT_WORK}/update_link_check")
+get_filename_component(update_contract_cc_name "${UPDATE_CONTRACT_CC}" NAME)
+string(TOLOWER "${update_contract_cc_name}" update_contract_cc_name)
+if(update_contract_cc_name MATCHES "^(cl|clang-cl)(\\.exe)?$")
+    set(link_exe "${link_exe}.exe")
+    set(update_contract_compile_flags /nologo /std:c11)
+    set(update_contract_output_flags "/Fe${link_exe}")
+else()
+    set(update_contract_compile_flags -std=c11)
+    set(update_contract_output_flags -o "${link_exe}")
+endif()
 separate_arguments(update_contract_san_flags UNIX_COMMAND "${UPDATE_CONTRACT_SAN}")
 execute_process(
-    COMMAND ${UPDATE_CONTRACT_CC} -std=c11 ${update_contract_san_flags}
+    COMMAND ${UPDATE_CONTRACT_CC} ${update_contract_compile_flags} ${update_contract_san_flags}
             -I${UPDATE_CONTRACT_INCLUDE}
             "-DUPDATE_LINK_WORK=\"${UPDATE_CONTRACT_WORK}\""
             "${link_main}"
             "${UPDATE_CONTRACT_INCLUDE}/platform/platform_fs.c"
             "${UPDATE_CONTRACT_ARCHIVE}" "${UPDATE_CONTRACT_CRYPTO_ARCHIVE}"
             ${update_contract_libcrypto}
-            -o "${link_exe}"
+            ${update_contract_output_flags}
     RESULT_VARIABLE link_rc
     OUTPUT_VARIABLE link_out
     ERROR_VARIABLE link_err)

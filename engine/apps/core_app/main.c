@@ -13,6 +13,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(_WIN32)
+#include <windows.h>
+#include <shellapi.h>
+#endif
+
 static void print_help(void) {
     puts("Usage: core_app [OPTIONS]\n"
          "  --render record|auto|vulkan|opengl\n"
@@ -150,7 +155,7 @@ static bool parse_poll_ms(const char *value, u32 *out) {
 }
 #endif
 
-int main(int argc, char **argv) {
+static int core_app_main(int argc, char **argv) {
     CoreAppConfig config = {
         .asset_root = "assets/core_app",
         .render_mode = CORE_APP_RENDER_AUTO,
@@ -316,3 +321,78 @@ int main(int argc, char **argv) {
     }
     return exit_code;
 }
+
+#if defined(_WIN32)
+static bool windows_device_name_arg(char **argv, int index) {
+    const char *arg = argv[index];
+    if (index > 0 &&
+        (strcmp(argv[index - 1], "--audio-device") == 0 ||
+         strcmp(argv[index - 1], "--voice-capture-device") == 0)) {
+        return true;
+    }
+    return strncmp(arg, "--audio-device=", sizeof("--audio-device=") - 1u) == 0 ||
+           strncmp(arg, "--voice-capture-device=",
+                   sizeof("--voice-capture-device=") - 1u) == 0;
+}
+
+static char *windows_utf8_arg(const wchar_t *arg) {
+    int size = WideCharToMultiByte(CP_UTF8, 0, arg, -1, NULL, 0, NULL, NULL);
+    char *result;
+    if (size <= 0) return NULL;
+    result = malloc((usize)size);
+    if (!result) return NULL;
+    if (WideCharToMultiByte(CP_UTF8, 0, arg, -1, result, size, NULL, NULL) != size) {
+        free(result);
+        return NULL;
+    }
+    return result;
+}
+
+int main(int argc, char **argv) {
+    int wide_argc = 0;
+    int i;
+    int exit_code = 2;
+    bool needed = false;
+    LPWSTR *wide_argv;
+    char **args;
+    for (i = 0; i < argc; ++i) {
+        if (windows_device_name_arg(argv, i)) {
+            needed = true;
+            break;
+        }
+    }
+    if (!needed) return core_app_main(argc, argv);
+    wide_argv = CommandLineToArgvW(GetCommandLineW(), &wide_argc);
+    if (!wide_argv) return cli_error("could not read the Windows command line");
+    if (wide_argc != argc) {
+        LocalFree(wide_argv);
+        return cli_error("could not match the Windows command line");
+    }
+    args = malloc(((usize)argc + 1u) * sizeof(*args));
+    if (!args) {
+        LocalFree(wide_argv);
+        return cli_error("could not allocate the Windows command line");
+    }
+    memcpy(args, argv, ((usize)argc + 1u) * sizeof(*args));
+    for (i = 0; i < argc; ++i) {
+        if (!windows_device_name_arg(argv, i)) continue;
+        args[i] = windows_utf8_arg(wide_argv[i]);
+        if (!args[i]) break;
+    }
+    if (i == argc) {
+        exit_code = core_app_main(argc, args);
+    } else {
+        cli_error("could not convert the Windows audio device name to UTF-8");
+    }
+    for (i = 0; i < argc; ++i) {
+        if (args[i] != argv[i]) free(args[i]);
+    }
+    free(args);
+    LocalFree(wide_argv);
+    return exit_code;
+}
+#else
+int main(int argc, char **argv) {
+    return core_app_main(argc, argv);
+}
+#endif

@@ -846,8 +846,7 @@ target_include_directories(break_replication_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(break_replication_core PUBLIC break_ecs_replication)
 
-# Optional online-session network capabilities. Socket symbols remain
-# owned by engine/network.c and resolve at the consumer's final link.
+# Optional online-session network capabilities and their socket implementation.
 add_library(break_online STATIC
     src/network/break_online_lobby.c
     src/network/break_online_inbox.c
@@ -861,6 +860,11 @@ add_library(break_online STATIC
 set_property(TARGET break_online PROPERTY C_STANDARD 11)
 target_include_directories(break_online PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(break_online PUBLIC Threads::Threads break_replication_core)
+if(ENGINE_PLATFORM STREQUAL "windows")
+    target_compile_definitions(break_online PRIVATE
+        ENGINE_PLATFORM_WINDOWS=1 _WIN32_WINNT=0x0601)
+    target_link_libraries(break_online PUBLIC ws2_32)
+endif()
 if(BREAK_ENABLE_CRYPTO)
     target_compile_definitions(break_online PUBLIC BREAK_ENABLE_CRYPTO=1)
     target_link_libraries(break_online PUBLIC break_crypto)
@@ -1726,6 +1730,9 @@ target_link_libraries(core_app PRIVATE core_app_runtime core_app_network m)
 # ahead of the backend archives (engine_demo order) so those resolve.
 target_link_libraries(core_app PRIVATE engine)
 engine_link_rhi_backend(core_app)
+if(ENGINE_PLATFORM STREQUAL "windows")
+    target_link_libraries(core_app PRIVATE shell32)
+endif()
 add_executable(core_app_asset_bake apps/core_app/core_app_asset_bake.c)
 set_property(TARGET core_app_asset_bake PROPERTY C_STANDARD 11)
 target_link_libraries(core_app_asset_bake PRIVATE core_app_runtime m)
@@ -6594,8 +6601,7 @@ endif()
             TIMEOUT 20 LABELS "network;online;nat;no_crypto")
     endif()
 
-    add_executable(test_break_online_voice tests/test_break_online_voice.c
-        src/network/network.c)
+    add_executable(test_break_online_voice tests/test_break_online_voice.c)
     target_include_directories(test_break_online_voice PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_break_online_voice PRIVATE break_online Threads::Threads m)
     if(ENGINE_PLATFORM STREQUAL "linux" OR ENGINE_PLATFORM STREQUAL "android" OR
@@ -6604,7 +6610,6 @@ endif()
             ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=200112L)
     elseif(ENGINE_PLATFORM STREQUAL "windows")
         target_compile_definitions(test_break_online_voice PRIVATE ENGINE_PLATFORM_WINDOWS=1)
-        target_link_libraries(test_break_online_voice PRIVATE ws2_32)
     endif()
     add_test(NAME test_break_online_voice COMMAND test_break_online_voice)
     set_tests_properties(test_break_online_voice PROPERTIES
@@ -7049,6 +7054,9 @@ endif()
         set(BREAK_CONTRACT_LIBCRYPTO "${OPENSSL_CRYPTO_LIBRARY}")
     elseif(WIN32)
         set(BREAK_CONTRACT_LIBCRYPTO "$<TARGET_LINKER_FILE:OpenSSL::Crypto>")
+    endif()
+    if(NOT CMAKE_NM)
+        find_program(CMAKE_NM NAMES nm llvm-nm)
     endif()
     if(BREAK_ENABLE_CRYPTO)
         add_executable(test_break_crypto tests/test_break_crypto.c)

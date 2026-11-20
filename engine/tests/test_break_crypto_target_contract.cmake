@@ -201,12 +201,22 @@ else()
     set(crypto_contract_libcrypto -lcrypto)
 endif()
 set(link_exe "${CRYPTO_CONTRACT_WORK}/crypto_link_check")
+get_filename_component(crypto_contract_cc_name "${CRYPTO_CONTRACT_CC}" NAME)
+string(TOLOWER "${crypto_contract_cc_name}" crypto_contract_cc_name)
+if(crypto_contract_cc_name MATCHES "^(cl|clang-cl)(\\.exe)?$")
+    set(link_exe "${link_exe}.exe")
+    set(crypto_contract_compile_flags /nologo /std:c11)
+    set(crypto_contract_output_flags "/Fe${link_exe}")
+else()
+    set(crypto_contract_compile_flags -std=c11)
+    set(crypto_contract_output_flags -o "${link_exe}")
+endif()
 separate_arguments(crypto_contract_san_flags UNIX_COMMAND "${CRYPTO_CONTRACT_SAN}")
 execute_process(
-    COMMAND ${CRYPTO_CONTRACT_CC} -std=c11 ${crypto_contract_san_flags}
+    COMMAND ${CRYPTO_CONTRACT_CC} ${crypto_contract_compile_flags} ${crypto_contract_san_flags}
             -I${CRYPTO_CONTRACT_INCLUDE}
             "${link_main}" "${CRYPTO_CONTRACT_ARCHIVE}" ${crypto_contract_libcrypto}
-            -o "${link_exe}"
+            ${crypto_contract_output_flags}
     RESULT_VARIABLE link_rc
     OUTPUT_VARIABLE link_out
     ERROR_VARIABLE link_err)
