@@ -3,7 +3,10 @@
 - **最小场景**：新增 runtime facade 18 例、runtime IO 16 例、runtime reload/profiler 34 例，共 68 个分项、三个直接可执行目标。均链接既有测试专用 `runtime_core_test`，由生成的 QEMU 命令执行，无嵌套工具或宿主 driver 修改。
 - **未修改基线与 focused 复验**：原生和交叉均为 3/3、18/16/34；workflow 修改后再次通过，原生 0.81 秒、交叉 1.45 秒，无 skip。无需修改产品或测试源码。
 - **RED 与精确选择**：旧 workflow 因缺少三个构建目标按预期 RED。追加目标和局部结尾锚定的 `test_runtime_(facade|io|reload)$` 后，真实原生选择为既有三十五项加三项，共三十八项，显式集合断言通过。独立评审发现初版缺少局部 `$`；新增静态锚点契约先在旧文本 RED，修正后拒绝 `test_runtime_io_extra` 等未来前缀扩展并再次通过 38 项集合断言。
-- **验证状态**：原生全量、最终干净容器、独立评审及远端 job 在实际完成后补记。Lua/ECS、编辑器/渲染、Snowflake loopback/voice、QUIC、GPU 与物理设备仍不在本次覆盖内。
+- **本地验证（2026-11-20 16:26 CST）**：原生全量 455 项零失败，4 个既有平台用例跳过，CTest 153.49 秒。局部锚点修正后的最终干净 Ubuntu 24.04 容器完成 workflow 原始步骤，38/38、CTest 109.02 秒；新增 18/16/34 与全部既有分项/契约/e2e 成功，既有 ptrace 设置 skip 恰好一次，无新增跳过。`git diff --check` 通过。
+- **独立评审**：初审发现新增正则缺少局部结尾锚点，已按 RED/GREEN 修正并同步设计、计划与使用文档；复核确认该 Important 问题已解决，最终无 Critical/Important 问题。
+- **远端验证**：[CI run 44702474649](https://github.com/konyka/break/actions/runs/44702474649) 的 [arm64 job 136173922125](https://github.com/konyka/break/actions/runs/44702474649/job/136173922125) 在提交 `17e5eb07` 上全部步骤成功。原始日志断言确认精确三十八项、`0 tests failed out of 38`、runtime facade/IO/reload 18/16/34、runtime_core 9/9 与契约、全部既有分项/契约/e2e，既有 ptrace 设置 skip 恰好一次；非 root 权限分支实际执行，两个真实 LLVM Mach-O 子检查仍按工具缺失条件跳过。
+- **验证边界**：Lua/ECS、编辑器/渲染、Snowflake loopback/voice、QUIC、GPU 与物理设备仍不在本次覆盖内。
 
 ## arm64 runtime_core 与三十五项 CTest（2026-11-20）
 
