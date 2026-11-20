@@ -3,7 +3,9 @@
 - **问题**：一百五十二项串行 CTest 在远端 [job 136297883692](https://github.com/konyka/break/actions/runs/44739103555/job/136297883692) 耗时 171.23 秒，已占外层 `timeout 300` 的 57%；最慢三项为 `test_break_http` 66.12 秒（原生 10.6 秒）、`test_break_crash_e2e` 27.24 秒、`test_break_update_e2e` 14.46 秒。135 项未设 CTest `TIMEOUT`，只受外层守护约束，正常波动或后续扩选都可能在无测试失败时误杀整条 lane。
 - **改动**：workflow 与 Build_Guide 镜像命令把 `timeout 300 ctest` 改为 `timeout 600 ctest`，选择、单项 `TIMEOUT` 与 job 级 `timeout-minutes: 25` 不变。拒绝 `-j` 并行（会重现 `test_runtime_io` 的 qemu-user 挂起），暂不拆分 lane（多一次约 50 秒的 multiarch 安装）。
 - **TDD**：预算契约要求恰好一处 `timeout 600 ctest`、无 `timeout 300`、job 上限仍为 25 分钟、指南同步、选择仍为一百五十二项；旧 workflow 在「old 300 s guard still present」处 RED，改动后 GREEN。
-- **验证状态**：干净容器与远端 job 在实际完成后补记。
+- **独立评审**：只读评审未发现 Critical/Important 问题，确认 600 秒守护在 25 分钟 job 中仍留约 13 分钟余量（CTest 在 job 开始约 1 分 50 秒后启动）、135/152 与 DartConfiguration 默认 1500 秒属实。采纳 Minor：`docs/design/crash_symbolization.md` 的命令块注明为崩溃切片原始命令并指向 Build_Guide 1.5；音频节的「300 秒上限」补注 2026-11-20 起为 600 秒。旧的带日期 spec/plan 按历史保留。
+- **本地验证与第二次挂起**：第一次干净容器运行在既有 `test_runtime_reload` 第 23 例 `reload_destroy_requires_shutdown_aborts` 挂起：fork 子进程两个线程都停在 futex，父进程停在 `waitpid`，表现与此前 `test_runtime_io` 第 15 例一致；两者都在 fork 子进程里起 worker 线程，再期待 abort。该次运行被人工停止。重跑 152/152、CTest 139.83 秒，既有 ptrace skip 恰好一次。根因尚未定位：最小复现（fork 后在子进程建线程，或建线程后 abort，串行与 12 路并行各数百次）以及 QEMU 上游 [issue 358](https://gitlab.com/qemu-project/qemu/-/issues/358) 的复现程序在 QEMU 8.2.2 下均为 0 次挂起。远端 job 历次未出现。不加重试、不屏蔽；记录为待办：给这两个用例加子进程级超时以便挂起时立即失败并给出诊断，再继续缩小触发条件。
+- **验证状态**：远端 job 在实际完成后补记。
 
 ## arm64 规则引擎与一百五十二项 CTest（2026-11-20）
 
@@ -20,7 +22,7 @@
 ## arm64 音频与一百三十一项 CTest（2026-11-20）
 
 - **最小场景**：新增二十三项音频测试：二十二个直接可执行目标共 348 个分项（voice playback 4、audio 47、audio extended 129、dsp 10、hrtf 9、capture 13、agc 8、noise gate 8、echo canceller 9、delay estimator 21、fft 8、noise suppressor 8、residual echo suppressor 8、delay tracker 8、gcc-phat 8、drift estimator 8、drift resampler 12、drift compensator 8、edit 6、voice processor 3、voice aligner 6、wav 7），以及宿主 `cmake -P` 的 realtime 契约。用例使用 FAKE 后端或 miniaudio Null 设备；其中三个用例（`test_audio.c:827`、`test_audio_capture.c:416/537`）打开 `AUDIO_BACKEND_DEFAULT`，会先经 dlopen 尝试 PulseAudio/ALSA/JACK 再回落 Null，容器内无 arm64 声音库所以回落 Null。这不是真实设备证据，镜像若加入 arm64 声音库该行为会改变。
-- **未修改基线与 focused 复验**：改动前干净容器交叉 23/23，CTest 16.57 秒，最慢的 delay tracker 3.66 秒，voice playback 与 capture 设有 20/30 秒单项超时，其余项由 lane 的 300 秒上限约束；分项数与原生一致。改动后原生以完整新 `-R` 复跑 23/23，无 skip。无需修改产品或测试源码。
+- **未修改基线与 focused 复验**：改动前干净容器交叉 23/23，CTest 16.57 秒，最慢的 delay tracker 3.66 秒，voice playback 与 capture 设有 20/30 秒单项超时，其余项由 lane 的 300 秒上限约束（2026-11-20 起为 600 秒）；分项数与原生一致。改动后原生以完整新 `-R` 复跑 23/23，无 skip。无需修改产品或测试源码。
 - **RED 与精确选择**：旧 workflow 因缺少二十二个构建目标按预期 RED。新增独立的 `test_audio(_(extended|dsp|hrtf|capture|agc|noise_gate|echo_canceller|delay_estimator|fft|noise_suppressor|residual_echo_suppressor|delay_tracker|gcc_phat|drift_estimator|drift_resampler|drift_compensator|edit|voice_processor|voice_aligner|wav|realtime_contract))?$|test_voice_playback$`，未改动既有表达式；真实选择为既有一百零八项加二十三项，共一百三十一项。派生名称与同带 `audio` 标签的 `test_core_app_voice`、`test_core_app_voice_lane`、`test_editor_audio_sink`（及 `test_editor_audio`）被拒绝。
 - **覆盖缺口**：realtime 契约只检查源码中的实时路径约束，不代表 arm64 行为；QEMU 下通过只说明同一 arm64 构建内 DSP 管线自洽，不证明跨架构逐位一致，也不代表真机实时期限。
 - **本地验证（2026-11-20 20:36 CST）**：原生全量 455 项零失败，4 个既有平台用例跳过，CTest 154.67 秒。最终干净 Ubuntu 24.04 容器按 workflow 原始步骤完成构建、对象检查与一百三十一项 CTest，131/131、CTest 135.16 秒；二十二个音频分项数逐项与表一致（合计 348），全部既有分项/契约/e2e 成功，既有 ptrace 设置 skip 恰好一次，无新增跳过。`git diff --check` 通过。

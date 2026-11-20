@@ -115,7 +115,7 @@ Mach-O 用例在测试里逐字节构造镜像，不需要 Apple SDK：dylib 与
 
 ### Linux arm64 QEMU 运行（2026-11-20）
 
-CI 的 `lane-cross-aarch64-linux` 配置 `CMAKE_CROSSCOMPILING_EMULATOR=/usr/bin/qemu-aarch64;-L;/`，构建九个目标后统一执行：
+CI 的 `lane-cross-aarch64-linux` 配置 `CMAKE_CROSSCOMPILING_EMULATOR=/usr/bin/qemu-aarch64;-L;/`。崩溃切片最初构建九个目标后统一执行下面的命令；当前选择与外层守护（2026-11-20 起为 `timeout 600`）以 `docs/Build_Guide.md` 1.5 节为准：
 
 ```sh
 BREAK_TEST_NM=aarch64-linux-gnu-nm \
