@@ -163,10 +163,12 @@ typedef enum BreakNetTransportClass {
 4. **Replay window 集成**：`test_datagram_replay_window_integration` —— 66 个唯一数据报各投递一次，序号 1 的即时重复和窗口外重发各被拒绝一次，应用计数保持 66、连接丢弃计数为 2
 5. **三方语音会议**：`test_voice_conference` —— 三个认证客户端分别发送 1000、2000、3000 的 PCM 帧，服务器按连接 ID 混音为每样本 6000，再回发；三个客户端都播放出相同的 160 样本混合帧
 6. **会议弱网**：`test_voice_conference_weak_network` —— 每客户端上下行各四帧，每方向第四个 UDP 包丢弃，其余包延迟 15 ms，首包延迟 30 ms 形成乱序；三个客户端仍播放出逐样本为 6000 的混合帧
-7. **随机弱网**：`test_voice_conference_seeded_weak_network` —— 固定种子 `0xB5EED123`，25% 丢包与 0–20 ms 抖动，每客户端上下行各六帧；断言实际发生丢包和非零抖动，三个客户端仍播放正确混合帧
-8. **C++20 同步**：`test_break_net_quic_cpp20` —— 封装层 echo/auth/datagram 全链路验证，并检查 `Conn::Id()`、`Conn::DroppedDatagrams()` 与 C 接口一致
+7. **均衡随机弱网**：`test_voice_conference_seeded_weak_network` —— 种子 `0xB5EED123`，上下行各 25% 丢包与 0–20 ms 抖动，验证双方向丢包／抖动及正确混音
+8. **上行高丢包**：`test_voice_conference_seeded_uplink_loss` —— 种子 `0xA11CE002`，上行 40%、下行 5%，验证上行实际丢包与双方向抖动
+9. **下行高丢包**：`test_voice_conference_seeded_downlink_loss` —— 种子 `0xD00D1003`，上行 5%、下行 40%，验证下行实际丢包与双方向抖动
+10. **C++20 同步**：`test_break_net_quic_cpp20` —— 封装层 echo/auth/datagram 全链路验证，并检查 `Conn::Id()`、`Conn::DroppedDatagrams()` 与 C 接口一致
 
-完整套件：`test_break_net_quic` 21/21（传输 8 + 会话 4 + 数据报 4 + 语音 4 + lobby 1），连续重复运行 10/10 通过；C++20 封装测试通过；非图形 CTest 414/414 通过（2026-11-20）。
+完整套件：`test_break_net_quic` 23/23（传输 8 + 会话 4 + 数据报 4 + 语音 6 + lobby 1），连续重复运行 10/10 通过；C++20 封装测试通过；非图形 CTest 414/414 通过（2026-11-20）。
 
 ## 12.1 语音路径已迁移到数据报通道
 
@@ -207,9 +209,15 @@ typedef enum BreakNetTransportClass {
 
 ## 12.5 固定种子的丢包率与抖动分布
 
-`test_quic_udp_proxy_set_random` 为每通道、每方向初始化独立的 xorshift32 状态；种子为 `0xB5EED123`，零状态有固定非零回退。每个到达包先取随机数执行 `value % 100 < 25` 的丢包判断，幸存包再取 `value % 21`，得到 0–20 ms 的均匀离散延迟。相同输入序列与种子因此产生相同的代理决策，不依赖全局随机状态。
+`test_quic_udp_proxy_set_random` 为每通道、每方向初始化独立的 xorshift32 状态，零状态有固定非零回退；上下行丢包率分别配置。每个到达包先取随机数执行 `value % 100 < drop_percent[direction]`，幸存包再取 `value % 21`，得到 0–20 ms 的均匀离散延迟。相同输入序列与种子因此产生相同的代理决策，不依赖全局随机状态。
 
-`test_voice_conference_seeded_weak_network` 每方向发送六帧，低于八帧 jitter capacity；代理队列全部排空后才做混音和播放断言。测试要求三个方向通道都观察到上下行流量，总 `dropped > 0`、总 `jittered > 0`，但不把短样本的实际比例误当作统计收敛证明。语音发送遇到拥塞时有界重试，BRV 帧内容及其应用序号保持不变；传输数据报序号允许因失败尝试产生间隔。
+| 场景 | 种子 | 上行丢包 | 下行丢包 |
+|---|---|---:|---:|
+| `test_voice_conference_seeded_weak_network` | `0xB5EED123` | 25% | 25% |
+| `test_voice_conference_seeded_uplink_loss` | `0xA11CE002` | 40% | 5% |
+| `test_voice_conference_seeded_downlink_loss` | `0xD00D1003` | 5% | 40% |
+
+三个场景均为每客户端上下行各六帧，低于八帧 jitter capacity；代理队列全部排空后才做混音和播放断言。`dropped_by_direction` 用于断言每个配置为至少 25% 的方向确实发生丢包，`jittered_by_direction` 用于断言上下行都出现非零抖动；短样本的实际比例不被当作统计收敛证明。语音发送遇到拥塞时有界重试，BRV 帧内容及其应用序号保持不变；传输数据报序号允许因失败尝试产生间隔。
 
 ## 13. NOT delivered（本切片明确不覆盖）
 

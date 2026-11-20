@@ -10,6 +10,8 @@ typedef struct TestQuicUdpProxySet TestQuicUdpProxySet;
 
 typedef struct TestQuicUdpProxyStats {
     u64 received[TEST_QUIC_UDP_PROXY_STATS_DIRS];
+    u64 dropped_by_direction[TEST_QUIC_UDP_PROXY_STATS_DIRS];
+    u64 jittered_by_direction[TEST_QUIC_UDP_PROXY_STATS_DIRS];
     u64 forwarded;
     u64 dropped;
     u64 delayed;
@@ -34,7 +36,8 @@ void test_quic_udp_proxy_set_impairment(TestQuicUdpProxySet *set, bool enabled,
  * surviving packet gets an integer delay in [0, jitter_max_ms]. Set enabled=
  * false to return to the deterministic rules above. */
 void test_quic_udp_proxy_set_random(TestQuicUdpProxySet *set, bool enabled,
-                                    u32 seed, u32 drop_percent,
+                                    u32 seed, u32 uplink_drop_percent,
+                                    u32 downlink_drop_percent,
                                     u32 jitter_max_ms);
 bool test_quic_udp_proxy_set_step(TestQuicUdpProxySet *set, u32 timeout_ms);
 void test_quic_udp_proxy_set_stats(const TestQuicUdpProxySet *set, u32 channel,

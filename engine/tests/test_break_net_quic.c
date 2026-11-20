@@ -1116,7 +1116,8 @@ static bool conference_direction_drained(TestQuicUdpProxySet *proxies,
     return true;
 }
 
-static bool run_voice_conference(bool impaired, bool random) {
+static bool run_voice_conference(bool impaired, bool random, u32 seed,
+                                 u32 uplink_drop, u32 downlink_drop) {
     BreakNetQuicServerConfig server_config;
     memset(&server_config, 0, sizeof(server_config));
     server_config.cert_file = kCert;
@@ -1208,12 +1209,13 @@ static bool run_voice_conference(bool impaired, bool random) {
     ASSERT_EQ_U(break_net_quic_conn_id(NULL), 0u);
 
     /* Impair only post-auth traffic. Deterministic mode drops every fourth
-     * packet and uses 15/30 ms delays; random mode drops 25% with 0..20 ms
-     * jitter from a fixed xorshift32 seed. */
+     * packet and uses 15/30 ms delays; random mode applies the scenario's
+     * per-direction loss rates with 0..20 ms seeded jitter. */
     const u32 frame_count = !impaired ? 1u : (random ? 6u : 4u);
     if (random) {
         test_quic_udp_proxy_set_impairment(proxies, true, 0u, 0u, false);
-        test_quic_udp_proxy_set_random(proxies, true, 0xB5EED123u, 25u, 20u);
+        test_quic_udp_proxy_set_random(proxies, true, seed, uplink_drop,
+                                       downlink_drop, 20u);
     } else if (impaired) {
         test_quic_udp_proxy_set_impairment(proxies, true, 4u, 15u, true);
     }
@@ -1322,16 +1324,20 @@ static bool run_voice_conference(bool impaired, bool random) {
     }
 
     if (impaired) {
-        u64 total_dropped = 0u;
-        u64 total_jittered = 0u;
+        u64 direction_drops[TEST_QUIC_UDP_PROXY_STATS_DIRS] = {0u, 0u};
+        u64 direction_jitter[TEST_QUIC_UDP_PROXY_STATS_DIRS] = {0u, 0u};
         for (u32 i = 0u; i < CONFERENCE_CLIENTS; ++i) {
             TestQuicUdpProxyStats stats;
             test_quic_udp_proxy_set_stats(proxies, i, &stats);
             ASSERT_TRUE(stats.received[0] >= frame_count);
             ASSERT_TRUE(stats.received[1] >= frame_count);
             if (random) {
-                total_dropped += stats.dropped;
-                total_jittered += stats.jittered;
+                for (u32 direction = 0u;
+                     direction < TEST_QUIC_UDP_PROXY_STATS_DIRS; ++direction) {
+                    direction_drops[direction] += stats.dropped_by_direction[direction];
+                    direction_jitter[direction] +=
+                        stats.jittered_by_direction[direction];
+                }
             } else {
                 ASSERT_TRUE(stats.dropped >= 2u);   /* uplink + downlink loss */
                 ASSERT_TRUE(stats.delayed >= 6u);   /* surviving frames */
@@ -1339,8 +1345,14 @@ static bool run_voice_conference(bool impaired, bool random) {
             }
         }
         if (random) {
-            ASSERT_TRUE(total_dropped > 0u);
-            ASSERT_TRUE(total_jittered > 0u);
+            if (uplink_drop >= 25u) {
+                ASSERT_TRUE(direction_drops[0] > 0u);
+            }
+            if (downlink_drop >= 25u) {
+                ASSERT_TRUE(direction_drops[1] > 0u);
+            }
+            ASSERT_TRUE(direction_jitter[0] > 0u);
+            ASSERT_TRUE(direction_jitter[1] > 0u);
         }
     }
 
@@ -1355,15 +1367,23 @@ static bool run_voice_conference(bool impaired, bool random) {
 }
 
 static bool test_voice_conference(void) {
-    return run_voice_conference(false, false);
+    return run_voice_conference(false, false, 0u, 0u, 0u);
 }
 
 static bool test_voice_conference_weak_network(void) {
-    return run_voice_conference(true, false);
+    return run_voice_conference(true, false, 0u, 0u, 0u);
 }
 
 static bool test_voice_conference_seeded_weak_network(void) {
-    return run_voice_conference(true, true);
+    return run_voice_conference(true, true, 0xB5EED123u, 25u, 25u);
+}
+
+static bool test_voice_conference_seeded_uplink_loss(void) {
+    return run_voice_conference(true, true, 0xA11CE002u, 40u, 5u);
+}
+
+static bool test_voice_conference_seeded_downlink_loss(void) {
+    return run_voice_conference(true, true, 0xD00D1003u, 5u, 40u);
 }
 
 /* ---- runner --------------------------------------------------------------- */
@@ -1397,6 +1417,8 @@ int main(void) {
         {"voice_conference", test_voice_conference},
         {"voice_conference_weak_network", test_voice_conference_weak_network},
         {"voice_conference_seeded_weak_network", test_voice_conference_seeded_weak_network},
+        {"voice_conference_seeded_uplink_loss", test_voice_conference_seeded_uplink_loss},
+        {"voice_conference_seeded_downlink_loss", test_voice_conference_seeded_downlink_loss},
     };
     size_t passed = 0;
     size_t total = sizeof(tests) / sizeof(tests[0]);
