@@ -3,7 +3,10 @@
 - **最小场景**：新增 async loader 17 例、hotreload 7 例、VFS 36 例、filewatch backend 26 例，共 86 个分项、四个直接可执行目标。均由既有 QEMU 命令执行，无嵌套工具、资产路径翻译或宿主 driver 修改。
 - **未修改基线与 focused 复验**：原生和交叉均为 4/4、17/7/36/26；最新 focused CTest 为 0.04/0.30 秒，无 skip。无需修改产品或测试源码。
 - **RED 与精确选择**：旧 workflow 因缺少四个构建目标按预期 RED。加入 `test_(vfs|async_loader|filewatch_backend|hotreload)$` 后，真实原生选择为既有五十二项加四项，共五十六项；未来派生前缀被拒绝，显式集合断言通过。
-- **验证状态**：原生全量、最终干净容器、独立评审及远端 job 在实际完成后补记。材质/场景纹理、glTF、world streaming、编辑器/渲染、LuaJIT、Snowflake/QUIC、GPU 与物理设备仍不在本次覆盖内。
+- **本地验证（2026-11-20 17:47 CST）**：无冲突 rebase 到远端 `682822e7` 后，原生全量 455 项零失败，4 个既有平台用例跳过，CTest 153.27 秒。最终干净 Ubuntu 24.04 容器按 workflow 原始步骤完成构建、对象检查与五十六项 CTest，56/56、CTest 117.85 秒；新增 17/7/36/26 与全部既有分项/契约/e2e 成功，既有 ptrace 设置 skip 恰好一次，无新增跳过。`git diff --check` 通过。
+- **独立评审**：只读评审未发现任何 Critical/Important/Minor 问题，确认精确 56 项选择、局部锚点、四个直接 QEMU 可执行目标和文档边界。
+- **远端验证**：[CI run 44713577014](https://github.com/konyka/break/actions/runs/44713577014) 的 [arm64 job 136211143635](https://github.com/konyka/break/actions/runs/44713577014/job/136211143635) 在提交 `14a54dd7` 上全部步骤成功。原始日志断言确认精确五十六项、`0 tests failed out of 56`、资产/VFS 17/7/36/26、全部既有分项/契约/e2e，既有 ptrace 设置 skip 恰好一次；非 root 权限分支实际执行，两个真实 LLVM Mach-O 子检查仍按工具缺失条件跳过。
+- **验证边界**：材质/场景纹理、glTF、world streaming、编辑器/渲染、LuaJIT、Snowflake/QUIC、GPU 与物理设备仍不在本次覆盖内。
 
 ## arm64 Lua Runtime 与五十二项 CTest（2026-11-20）
 
