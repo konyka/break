@@ -126,7 +126,7 @@ timeout 300 ctest --test-dir build-arm64 --verbose --no-tests=error \
   -R '^test_break_crash'
 ```
 
-选择恰好七项：六个 `crash` 标签测试（`test_break_crash`、其目标契约、符号化、聚类、HTTP 上传、e2e）以及 `test_break_crash_server_target_contract`。可执行目标由 CMake 自动加 QEMU；宿主 CMake 驱动的契约显式接收 `CMAKE_NM`，现场链接检查与 e2e 的 server/report/client 接收同一目标运行器。宿主工具和 `nm` 本身不由 QEMU 执行，也不修改宿主 binfmt。
+选择恰好七项：六个 `crash` 标签测试（`test_break_crash`、其目标契约、符号化、聚类、HTTP 上传、e2e）以及 `test_break_crash_server_target_contract`。可执行目标由 CMake 自动加 QEMU；宿主 CMake 驱动的契约显式接收 `CMAKE_NM`，现场链接检查与 e2e 的 server/report/client 接收同一目标运行器。符号化测试内部新编译的崩溃 fixture 仍由 `BREAK_TEST_RUNNER` 显式启动。宿主工具和 `nm` 本身不由 QEMU 执行，也不修改宿主 binfmt；e2e 的 shell 启动逐个转义运行器参数，保留含空格或单引号的路径。
 
 37 项崩溃用例覆盖记录、有界 spool、真实 SIGSEGV/SIGABRT、context blob、恢复上传和脱敏；45 项符号化覆盖真实 AArch64 ELF、非 PIE/PIE 调用链与既有 Mach-O 规则；26 项聚类覆盖签名、去重、回归、持久化与进程锁；8 项上传覆盖真实 loopback TLS、状态/成帧错误和重试。两项归档契约保留精确导出清单及禁链检查，e2e 保留真实崩溃到 TLS 收集、聚类、回归报告和拒绝/重试的 11 个场景。`--no-tests=error` 防止空选择，失败与超时不被重试或屏蔽。
 

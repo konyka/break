@@ -6,6 +6,8 @@
 - **交叉验证**：修改 CI 前以相同 Configure/CTest 命令取得七项 7/7，日志确认可执行目标由 `/usr/bin/qemu-aarch64 -L /` 启动；37/45/26/8 全绿，两项契约及 `break_crash_e2e OK` 均出现。root 容器仅按既有规则明确跳过不可写统计文件场景；两个真实 LLVM Mach-O 子检查仍按工具缺失条件跳过。
 - **CI 与本地验证**：YAML 契约先在缺少 emulator 处 RED，补齐九目标和统一七项 CTest 后 GREEN，并核对真实选择集合恰好七项。原生全量 455 项零失败，4 个既有平台用例跳过。最终 CI run 脚本的干净容器复验同样七项 7/7，37/45/26/8、两项契约及 e2e 成功，root 权限跳过保持明确。远端 job 与非 root e2e 权限结果在实际完成后补记；无 GPU、物理设备或其他 arm64 子系统覆盖声明。
 
+- **独立评审与补强**：只读评审未发现 Critical/Important 问题。评审后补充符号化 `BREAK_TEST_RUNNER` 文档，并以路径及参数均含空格的包装器复现 server runner 被 shell 拆分的问题；逐元素 POSIX 单引号转义后，同一完整 e2e 由失败转为 `break_crash_e2e OK`。固定 CI 的 QEMU 列表经最终干净容器七项 7/7 复验，原生空运行器经全量 455 项零失败复验。
+
 ## arm64 ELF 符号化与 QEMU 测试（2026-11-20）
 
 - **交付**：`break_crash_symbolize` 的 ELF64 白名单由仅 `EM_X86_64` 扩为 `EM_X86_64`/`EM_AARCH64`，其余边界、符号过滤和地址换算不变。新增 `an_aarch64_elf_uses_the_same_symbol_table_layout` 原生回归；公开接口和记录格式不变。

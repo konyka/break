@@ -93,10 +93,10 @@ At the beginning of `start_server`, derive a shell prefix from the CMake list:
 
 ```cmake
     set(target_runner_text "")
-    if(TARGET_RUNNER)
-        string(REPLACE ";" " " target_runner_text "${TARGET_RUNNER}")
-        string(APPEND target_runner_text " ")
-    endif()
+    foreach(target_runner_arg IN LISTS TARGET_RUNNER)
+        string(REPLACE "'" "'\"'\"'" quoted_target_runner_arg "${target_runner_arg}")
+        string(APPEND target_runner_text "'${quoted_target_runner_arg}' ")
+    endforeach()
 ```
 
 Use it only in the existing server launch:

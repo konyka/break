@@ -102,8 +102,10 @@ Apply it as follows:
 - `report`: the same prefix before `"${REPORT}"`;
 - direct `run(TRUE "${CLIENT}" ...)` calls: expand the runner list before the
   client path;
-- `start_server`: convert the list to a space-separated prefix solely for its
-  existing quoted shell launch, then launch `"${SERVER}"` through that prefix.
+- `start_server`: shell-quote each list element separately (including embedded
+  single quotes) solely for its existing quoted shell launch, then launch
+  `"${SERVER}"` through that prefix. Element boundaries and whitespace must be
+  preserved.
 
 Do not prefix the host CMake process, shell utilities, file operations, or
 `nm`. Do not change ports, certificate checks, HTTP assertions, retry counts,
