@@ -65,7 +65,7 @@ endif()
 
 function(run_offline name)
     execute_process(
-        COMMAND "${CORE_APP}" ${common_args} --trace "${WORK_DIR}/${name}.trace"
+        COMMAND ${CORE_APP_RUNNER} "${CORE_APP}" ${common_args} --trace "${WORK_DIR}/${name}.trace"
         RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err TIMEOUT 120)
     if(NOT rc EQUAL 0)
         message(FATAL_ERROR "offline run ${name} failed: rc=${rc}\n${out}${err}")
@@ -152,7 +152,7 @@ if(MODE STREQUAL "start_failure")
             set(ENV{CORE_APP_TEST_PSK} "${psk}")
         endif()
         execute_process(
-            COMMAND "${CORE_APP}" ${common_args} --trace "${WORK_DIR}/${name}.trace"
+            COMMAND ${CORE_APP_RUNNER} "${CORE_APP}" ${common_args} --trace "${WORK_DIR}/${name}.trace"
                 --network --bind 127.0.0.1:0 --tls-cert "${cert}" --tls-key "${TLS_KEY}"
                 --psk-env CORE_APP_TEST_PSK --port-file "${port_file}"
             RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err TIMEOUT 60)
@@ -219,7 +219,7 @@ if(MODE STREQUAL "voice_relay" OR MODE STREQUAL "voice_mute" OR MODE STREQUAL "v
     set(relay_args --voice-relay)
 endif()
 execute_process(
-    COMMAND "${CORE_APP}" ${common_args} --trace "${WORK_DIR}/network.trace"
+    COMMAND ${CORE_APP_RUNNER} "${CORE_APP}" ${common_args} --trace "${WORK_DIR}/network.trace"
         --network --bind 127.0.0.1:0 --tls-cert "${TLS_CERT}" --tls-key "${TLS_KEY}"
         --psk-env CORE_APP_TEST_PSK --port-file "${WORK_DIR}/server.port"
         --net-poll-ms ${poll_ms} ${relay_args}

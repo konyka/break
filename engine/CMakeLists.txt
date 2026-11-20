@@ -5383,6 +5383,7 @@ endif()
         COMMAND ${CMAKE_COMMAND}
             -DMODE=offline
             -DCORE_APP=$<TARGET_FILE:core_app>
+            "-DCORE_APP_RUNNER=${CMAKE_CROSSCOMPILING_EMULATOR}"
             -DASSET_DIR=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app
             -DSCENARIO=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app/deterministic.scenario
             -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/core_app_network_offline
