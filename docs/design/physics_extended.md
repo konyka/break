@@ -159,4 +159,4 @@ void ragdoll_write_pose(const Ragdoll *rd, const PhysicsWorld *pw, Skeleton *sk)
 
 arm64 lane 新增刚体核心、replay、sync、hinge、cone-twist、identity、ragdoll、vehicle 八项，共 135 例（83/4/13/3/8/5/10/9），统一选择达到八十项。原生与交叉 focused 均为 8/8，无新增 skip。
 
-replay 与 sync 在单进程、单架构内比较，因此 arm64 通过只说明 arm64 内部确定，不代表 x86-64 与 arm64 之间可逐位回放或保持 lockstep；跨架构确定性需要交换录制的专门测试。cloth、rope、soft-body、destructible 与 slider 尚未纳入 arm64 选择。
+replay 与 sync 在单进程内比较两个世界或同一录制，因此 arm64 通过只说明同一 arm64 构建在单进程内自洽，不代表不同构建/编译器之间、或 x86-64 与 arm64 之间可逐位回放或保持 lockstep。物理源码当前未使用 `-ffp-contract=off`，编译器可能按构建不同融合乘加；跨架构确定性需要交换录制的专门测试，并很可能需要固定浮点收缩策略。cloth、rope、soft-body、destructible 与 slider 尚未纳入 arm64 选择。

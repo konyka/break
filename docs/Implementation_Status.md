@@ -3,8 +3,10 @@
 - **最小场景**：新增刚体核心 83 例、replay 4 例、sync 13 例、hinge 3 例、cone-twist 8 例、identity 5 例、ragdoll 10 例、vehicle 9 例，共 135 个分项、八个直接可执行目标，均由既有 QEMU 命令执行。
 - **未修改基线与 focused 复验**：原生和交叉均为 8/8、83/4/13/3/8/5/10/9；focused CTest 0.02/0.28 秒，无 skip。无需修改产品或测试源码。
 - **RED 与精确选择**：旧 workflow 因缺少八个构建目标按预期 RED。加入 `test_(physics(_replay|_sync|_hinge|_cone_twist|_identity)?|ragdoll|vehicle)$` 后，真实原生选择为既有七十二项加八项，共八十项。`$` 覆盖整个可选后缀组，注册表中真实存在的同前缀测试 `test_physics_slider` 及未来派生名称均被拒绝。
-- **确定性边界**：replay 与 sync 在单进程、单架构内录制和比较，arm64 通过只说明 arm64 内部确定；不证明 x86-64 录制能在 arm64 上逐位回放，也不证明跨架构对端能保持 lockstep。
-- **验证状态**：原生全量、最终干净容器、独立评审及远端 job 在实际完成后补记。cloth/rope/soft-body/destructible/slider、跨架构确定性、渲染、Snowflake/QUIC、GPU 与物理设备仍不在本次覆盖内。
+- **确定性边界**：replay 与 sync 在单进程内录制和比较，arm64 通过只说明同一 arm64 构建在单进程内自洽（物理源码未使用 `-ffp-contract=off`）；不证明 x86-64 录制能在 arm64 上逐位回放，也不证明跨架构对端能保持 lockstep。
+- **本地验证（2026-11-20 19:11 CST）**：原生全量 455 项零失败，4 个既有平台用例跳过，CTest 151.05 秒。最终干净 Ubuntu 24.04 容器按 workflow 原始步骤完成构建、对象检查与八十项 CTest，80/80、CTest 112.37 秒；八项物理汇总 83/4/13/3/8/5/10/9 及全部既有分项/契约/e2e 成功，既有 ptrace 设置 skip 恰好一次，无新增跳过。`git diff --check` 通过。
+- **独立评审**：只读评审未发现 Critical/Important 问题。评审用生成的 arm64 注册表逐名验证新旧正则：72→80，差集恰为八项，并拒绝 `test_physics_slider`、`test_core_app_lifecycle_ragdoll/vehicle` 等真实同名测试。采纳两条 Minor：确定性表述收窄为「同一 arm64 构建在单进程内自洽」（物理源码未使用 `-ffp-contract=off`）；记录 `test_physics` 缺少 `physics` 标签这一既有问题。
+- **验证边界**：远端 job 在实际完成后补记。cloth/rope/soft-body/destructible/slider、跨构建/跨架构确定性、渲染、Snowflake/QUIC、GPU 与物理设备仍不在本次覆盖内。
 
 ## arm64 PAL/Job System 与七十二项 CTest（2026-11-20）
 

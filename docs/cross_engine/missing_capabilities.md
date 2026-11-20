@@ -401,4 +401,4 @@
 - **PAL/线程与任务验证追加**：2026-11-20 arm64 lane 新增 platform config 10 例、null-safety 1 例、fs-write 11 例、size-semantics 3 例、task 16 例和 task-singleton 1 例，统一选择达到七十二项。未修改 QEMU 树六项全通过，无新增 skip 或 X11 内容；窗口/WSI、移动设备后端和其他 arm64 子系统仍需独立覆盖。
 
 
-- **物理验证追加**：2026-11-20 arm64 lane 新增刚体核心、replay、sync、hinge、cone-twist、identity、ragdoll、vehicle 八项共 135 例，统一选择达到八十项。未修改 QEMU 树八项全通过，无新增 skip。仍缺：跨架构物理确定性（x86-64 录制在 arm64 回放、跨架构 lockstep）的专门测试，以及 cloth/rope/soft-body/destructible/slider 的 arm64 覆盖。
+- **物理验证追加**：2026-11-20 arm64 lane 新增刚体核心、replay、sync、hinge、cone-twist、identity、ragdoll、vehicle 八项共 135 例，统一选择达到八十项。未修改 QEMU 树八项全通过，无新增 skip。仍缺：跨架构物理确定性（x86-64 录制在 arm64 回放、跨架构 lockstep）的专门测试，以及 cloth/rope/soft-body/destructible/slider 的 arm64 覆盖。另：`test_physics` 是同组中唯一缺少 `LABELS "headless;physics"` 的测试，`ctest -L physics` 会漏掉它（既有问题，不影响 `-R` 选择）。
