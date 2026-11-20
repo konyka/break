@@ -68,5 +68,5 @@ The `$` binds the whole group, so derived names are rejected.
 ## Boundaries
 
 A selected 108-test suite, not full arm64 CTest. Navmesh assets from real
-levels, large-crowd performance, and editor AI tools remain outside it. Five
-executables have a single case each.
+levels, large-crowd performance, and editor AI tools remain outside it. Four
+executables have a single case each: nav follow, perception, behavior, and steer.
