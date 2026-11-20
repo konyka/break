@@ -410,7 +410,7 @@ if(NOT link_rc EQUAL 0)
         "minimal link test failed to build (libbreak_crash.a + inline platform_fs.c + break_version.c): ${link_err}")
 endif()
 execute_process(
-    COMMAND "${link_exe}"
+    COMMAND ${CRASH_CONTRACT_RUNNER} "${link_exe}"
     RESULT_VARIABLE run_rc
     OUTPUT_VARIABLE run_out
     ERROR_VARIABLE run_err)

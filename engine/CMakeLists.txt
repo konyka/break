@@ -7179,6 +7179,8 @@ endif()
                 -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
                 -DCRASH_CONTRACT_ARCHIVE=$<TARGET_FILE:break_crash>
                 -DCRASH_CONTRACT_CC=${CMAKE_C_COMPILER}
+                -DCRASH_CONTRACT_NM=${CMAKE_NM}
+                "-DCRASH_CONTRACT_RUNNER=${CMAKE_CROSSCOMPILING_EMULATOR}"
                 -DCRASH_CONTRACT_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/src
                 -DCRASH_CONTRACT_WORK=${CMAKE_CURRENT_BINARY_DIR}/crash_contract_tmp
                 -DCRASH_CONTRACT_SAN=${BREAK_CRASH_CONTRACT_SAN}
@@ -8239,6 +8241,7 @@ endif()
         add_test(NAME test_break_crash_server_target_contract
             COMMAND ${CMAKE_COMMAND}
                 -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+                -DNM=${CMAKE_NM}
                 -DCRASH_ARCHIVE=$<TARGET_FILE:break_crash>
                 -DUPLOAD_ARCHIVE=$<TARGET_FILE:break_crash_upload_http>
                 -DCLUSTER_ARCHIVE=$<TARGET_FILE:break_crash_cluster>
@@ -8271,6 +8274,7 @@ endif()
                 -DSERVER=$<TARGET_FILE:break_crash_server>
                 -DREPORT=$<TARGET_FILE:break_crash_report>
                 -DCLIENT=$<TARGET_FILE:break_crash_e2e>
+                "-DTARGET_RUNNER=${CMAKE_CROSSCOMPILING_EMULATOR}"
                 -DCERT=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ssl/break_test_cert.pem
                 -DKEY=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ssl/break_test_key.pem
                 -DWORK=${CMAKE_CURRENT_BINARY_DIR}/break-crash-e2e

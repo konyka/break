@@ -36,7 +36,7 @@ endfunction()
 
 # client(<outvar> <rcvar> args...)
 function(client outvar rcvar)
-    execute_process(COMMAND "${CLIENT}" ${ARGN}
+    execute_process(COMMAND ${TARGET_RUNNER} "${CLIENT}" ${ARGN}
         RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err)
     set(${outvar} "${out}${err}" PARENT_SCOPE)
     set(${rcvar} "${rc}" PARENT_SCOPE)
@@ -44,7 +44,7 @@ endfunction()
 
 # report(<outvar> <rcvar> <stats> args...)
 function(report outvar rcvar stats)
-    execute_process(COMMAND "${REPORT}" "${stats}" ${ARGN}
+    execute_process(COMMAND ${TARGET_RUNNER} "${REPORT}" "${stats}" ${ARGN}
         RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err)
     set(${outvar} "${out}${err}" PARENT_SCOPE)
     set(${rcvar} "${rc}" PARENT_SCOPE)
@@ -52,6 +52,11 @@ endfunction()
 
 # start_server(<tag> <stats> <extra server args...>) sets <tag>_PORT / <tag>_LOG
 function(start_server tag stats)
+    set(target_runner_text "")
+    if(TARGET_RUNNER)
+        string(REPLACE ";" " " target_runner_text "${TARGET_RUNNER}")
+        string(APPEND target_runner_text " ")
+    endif()
     set(port_file "${WORK}/${tag}.port")
     set(pid_file "${WORK}/${tag}.pid")
     set(log "${WORK}/${tag}.log")
@@ -61,7 +66,7 @@ function(start_server tag stats)
         set(extra "'${extra}'")
     endif()
     execute_process(COMMAND sh -c
-        "'${SERVER}' --symbols '${WORK}/symbols' --stats '${stats}' --cert '${CERT}' --key '${KEY}' --port 0 --print-port --log '${log}' ${extra} > '${port_file}' 2> '${WORK}/${tag}.err' & echo $! > '${pid_file}'"
+        "${target_runner_text}'${SERVER}' --symbols '${WORK}/symbols' --stats '${stats}' --cert '${CERT}' --key '${KEY}' --port 0 --print-port --log '${log}' ${extra} > '${port_file}' 2> '${WORK}/${tag}.err' & echo $! > '${pid_file}'"
         RESULT_VARIABLE rc)
     if(NOT rc EQUAL 0)
         message(FATAL_ERROR "could not start the server for ${tag}")
@@ -204,9 +209,9 @@ execute_process(COMMAND sh -c "printf 'not a crash record at all' > '${WORK}/gar
 execute_process(COMMAND sh -c "cp '${SENT_REC}' '${WORK}/trailing.bin' && printf '\\n' >> '${WORK}/trailing.bin'")
 execute_process(COMMAND sh -c "head -c 100 '${SENT_REC}' > '${WORK}/truncated.bin'")
 execute_process(COMMAND sh -c "head -c 70000 /dev/zero | tr '\\000' 'a' > '${WORK}/oversize.bin'")
-run(TRUE "${CLIENT}" forge "${WORK}/signal0.bin" "${BUILD}" 0)
-run(TRUE "${CLIENT}" forge "${WORK}/signal99.bin" "${BUILD}" 99)
-run(TRUE "${CLIENT}" forge "${WORK}/unreg.bin" "unreg-build" 11)
+run(TRUE ${TARGET_RUNNER} "${CLIENT}" forge "${WORK}/signal0.bin" "${BUILD}" 0)
+run(TRUE ${TARGET_RUNNER} "${CLIENT}" forge "${WORK}/signal99.bin" "${BUILD}" 99)
+run(TRUE ${TARGET_RUNNER} "${CLIENT}" forge "${WORK}/unreg.bin" "unreg-build" 11)
 foreach(case
         "garbage.bin|/crash|${CT}|400"
         "trailing.bin|/crash|${CT}|400"
@@ -247,13 +252,13 @@ if(rep5 MATCHES "REGRESSED" OR NOT rep5 MATCHES "fixed=${BUILD}")
     message(FATAL_ERROR "marking fixed should not regress by itself: ${rep5}")
 endif()
 # the old build keeps crashing after the fix ships: counted, not a regression
-run(TRUE "${CLIENT}" rebuild "${SENT_REC}" "${WORK}/old_again.bin" "${BUILD}")
+run(TRUE ${TARGET_RUNNER} "${CLIENT}" rebuild "${SENT_REC}" "${WORK}/old_again.bin" "${BUILD}")
 post(out rc ${s1_PORT} /crash "${WORK}/old_again.bin" "${CT}")
 if(NOT out MATCHES "body=ok count=3 regression=0")
     message(FATAL_ERROR "an old-build crash after the fix: ${out}")
 endif()
 # the build released after the fix crashes the same way
-run(TRUE "${CLIENT}" rebuild "${SENT_REC}" "${WORK}/later.bin" "${LATER}")
+run(TRUE ${TARGET_RUNNER} "${CLIENT}" rebuild "${SENT_REC}" "${WORK}/later.bin" "${LATER}")
 post(out rc ${s1_PORT} /crash "${WORK}/later.bin" "${CT}")
 if(NOT out MATCHES "body=ok count=4 regression=1")
     message(FATAL_ERROR "a later-build crash after the fix: ${out}")
@@ -383,7 +388,7 @@ stop_server(s9)
 set(STATS4 "${WORK}/stats4.txt")
 report(out rc "${STATS4}" register-build "${BUILD}")
 start_server(s10 "${STATS4}")
-run(TRUE "${CLIENT}" spool-put "${WORK}/spool10" "${WORK}/unreg.bin")        # build id the server does not know
+run(TRUE ${TARGET_RUNNER} "${CLIENT}" spool-put "${WORK}/spool10" "${WORK}/unreg.bin")        # build id the server does not know
 client(out rc status "${WORK}/spool10")
 if(NOT out MATCHES "pending=1 sent=0 discarded=0")
     message(FATAL_ERROR "spool-put: ${out}")
