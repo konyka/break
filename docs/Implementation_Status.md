@@ -3,7 +3,10 @@
 - **最小场景**：新增九个 Stage 3 Lua 可执行测试与目标契约，共 126 个分项。覆盖运行时/模块热加载/值与帧/宿主绑定/稳定句柄/有界表/调试/内核集成/ECS 应用；契约仅由宿主 CMake 检查正式目标和测试钩子隔离。
 - **未修改基线与 focused 复验**：原生和交叉均为 10/10，九组汇总为 9/24/34/33/4/5/9/4/4，`break_lua target contract passed`；最新 focused CTest 为 0.42/1.67 秒，无 skip。无需修改产品或测试源码。
 - **RED 与精确选择**：旧 workflow 因缺少九个构建目标按预期 RED。加入两个局部结尾锚定表达式后，真实原生选择为既有四十二项加十项，共五十二项；未来派生前缀与旧版 `test_script_lua` 均被拒绝，显式集合断言通过。
-- **验证状态**：原生全量、最终干净容器、独立评审及远端 job 在实际完成后补记。LuaJIT、旧版脚本兼容层、编辑器/渲染、world streaming、Snowflake/QUIC、GPU 与物理设备仍不在本次覆盖内。
+- **本地验证（2026-11-20 17:12 CST）**：原生全量 455 项零失败，4 个既有平台用例跳过，CTest 154.38 秒。最终干净 Ubuntu 24.04 容器按 workflow 原始步骤完成构建、对象检查与五十二项 CTest，52/52、CTest 109.61 秒；Lua 九组 126 个分项、目标契约及全部既有分项/契约/e2e 成功，既有 ptrace 设置 skip 恰好一次，无新增跳过。`git diff --check` 通过。
+- **独立评审**：只读评审未发现任何 Critical/Important/Minor 问题，确认精确 52 项选择、局部锚点、宿主/目标边界、126 个 Lua 分项和文档范围。
+- **远端验证**：[CI run 44709553764](https://github.com/konyka/break/actions/runs/44709553764) 的 [arm64 job 136197473261](https://github.com/konyka/break/actions/runs/44709553764/job/136197473261) 在提交 `5d34d651` 上全部步骤成功。原始日志断言确认精确五十二项、`0 tests failed out of 52`、Lua 九组 126 个分项与目标契约、全部既有分项/契约/e2e，既有 ptrace 设置 skip 恰好一次；非 root 权限分支实际执行，两个真实 LLVM Mach-O 子检查仍按工具缺失条件跳过。
+- **验证边界**：LuaJIT、旧版脚本兼容层、编辑器/渲染、world streaming、Snowflake/QUIC、GPU 与物理设备仍不在本次覆盖内。
 
 ## arm64 ECS/replication 与四十二项 CTest（2026-11-20）
 
