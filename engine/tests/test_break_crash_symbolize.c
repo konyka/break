@@ -160,6 +160,36 @@ TEST(resolves_every_function_of_a_real_binary_against_nm) {
     break_elf_symbols_destroy(s);
 }
 
+TEST(an_aarch64_elf_uses_the_same_symbol_table_layout) {
+    char exe[400], arm64[400];
+    u8 *b;
+    size_t n;
+    u64 addr = 0, off = 99;
+    Elf64_Ehdr eh;
+    BreakElfSymbols *s;
+    char name[BREAK_CRASH_SYMBOLIZE_NAME_MAX];
+    path_in(exe, sizeof(exe), "fixture");
+    path_in(arm64, sizeof(arm64), "fixture_arm64");
+    ASSERT_TRUE(build_fixture(exe, ""));
+    ASSERT_TRUE(nm_addr(exe, "leaf", &addr));
+    b = read_all(exe, &n);
+    ASSERT_NOT_NULL(b);
+    memcpy(&eh, b, sizeof(eh));
+    eh.e_machine = EM_AARCH64;
+    memcpy(b, &eh, sizeof(eh));
+    ASSERT_TRUE(write_bytes(arm64, b, n));
+    s = break_elf_symbols_open(arm64);
+    ASSERT_NOT_NULL(s);
+    ASSERT_TRUE(break_elf_symbols_lookup(s, addr, name, sizeof(name), &off));
+    ASSERT_STR_EQ(name, "leaf");
+    ASSERT_EQ(off, 0u);
+    ASSERT_TRUE(break_elf_symbols_lookup(s, addr + 1u, name, sizeof(name), &off));
+    ASSERT_STR_EQ(name, "leaf");
+    ASSERT_EQ(off, 1u);
+    break_elf_symbols_destroy(s);
+    free(b);
+}
+
 TEST(addresses_outside_any_function_do_not_resolve) {
     char exe[400];
     BreakElfSymbols *s;
@@ -1900,6 +1930,7 @@ static void cleanup(void) {
 TEST_MAIN_BEGIN()
     dir_init();
     RUN_TEST(resolves_every_function_of_a_real_binary_against_nm);
+    RUN_TEST(an_aarch64_elf_uses_the_same_symbol_table_layout);
     RUN_TEST(addresses_outside_any_function_do_not_resolve);
     RUN_TEST(a_stripped_binary_loads_and_resolves_nothing);
     RUN_TEST(a_position_independent_binary_resolves_by_file_address);

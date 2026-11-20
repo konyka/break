@@ -112,7 +112,8 @@ static BreakElfSymbols *elf_from_bytes(const u8 *file, u64 size) {
     memcpy(&eh, file, sizeof(eh));
     if (memcmp(eh.e_ident, ELFMAG, SELFMAG) != 0 || eh.e_ident[EI_CLASS] != ELFCLASS64 ||
         eh.e_ident[EI_DATA] != ELFDATA2LSB || eh.e_ident[EI_VERSION] != EV_CURRENT ||
-        eh.e_version != EV_CURRENT || eh.e_machine != EM_X86_64 ||
+        eh.e_version != EV_CURRENT ||
+        (eh.e_machine != EM_X86_64 && eh.e_machine != EM_AARCH64) ||
         eh.e_shentsize != sizeof(Elf64_Shdr) || eh.e_shnum == 0u || eh.e_shnum > SYM_MAX_SECTIONS ||
         !in_file(eh.e_shoff, (u64)eh.e_shnum * sizeof(Elf64_Shdr), size)) {
         return NULL;
