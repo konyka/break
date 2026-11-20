@@ -1,0 +1,130 @@
+name: QUIC Weak Network
+
+# Independent macOS lane for the four Snowflake/ngtcp2 UDP impairment tests.
+# The private Snowflake checkout requires a contents:read PAT stored as
+# SNOWFLAKE_READ_TOKEN. Missing credentials are reported as unavailable rather
+# than being presented as test evidence.
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/quic-weak-network.yml
+      - engine/CMakeLists.txt
+      - engine/external/locked_dependencies.json
+      - engine/src/network/break_net_quic.c
+      - engine/src/network/break_net_quic.h
+      - engine/src/network/break_net_quic.hpp
+      - engine/src/network/break_online_voice.c
+      - engine/src/network/break_online_voice.h
+      - engine/src/network/break_online_voice_quic.c
+      - engine/src/network/break_online_voice_quic.h
+      - engine/src/network/break_voice_mixer.c
+      - engine/src/network/break_voice_mixer.h
+      - engine/src/network/break_replay_window.c
+      - engine/src/network/break_replay_window.h
+      - engine/tests/test_break_net_quic.c
+      - engine/tests/test_quic_udp_proxy.c
+      - engine/tests/test_quic_udp_proxy.h
+      - engine/tests/fixtures/ssl/**
+  pull_request:
+    branches: [master]
+    paths:
+      - .github/workflows/quic-weak-network.yml
+      - engine/CMakeLists.txt
+      - engine/external/locked_dependencies.json
+      - engine/src/network/break_net_quic.c
+      - engine/src/network/break_net_quic.h
+      - engine/src/network/break_net_quic.hpp
+      - engine/src/network/break_online_voice.c
+      - engine/src/network/break_online_voice.h
+      - engine/src/network/break_online_voice_quic.c
+      - engine/src/network/break_online_voice_quic.h
+      - engine/src/network/break_voice_mixer.c
+      - engine/src/network/break_voice_mixer.h
+      - engine/src/network/break_replay_window.c
+      - engine/src/network/break_replay_window.h
+      - engine/tests/test_break_net_quic.c
+      - engine/tests/test_quic_udp_proxy.c
+      - engine/tests/test_quic_udp_proxy.h
+      - engine/tests/fixtures/ssl/**
+
+permissions:
+  contents: read
+
+jobs:
+  weak-network:
+    name: macOS QUIC weak network (4 independent scenarios)
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - name: Check out Break
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Check Snowflake read access
+        id: snow_access
+        env:
+          SNOWFLAKE_TOKEN: ${{ secrets.SNOWFLAKE_READ_TOKEN }}
+        run: |
+          if [ -z "$SNOWFLAKE_TOKEN" ]; then
+            echo 'available=false' >> "$GITHUB_OUTPUT"
+            echo '::warning::SNOWFLAKE_READ_TOKEN is not configured; QUIC weak-network evidence is UNAVAILABLE'
+          else
+            echo 'available=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check out pinned Snowflake
+        if: steps.snow_access.outputs.available == 'true'
+        uses: actions/checkout@v6
+        with:
+          repository: konyka/snowflake
+          ref: 4ab761fc58a9d15970f295e231003c99a7d44df8
+          path: snowflake
+          token: ${{ secrets.SNOWFLAKE_READ_TOKEN }}
+          persist-credentials: false
+
+      - name: Install build dependencies
+        if: steps.snow_access.outputs.available == 'true'
+        run: brew install ninja openssl@3 shaderc spirv-cross
+
+      - name: Configure QUIC tests
+        if: steps.snow_access.outputs.available == 'true'
+        run: |
+          cmake -S engine -B build-quic -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DENGINE_RHI_BACKEND=metal \
+            -DENGINE_VULKAN=OFF \
+            -DBREAK_ENABLE_SNOWFLAKE=ON \
+            -DSNOWFLAKE_SOURCE_DIR="$GITHUB_WORKSPACE/snowflake" \
+            -DBREAK_ENABLE_QUIC=ON \
+            -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"
+
+      - name: Build QUIC tests
+        if: steps.snow_access.outputs.available == 'true'
+        run: cmake --build build-quic --parallel --target test_break_net_quic test_break_net_quic_cpp20
+
+      - name: Test four weak-network scenarios in parallel
+        if: steps.snow_access.outputs.available == 'true'
+        run: |
+          set -o pipefail
+          ctest --test-dir build-quic -L weak_network -j4 --output-on-failure --no-tests=error \
+            | tee quic-weak-network.log
+          grep -q '100% tests passed out of 4' quic-weak-network.log
+
+      - name: Record unavailable dependency boundary
+        if: steps.snow_access.outputs.available == 'false'
+        run: |
+          {
+            echo '## QUIC weak network: UNAVAILABLE'
+            echo 'No test ran. Configure SNOWFLAKE_READ_TOKEN with contents:read access to konyka/snowflake.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload weak-network log
+        if: always() && steps.snow_access.outputs.available == 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: quic-weak-network-log
+          path: quic-weak-network.log
+          if-no-files-found: error

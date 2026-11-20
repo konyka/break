@@ -230,7 +230,7 @@ typedef enum BreakNetTransportClass {
 - `test_break_net_quic_voice_conference_seeded_uplink_loss`
 - `test_break_net_quic_voice_conference_seeded_downlink_loss`
 
-它们带 `weak_network` 标签，可与全量入口并行调度；因此非图形 CTest 总数由 414 增至 418，新增四项是有意的独立覆盖，不是测试清单误重复。
+它们带 `weak_network` 标签，可与全量入口并行调度；因此非图形 CTest 总数由 414 增至 418，新增四项是有意的独立覆盖，不是测试清单误重复。独立工作流 `.github/workflows/quic-weak-network.yml` 在 macOS 15 上按 Snowflake pin 构建并四路并行执行这些场景，支持 Actions 手动单独触发。私有 Snowflake 依赖需要 `SNOWFLAKE_READ_TOKEN`；缺失时报告 UNAVAILABLE，不产生通过证据。
 
 ```sh
 ./build-review-now/test_break_net_quic --only voice_conference_seeded_downlink_loss

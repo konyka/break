@@ -1,4 +1,10 @@
-## arm64 无头 world 与一百七十九项 CTest（2026-11-20）
+## QUIC 弱网独立 CI（2026-11-20）
+
+- **最小场景**：新增 `.github/workflows/quic-weak-network.yml`，把四个既有 `weak_network` CTest 放入独立 macOS 15 工作流；支持 `workflow_dispatch`，并在 QUIC/语音/replay/代理源码、测试或 Snowflake pin 变化时触发。构建只针对 `test_break_net_quic` 与 `test_break_net_quic_cpp20`，测试以 `-j4` 并行，日志断言精确 `4/4` 并上传 artifact。
+- **私有依赖边界**：Snowflake 匿名 HTTPS 不可读，工作流通过仅具 `contents:read` 的 `SNOWFLAKE_READ_TOKEN` 检出 pin `4ab761fc58a9d15970f295e231003c99a7d44df8`。未配置 secret 时明确记录 UNAVAILABLE，不执行测试也不宣称通过；token 存在但无效则正常失败。
+- **本地验证**：PyYAML 解析与六个 shell step 的 `bash -n` 全部通过；`git diff --check` 通过。既有四个独立场景本机已并行 `4/4`、连续十轮 `10/10`，本次没有修改其产品或测试代码。
+- **远端验证**：待首次 Actions 运行；若仓库尚未配置上述 secret，预期只能得到 UNAVAILABLE 收据，而非绿色测试证据。
+
 
 - **最小场景**：新增全部十五项 `headless;world` 测试，均为直接 QEMU 可执行目标，共 29 个分项：vegetation、time_of_day、visarea、world_stream、decal、voxel、road、mesh_stage 各 1；mesh_buffer 3；mesh_gpu 1（链接 `engine_rhi_headless`）；world_mesh_fake 4、world_presenter_fake 5（`tests/world_fake_rhi.c`）；world_presentation 5；world_stream_job 1（一个 worker 的任务系统）；world_stream_world 2（在 `test_tmp()` 根下写文件）。均不 fork、不用 GPU 或设备。
 - **未修改基线与 focused 复验**：原生分项数一致；改动前干净容器交叉 15/15、CTest 0.29 秒。改动后原生以完整新 `-R` 复跑 15/15，无 skip。无需修改产品或测试源码。

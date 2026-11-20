@@ -585,6 +585,21 @@ cmake --build build-quic
 ctest --test-dir build-quic -R "quic" --output-on-failure
 ```
 
+独立弱网 CI 位于 `.github/workflows/quic-weak-network.yml`：macOS 15 上检出
+`BREAK_SNOWFLAKE_PIN` 对应的 Snowflake，使用 brew 的 OpenSSL 3.5+，只构建 QUIC
+测试目标并以四路并行执行 `ctest -L weak_network`。可在 Actions 的
+**QUIC Weak Network** 工作流中单独手动触发；相关网络源码或测试变更也会自动触发。
+
+Snowflake 仓库需要认证读取。仓库维护者需配置仅含 `contents:read` 权限的
+`SNOWFLAKE_READ_TOKEN` Actions secret；未配置时工作流明确记录 **UNAVAILABLE**，
+不会把未执行记作通过。配置后日志要求精确 `4/4` 通过，并上传
+`quic-weak-network-log`。本地等价命令：
+
+```bash
+cmake --build build-quic --target test_break_net_quic test_break_net_quic_cpp20
+ctest --test-dir build-quic -L weak_network -j4 --output-on-failure --no-tests=error
+```
+
 ```bash
 cd engine
 cmake -B build-macos -G Xcode -DCMAKE_BUILD_TYPE=Debug
