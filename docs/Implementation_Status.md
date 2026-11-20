@@ -1,3 +1,11 @@
+## arm64 规则引擎与一百五十二项 CTest（2026-11-20）
+
+- **最小场景**：新增 `engine/CMakeLists.txt:3123-3251` 注册的二十一项规则引擎测试，均只链接 `rule_engine_core`（C99），共 643 个分项：core 98、transactions 13、tms 19、grl semantics 26、ir 20、forall limits 5、rete incremental 19、agenda 45、backward 13、backward ext 55、grl surface 137、plugin parity 37、example coverage 3、query blocks 25、stream ext 57、stream grl 19、stream eval 22、backward deep chain 1、backward machine structure 4、backward machine context 4、backward bindings 21。
+- **未修改基线与 focused 复验**：原生 21/21；改动前干净容器交叉 21/21，分项数一致，CTest 2.86 秒，最慢的 backward deep chain 1.28 秒。改动后原生以完整新 `-R` 复跑 21/21，无 skip。无需修改产品或测试源码。
+- **RED 与精确选择**：旧 workflow 因缺少二十一个构建目标按预期 RED。新增独立的 `test_rule_engine(_(transactions|tms|grl_semantics|ir|forall_limits|rete_incremental|agenda|backward|backward_ext|grl_surface|plugin_parity|example_coverage|query_blocks|stream_ext|stream_grl|stream_eval|backward_deep_chain|backward_bindings))?$|test_backward_machine_(structure|context)$`，未改动既有表达式；真实选择为既有一百三十一项加二十一项，共一百五十二项。派生名称、`test_rule_engine_executor_stress` 与 `rule_engine_fuzz_smoke` 被拒绝。
+- **覆盖缺口**：arm64 树无 hiredis，Redis 路径在原生与交叉均未编译；backward deep chain 只有一个用例；backward machine structure 通过编译期 `TEST_SOURCE_ROOT` 读取源码，检查的是源码结构而非 arm64 行为。
+- **验证状态**：原生全量、最终干净容器、独立评审及远端 job 在实际完成后补记。Redis 路径、C11 并行执行器压力测试、fuzz、大规则集性能、Snowflake/QUIC、GPU 与物理设备仍不在本次覆盖内。
+
 ## arm64 音频与一百三十一项 CTest（2026-11-20）
 
 - **最小场景**：新增二十三项音频测试：二十二个直接可执行目标共 348 个分项（voice playback 4、audio 47、audio extended 129、dsp 10、hrtf 9、capture 13、agc 8、noise gate 8、echo canceller 9、delay estimator 21、fft 8、noise suppressor 8、residual echo suppressor 8、delay tracker 8、gcc-phat 8、drift estimator 8、drift resampler 12、drift compensator 8、edit 6、voice processor 3、voice aligner 6、wav 7），以及宿主 `cmake -P` 的 realtime 契约。用例使用 FAKE 后端或 miniaudio Null 设备；其中三个用例（`test_audio.c:827`、`test_audio_capture.c:416/537`）打开 `AUDIO_BACKEND_DEFAULT`，会先经 dlopen 尝试 PulseAudio/ALSA/JACK 再回落 Null，容器内无 arm64 声音库所以回落 Null。这不是真实设备证据，镜像若加入 arm64 声音库该行为会改变。

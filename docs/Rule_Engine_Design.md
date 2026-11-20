@@ -1138,3 +1138,12 @@ at source level, but code compiled against the old layout must be recompiled.
 Extension declarations do not claim custom functions, backward
 chaining, streaming, Redis state, advanced agenda controls, or concurrency are
 complete.
+
+## Addendum (2026-11-20): arm64 verification
+
+The arm64 QEMU lane now runs the twenty-one rule-engine tests registered at
+`engine/CMakeLists.txt:3123-3251` (643 cases), bringing the selection to 152.
+Native and cross focused runs both pass 21/21 with identical counts. This shows
+the C99 core is self-consistent inside one arm64 build. Redis-backed paths are
+not compiled in the arm64 tree, and the C11 parallel executor stress test,
+fuzzing, and large-rule-set performance are not covered.
