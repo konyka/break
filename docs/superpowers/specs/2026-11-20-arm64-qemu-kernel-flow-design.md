@@ -39,7 +39,7 @@ concern. No product or test-source change is needed.
 
 ## CI Change
 
-Append the eleven executable targets after `test_backward_machine_context`
+Append the eleven executable targets after `test_rule_engine_backward_bindings`
 and add:
 
 ```text
@@ -60,7 +60,7 @@ test_break_kernel_(actor|items|weapons|actions|move|level|area|flow|target_contr
 
 ## Boundaries
 
-A selected 164-test suite, not full arm64 CTest. Four kernel executables
-(actions, move, level) and `test_break_kernel_area` at 2 cases have thin
-coverage; actions, move, and level have one case each. The target contract
+A selected 164-test suite, not full arm64 CTest. Three kernel executables
+(actions, move, level) have one case each and `test_break_kernel_area` has
+two, so their coverage is thin. The target contract
 checks build wiring, not arm64 behavior.

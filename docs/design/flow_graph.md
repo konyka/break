@@ -103,3 +103,7 @@ focused normal、ASan+UBSan、TSan 均使用 `-j3` 构建并运行 Flow/Applicat
 ## 9. 生命周期与保存边界
 
 Flow Graph 的二进制序列化是独立侧车格式；本轮不暗中改变 BSCN 格式。`BreakEditorDoc` 的 new/reset 会重置图，现有 scene load 不声称加载 Flow 侧车。编辑器 UI 提供图内编辑与 undo；磁盘读写由调用方使用公开序列化 API 完成。运行时 reset 会清空待处理事件，调用方必须在编辑资产后显式执行。
+
+## 10. arm64 验证（2026-11-20）
+
+arm64 lane 新增三个 `test_break_flow_*`（graph 8、serial 6、runtime 12 例）与 kernel 族八个可执行目标及其 target 契约，统一选择达到一百六十四项。改动前干净容器交叉基线与改动后原生 focused 均为 12/12。QEMU 下通过只说明 Flow 运行时与序列化在同一 arm64 构建内自洽，不证明跨架构逐位一致的侧车格式。
