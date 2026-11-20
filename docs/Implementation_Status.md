@@ -2,7 +2,8 @@
 
 - **交付**：保留 `lane-cross-aarch64-linux` 的 multiarch 工具链、`break_crash`/`engine` 编译链接与对象架构检查，安装 `qemu-user` 并增建 `test_break_crash`。对象检查后执行 `timeout 240 qemu-aarch64 -L / ./build-arm64/test_break_crash`；超时或非零退出直接使 lane 失败，不重试、不屏蔽。
 - **TDD**：先以 PyYAML 契约要求 QEMU 显示名、`qemu-user`、三个构建目标和精确执行步骤；旧 workflow 在缺少 QEMU 显示名处 RED。最小修改后完整契约 GREEN。契约中的包名匹配最初误要求行首，已依据实际 apt 包列表修正为匹配合法的空白分隔包名，未放宽目标列表或执行命令。
-- **本地验证**：两次预研均为 37/37。修改后的 YAML 在干净 Ubuntu 24.04 容器中首次执行时，因基础镜像没有 GitHub runner 预装的 CMake 而在 configure 前失败；只补齐该 runner 前置工具后，原始 CI run 脚本逐步通过，完成 180 步构建、对象架构检查和 QEMU 37/37。rebase 到 `881be31f` 后再次完成干净容器全流程与 QEMU 37/37，包括真实 SIGSEGV/SIGABRT、上下文、恢复上传和脱敏用例。合并后的 `build-core-app-net` 执行 `cmake . && make -j6 && ctest -j4 --timeout 240 --output-on-failure`，455 项零失败，4 个既有平台用例跳过。远端 job 结果将在实际完成后补记。
+- **本地验证**：两次预研均为 37/37。修改后的 YAML 在干净 Ubuntu 24.04 容器中首次执行时，因基础镜像没有 GitHub runner 预装的 CMake 而在 configure 前失败；只补齐该 runner 前置工具后，原始 CI run 脚本逐步通过，完成 180 步构建、对象架构检查和 QEMU 37/37。rebase 到 `881be31f` 后再次完成干净容器全流程与 QEMU 37/37，包括真实 SIGSEGV/SIGABRT、上下文、恢复上传和脱敏用例。合并后的 `build-core-app-net` 执行 `cmake . && make -j6 && ctest -j4 --timeout 240 --output-on-failure`，455 项零失败，4 个既有平台用例跳过。
+- **远端验证**：[CI run 44657723397](https://github.com/konyka/break/actions/runs/44657723397) 的 [arm64 job 136027995552](https://github.com/konyka/break/actions/runs/44657723397/job/136027995552) 在提交 `5176400c` 上成功；依赖安装、配置、构建、对象架构检查和 QEMU 步骤均为 `success`，远端日志为 `37 passed, 0 failed, 37 total`。
 - **边界**：这里没有全量 arm64 `ctest`、OpenGL 运行、GPU 或物理设备证据；arm64 `test_break_crash_symbolize` 仍未纳入，需要另行解决目标架构 `nm`/`strip` 和模拟进程内新构建 fixture 的执行。
 
 ## arm64 寄存器捕获与交叉构建 lane（2026-11-20）
