@@ -378,3 +378,6 @@
 
 
 - **运行时/架构验证追加**：2026-11-20 arm64 lane 新增 runtime_core 生命周期协调器 9 例与目标结构契约，统一选择达到三十五项。两项在未修改 QEMU 树直接通过，无新增 skip；runtime IO/reload/facade、Lua/ECS 和其他 arm64 子系统仍需独立覆盖。
+
+
+- **运行时/架构验证追加**：2026-11-20 arm64 lane 新增 runtime facade 18 例、runtime IO 16 例、runtime reload/profiler 34 例，统一选择达到三十八项。未修改 QEMU 树三项全通过，无嵌套工具或新增 skip；Lua/ECS、编辑器/渲染和其他 arm64 子系统仍需独立覆盖。

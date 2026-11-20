@@ -226,3 +226,10 @@ full CTest 的失败必须分类为 code、environment、skipped/not-built；fuz
 arm64 lane 新增 `test_runtime_core`（9 例）与 `test_runtime_core_target_contract`，统一选择达到三十五项。未修改树的原生与交叉 focused 均为 2/2；单元测试由现有 QEMU emulator 执行，目标契约保持宿主 CMake 源码结构检查，不引入目标工具前缀。
 
 选择使用 `test_runtime_core($|_target_contract)`，不包含 runtime IO、reload、facade 或其他 runtime 前缀测试。本项证据限于生命周期协调器与目标归属；其他运行时子系统仍需独立切片。
+
+
+## 补充（2026-11-20）：arm64 runtime facade/IO/reload 验证
+
+arm64 lane 新增 `test_runtime_facade`（18 例）、`test_runtime_io`（16 例）与 `test_runtime_reload`（34 例），统一选择达到三十八项。三项均为直接可执行目标，使用既有 QEMU emulator；原生与交叉 focused 均为 3/3、18/16/34，无新增 skip 或运行器适配。
+
+覆盖消息/队列/任务交接、线程与异步 VFS IO、热加载所有权/提交/取消/关闭及 profiler 记录/导出/窗口行为。`test_runtime_(facade|io|reload)` 精确限定三项，不外推为 Lua/ECS、编辑器、渲染或全量 arm64 覆盖。
