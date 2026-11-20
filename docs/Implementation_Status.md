@@ -1,3 +1,10 @@
+## arm64 lane 外层时间预算（2026-11-20）
+
+- **问题**：一百五十二项串行 CTest 在远端 [job 136297883692](https://github.com/konyka/break/actions/runs/44739103555/job/136297883692) 耗时 171.23 秒，已占外层 `timeout 300` 的 57%；最慢三项为 `test_break_http` 66.12 秒（原生 10.6 秒）、`test_break_crash_e2e` 27.24 秒、`test_break_update_e2e` 14.46 秒。135 项未设 CTest `TIMEOUT`，只受外层守护约束，正常波动或后续扩选都可能在无测试失败时误杀整条 lane。
+- **改动**：workflow 与 Build_Guide 镜像命令把 `timeout 300 ctest` 改为 `timeout 600 ctest`，选择、单项 `TIMEOUT` 与 job 级 `timeout-minutes: 25` 不变。拒绝 `-j` 并行（会重现 `test_runtime_io` 的 qemu-user 挂起），暂不拆分 lane（多一次约 50 秒的 multiarch 安装）。
+- **TDD**：预算契约要求恰好一处 `timeout 600 ctest`、无 `timeout 300`、job 上限仍为 25 分钟、指南同步、选择仍为一百五十二项；旧 workflow 在「old 300 s guard still present」处 RED，改动后 GREEN。
+- **验证状态**：干净容器与远端 job 在实际完成后补记。
+
 ## arm64 规则引擎与一百五十二项 CTest（2026-11-20）
 
 - **最小场景**：新增 `engine/CMakeLists.txt:3123-3251` 注册的二十一项规则引擎测试，均只链接 `rule_engine_core`（C99），共 643 个分项：core 98、transactions 13、tms 19、grl semantics 26、ir 20、forall limits 5、rete incremental 19、agenda 45、backward 13、backward ext 55、grl surface 137、plugin parity 37、example coverage 3、query blocks 25、stream ext 57、stream grl 19、stream eval 22、backward deep chain 1、backward machine structure 4、backward machine context 4、backward bindings 21。
