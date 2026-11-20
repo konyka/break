@@ -5,7 +5,9 @@
 - **交付**：keygen 普通、RLIMIT_FSIZE 和 12 进程并发启动均接入 `TARGET_RUNNER`；crypto 契约接入 `CMAKE_NM` 与现场链接 runner，authority 契约接入 `CMAKE_NM`。宿主工具不模拟，权限、环容量、短写原子性、并发、导出和信任边界断言不变。
 - **模拟边界**：只有 exit 90 且 `BREAK_TEST_QEMU_USER=1` 时打印 `skipped (QEMU user has no PTRACE_TRACEME)`；exit 91（产品检测错误）及所有其他状态继续判红。原生 ptrace 正例无 skip 且通过；QEMU integrity 8/8 中一项是设置跳过，其他七项实际执行。
 - **交叉与原生验证**：修改 CI 前交叉六项 6/6，keygen RLIMIT/并发成功，crypto 20/20、authority 14/14、两个契约通过，唯一 skip 文本出现一次。原生六项 6/6，ptrace 正例无 skip。CI YAML 契约先 RED 后 GREEN，并核对真实选择集合二十项。
-- **本地验证**：原生全量 455 项零失败，4 个既有平台用例跳过；原生 ptrace 正例严格通过。最终干净容器二十项 20/20，CTest 147.37 秒，所有旧/新用例、keygen、契约与 e2e 成功，唯一 ptrace 设置 skip 出现一次。远端 job 结果在实际完成后补记。客户端完整性信号仍只提高攻击成本，不作为授权输入；无 GPU、物理设备或其他 arm64 子系统覆盖声明。
+- **本地验证**：原生全量 455 项零失败，4 个既有平台用例跳过；原生 ptrace 正例严格通过。最终干净容器二十项 20/20，CTest 147.37 秒，所有旧/新用例、keygen、契约与 e2e 成功，唯一 ptrace 设置 skip 出现一次。客户端完整性信号仍只提高攻击成本，不作为授权输入；无 GPU、物理设备或其他 arm64 子系统覆盖声明。
+- **远端验证**：[CI run 44673093467](https://github.com/konyka/break/actions/runs/44673093467) 的 [arm64 job 136078423033](https://github.com/konyka/break/actions/runs/44673093467/job/136078423033) 在提交 `5da6a711` 上全部步骤成功。日志断言确认 `0 tests failed out of 20`、全部既有汇总、crypto 20/20、authority 14/14、keygen 与两个契约；integrity 8/8 中 `QEMU user has no PTRACE_TRACEME` 恰好一次，其余七项实际执行，未宣称 ptrace 正向模拟证据。
+- **独立评审**：只读评审未发现 Critical/Important 问题，确认原生严格性、exit-90/value-1 限制、keygen 全启动路径、目标-only 模拟及信任边界。唯一非阻塞建议是改进旧 crypto 契约失败诊断文本，本次未扩大改动。
 
 ## arm64 crash/update 十四项 CTest（2026-11-20）
 
