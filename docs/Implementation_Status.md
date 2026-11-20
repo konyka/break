@@ -1,9 +1,9 @@
-## arm64 扩展物理与八十五项 CTest（2026-11-20）
+## arm64 扩展物理、角色控制与八十六项 CTest（2026-11-20）
 
-- **最小场景**：新增 slider、cloth、rope、soft-body、destructible 五个直接可执行目标，至此所有已注册物理测试均纳入 arm64。每项一个多断言场景，断言数分别为 12/24/10/15/30。
-- **未修改基线与 focused 复验**：原生和交叉均为 5/5，focused CTest 0.01/0.15 秒，无 skip。无需修改产品或测试源码。
-- **RED 与精确选择**：旧 workflow 因缺少五个构建目标按预期 RED。新增独立的 `test_(physics_slider|cloth|rope|soft_body|destructible)$`，未改动已验证的刚体表达式；真实选择为既有八十项加五项，共八十五项，`*_extra` 派生名称被拒绝。
-- **覆盖缺口**：五个扩展模块各只有一个测试场景，覆盖偏薄；本切片如实记录，不扩充测试。
+- **最小场景**：新增 slider、cloth、rope、soft-body、destructible 五个直接可执行目标，以及 character 30 例（链接 character.c 与 physics.c），至此所有已注册物理测试均纳入 arm64。五个扩展模块每项一个场景，静态断言点分别为 12/24/10/15/30（含循环，运行时检查次数更多）。
+- **未修改基线与 focused 复验**：原生和交叉均为 6/6（character 30/30），无 skip。无需修改产品或测试源码。
+- **RED 与精确选择**：旧 workflow 因缺少构建目标按预期 RED（先对五项，评审指出遗漏 character 后再次对六项 RED）。新增独立的 `test_(physics_slider|cloth|rope|soft_body|destructible|character)$`，未改动已验证的刚体表达式；真实选择为既有八十项加六项，共八十六项，`*_extra` 派生名称被拒绝。
+- **覆盖缺口**：五个扩展模块各只有一个测试场景，首个失败断言会提前返回并遮住后续检查，汇总只报 1 例；本切片如实记录，不扩充测试。
 - **验证状态**：原生全量、最终干净容器、独立评审及远端 job 在实际完成后补记。跨构建/跨架构确定性、渲染、Snowflake/QUIC、GPU 与物理设备仍不在本次覆盖内。
 
 ## arm64 物理与八十项 CTest（2026-11-20）

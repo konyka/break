@@ -5,7 +5,7 @@
 The arm64 lane currently selects exactly 80 tests, including eight rigid-body
 physics tests. Five registered extended-physics tests remain outside it:
 `test_physics_slider`, `test_cloth`, `test_rope`, `test_soft_body`, and
-`test_destructible`. This slice adds exactly those five and produces an 85-test
+`test_destructible`. This slice adds exactly those five and produces an 86-test
 selection. It completes arm64 coverage of every registered physics test.
 
 ## Approaches
@@ -64,14 +64,14 @@ relaxation is introduced.
 
 1. Run the selection contract against the old workflow: require the five build
    targets, the exact alternative, rejection of `*_extra` names, and previous 80
-   plus exactly these five = 85. Observe RED on the old build command.
+   plus exactly these five = 86. Observe RED on the old build command.
 2. Apply only the build-list and selection-regex edits; require GREEN against an
-   explicit 85-name set.
+   explicit 86-name set.
 3. Re-run native and cross focused tests; require 5/5 and no new skips.
 4. Run native full regression; require 455 tests, zero failures, and only the
    four established platform skips.
 5. Execute the final workflow run blocks in a clean Ubuntu 24.04 container.
-   Require 85/85, all previous evidence, and exactly one existing ptrace skip.
+   Require 86/86, all previous evidence, and exactly one existing ptrace skip.
 6. Request independent read-only review, push, and assert the exact-HEAD remote
    arm64 log with the shared log checker.
 
@@ -80,7 +80,18 @@ relaxation is introduced.
 Append evidence to the build guide, implementation status, extended physics
 design document, and missing-capabilities inventory without replacing history.
 
-This is a selected 85-test suite, not full arm64 CTest. Cross-build and
+This is a selected 86-test suite, not full arm64 CTest. Cross-build and
 cross-architecture determinism, rendering, Snowflake transport scenarios, QUIC,
 GPU, and physical devices remain outside it. Each extended module having a single
 scenario is recorded as a coverage gap.
+
+
+## Addendum: test_character
+
+Review found `test_character` (`engine/CMakeLists.txt:7562-7566`, 30 cases, links
+`character.c` and `physics.c`, direct QEMU registration) outside the lane, which
+made the "every registered physics test" claim false. It is added to this slice:
+the alternative becomes `test_(physics_slider|cloth|rope|soft_body|destructible|character)$`
+and the selection is 86 tests. The 12/24/10/15/30 figures are static assertion
+sites, not runtime check counts; the real gap is that each extended module has a
+single scenario whose first failing assertion returns early and hides later checks.
