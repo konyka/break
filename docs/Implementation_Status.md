@@ -3,7 +3,9 @@
 - **新增三项**：online aspect 12 例、online aspect replication 9 例、replication fragment 12 例。均为直接可执行目标，无嵌套工具、无 Snowflake 依赖，未修改产品或测试源码。
 - **未修改 QEMU 基线**：三项 3/3，分项 12/9/12，focused CTest 0.26 秒；aspect 覆盖原子变更/epoch/休眠状态，aspect replication 覆盖预算/重试/分片/离开重入，fragment 覆盖乱序/冲突/校验/ supersession 与容量边界。
 - **CI 契约**：先在旧构建命令处 RED，追加三个目标并加入 aspect 前缀和 fragment 正则后 GREEN；真实原生选择为既有二十八项加三项，共三十一项。其他 workflow 输入不变，无新增依赖或 skip。
-- **本地验证**：原生全量 455 项零失败，4 个既有平台用例跳过。最终干净容器三十一项 31/31，CTest 118.55 秒；新增 12/9/12 与全部既有汇总/契约/e2e 成功，既有 ptrace 设置 skip 恰好一次，无新增跳过。远端 job 结果在实际完成后补记。Snowflake 适配器/会话/TLS、core_app 网络驱动、QUIC、生产部署、其他 arm64 子系统、GPU 与物理设备仍不在本次覆盖内。
+- **本地验证**：原生全量 455 项零失败，4 个既有平台用例跳过。最终干净容器三十一项 31/31，CTest 118.55 秒；新增 12/9/12 与全部既有汇总/契约/e2e 成功，既有 ptrace 设置 skip 恰好一次，无新增跳过。Snowflake 适配器/会话/TLS、core_app 网络驱动、QUIC、生产部署、其他 arm64 子系统、GPU 与物理设备仍不在本次覆盖内。
+- **远端验证**：[CI run 44677227536](https://github.com/konyka/break/actions/runs/44677227536) 的 [arm64 job 136091832637](https://github.com/konyka/break/actions/runs/44677227536/job/136091832637) 在提交 `36fa7592` 上全部步骤成功。日志断言确认 `0 tests failed out of 31`、新增 12/9/12、全部既有汇总，既有 ptrace 设置 skip 恰好一次，无新增跳过。
+- **独立评审**：只读评审未发现任何 Critical/Important/Minor 问题，确认三十一项精确选择、非 Snowflake 目标、失败传播与文档边界。
 
 ## arm64 核心网络与二十八项 CTest（2026-11-20）
 
