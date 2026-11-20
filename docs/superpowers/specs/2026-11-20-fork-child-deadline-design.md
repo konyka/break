@@ -18,7 +18,7 @@ a stuck child must fail its own case quickly and name what happened.
 
 ## Approaches
 
-1. Add a bounded wait helper to `test_framework.h` that polls
+1. Add a bounded wait helper in a new `engine/tests/test_fork.h` that polls
    `waitpid(WNOHANG)` until a deadline, then sends `SIGKILL`, reaps the child,
    and reports a timeout. Recommended: no new dependency, works on every POSIX
    target that already runs these tests, and other fork tests can reuse it.
@@ -28,7 +28,9 @@ a stuck child must fail its own case quickly and name what happened.
 
 ## Design
 
-`test_framework.h` (POSIX only) gains:
+`engine/tests/test_fork.h` (POSIX only; kept out of `test_framework.h` so the
+318 files that include it see no new headers or feature-macro requirements)
+provides:
 
 ```c
 /* Returns pid on success with *status filled, 0 on deadline (child killed
@@ -45,7 +47,7 @@ and assert the return equals `pid`, so a hang becomes a named case failure.
 
 ## TDD
 
-A new `test_test_framework` executable checks the helper:
+A new `test_fork_deadline` executable checks the helper:
 1. A child that exits 7 returns `pid` with `WEXITSTATUS == 7`.
 2. A child that aborts returns `pid` with `WTERMSIG == SIGABRT`.
 3. A child that sleeps forever returns 0 within the deadline plus slack, and the

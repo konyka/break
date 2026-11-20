@@ -443,6 +443,8 @@ configure 时真实探测 `GLES2/gl2.h` 与导入库，stock Windows 无 SDK 时
 参数，固定名称还会让并行构建树互相删除文件。`test_world_stream_world` 在 2026-11-02
 按此约定修复，真实 VFS 和文件内容断言不变。
 
+fork 子进程的测试在 POSIX 上应包含 `tests/test_fork.h`，用 `test_waitpid_deadline(pid, &status, timeout_ms)` 代替无界 `waitpid(pid, &status, 0)`：子进程超过期限仍未结束时会被 `SIGKILL` 并回收，函数返回 0 并打印 `CHILD TIMEOUT after <ms> ms (killed)`，调用方断言返回值等于 `pid` 即可让挂起变成本用例的明确失败，而不是拖到外层 CTest 守护超时。该头文件独立于 `test_framework.h`，后者的 318 个包含者不受影响。
+
 `core_app` 的 11 个正式资产由真实 baker 生成并逐字节比较；其中 Lua、scenario 和
 `actors.sidecar` 在 `.gitattributes` 固定为 LF，避免 `core.autocrlf=true` 将工作树检出为
 CRLF 后产生伪差异。Windows 测试用 `_spawnv(_P_WAIT)` 直接启动 baker，不经过 `system()`

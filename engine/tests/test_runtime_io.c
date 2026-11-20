@@ -1,4 +1,5 @@
 #include "test_framework.h"
+#include "test_fork.h"
 #include <runtime/runtime_thread.h>
 #include <runtime/runtime_io.h>
 #include <runtime/runtime_test_hooks.h>
@@ -1073,7 +1074,7 @@ TEST(io_request_double_release_aborts)
             stage_read = read(stage_pipe[0], &stage, 1u);
         } while (stage_read < 0 && errno == EINTR);
         close_read_result = close(stage_pipe[0]);
-        wait_result = waitpid(pid, &status, 0);
+        wait_result = test_waitpid_deadline(pid, &status, 30000u);
         ASSERT_EQ(close_write_result, 0);
         ASSERT_EQ(close_read_result, 0);
         ASSERT_EQ(wait_result, pid);

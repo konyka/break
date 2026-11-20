@@ -1,3 +1,11 @@
+## fork 子进程截止等待（2026-11-20）
+
+- **问题**：`test_runtime_io` 第 15 例与 `test_runtime_reload` 第 23 例在 fork 子进程中启动 worker 线程并期待 abort；qemu-user 高负载下子进程偶发永不结束，父进程的 `waitpid(pid, &status, 0)` 无界阻塞，整条 arm64 lane 只能等外层 `timeout 600` 杀掉 CTest，日志不指明是哪一例。根因仍未定位，但无界等待本身就是测试缺陷。
+- **改动**：新增 `engine/tests/test_fork.h`，提供 `test_waitpid_deadline(pid, &status, timeout_ms)`：每 10 ms 以 `WNOHANG` 轮询，超时后 `SIGKILL`、回收（只对 `EINTR` 重试）、打印 `CHILD TIMEOUT after <ms> ms (killed)` 并返回 0。两例改用 30 秒期限，原有断言不变；挂起时现在以本用例 FAIL 结束。未放入 `test_framework.h`，以免其 318 个包含者引入新的头文件和特性宏要求。
+- **TDD**：新增 `test_fork_deadline`（3 例：正常退出码、SIGABRT、卡死子进程在 200 ms 期限后被杀并回收、第二次 `waitpid` 返回 `ECHILD`）。helper 不存在时编译失败（RED），实现后 3/3（GREEN）。`test_runtime_io` 16/16、`test_runtime_reload` 34/34。
+- **交叉 focused**：干净容器重新配置 `build-arm64` 后，QEMU 下 `test_fork_deadline` 3/3（含卡死子进程 200 ms 被杀并回收）、`test_runtime_io` 16/16、`test_runtime_reload` 34/34。
+- **验证状态**：原生全量与远端 job 在实际完成后补记。`test_fork_deadline` 本切片不加入 arm64 选择；QEMU 挂起根因仍为待办。
+
 ## arm64 lane 外层时间预算（2026-11-20）
 
 - **问题**：一百五十二项串行 CTest 在远端 [job 136297883692](https://github.com/konyka/break/actions/runs/44739103555/job/136297883692) 耗时 171.23 秒，已占外层 `timeout 300` 的 57%；最慢三项为 `test_break_http` 66.12 秒（原生 10.6 秒）、`test_break_crash_e2e` 27.24 秒、`test_break_update_e2e` 14.46 秒。135 项未设 CTest `TIMEOUT`，只受外层守护约束，正常波动或后续扩选都可能在无测试失败时误杀整条 lane。

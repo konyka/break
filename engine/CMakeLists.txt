@@ -6482,6 +6482,14 @@ endif()
     set_tests_properties(test_runtime_io PROPERTIES
         LABELS "headless;runtime_core")
 
+    if(NOT WIN32)
+        add_executable(test_fork_deadline tests/test_fork_deadline.c)
+        target_compile_definitions(test_fork_deadline PRIVATE _POSIX_C_SOURCE=199309L)
+        add_test(NAME test_fork_deadline COMMAND test_fork_deadline)
+        set_tests_properties(test_fork_deadline PROPERTIES
+            LABELS "headless" TIMEOUT 30)
+    endif()
+
     # Reload coordinator + profiler bridge focused tests (Task 6). vfs.c,
     # log.c, profiler.c and time.c are compiled beside the test: the
     # coordinator reads through a borrowed VFS and the profiler bridge hands

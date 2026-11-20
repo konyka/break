@@ -411,3 +411,4 @@
 - **规则引擎验证追加**：2026-11-20 arm64 lane 新增二十一项规则引擎测试（643 个分项），统一选择达到一百五十二项。仍缺：Redis 路径（`RULE_ENGINE_ENABLE_REDIS` 默认关闭，stream ext 中 10 例只打印 SKIP，643 例中有断言的为 633 例）、C11 并行执行器压力测试与 fuzz 的 arm64 运行、大规则集性能。
 - **QEMU 偶发挂起记录**：`test_runtime_io` 的 fork 子进程在 qemu-user 下创建线程时于高宿主负载下偶发死锁（12 路并行 180 次中 5 次），原生不复现；待评估在 QEMU 用户态下改用不在 fork 子进程中起线程的等价断言。 2026-11-20 又在 `test_runtime_reload` 的同类用例（fork 子进程建 worker 线程后期待 abort）观察到一次；最小复现与 QEMU 上游 issue 358 复现程序均未触发，根因未定位。
 - **arm64 lane 时间预算追加**：2026-11-20 外层守护由 300 秒放宽到 600 秒（实测 171 秒）。仍缺：`test_break_http` 在 QEMU 下比原生慢约 6 倍，若后续继续扩选，需要评估拆分 lane。
+- **fork 子进程截止等待追加**：2026-11-20 两个 fork 后 abort 的用例改用 `tests/test_fork.h` 的 30 秒有界等待，QEMU 挂起时会以本用例失败结束并给出诊断，不再拖垮整条 lane。根因仍未定位。

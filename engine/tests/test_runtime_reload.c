@@ -1,4 +1,5 @@
 #include "test_framework.h"
+#include "test_fork.h"
 #include <runtime/runtime_reload.h>
 #include <runtime/runtime_message.h>
 #include <runtime/runtime_profiler.h>
@@ -1521,7 +1522,7 @@ TEST(reload_destroy_requires_shutdown_aborts)
         {
             int status = 0;
             ASSERT_TRUE(pid > 0);
-            ASSERT_EQ(waitpid(pid, &status, 0), pid);
+            ASSERT_EQ(test_waitpid_deadline(pid, &status, 30000u), pid);
             ASSERT_TRUE(WIFSIGNALED(status)); /* SIGABRT expected */
         }
     }
