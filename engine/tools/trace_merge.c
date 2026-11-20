@@ -308,7 +308,6 @@ int main(int argc, char **argv)
      * session, from --session or from its own trace, and
      * apply_clock_offset fails naming the input when neither is there */
     if (clock_path && count < 2u) {
-        fprintf(stderr, "DEBUG: count=%u clock_path=%s\n", count, clock_path);
         return usage_error("--clock-offset needs exactly two inputs or --session per peer");
     }
 
