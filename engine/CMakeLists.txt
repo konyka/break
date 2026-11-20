@@ -8002,6 +8002,7 @@ endif()
     add_test(NAME test_trace_merge_tool
         COMMAND ${CMAKE_COMMAND}
             -DTRACE_MERGE=$<TARGET_FILE:trace_merge>
+            "-DTRACE_MERGE_RUNNER=${CMAKE_CROSSCOMPILING_EMULATOR}"
             -DWORK=${CMAKE_CURRENT_BINARY_DIR}/trace-merge-tool
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_trace_merge_tool.cmake)
     set_tests_properties(test_trace_merge_tool PROPERTIES LABELS "headless")

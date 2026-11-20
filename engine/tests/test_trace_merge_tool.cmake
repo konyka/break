@@ -4,6 +4,12 @@ foreach(var TRACE_MERGE WORK)
     endif()
 endforeach()
 
+set(trace_merge_runner_text "")
+foreach(trace_merge_runner_arg IN LISTS TRACE_MERGE_RUNNER)
+    string(REPLACE "'" "'\"'\"'" quoted_trace_merge_runner_arg "${trace_merge_runner_arg}")
+    string(APPEND trace_merge_runner_text "'${quoted_trace_merge_runner_arg}' ")
+endforeach()
+
 set_property(GLOBAL PROPERTY TRACE_MERGE_TOOL_ERRORS "")
 function(record_error text)
     get_property(errors GLOBAL PROPERTY TRACE_MERGE_TOOL_ERRORS)
@@ -12,7 +18,7 @@ function(record_error text)
 endfunction()
 
 function(run_tool name expected_rc)
-    execute_process(COMMAND "${TRACE_MERGE}" ${ARGN}
+    execute_process(COMMAND ${TRACE_MERGE_RUNNER} "${TRACE_MERGE}" ${ARGN}
         RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err TIMEOUT 20)
     set(TOOL_ERR "${err}" PARENT_SCOPE)
     if(NOT "${rc}" STREQUAL "${expected_rc}")
@@ -79,7 +85,7 @@ file(WRITE "${WORK}/two.trace"
     "${clk} offset_us=1 error_us=1 samples=4\n${clk} offset_us=2 error_us=1 samples=4\n")
 file(WRITE "${WORK}/malformed.trace" "${clk} offset_us=01 error_us=1 samples=4\n")
 
-execute_process(COMMAND "${TRACE_MERGE}" --out "${WORK}/behind.json"
+execute_process(COMMAND ${TRACE_MERGE_RUNNER} "${TRACE_MERGE}" --out "${WORK}/behind.json"
     --clock-offset "${WORK}/behind.trace" "${WORK}/a.json" "${WORK}/b.json"
     RESULT_VARIABLE behind_rc OUTPUT_VARIABLE behind_out ERROR_VARIABLE behind_err TIMEOUT 20)
 if(NOT behind_rc EQUAL 0 OR NOT behind_out MATCHES "clock offset offset_us=-1000 error_us=12")
@@ -138,7 +144,7 @@ file(WRITE "${WORK}/peers.trace"
     "${clk1} session=1 offset_us=-500 error_us=4 samples=4\n"
     "${clk1} session=2 offset_us=300 error_us=6 samples=4\n"
     "${clk1} session=3 offset_us=x error_us=1 samples=4\n")
-execute_process(COMMAND "${TRACE_MERGE}" --out "${WORK}/peers.json"
+execute_process(COMMAND ${TRACE_MERGE_RUNNER} "${TRACE_MERGE}" --out "${WORK}/peers.json"
     --clock-offset "${WORK}/peers.trace" "${WORK}/a.json"
     --session 1 "${WORK}/b.json" --session 2 "${WORK}/c.json"
     RESULT_VARIABLE peers_rc OUTPUT_VARIABLE peers_out ERROR_VARIABLE peers_err TIMEOUT 20)
@@ -166,7 +172,7 @@ file(WRITE "${WORK}/c.named.json"
     "{\"traceEvents\":[\n"
     "{\"name\":\"network_session_welcome\",\"cat\":\"core_app\",\"ph\":\"i\",\"s\":\"g\",\"ts\":2,\"pid\":1,\"tid\":1,\"args\":{\"session\":2,\"tick\":4}}\n"
     "${tail}")
-execute_process(COMMAND "${TRACE_MERGE}" --out "${WORK}/named.json"
+execute_process(COMMAND ${TRACE_MERGE_RUNNER} "${TRACE_MERGE}" --out "${WORK}/named.json"
     --clock-offset "${WORK}/peers.trace" "${WORK}/a.json"
     "${WORK}/b.named.json" "${WORK}/c.named.json"
     RESULT_VARIABLE named_rc OUTPUT_VARIABLE named_out ERROR_VARIABLE named_err TIMEOUT 20)
@@ -241,7 +247,7 @@ run_tool(missing_value 2 --out)
 expect_err(missing_value "--out requires a value")
 # execute_process drops empty arguments; pass an empty --out through sh.
 if(CMAKE_HOST_UNIX)
-    execute_process(COMMAND /bin/sh -c "\"$0\" --out '' \"$1\"" "${TRACE_MERGE}" "${WORK}/a.json"
+    execute_process(COMMAND /bin/sh -c "${trace_merge_runner_text}\"$0\" --out '' \"$1\"" "${TRACE_MERGE}" "${WORK}/a.json"
         RESULT_VARIABLE empty_rc ERROR_VARIABLE empty_err TIMEOUT 20)
     if(NOT empty_rc EQUAL 2 OR NOT empty_err MATCHES "--out requires a value")
         record_error("empty_value: exit=${empty_rc}, want 2; stderr=${empty_err}")
