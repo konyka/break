@@ -3,8 +3,10 @@
 - **最小场景**：新增 core_app network 单元 25 例和 network offline 确定性/无网络符号契约。当前交叉配置 Snowflake OFF，loopback/voice/start-failure/net-transport 未注册，不计为通过或跳过。
 - **RED 与交付**：未修改时单元 25/25 已通过，offline 因宿主直接执行 arm64 core_app 失败。新增专用 `CORE_APP_RUNNER` 覆盖 driver 中 core_app 启动点；NM、NET_CLIENT、trace 工具与宿主 CMake 不加此前缀。原生两项直接执行通过，交叉两项 2/2、25/25、offline contract 成功，CTest 0.87 秒，无 skip 77。
 - **精确选择**：CI 构建追加 `test_core_app_network core_app`，正则使用 `test_core_app_network($|_offline)`，真实原生选择为既有三十一项加两项，共三十三项。最初 `(_offline)?` 因可匹配空后缀而误选 loopback/voice，被集合断言抓红后修正；契约自身误伤 voice_mixer 的宽泛排除也改为仅排除 core_app 派生场景，未放宽 33 项相等断言。
-- **本地验证（2026-11-20 15:12 CST）**：原生全量 455 项零失败，4 个既有平台用例跳过。最终干净 Ubuntu 24.04 容器按 workflow 原始步骤完成三十三目标构建、对象检查与三十三项 CTest，33/33、CTest 111.74 秒；core_app network 25/25、offline contract 成功，全部既有分项/契约/e2e 成功，既有 ptrace 设置 skip 恰好一次，无新增跳过。`git diff --check` 通过。
-- **验证边界**：远端 job 与独立评审在实际完成后补记。Snowflake loopback/voice、QUIC、生产部署、其他 arm64 子系统、GPU 与物理设备仍不在本次覆盖内。
+- **本地验证（2026-11-20 15:24 CST）**：无冲突 rebase 到远端 `706eb1cc` 后，原生全量 455 项零失败，4 个既有平台用例跳过，CTest 153.31 秒。最终干净 Ubuntu 24.04 容器按 workflow 原始步骤完成三十三目标构建、对象检查与三十三项 CTest，33/33、CTest 108.78 秒；core_app network 25/25、offline contract 成功，全部既有分项/契约/e2e 成功，既有 ptrace 设置 skip 恰好一次，无新增跳过。`git diff --check` 通过。
+- **独立评审**：只读评审未发现任何 Critical/Important/Minor 问题，确认 runner 仅作用于 core_app、精确 33 项选择、原生兼容性、失败传播和文档边界。
+- **远端验证**：[CI run 44694765979](https://github.com/konyka/break/actions/runs/44694765979) 的 [arm64 job 136148755551](https://github.com/konyka/break/actions/runs/44694765979/job/136148755551) 在提交 `1b4060dc` 上全部步骤成功。原始日志断言确认精确三十三项、`0 tests failed out of 33`、core_app network 25/25、offline contract、全部既有分项/契约/e2e，既有 ptrace 设置 skip 恰好一次；非 root 的不可写统计文件分支实际执行，两个真实 LLVM Mach-O 子检查仍按工具缺失条件跳过。
+- **验证边界**：Snowflake loopback/voice、QUIC、生产部署、其他 arm64 子系统、GPU 与物理设备仍不在本次覆盖内。
 
 ## arm64 aspect/replication 与三十一项 CTest（2026-11-20）
 
