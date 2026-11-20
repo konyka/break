@@ -3,7 +3,10 @@
 - **最小场景**：新增 ECS 核心 45 例、系统调度 6 例、ECS snapshot/delta/AOI 35 例和 replication 目标结构契约。三个可执行目标使用既有 QEMU emulator；契约仅由宿主 CMake 检查正式源码归属，无目标工具适配。
 - **未修改基线与 focused 复验**：原生和交叉均为 4/4、45/6/35 与 `formal replication target contract passed`，CTest 各 0.04/0.16 秒，无 skip。无需修改产品或测试源码。
 - **RED 与精确选择**：旧 workflow 因缺少三个构建目标按预期 RED。加入 `test_ecs(_system|_replication)?$` 与 `test_replication_target_contract$` 后，真实原生选择为既有三十八项加四项，共四十二项。初版 `test_ecs($|_system|_replication)` 被未来前缀用例抓红，因为 `$` 只约束分组首分支；改为覆盖整个可选后缀的局部锚点后，所有前缀拒绝与 42 项集合断言通过。
-- **验证状态**：原生全量、最终干净容器、独立评审及远端 job 在实际完成后补记。Lua、world streaming、编辑器/渲染、Snowflake loopback/voice、QUIC、GPU 与物理设备仍不在本次覆盖内。
+- **本地验证（2026-11-20 16:48 CST）**：原生全量 455 项零失败，4 个既有平台用例跳过，CTest 155.27 秒。最终干净 Ubuntu 24.04 容器按 workflow 原始步骤完成构建、对象检查与四十二项 CTest，42/42、CTest 108.43 秒；ECS 45/6/35、目标契约及全部既有分项/契约/e2e 成功，既有 ptrace 设置 skip 恰好一次，无新增跳过。`git diff --check` 通过。
+- **独立评审**：只读评审未发现任何 Critical/Important/Minor 问题，确认精确 42 项选择、局部锚点、宿主/目标边界、原生兼容性和失败传播。
+- **远端验证**：[CI run 44706167613](https://github.com/konyka/break/actions/runs/44706167613) 的 [arm64 job 136186194398](https://github.com/konyka/break/actions/runs/44706167613/job/136186194398) 在提交 `7d9aeea7` 上全部步骤成功。原始日志断言确认精确四十二项、`0 tests failed out of 42`、ECS 45/6/35 与目标契约、全部既有分项/契约/e2e，既有 ptrace 设置 skip 恰好一次；非 root 权限分支实际执行，两个真实 LLVM Mach-O 子检查仍按工具缺失条件跳过。
+- **验证边界**：Lua、world streaming、编辑器/渲染、Snowflake loopback/voice、QUIC、GPU 与物理设备仍不在本次覆盖内。
 
 ## arm64 runtime facade/IO/reload 与三十八项 CTest（2026-11-20）
 
