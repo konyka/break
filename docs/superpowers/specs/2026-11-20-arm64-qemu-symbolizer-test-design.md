@@ -74,6 +74,25 @@ header-level native test.
 The executable consequently contains 45 named cases; the number of CTest
 registrations does not change.
 
+## AArch64 leaf-frame requirement discovered during verification
+
+The first run with explicit tools reached 43/45: both real crash-chain cases
+resolved `outer` where `mid` was expected. Disassembly showed that AArch64 GCC
+omitted the faulting leaf function's `x29` frame despite
+`-fno-omit-frame-pointer`; `mid` and `outer` had normal frames. The raw record
+started at the caller's frame and its first return address was in `outer`.
+The direct caller address remained only in `x30`, which the pinned record
+format does not store.
+
+This is the documented no-frame-pointer limitation, not a reason to weaken the
+assertions or invent a frame. The fixture now calls a noinline `prepare_leaf`
+before faulting. That call makes the faulting function non-leaf, so the
+compiler emits its frame and the existing record contains enough evidence for
+the asserted `leaf -> mid -> outer -> main` chain. No production record-field
+or unwinder change is made for this fixture requirement. The following QEMU
+run passed all 45 named cases; the two optional real LLVM Mach-O subchecks
+reported their existing tool-absence skips.
+
 ## Test tool and nested-runner overrides
 
 Add a small test-local setting helper. A nonempty environment value wins;

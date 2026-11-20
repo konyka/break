@@ -1,10 +1,18 @@
+## arm64 ELF 符号化与 QEMU 测试（2026-11-20）
+
+- **交付**：`break_crash_symbolize` 的 ELF64 白名单由仅 `EM_X86_64` 扩为 `EM_X86_64`/`EM_AARCH64`，其余边界、符号过滤和地址换算不变。新增 `an_aarch64_elf_uses_the_same_symbol_table_layout` 原生回归；公开接口和记录格式不变。
+- **测试工具链接入**：`test_break_crash_symbolize` 可用 `BREAK_TEST_NM`、`BREAK_TEST_READELF`、`BREAK_TEST_STRIP` 选择 GNU ELF 工具，用 `BREAK_TEST_RUNNER` 启动新编译 fixture；未设置时保持原生默认。CI 传入交叉 binutils 和 `qemu-aarch64 -L /`，不依赖 binfmt 全局状态。LLVM Mach-O 工具路径未被替换。
+- **TDD 与诊断**：原生新用例先以 44 通过/1 失败证明 `s is NULL`，白名单修改后 45/45。未修改 QEMU 基线为 28/44；ELF 修复后为 30/45（15 失败，`s is NULL` 消失）；显式工具/运行器后为 43/45，仅两个真实崩溃调用链把 `outer` 放在 `mid` 的位置。
+- **帧指针根因与修复**：反汇编确认 AArch64 GCC 即使收到 `-fno-omit-frame-pointer`，仍对故障叶子函数省略 `x29` 帧；原始记录的首个返回地址 `0x40168c` 位于 `outer`，而 `mid` 的返回地址只在未记录的 `x30`。没有伪造或放宽断言：fixture 在故障前调用不可内联的 `prepare_leaf`，使故障函数实际建立帧。随后真实非 PIE/PIE arm64 调用链均通过，QEMU 45/45；精简容器中的两个真实 LLVM Mach-O 子检查按既有条件跳过，合成 Mach-O 用例照常执行。
+- **本地验证**：原生 focused 45/45 和手工 QEMU 45/45 已完成。修改后 CI 的干净 Ubuntu 容器全流程通过：四个 arm64 目标、对象检查、崩溃测试 37/37、符号化 45/45，两个真实 LLVM Mach-O 子检查报告条件跳过。`build-core-app-net` 原生全量 455 项零失败，4 个既有平台用例跳过；`git diff --check` 通过。远端 job 结果在实际完成后补记。这里不宣称全量 arm64 `ctest`、GPU 或物理设备覆盖。
+
 ## arm64 QEMU 崩溃测试（2026-11-20）
 
 - **交付**：保留 `lane-cross-aarch64-linux` 的 multiarch 工具链、`break_crash`/`engine` 编译链接与对象架构检查，安装 `qemu-user` 并增建 `test_break_crash`。对象检查后执行 `timeout 240 qemu-aarch64 -L / ./build-arm64/test_break_crash`；超时或非零退出直接使 lane 失败，不重试、不屏蔽。
 - **TDD**：先以 PyYAML 契约要求 QEMU 显示名、`qemu-user`、三个构建目标和精确执行步骤；旧 workflow 在缺少 QEMU 显示名处 RED。最小修改后完整契约 GREEN。契约中的包名匹配最初误要求行首，已依据实际 apt 包列表修正为匹配合法的空白分隔包名，未放宽目标列表或执行命令。
 - **本地验证**：两次预研均为 37/37。修改后的 YAML 在干净 Ubuntu 24.04 容器中首次执行时，因基础镜像没有 GitHub runner 预装的 CMake 而在 configure 前失败；只补齐该 runner 前置工具后，原始 CI run 脚本逐步通过，完成 180 步构建、对象架构检查和 QEMU 37/37。rebase 到 `881be31f` 后再次完成干净容器全流程与 QEMU 37/37，包括真实 SIGSEGV/SIGABRT、上下文、恢复上传和脱敏用例。合并后的 `build-core-app-net` 执行 `cmake . && make -j6 && ctest -j4 --timeout 240 --output-on-failure`，455 项零失败，4 个既有平台用例跳过。
 - **远端验证**：[CI run 44657723397](https://github.com/konyka/break/actions/runs/44657723397) 的 [arm64 job 136027995552](https://github.com/konyka/break/actions/runs/44657723397/job/136027995552) 在提交 `5176400c` 上成功；依赖安装、配置、构建、对象架构检查和 QEMU 步骤均为 `success`，远端日志为 `37 passed, 0 failed, 37 total`。
-- **边界**：这里没有全量 arm64 `ctest`、OpenGL 运行、GPU 或物理设备证据；arm64 `test_break_crash_symbolize` 仍未纳入，需要另行解决目标架构 `nm`/`strip` 和模拟进程内新构建 fixture 的执行。
+- **边界**：该切片没有全量 arm64 `ctest`、OpenGL 运行、GPU 或物理设备证据；当时尚未纳入 arm64 `test_break_crash_symbolize`，后续工具链、嵌套 fixture 与 45 项运行结果见上一节。
 
 ## arm64 寄存器捕获与交叉构建 lane（2026-11-20）
 

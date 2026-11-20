@@ -56,11 +56,13 @@ bounded spool behavior, real signal capture, context blobs, recovery upload
 and redaction. It directly exercises the `uc_mcontext.pc`, `.sp` and
 `.regs[29]` path on an aarch64 process.
 
-It is not physical-hardware evidence, a full arm64 `ctest`, GPU validation, or
-an arm64 run of `test_break_crash_symbolize`. The existing native x86-64
-suite remains responsible for the broader regression net. The symbolizer's
-nested target-execution requirements are explicitly deferred rather than
-silently skipped.
+It is not physical-hardware evidence, a full arm64 `ctest`, or GPU validation.
+The original slice did not run `test_break_crash_symbolize`; its nested
+execution and target-tool requirements were deferred rather than silently
+skipped. The follow-up
+[arm64 symbolizer design](2026-11-20-arm64-qemu-symbolizer-test-design.md)
+adds that suite explicitly. The existing native x86-64 suite remains
+responsible for the broader regression net.
 
 ## Documentation
 
@@ -70,7 +72,10 @@ Update `docs/Build_Guide.md`, `docs/Implementation_Status.md`,
 
 - arm64 compile/link evidence for `break_crash` and `engine`;
 - QEMU arm64 runtime evidence for `test_break_crash`;
-- the still-unrun arm64 symbolizer suite and physical-device testing.
+- the originally unrun arm64 symbolizer suite and physical-device testing.
+
+The current documents also record the follow-up symbolizer delivery instead
+of continuing to list it as missing.
 
 Update the existing arm64 build-lane spec's out-of-scope statement so it no
 longer claims that all arm64 test execution is deferred.

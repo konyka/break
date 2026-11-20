@@ -66,7 +66,7 @@ errors before the fixes.
 
 ## Out of scope
 
-Running arm64 suites other than the follow-up's `test_break_crash`, including
+Running arm64 suites other than the follow-ups' `test_break_crash` and
 `test_break_crash_symbolize`, the Vulkan backend under cross-compilation,
 macOS arm64, Windows on arm64, and any claim of OpenGL runtime validation.
 The OpenGL path here is compile/link evidence only.
@@ -80,8 +80,9 @@ binary was executed in this original build-only slice.
 
 The follow-up [arm64 QEMU crash-test design](2026-11-20-arm64-qemu-crash-test-design.md)
 adds 37 emulated crash-handler tests to this lane while retaining its build
-checks. Its evidence does not extend to the remaining suites or physical
-hardware.
+checks. The [arm64 symbolizer design](2026-11-20-arm64-qemu-symbolizer-test-design.md)
+then adds 45 symbolizer cases, including real nested arm64 crash fixtures.
+Their evidence does not extend to other suites or physical hardware.
 
 **The field names are verified independently as well.** The previous slice's
 open question was whether `uc_mcontext.pc`, `.sp` and `.regs[29]` are the

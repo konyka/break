@@ -1,9 +1,10 @@
 # GCC cross-compiling to Linux arm64.
 #
-# Build-only: the binaries do not run on an x86-64 host, so this exists to
-# type-check and link the __aarch64__ paths (the crash handler's register
-# capture, the Mach-O reader's arm64 slices, the platform layer's arm64
-# branches). See docs/superpowers/specs/2026-11-20-arm64-build-lane-design.md.
+# The CI uses this toolchain for compile/link checks and explicitly runs
+# selected crash and symbolizer tests with QEMU. It type-checks the
+# __aarch64__ paths (the crash handler's register capture, the Mach-O
+# reader's arm64 slices, and the platform layer's arm64 branches).
+# See docs/superpowers/specs/2026-11-20-arm64-build-lane-design.md.
 #
 #   cmake -S engine -B build-arm64 \
 #       --toolchain /absolute/path/to/engine/toolchain-aarch64-linux.cmake \

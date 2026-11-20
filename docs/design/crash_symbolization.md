@@ -21,7 +21,7 @@
 
 输入是客户端上传的记录加上构建时留下的未剥离二进制。符号库的目录布局是 `<root>/<build-id>/<module>`。记录和 ELF 文件都按不可信输入处理。
 
-- 只读 64 位小端 x86-64 ELF。有 `.symtab` 用它，被剥离的文件退到 `.dynsym`。
+- 只读 64 位小端 x86-64（`EM_X86_64`）与 arm64（`EM_AARCH64`）ELF，其他 `e_machine` 仍拒绝。有 `.symtab` 用它，被剥离的文件退到 `.dynsym`。
 - 所有偏移、大小做溢出安全的范围检查；任何一个区段声称的字节在文件之外，整个文件拒绝（返回 NULL，不崩溃）。文件超过 256 MiB 拒绝。符号表项大小必须等于 `Elf64_Sym`。符号名偏移必须落在字符串表内，字符串表末尾强制补 NUL。
 - 符号查找要求地址落在 `[start, start+size)` 内；函数间的填充和最后一个函数之后都不解析。嵌套或别名符号向前走有界步数（64）。
 - Mach-O（2026-11-17）：`break_macho_symbols_open` 读单架构 64 位小端 Mach-O（x86_64、arm64；EXECUTE、DYLIB、BUNDLE、DSYM）的 `LC_SYMTAB`，返回同一个 `BreakElfSymbols`。`break_crash_symbols_open` 按文件 magic 选 ELF 或 Mach-O，符号库用它，所以 `<root>/<build-id>/<module>` 里两种格式都可以放。规则：
@@ -88,7 +88,7 @@
 
 | 测试 | 例数 | 内容 |
 |---|---|---|
-| `test_break_crash_symbolize` | 43 | 对 `nm` 逐函数核对；损坏 ELF 逐字段；剥离的 so；真实崩溃（非 PIE 与 PIE）的完整调用链；手工构造记录的链走查、伪造链、32 帧上限、窗口边界；符号根之外的名字；迟到的符号文件；Mach-O（20 项，见下） |
+| `test_break_crash_symbolize` | 45 | 对 `nm` 逐函数核对；x86-64/AArch64 ELF 机器类型；损坏 ELF 逐字段；剥离的 so；真实崩溃（非 PIE 与 PIE）的完整调用链；手工构造记录的链走查、伪造链、32 帧上限、窗口边界；符号根之外的名字；迟到的符号文件；Mach-O（20 项，见下） |
 | `test_break_crash_cluster` | 26 | 签名稳定性与敏感性；计数、重复、未登记构建；回归的全部时序；规范文本往返、每个前缀与单字节改动、结构性谎言；写入中途失败（`RLIMIT_FSIZE` 子进程）旧文件不变；界限与淘汰；恶意符号名；前缀解析；进程间锁 |
 | `test_break_crash_upload_http` | 8 | 伪造收集端：成功、各种状态、成帧错误、无应答、本地拒绝不接触在线服务、spool 重试 |
 | `test_break_crash_e2e` | 11 个场景 | 见下 |
@@ -115,20 +115,29 @@ Mach-O 用例在测试里逐字节构造镜像，不需要 Apple SDK：dylib 与
 
 ### Linux arm64 QEMU 运行（2026-11-20）
 
-CI 的 `lane-cross-aarch64-linux` 在原有 `break_crash`、`engine` 编译链接和对象架构检查之后，构建并执行：
+CI 的 `lane-cross-aarch64-linux` 在 `break_crash`、`engine` 编译链接和对象架构检查之后，构建两个测试可执行文件并运行：
 
 ```sh
 qemu-aarch64 --version
 timeout 240 qemu-aarch64 -L / ./build-arm64/test_break_crash
+BREAK_TEST_NM=aarch64-linux-gnu-nm \
+BREAK_TEST_READELF=aarch64-linux-gnu-readelf \
+BREAK_TEST_STRIP=aarch64-linux-gnu-strip \
+BREAK_TEST_RUNNER='qemu-aarch64 -L /' \
+timeout 240 qemu-aarch64 -L / ./build-arm64/test_break_crash_symbolize
 ```
 
-Ubuntu `qemu-user` 提供模拟器，`-L /` 使用 multiarch 安装的 arm64 根文件系统。37 项用例覆盖记录构造、有界 spool、真实 SIGSEGV/SIGABRT 捕获、context blob、恢复上传和脱敏，实际执行 aarch64 信号帧中的 `uc_mcontext.pc`、`.sp`、`.regs[29]` 读取路径。超时和测试失败不被重试或退出码屏蔽。
+Ubuntu `qemu-user` 提供模拟器，`-L /` 使用 multiarch 安装的 arm64 根文件系统。37 项崩溃用例覆盖记录构造、有界 spool、真实 SIGSEGV/SIGABRT 捕获、context blob、恢复上传和脱敏，实际执行 aarch64 信号帧中的 `uc_mcontext.pc`、`.sp`、`.regs[29]` 读取路径。
 
-这属于模拟的 Linux arm64 运行证据，不是全量 arm64 `ctest`、GPU 或物理设备证据。`test_break_crash_symbolize` 仍未在该 lane 执行：它还需要目标架构 `nm`/`strip`，以及从模拟测试进程执行新构建 arm64 fixture 的环境，不能用上述 37 项代替。
+45 项符号化用例额外覆盖真实 AArch64 ELF 的 `.symtab`/`.dynsym`、构建 id、非 PIE/PIE 模块偏移，以及 `leaf -> mid -> outer -> main` 帧链。交叉 GNU 工具是读取目标文件的宿主程序；`BREAK_TEST_RUNNER` 只给新编译的 arm64 fixture 加模拟器前缀，不修改宿主 binfmt。超时和测试失败不被重试或退出码屏蔽。
+
+AArch64 GCC 可对叶子函数省略 `x29` 帧，即使命令带 `-fno-omit-frame-pointer`。真实崩溃 fixture 在故障前调用不可内联的 `prepare_leaf`，确保故障函数建立帧；没有降低调用链断言。没有帧指针且未记录 `x30` 时仍可能得到短链，这是既有明确限制，不能据此声称支持 DWARF CFI 或无帧指针展开。
+
+精简 QEMU 环境未安装 clang/lld/llvm 工具时，两个真实 LLVM Mach-O 子检查按既有条件报告 skipped；合成 Mach-O 用例照常执行。这属于选定测试的模拟 Linux arm64 证据，不是全量 arm64 `ctest`、GPU 或物理设备证据。
 
 ## 7. 没有做的
 
-- minidump / PE 格式、Windows SEH/VEH（`_WIN32` 仍是编译期 stub）；Windows 与 macOS lane 未运行（新库只在 `UNIX AND NOT APPLE` 下构建，服务与工具只在 POSIX 下构建）。Mach-O 只读符号表。2026-11-20：帧恢复不再是 x86-64 专用——AAPCS64 的帧记录与 x86-64 同为 `[fp]`/`[fp+8]` 布局，同一套遍历两者通用，用例 `the_walker_follows_an_arm64_frame_pointer_chain_too` 以 arm64 形状的链验证；信号处理器在 `__aarch64__ && __linux__` 下读 `uc_mcontext.pc`/`.sp`/`.regs[29]`（x29 即帧指针）而不再写零。字段名已对照内核的 aarch64 `asm/sigcontext.h`（`regs[31]`/`sp`/`pc`，`regs[29]` 即 x29 帧指针）编译验证通过；`engine/toolchain-aarch64-linux.cmake` 与 CI 的 `lane-cross-aarch64-linux` 持续检查整体构建。Ubuntu 24.04 multiarch 容器中 `break_crash` 与 `engine` 的 176 个构建步骤已完成，目标对象确认为 aarch64；这两条是编译/链接证据。第 6 节另记录了后续增加的 37 项 QEMU arm64 崩溃测试；arm64 `test_break_crash_symbolize` 与物理设备验证仍未完成。没有验证 macOS 客户端生成的真实崩溃记录。
+- minidump / PE 格式、Windows SEH/VEH（`_WIN32` 仍是编译期 stub）；Windows 与 macOS lane 未运行（新库只在 `UNIX AND NOT APPLE` 下构建，服务与工具只在 POSIX 下构建）。Mach-O 只读符号表。2026-11-20：帧恢复不再是 x86-64 专用——AAPCS64 的帧记录与 x86-64 同为 `[fp]`/`[fp+8]` 布局，同一套遍历两者通用；信号处理器在 Linux arm64 下读 `pc`/`sp`/`x29`，字段名已对照内核 aarch64 `asm/sigcontext.h` 编译验证。后续 CI 已执行 37 项 QEMU 崩溃测试和 45 项符号化测试，包括真实 AArch64 ELF 与非 PIE/PIE 调用链；物理设备验证仍未完成，没有验证 macOS 客户端生成的真实崩溃记录。
 - DWARF CFI 展开；内联帧；无帧指针代码的可靠调用栈。
 - 生产服务：认证上传者、按客户端限速、记录本身的存储与保留、符号库管理与发布流程、统计的数据库、仪表板、告警。
 - GPU/RHI/网络/输入摘要的自动采集（仍由应用经 context-blob 接缝接入）。

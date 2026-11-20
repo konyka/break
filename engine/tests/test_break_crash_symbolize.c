@@ -1,8 +1,8 @@
 #define _POSIX_C_SOURCE 200809L
 /* break_crash_symbolize: the ELF symbol reader (this file) and the frame
- * recovery (G2, below). Fixtures are built at test time with the host
- * compiler so the symbol addresses are the real ones, and hostile ELF files
- * are made by corrupting a known-good one field by field. */
+ * recovery (G2, below). Fixtures are built at test time with the configured
+ * test compiler so the symbol addresses are the real ones, and hostile ELF
+ * files are made by corrupting a known-good one field by field. */
 
 #include "test_framework.h"
 
@@ -48,6 +48,11 @@ static bool run(const char *cmd) {
     return rc == 0;
 }
 
+static const char *test_setting(const char *name, const char *fallback) {
+    const char *value = getenv(name);
+    return value && value[0] ? value : fallback;
+}
+
 /* A small program with known functions, compiled -O0, no PIE, with symbols. */
 static const char k_fixture_src[] =
     "#include <stdio.h>\n"
@@ -69,7 +74,8 @@ static bool build_fixture(const char *exe, const char *extra_flags) {
 static bool nm_addr(const char *exe, const char *sym, u64 *out) {
     char cmd[800], line[200];
     FILE *p;
-    snprintf(cmd, sizeof(cmd), "nm '%s' 2>/dev/null | awk '$3==\"%s\" {print $1}'", exe, sym);
+    snprintf(cmd, sizeof(cmd), "%s '%s' 2>/dev/null | awk '$3==\"%s\" {print $1}'",
+             test_setting("BREAK_TEST_NM", "nm"), exe, sym);
     p = popen(cmd, "r");
     if (p == NULL) return false;
     if (fgets(line, sizeof(line), p) == NULL) {
@@ -84,7 +90,8 @@ static bool nm_addr(const char *exe, const char *sym, u64 *out) {
 static bool nm_size(const char *exe, const char *sym, u64 *out) {
     char cmd[800], line[200];
     FILE *p;
-    snprintf(cmd, sizeof(cmd), "nm -S '%s' 2>/dev/null | awk '$4==\"%s\" {print $2}'", exe, sym);
+    snprintf(cmd, sizeof(cmd), "%s -S '%s' 2>/dev/null | awk '$4==\"%s\" {print $2}'",
+             test_setting("BREAK_TEST_NM", "nm"), exe, sym);
     p = popen(cmd, "r");
     if (p == NULL) return false;
     if (fgets(line, sizeof(line), p) == NULL) {
@@ -97,9 +104,10 @@ static bool nm_size(const char *exe, const char *sym, u64 *out) {
 }
 
 /* true when `readelf -S` finds a .symtab section */
-static bool run_quiet_nm_has_symtab(const char *path) {
+static bool run_quiet_readelf_has_symtab(const char *path) {
     char cmd[600];
-    snprintf(cmd, sizeof(cmd), "readelf -S '%s' 2>/dev/null | grep -q ' .symtab '", path);
+    snprintf(cmd, sizeof(cmd), "%s -S '%s' 2>/dev/null | grep -q ' .symtab '",
+             test_setting("BREAK_TEST_READELF", "readelf"), path);
     return system(cmd) == 0;
 }
 
@@ -229,7 +237,7 @@ TEST(a_stripped_binary_loads_and_resolves_nothing) {
     path_in(exe, sizeof(exe), "fixture_stripped");
     ASSERT_TRUE(build_fixture(exe, ""));
     ASSERT_TRUE(nm_addr(exe, "leaf", &addr));
-    snprintf(cmd, sizeof(cmd), "strip '%s'", exe);
+    snprintf(cmd, sizeof(cmd), "%s '%s'", test_setting("BREAK_TEST_STRIP", "strip"), exe);
     ASSERT_TRUE(run(cmd));
     s = break_elf_symbols_open(exe);
     ASSERT_NOT_NULL(s);
@@ -287,7 +295,8 @@ TEST(the_gnu_build_id_is_read_as_hex) {
     ASSERT_STR_EQ(break_elf_symbols_build_id(s), "a1b2c3d4e5f60718293a4b5c6d7e8f9001122334");
     break_elf_symbols_destroy(s);
     /* the independent oracle agrees: readelf shows the same id */
-    snprintf(cmd, sizeof(cmd), "readelf -n '%s' 2>/dev/null | awk '/Build ID/ {print $3}'", exe);
+    snprintf(cmd, sizeof(cmd), "%s -n '%s' 2>/dev/null | awk '/Build ID/ {print $3}'",
+             test_setting("BREAK_TEST_READELF", "readelf"), exe);
     p = popen(cmd, "r");
     ASSERT_NOT_NULL(p);
     if (fgets(line, sizeof(line), p) == NULL) line[0] = '\0';
@@ -518,10 +527,10 @@ TEST(a_stripped_shared_object_still_resolves_its_exports_through_dynsym) {
     path_in(so, sizeof(so), "libstripped.so");
     path_in(src, sizeof(src), "fixture.c");
     ASSERT_TRUE(write_text(src, k_fixture_src));
-    snprintf(cmd, sizeof(cmd), "%s -O0 -g0 -fPIC -shared -o '%s' '%s' 2>/dev/null && strip '%s'",
-             BREAK_TEST_CC, so, src, so);
+    snprintf(cmd, sizeof(cmd), "%s -O0 -g0 -fPIC -shared -o '%s' '%s' 2>/dev/null && %s '%s'",
+             BREAK_TEST_CC, so, src, test_setting("BREAK_TEST_STRIP", "strip"), so);
     ASSERT_TRUE(run(cmd));
-    ASSERT_FALSE(run_quiet_nm_has_symtab(so));          /* no .symtab left: only .dynsym */
+    ASSERT_FALSE(run_quiet_readelf_has_symtab(so));     /* no .symtab left: only .dynsym */
     s = break_elf_symbols_open(so);
     ASSERT_NOT_NULL(s);
     ASSERT_TRUE(break_elf_symbols_count(s) > 0u);
@@ -529,7 +538,8 @@ TEST(a_stripped_shared_object_still_resolves_its_exports_through_dynsym) {
     {
         char c2[800], line[200];
         FILE *p;
-        snprintf(c2, sizeof(c2), "nm -D '%s' 2>/dev/null | awk '$3==\"outer\" {print $1}'", so);
+        snprintf(c2, sizeof(c2), "%s -D '%s' 2>/dev/null | awk '$3==\"outer\" {print $1}'",
+                 test_setting("BREAK_TEST_NM", "nm"), so);
         p = popen(c2, "r");
         ASSERT_NOT_NULL(p);
         ASSERT_NOT_NULL(fgets(line, sizeof(line), p));
@@ -548,7 +558,8 @@ TEST(a_stripped_shared_object_still_resolves_its_exports_through_dynsym) {
  * frame-pointer functions and faults in the innermost one. The record it
  * leaves is parsed by the real break_crash parser and symbolized against the
  * child's own executable. The child program is compiled with
- * -fno-omit-frame-pointer so the saved-RBP chain exists. */
+ * -fno-omit-frame-pointer. prepare_leaf makes the faulting function non-leaf:
+ * AArch64 GCC otherwise omits its frame even with that flag. */
 
 static const char k_crash_src[] =
     "#include <crash/break_crash.h>\n"
@@ -557,7 +568,8 @@ static const char k_crash_src[] =
     "#include <stdlib.h>\n"
     "#include <string.h>\n"
     "volatile int *g_null = 0;\n"
-    "__attribute__((noinline)) int leaf(int x) { *g_null = x; return x; }\n"
+    "__attribute__((noinline)) static int prepare_leaf(int x) { return x; }\n"
+    "__attribute__((noinline)) int leaf(int x) { x = prepare_leaf(x); *g_null = x; return x; }\n"
     "__attribute__((noinline)) int mid(int x) { return leaf(x + 1) + 1; }\n"
     "__attribute__((noinline)) int outer(int x) { return mid(x + 1) + 1; }\n"
     "int main(int argc, char **argv) {\n"
@@ -588,7 +600,8 @@ static bool crash_child(const char *exe_name, const char *extra, u8 **rec, u64 *
     if (!run(cmd)) return false;
     snprintf(cmd, sizeof(cmd), "rm -rf '%s'; mkdir -p '%s'", spool, spool);
     if (!run(cmd)) return false;
-    snprintf(cmd, sizeof(cmd), "'%s' '%s' >/dev/null 2>&1; true", exe_path, spool);
+    snprintf(cmd, sizeof(cmd), "%s '%s' '%s' >/dev/null 2>&1; true",
+             test_setting("BREAK_TEST_RUNNER", ""), exe_path, spool);
     if (!run(cmd)) return false;
     sp = break_crash_spool_open(spool);
     if (sp == NULL) return false;

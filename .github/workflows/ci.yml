@@ -152,8 +152,8 @@ jobs:
           name: evidence-receipt-headless-linux-gcc-asan
           path: receipt.json
 
-  # Cross-compile the architecture-specific code, then exercise the crash
-  # handler on the target architecture with QEMU user emulation. The native
+  # Cross-compile the architecture-specific code, then exercise crash record
+  # handling and ELF/frame symbolization with QEMU user emulation. The native
   # suite remains the broader regression net; this is not a full arm64 ctest.
   lane-cross-aarch64-linux:
     name: Linux arm64 cross-build + QEMU crash tests (GCC)
@@ -208,7 +208,7 @@ jobs:
       # libraries so a type error anywhere in them fails here too.
       - name: Build the arm64 targets
         run: |
-          cmake --build build-arm64 --parallel --target break_crash engine test_break_crash
+          cmake --build build-arm64 --parallel --target break_crash engine test_break_crash test_break_crash_symbolize
 
       - name: Confirm the objects really are arm64
         run: |
@@ -220,6 +220,11 @@ jobs:
         run: |
           qemu-aarch64 --version
           timeout 240 qemu-aarch64 -L / ./build-arm64/test_break_crash
+          BREAK_TEST_NM=aarch64-linux-gnu-nm \
+          BREAK_TEST_READELF=aarch64-linux-gnu-readelf \
+          BREAK_TEST_STRIP=aarch64-linux-gnu-strip \
+          BREAK_TEST_RUNNER='qemu-aarch64 -L /' \
+          timeout 240 qemu-aarch64 -L / ./build-arm64/test_break_crash_symbolize
 
   lane-libfuzzer-linux-clang:
     name: Linux + Clang-18 (libFuzzer, coverage-guided)
