@@ -152,12 +152,11 @@ jobs:
           name: evidence-receipt-headless-linux-gcc-asan
           path: receipt.json
 
-  # Build only: the binaries cannot run on an x86-64 runner, so this lane's
-  # statement is "the __aarch64__ paths compile and link" — which nothing
-  # else in CI checks. Needed because the crash handler's arm64 register
-  # capture would otherwise ship untyped.
+  # Cross-compile the architecture-specific code, then exercise the crash
+  # handler on the target architecture with QEMU user emulation. The native
+  # suite remains the broader regression net; this is not a full arm64 ctest.
   lane-cross-aarch64-linux:
-    name: Linux arm64 cross-build (GCC, build-only)
+    name: Linux arm64 cross-build + QEMU crash tests (GCC)
     runs-on: ubuntu-24.04
     defaults:
       run:
@@ -188,7 +187,7 @@ jobs:
             pkg-config python3 file libwayland-dev wayland-protocols \
             libwayland-dev:arm64 libxkbcommon-dev:arm64 \
             libgl-dev:arm64 libegl-dev:arm64 libopengl-dev:arm64 \
-            libssl-dev:arm64
+            libssl-dev:arm64 qemu-user
           aarch64-linux-gnu-gcc --version
 
       - name: Configure
@@ -199,7 +198,8 @@ jobs:
           export AARCH64_SYSROOT=/
           export PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/aarch64-linux-gnu/lib/pkgconfig:/usr/share/pkgconfig
           # Linux has no ENGINE_RHI_BACKEND=headless selector. Compile the
-          # explicit OpenGL path against real arm64 packages; run nothing.
+          # explicit OpenGL path against real arm64 packages; graphics remain
+          # compile-only.
           cmake -S engine -B build-arm64 -G Ninja \
             --toolchain "$GITHUB_WORKSPACE/engine/toolchain-aarch64-linux.cmake" \
             -DCMAKE_BUILD_TYPE=Debug -DENGINE_RHI_BACKEND=opengl
@@ -208,13 +208,18 @@ jobs:
       # libraries so a type error anywhere in them fails here too.
       - name: Build the arm64 targets
         run: |
-          cmake --build build-arm64 --parallel --target break_crash engine
+          cmake --build build-arm64 --parallel --target break_crash engine test_break_crash
 
       - name: Confirm the objects really are arm64
         run: |
           file build-arm64/libengine.a | tee /dev/stderr | grep -q 'current ar archive'
           aarch64-linux-gnu-objdump -f build-arm64/CMakeFiles/break_crash.dir/src/crash/break_crash.c.o \
             | tee /dev/stderr | grep -q 'aarch64'
+
+      - name: Run the crash tests under QEMU
+        run: |
+          qemu-aarch64 --version
+          timeout 240 qemu-aarch64 -L / ./build-arm64/test_break_crash
 
   lane-libfuzzer-linux-clang:
     name: Linux + Clang-18 (libFuzzer, coverage-guided)

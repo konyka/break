@@ -113,9 +113,22 @@ Mach-O 用例在测试里逐字节构造镜像，不需要 Apple SDK：dylib 与
 
 **修复过程中暴露的问题**：（1）上文的 ET_EXEC 换算；（2）负缓存；（3）413 前未读请求体；（4）ASan+UBSan 树里端到端测试的崩溃子进程拿不到记录。**原因是 UBSan 的空指针检查**：它在 `break_crash` 处理器运行之前就报告并结束了进程。我最初把原因写成"处理器复制栈窗口时碰到 ASan 红区"，那是没验证的猜测，后来用变体构建和探针证伪（见下）。只要故障点那一个函数不带 UBSan 检查就足够，记录正常产生；当前代码仍把整条故障路径都标为不带插桩，这比必要的多，但无害。探针：在带栈数组的 ASan 插桩帧里 `raise(SIGSEGV)`，ASan 单独与 ASan+UBSan 两种构建下处理器都写出了记录，没有红区报告。**因此没有证据表明 ASan 构建的应用里栈窗口会被红区拦下**。
 
+### Linux arm64 QEMU 运行（2026-11-20）
+
+CI 的 `lane-cross-aarch64-linux` 在原有 `break_crash`、`engine` 编译链接和对象架构检查之后，构建并执行：
+
+```sh
+qemu-aarch64 --version
+timeout 240 qemu-aarch64 -L / ./build-arm64/test_break_crash
+```
+
+Ubuntu `qemu-user` 提供模拟器，`-L /` 使用 multiarch 安装的 arm64 根文件系统。37 项用例覆盖记录构造、有界 spool、真实 SIGSEGV/SIGABRT 捕获、context blob、恢复上传和脱敏，实际执行 aarch64 信号帧中的 `uc_mcontext.pc`、`.sp`、`.regs[29]` 读取路径。超时和测试失败不被重试或退出码屏蔽。
+
+这属于模拟的 Linux arm64 运行证据，不是全量 arm64 `ctest`、GPU 或物理设备证据。`test_break_crash_symbolize` 仍未在该 lane 执行：它还需要目标架构 `nm`/`strip`，以及从模拟测试进程执行新构建 arm64 fixture 的环境，不能用上述 37 项代替。
+
 ## 7. 没有做的
 
-- minidump / PE 格式、Windows SEH/VEH（`_WIN32` 仍是编译期 stub）；Windows 与 macOS lane 未运行（新库只在 `UNIX AND NOT APPLE` 下构建，服务与工具只在 POSIX 下构建）。Mach-O 只读符号表。2026-11-20：帧恢复不再是 x86-64 专用——AAPCS64 的帧记录与 x86-64 同为 `[fp]`/`[fp+8]` 布局，同一套遍历两者通用，用例 `the_walker_follows_an_arm64_frame_pointer_chain_too` 以 arm64 形状的链验证；信号处理器在 `__aarch64__ && __linux__` 下读 `uc_mcontext.pc`/`.sp`/`.regs[29]`（x29 即帧指针）而不再写零。字段名已对照内核的 aarch64 `asm/sigcontext.h`（`regs[31]`/`sp`/`pc`，`regs[29]` 即 x29 帧指针）编译验证通过；`engine/toolchain-aarch64-linux.cmake` 与 CI 的 `lane-cross-aarch64-linux` 持续检查整体构建。Ubuntu 24.04 multiarch 容器中 `break_crash` 与 `engine` 的 176 个构建步骤已完成，目标对象确认为 aarch64；这仍只是编译/链接证据，未在 arm64 上执行测试。没有验证 macOS 客户端生成的真实崩溃记录。
+- minidump / PE 格式、Windows SEH/VEH（`_WIN32` 仍是编译期 stub）；Windows 与 macOS lane 未运行（新库只在 `UNIX AND NOT APPLE` 下构建，服务与工具只在 POSIX 下构建）。Mach-O 只读符号表。2026-11-20：帧恢复不再是 x86-64 专用——AAPCS64 的帧记录与 x86-64 同为 `[fp]`/`[fp+8]` 布局，同一套遍历两者通用，用例 `the_walker_follows_an_arm64_frame_pointer_chain_too` 以 arm64 形状的链验证；信号处理器在 `__aarch64__ && __linux__` 下读 `uc_mcontext.pc`/`.sp`/`.regs[29]`（x29 即帧指针）而不再写零。字段名已对照内核的 aarch64 `asm/sigcontext.h`（`regs[31]`/`sp`/`pc`，`regs[29]` 即 x29 帧指针）编译验证通过；`engine/toolchain-aarch64-linux.cmake` 与 CI 的 `lane-cross-aarch64-linux` 持续检查整体构建。Ubuntu 24.04 multiarch 容器中 `break_crash` 与 `engine` 的 176 个构建步骤已完成，目标对象确认为 aarch64；这两条是编译/链接证据。第 6 节另记录了后续增加的 37 项 QEMU arm64 崩溃测试；arm64 `test_break_crash_symbolize` 与物理设备验证仍未完成。没有验证 macOS 客户端生成的真实崩溃记录。
 - DWARF CFI 展开；内联帧；无帧指针代码的可靠调用栈。
 - 生产服务：认证上传者、按客户端限速、记录本身的存储与保留、符号库管理与发布流程、统计的数据库、仪表板、告警。
 - GPU/RHI/网络/输入摘要的自动采集（仍由应用经 context-blob 接缝接入）。

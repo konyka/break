@@ -33,17 +33,19 @@ the platform layer has arm64 branches), and for any future one.
   `/usr/aarch64-linux-gnu` sysroot: the former matches the installed target
   filesystem, while the latter double-prefixes cross libc linker paths.
 - Linux has no `ENGINE_RHI_BACKEND=headless` selector. The lane explicitly
-  compiles the OpenGL path and runs none of it. It builds `break_crash` and
-  `engine`, then checks the resulting object architecture with `objdump`.
-- Build only, no `ctest`: the binaries cannot run on an x86-64 runner, and
-  claiming otherwise would be the kind of false evidence the rest of the
-  repository's CI design avoids. The lane's statement is "the arm64 code
-  compiles and links", which is exactly what was missing.
+  compiles the OpenGL path without executing graphics. It builds
+  `break_crash` and `engine`, then checks the resulting object architecture
+  with `objdump`.
+- The original lane was build-only, with no `ctest`: the binaries cannot run
+  directly on an x86-64 runner. Its initial statement was therefore limited
+  to "the arm64 code compiles and links". The follow-up QEMU slice adds the
+  specifically scoped runtime evidence described below.
 
 `docs/Build_Guide.md`:
 
-- A subsection naming the toolchain file, the real target dependencies, the
-  multiarch environment and the fact that the lane is build-only.
+- A subsection naming the toolchain file, the real target dependencies and
+  the multiarch environment; its current version also includes the follow-up
+  QEMU crash-test command.
 
 ## Tests
 
@@ -64,17 +66,22 @@ errors before the fixes.
 
 ## Out of scope
 
-Running arm64 tests (needs qemu-user or an arm64 runner), the Vulkan backend
-under cross-compilation, macOS arm64, Windows on arm64, and any claim of
-OpenGL runtime validation. The OpenGL path here is compile/link evidence
-only.
+Running arm64 suites other than the follow-up's `test_break_crash`, including
+`test_break_crash_symbolize`, the Vulkan backend under cross-compilation,
+macOS arm64, Windows on arm64, and any claim of OpenGL runtime validation.
+The OpenGL path here is compile/link evidence only.
 
 ## Result
 
 Delivered: the toolchain file, the CI lane, and the Build_Guide subsection.
 The complete build is verified in the Ubuntu 24.04 container; the remote CI
 lane consumes the same configuration for continuous verification. No arm64
-binary was executed.
+binary was executed in this original build-only slice.
+
+The follow-up [arm64 QEMU crash-test design](2026-11-20-arm64-qemu-crash-test-design.md)
+adds 37 emulated crash-handler tests to this lane while retaining its build
+checks. Its evidence does not extend to the remaining suites or physical
+hardware.
 
 **The field names are verified independently as well.** The previous slice's
 open question was whether `uc_mcontext.pc`, `.sp` and `.regs[29]` are the
