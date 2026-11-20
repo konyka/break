@@ -226,7 +226,7 @@ jobs:
           BREAK_TEST_RUNNER='qemu-aarch64 -L /' \
           BREAK_TEST_QEMU_USER=1 \
           timeout 300 ctest --test-dir build-arm64 --verbose --no-tests=error \
-            -R '^(test_break_crash|test_break_update|test_break_http|test_break_manifest_tool|test_break_crypto|test_break_keygen|test_break_integrity|test_break_authority|test_packet|test_network|test_break_online_lobby|test_break_online_nat|test_break_online_voice|test_break_voice_mixer|test_break_replay_window|test_break_msg_rate|test_break_online_aspect|test_break_replication_fragment|test_core_app_network($|_offline)|test_runtime_core($|_target_contract)|test_runtime_(facade|io|reload))'
+            -R '^(test_break_crash|test_break_update|test_break_http|test_break_manifest_tool|test_break_crypto|test_break_keygen|test_break_integrity|test_break_authority|test_packet|test_network|test_break_online_lobby|test_break_online_nat|test_break_online_voice|test_break_voice_mixer|test_break_replay_window|test_break_msg_rate|test_break_online_aspect|test_break_replication_fragment|test_core_app_network($|_offline)|test_runtime_core($|_target_contract)|test_runtime_(facade|io|reload)$)'
 
   lane-libfuzzer-linux-clang:
     name: Linux + Clang-18 (libFuzzer, coverage-guided)

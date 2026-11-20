@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Add exactly `test_runtime_facade`, `test_runtime_io`, and `test_runtime_reload`; previous 35 + 3 = 38.
-- Use the exact alternative `test_runtime_(facade|io|reload)`.
+- Use the exact alternative `test_runtime_(facade|io|reload)$`.
 - Preserve the previous 35 tests, runtime_core unit/contract, emulator settings, object checks, timeout, and failure propagation.
 - Add no dependency, skip, retry, status mask, or assertion relaxation.
 - Do not claim full arm64 CTest, Lua/ECS, editor/rendering, Snowflake/QUIC, GPU, or physical-device coverage.
@@ -48,7 +48,7 @@ build = next(s['run'] for s in steps if s.get('name') == 'Build the arm64 target
 run = next(s['run'] for s in steps if s.get('name') == 'Run selected tests under QEMU')
 targets = 'test_runtime_facade test_runtime_io test_runtime_reload'
 assert build.rstrip().endswith('test_runtime_core ' + targets), 'missing runtime facade build targets'
-assert 'test_runtime_(facade|io|reload)' in run, 'missing exact runtime facade alternative'
+assert 'test_runtime_(facade|io|reload)$' in run, 'missing exact runtime facade alternative'
 pattern = re.search(r"-R '([^']+)'", run).group(1)
 out = subprocess.check_output([
     'ctest', '--test-dir', 'build-core-app-net', '-N', '-R', pattern,
@@ -78,7 +78,7 @@ test_runtime_facade test_runtime_io test_runtime_reload
 Add this alternative inside the existing outer capture group:
 
 ```text
-test_runtime_(facade|io|reload)
+test_runtime_(facade|io|reload)$
 ```
 
 Do not edit other workflow inputs.

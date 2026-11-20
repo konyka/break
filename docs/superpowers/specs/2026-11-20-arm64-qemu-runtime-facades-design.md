@@ -46,16 +46,19 @@ Append these targets to the existing arm64 build command:
 test_runtime_facade test_runtime_io test_runtime_reload
 ```
 
-Add this single alternative to the existing CTest selection:
+Add this single locally end-anchored alternative to the existing CTest selection:
 
 ```text
-test_runtime_(facade|io|reload)
+test_runtime_(facade|io|reload)$
 ```
 
-The existing final outer anchor limits this alternative to exactly the three
-names. Keep the runtime_core unit/contract alternative and all 35 previous tests
-unchanged. Emulator environment, object checks, verbose output,
-`--no-tests=error`, 300-second timeout, and failure propagation remain intact.
+The local `$` is required because the overall expression intentionally has no
+global end anchor: existing family alternatives select derived tests. The local
+anchor prevents future names such as `test_runtime_io_extra` from silently
+entering this exact three-test alternative. Keep the runtime_core unit/contract
+alternative and all 35 previous tests unchanged. Emulator environment, object
+checks, verbose output, `--no-tests=error`, 300-second timeout, and failure
+propagation remain intact.
 
 No dependency, skip, retry, status mask, or assertion relaxation is introduced.
 

@@ -1438,10 +1438,10 @@ BREAK_TEST_STRIP=aarch64-linux-gnu-strip \
 BREAK_TEST_RUNNER='qemu-aarch64 -L /' \
 BREAK_TEST_QEMU_USER=1 \
 timeout 300 ctest --test-dir build-arm64 --verbose --no-tests=error \
-  -R '^(test_break_crash|test_break_update|test_break_http|test_break_manifest_tool|test_break_crypto|test_break_keygen|test_break_integrity|test_break_authority|test_packet|test_network|test_break_online_lobby|test_break_online_nat|test_break_online_voice|test_break_voice_mixer|test_break_replay_window|test_break_msg_rate|test_break_online_aspect|test_break_replication_fragment|test_core_app_network($|_offline)|test_runtime_core($|_target_contract)|test_runtime_(facade|io|reload))'
+  -R '^(test_break_crash|test_break_update|test_break_http|test_break_manifest_tool|test_break_crypto|test_break_keygen|test_break_integrity|test_break_authority|test_packet|test_network|test_break_online_lobby|test_break_online_nat|test_break_online_voice|test_break_voice_mixer|test_break_replay_window|test_break_msg_rate|test_break_online_aspect|test_break_replication_fragment|test_core_app_network($|_offline)|test_runtime_core($|_target_contract)|test_runtime_(facade|io|reload)$)'
 ```
 
-选择当前恰好三十八项：既有三十五项，加 `test_runtime_facade`（18 例）、`test_runtime_io`（16 例）和 `test_runtime_reload`（34 例）。三者均为直接可执行目标，由既有 emulator 启动；`test_runtime_(facade|io|reload)` 不选择其他测试。runtime_core 单元/契约仍由 `test_runtime_core($|_target_contract)` 精确选择，契约保持宿主 CMake 源码结构检查。core_app offline 继续执行确定性 trace 和无网络符号扫描，无 skip 77。`--no-tests=error` 防止空选择通过，超时和失败不重试、不屏蔽。
+选择当前恰好三十八项：既有三十五项，加 `test_runtime_facade`（18 例）、`test_runtime_io`（16 例）和 `test_runtime_reload`（34 例）。三者均为直接可执行目标，由既有 emulator 启动；`test_runtime_(facade|io|reload)$` 不选择其他测试。runtime_core 单元/契约仍由 `test_runtime_core($|_target_contract)` 精确选择，契约保持宿主 CMake 源码结构检查。core_app offline 继续执行确定性 trace 和无网络符号扫描，无 skip 77。`--no-tests=error` 防止空选择通过，超时和失败不重试、不屏蔽。
 
 `-L /` 让模拟器使用 multiarch arm64 根文件系统。CMake 自动给可执行目标测试加 QEMU；宿主 CMake 驱动的归档契约接收 `CMAKE_NM`，其现场链接程序与 e2e 的 server/report/client 使用目标运行器。符号化 fixture 使用 `BREAK_TEST_RUNNER`；manifest、更新 e2e 和 keygen 的目标工具使用 `TARGET_RUNNER`，包括 keygen 的 RLIMIT_FSIZE 与并发 shell 启动。宿主 `nm`、CMake 和 shell 不模拟，shell 前缀逐元素转义。未配置交叉运行器时，原生测试仍直接执行。
 
