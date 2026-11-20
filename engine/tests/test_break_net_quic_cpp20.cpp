@@ -60,7 +60,9 @@ int run_echo() {
     auto conn = server->GetConn(ev->conn_id);
     CHECK(conn.Valid());
     CHECK(conn.Id() == ev->conn_id);
+    CHECK(conn.DroppedDatagrams() == 0u);
     CHECK(bq::Conn().Id() == 0u);
+    CHECK(bq::Conn().DroppedDatagrams() == 0u);
 
     const char *ping = "ping";
     CHECK(client->Send(std::span<const u8>(

@@ -84,20 +84,36 @@ static bool proxy_send(ProxyChannel *channel,
 
 static SnowStatus proxy_flush(ProxyChannel *channel, u64 now_ns,
                               u64 *nearest_ns) {
-    for (u32 i = 0u; i < PROXY_QUEUE_CAPACITY; ++i) {
-        ProxyPacket *packet = &channel->queue[i];
-        if (!packet->used) {
-            continue;
-        }
-        if (packet->due_ns > now_ns) {
-            if (*nearest_ns > packet->due_ns) {
-                *nearest_ns = packet->due_ns;
+    /* Select by due time, not slot index: under load both the delayed first
+     * packet and its successor may be overdue, and the successor must still
+     * be transmitted first to make the reorder injection deterministic. */
+    for (;;) {
+        i32 selected = -1;
+        for (u32 i = 0u; i < PROXY_QUEUE_CAPACITY; ++i) {
+            ProxyPacket *candidate = &channel->queue[i];
+            if (!candidate->used) {
+                continue;
             }
-            continue;
+            if (candidate->due_ns > now_ns) {
+                if (*nearest_ns > candidate->due_ns) {
+                    *nearest_ns = candidate->due_ns;
+                }
+                continue;
+            }
+            if (selected < 0 ||
+                candidate->due_ns < channel->queue[selected].due_ns ||
+                (candidate->due_ns == channel->queue[selected].due_ns &&
+                 candidate->ordinal < channel->queue[selected].ordinal)) {
+                selected = (i32)i;
+            }
         }
+        if (selected < 0) {
+            return SNOW_OK;
+        }
+        ProxyPacket *packet = &channel->queue[selected];
         bool earlier_queued = false;
         for (u32 j = 0u; j < PROXY_QUEUE_CAPACITY; ++j) {
-            if (channel->queue[j].used && j != i &&
+            if (channel->queue[j].used && j != (u32)selected &&
                 channel->queue[j].ordinal < packet->ordinal) {
                 earlier_queued = true;
                 break;
@@ -130,7 +146,6 @@ static SnowStatus proxy_flush(ProxyChannel *channel, u64 now_ns,
         channel->forwarded++;
         packet->used = false;
     }
-    return SNOW_OK;
 }
 
 static SnowStatus proxy_service(void *userdata, u64 now_ns,

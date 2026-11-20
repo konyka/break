@@ -160,11 +160,12 @@ typedef enum BreakNetTransportClass {
 1. **数据报回声**：`test_datagram_echo` —— 认证后的 client/server 互发数据报，验证 type/sequence/payload 完整到达（server_cap.count、client_cap.count 均 ≥1）
 2. **尺寸边界**：`test_datagram_size_boundary` —— 1200 字节接受，1201 字节发送侧拒绝（不进入网络）
 3. **未认证门控**：`test_datagram_unauthenticated_dropped` —— 未认证连接的数据报被丢弃（server_cap.count == 0）
-4. **三方语音会议**：`test_voice_conference` —— 三个认证客户端分别发送 1000、2000、3000 的 PCM 帧，服务器按连接 ID 混音为每样本 6000，再回发；三个客户端都播放出相同的 160 样本混合帧
-5. **会议弱网**：`test_voice_conference_weak_network` —— 每客户端上下行各四帧，每方向第四个 UDP 包丢弃，其余包延迟 15 ms，首包延迟 30 ms 形成乱序；三个客户端仍播放出逐样本为 6000 的混合帧
-6. **C++20 同步**：`test_break_net_quic_cpp20` —— 封装层 echo/auth/datagram 全链路验证，并检查 `Conn::Id()` 与 C 事件中的连接 ID 一致
+4. **Replay window 集成**：`test_datagram_replay_window_integration` —— 66 个唯一数据报各投递一次，序号 1 的即时重复和窗口外重发各被拒绝一次，应用计数保持 66、连接丢弃计数为 2
+5. **三方语音会议**：`test_voice_conference` —— 三个认证客户端分别发送 1000、2000、3000 的 PCM 帧，服务器按连接 ID 混音为每样本 6000，再回发；三个客户端都播放出相同的 160 样本混合帧
+6. **会议弱网**：`test_voice_conference_weak_network` —— 每客户端上下行各四帧，每方向第四个 UDP 包丢弃，其余包延迟 15 ms，首包延迟 30 ms 形成乱序；三个客户端仍播放出逐样本为 6000 的混合帧
+7. **C++20 同步**：`test_break_net_quic_cpp20` —— 封装层 echo/auth/datagram 全链路验证，并检查 `Conn::Id()`、`Conn::DroppedDatagrams()` 与 C 接口一致
 
-完整套件：`test_break_net_quic` 19/19（传输 8 + 会话 4 + 数据报 3 + 语音 3 + lobby 1），连续重复运行 5/5 通过；C++20 封装测试通过；非图形 CTest 414/414 通过（2026-11-20）。
+完整套件：`test_break_net_quic` 20/20（传输 8 + 会话 4 + 数据报 4 + 语音 3 + lobby 1），连续重复运行 10/10 通过；C++20 封装测试通过；非图形 CTest 414/414 通过（2026-11-20）。
 
 ## 12.1 语音路径已迁移到数据报通道
 
@@ -190,9 +191,18 @@ typedef enum BreakNetTransportClass {
 
 - 每通道固定 32 个待发包槽位，每包最多 `SNOW_QUIC_NGTCP2_MAX_PACKET` 字节；槽位耗尽即丢弃并计数
 - 延迟使用引擎 owner 线程的单调时钟与 service deadline，条件轮询驱动，无固定 sleep
+- 到期包按 `(due_ns, ordinal)` 而非槽位顺序选择，避免高负载下多个包同时到期时退化为原顺序
 - 每方向独立按包计数，第四个包丢弃；首包双倍延迟，统计只在后序包实际先发送时增加 `reordered`
 - 测试断言每通道上下行均至少四个包、`dropped >= 2`、`delayed >= 6`、`reordered >= 2`，并验证丢包/乱序后的混合语音内容
 - 代理只进入 `test_break_net_quic` 测试目标，不改变生产网络 API 或 C++20 封装
+
+## 12.4 重复与过老数据报的端到端证据
+
+`break_net_quic_conn_dropped_datagrams()` 提供每连接的认证／replay-window 拒绝计数，C++20 对应 `Conn::DroppedDatagrams()`。它独立于 listener 级别的聚合丢弃计数，测试可以等待到确切的过滤次数后再断言应用回调未多收。
+
+直接复制 UDP 密文包不能覆盖本模块的 replay window：相同 QUIC packet number 会由 ngtcp2 更早去重。因此测试使用 `BREAK_NET_QUIC_TESTING` 下的 `break_net_quic_client_set_next_datagram_sequence_for_test()` 指定应用序号，让重复或旧序号进入**新的、正常加密的 QUIC 数据报**，再经真实 UDP 代理送达。该钩子仅在 `ENGINE_BUILD_TESTS=ON` 时编译，正常生产构建不包含它；拥塞重试时每次尝试都重置序号，避免测试自身产生序号跳变。
+
+`test_datagram_replay_window_integration` 的顺序为：发送序号 1 → 以新 QUIC 包重发序号 1（DUPLICATE，拒绝计数 1）→ 发送序号 2…66 → 再以新 QUIC 包重发序号 1（age 65，TOO_OLD，拒绝计数 2）。最终应用回调仅收到 66 个唯一序号，最后序号为 66，代理自身没有丢包。
 
 ## 13. NOT delivered（本切片明确不覆盖）
 
@@ -200,8 +210,7 @@ typedef enum BreakNetTransportClass {
 - 0-RTT 数据报的启用（依赖上游 0-RTT 接线；当前未启用）
 - 多流并行（语音与控制分流是数据报的职责，不需要多流）
 - Windows/IPv6 支持（与 break_net_quic v1 的平台边界一致）
-- 真实公网与运营商弱网验证（当前仅本机 UDP 代理的确定性丢包、延迟和乱序，不覆盖真实路径）
-- 重复/过老数据报的显式集成测试（replay window 的单元测试在 `test_break_replay_window` 里已覆盖；乱序集成路径已由 `test_voice_conference_weak_network` 覆盖）
+- 真实公网与运营商弱网验证（当前仅本机 UDP 代理的确定性丢包、延迟、乱序和应用序号重放，不覆盖真实路径）
 
 ## 14. 文档关系
 

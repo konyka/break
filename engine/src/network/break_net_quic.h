@@ -97,6 +97,14 @@ bool break_net_quic_datagram_send(BreakNetQuicServer *server,
 bool break_net_quic_client_datagram_send(BreakNetQuicClient *client, u8 type,
                                          const u8 *payload, u32 len);
 
+#ifdef BREAK_NET_QUIC_TESTING
+/* Available only in test builds. Sets the next application datagram sequence
+ * so tests can put duplicate/stale application messages into fresh QUIC
+ * packets; ngtcp2 quite correctly drops byte-identical UDP copies earlier. */
+bool break_net_quic_client_set_next_datagram_sequence_for_test(
+    BreakNetQuicClient *client, u64 sequence);
+#endif
+
 typedef enum BreakNetQuicDisconnectReason {
     BREAK_NET_QUIC_DISCONNECT_NONE = 0,
     BREAK_NET_QUIC_DISCONNECT_PEER = 1,       /* peer closed */
@@ -160,6 +168,9 @@ BreakNetQuicConn *break_net_quic_server_conn(BreakNetQuicServer *server,
 /* Stable connection id for datagram dispatch and application session keys.
  * 0 for NULL. The id is nonzero for every live server-side connection. */
 u32 break_net_quic_conn_id(const BreakNetQuicConn *conn);
+/* Datagrams rejected on this connection by authentication or replay-window
+ * checks. This is deliberately separate from listener-level drop counters. */
+u64 break_net_quic_conn_dropped_datagrams(const BreakNetQuicConn *conn);
 /* Copies the inbox message out (cap-bounded) and reopens flow-control
  * credit. Returns false when the inbox is empty or cap is too small. */
 bool break_net_quic_conn_read(BreakNetQuicServer *server, BreakNetQuicConn *conn,

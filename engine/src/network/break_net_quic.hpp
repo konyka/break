@@ -98,6 +98,9 @@ class Conn {
 
     [[nodiscard]] bool Valid() const { return conn_ != nullptr; }
     [[nodiscard]] u32 Id() const { return break_net_quic_conn_id(conn_); }
+    [[nodiscard]] u64 DroppedDatagrams() const {
+        return break_net_quic_conn_dropped_datagrams(conn_);
+    }
 
   private:
     friend class Server;

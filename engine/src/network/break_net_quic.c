@@ -1072,6 +1072,10 @@ u32 break_net_quic_conn_id(const BreakNetQuicConn *conn) {
     return conn != NULL ? conn->conn_id : 0u;
 }
 
+u64 break_net_quic_conn_dropped_datagrams(const BreakNetQuicConn *conn) {
+    return conn != NULL ? conn->datagram_dropped : 0u;
+}
+
 bool break_net_quic_conn_read(BreakNetQuicServer *s, BreakNetQuicConn *conn,
                               u8 *out, u32 cap, u32 *out_len) {
     if (s == NULL || conn == NULL || conn->server != s || out == NULL) {
@@ -1221,6 +1225,17 @@ bool break_net_quic_client_datagram_send(BreakNetQuicClient *c, u8 type,
     }
     return bnq_datagram_send(c->conn, type, payload, len);
 }
+
+#ifdef BREAK_NET_QUIC_TESTING
+bool break_net_quic_client_set_next_datagram_sequence_for_test(
+    BreakNetQuicClient *c, u64 sequence) {
+    if (c == NULL || c->conn == NULL || sequence == 0u) {
+        return false;
+    }
+    c->conn->tx_datagram_seq = sequence;
+    return true;
+}
+#endif
 
 void break_net_quic_server_destroy(BreakNetQuicServer **server) {
     if (server == NULL || *server == NULL) {

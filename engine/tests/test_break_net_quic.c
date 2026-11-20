@@ -726,6 +726,146 @@ static bool test_datagram_unauthenticated_dropped(void) {
     return true;
 }
 
+/* ---- replay-window integration through a real UDP proxy ------------------- */
+
+static bool proxy_pair_step(Pair *p, TestQuicUdpProxySet *proxies) {
+    if (!test_quic_udp_proxy_set_step(proxies, 0u)) {
+        return false;
+    }
+    break_net_quic_server_step(p->server, 1u);
+    break_net_quic_client_step(p->client, 1u);
+    return test_quic_udp_proxy_set_step(proxies, 0u);
+}
+
+static bool proxy_datagram_send(Pair *p, TestQuicUdpProxySet *proxies,
+                                u64 sequence, u8 payload) {
+    for (u32 round = 0u; round < 2500u; ++round) {
+        /* A congested send consumes its local number before returning false.
+         * Reset on every attempt so this deterministic test never skips. */
+        if (!break_net_quic_client_set_next_datagram_sequence_for_test(
+                p->client, sequence)) {
+            return false;
+        }
+        if (break_net_quic_client_datagram_send(p->client, 7u, &payload, 1u)) {
+            return true;
+        }
+        if (!proxy_pair_step(p, proxies)) {
+            return false;
+        }
+    }
+    return false;
+}
+
+static bool test_datagram_replay_window_integration(void) {
+    Pair p;
+    memset(&p, 0, sizeof(p));
+    BreakNetQuicServerConfig server_config;
+    memset(&server_config, 0, sizeof(server_config));
+    server_config.cert_file = kCert;
+    server_config.key_file = kKey;
+    server_config.alpn = kAlpn;
+    server_config.port = 0u;
+    server_config.max_connections = 1u;
+    p.server = break_net_quic_server_create(&server_config);
+    ASSERT_TRUE(p.server != NULL);
+    ASSERT_TRUE(break_net_quic_server_set_auth(p.server, test_key_fn,
+                                               (void *)k_test_psk, 0u));
+
+    DatagramCapture capture;
+    memset(&capture, 0, sizeof(capture));
+    break_net_quic_server_set_datagram_handler(p.server, capture_datagram,
+                                               &capture);
+
+    TestQuicUdpProxySet *proxies = NULL;
+    ASSERT_TRUE(test_quic_udp_proxy_set_create(
+        break_net_quic_server_port(p.server), 1u, &proxies));
+    BreakNetQuicClientConfig client_config;
+    memset(&client_config, 0, sizeof(client_config));
+    client_config.host = "127.0.0.1";
+    client_config.port = test_quic_udp_proxy_port(proxies, 0u);
+    client_config.server_name = "localhost";
+    client_config.trust_store_file = kCert;
+    client_config.cert_file = kCert;
+    client_config.key_file = kKey;
+    client_config.alpn = kAlpn;
+    p.client = break_net_quic_client_create(&client_config);
+    ASSERT_TRUE(p.client != NULL);
+
+    bool auth_sent = false;
+    BreakNetQuicConn *conn = NULL;
+    for (u32 round = 0u; round < 6000u && conn == NULL; ++round) {
+        ASSERT_TRUE(proxy_pair_step(&p, proxies));
+        if (!auth_sent && break_net_quic_client_handshake_done(p.client)) {
+            auth_sent = break_net_quic_client_authenticate(p.client,
+                                                           k_test_key_id,
+                                                           k_test_psk);
+        }
+        BreakNetQuicEvent event;
+        while (break_net_quic_server_poll_event(p.server, &event)) {
+            if (event.type == BREAK_NET_QUIC_EVENT_AUTHENTICATED) {
+                conn = break_net_quic_server_conn(p.server, event.conn_id);
+            }
+        }
+    }
+    ASSERT_TRUE(auth_sent);
+    ASSERT_TRUE(conn != NULL);
+    ASSERT_EQ_U(break_net_quic_conn_dropped_datagrams(conn), 0u);
+
+    /* Send application sequence 1 twice in distinct, freshly protected QUIC
+     * packets. A byte-identical UDP copy would be discarded by ngtcp2 itself
+     * and would not exercise this module's replay window. */
+    const u32 unique_datagrams = 66u;
+    for (u32 sequence = 1u; sequence <= unique_datagrams; ++sequence) {
+        u8 payload = (u8)sequence;
+        ASSERT_TRUE(proxy_datagram_send(&p, proxies, sequence, payload));
+        for (u32 round = 0u;
+             round < 2500u && capture.count < sequence; ++round) {
+            ASSERT_TRUE(proxy_pair_step(&p, proxies));
+        }
+        ASSERT_EQ_U(capture.count, sequence);
+        ASSERT_EQ_U(capture.last_sequence, sequence);
+        ASSERT_EQ_U(capture.last_type, 7u);
+        ASSERT_EQ_U(capture.last_len, 1u);
+        ASSERT_EQ_U(capture.last_payload[0], sequence);
+
+        if (sequence == 1u) {
+            ASSERT_TRUE(proxy_datagram_send(&p, proxies, 1u, payload));
+            for (u32 round = 0u;
+                 round < 2500u &&
+                 break_net_quic_conn_dropped_datagrams(conn) < 1u; ++round) {
+                ASSERT_TRUE(proxy_pair_step(&p, proxies));
+            }
+            ASSERT_EQ_U(break_net_quic_conn_dropped_datagrams(conn), 1u);
+            ASSERT_EQ_U(capture.count, 1u); /* duplicate was not delivered */
+        }
+    }
+
+    /* After sequence 66, sequence 1 is 65 positions behind the highest and
+     * therefore outside the 64-bit window. It still travels in a new QUIC
+     * packet through the proxy, but must not reach the application callback. */
+    ASSERT_TRUE(proxy_datagram_send(&p, proxies, 1u, 1u));
+    TestQuicUdpProxyStats stats;
+    memset(&stats, 0, sizeof(stats));
+    for (u32 round = 0u; round < 2500u; ++round) {
+        ASSERT_TRUE(proxy_pair_step(&p, proxies));
+        test_quic_udp_proxy_set_stats(proxies, 0u, &stats);
+        if (break_net_quic_conn_dropped_datagrams(conn) == 2u &&
+            stats.queued == 0u) {
+            break;
+        }
+    }
+    ASSERT_EQ_U(capture.count, unique_datagrams);
+    ASSERT_EQ_U(capture.last_sequence, unique_datagrams);
+    ASSERT_EQ_U(break_net_quic_conn_dropped_datagrams(conn), 2u);
+    ASSERT_EQ_U(stats.dropped, 0u);
+    ASSERT_EQ_U(stats.queued, 0u);
+    ASSERT_TRUE(stats.forwarded >= unique_datagrams + 2u);
+
+    free_pair(&p);
+    test_quic_udp_proxy_set_destroy(&proxies);
+    return true;
+}
+
 /* ---- voice over QUIC datagram --------------------------------------------- */
 
 static bool test_voice_over_quic_datagram(void) {
@@ -1200,6 +1340,7 @@ int main(void) {
         {"datagram_echo", test_datagram_echo},
         {"datagram_size_boundary", test_datagram_size_boundary},
         {"datagram_unauthenticated_dropped", test_datagram_unauthenticated_dropped},
+        {"datagram_replay_window_integration", test_datagram_replay_window_integration},
         {"voice_over_quic_datagram", test_voice_over_quic_datagram},
         {"lobby_quic_auth_source", test_lobby_quic_auth_source},
         {"voice_conference", test_voice_conference},

@@ -565,6 +565,8 @@ if(BREAK_ENABLE_QUIC)
         src/network/break_online_session_quic.c)
     set_property(TARGET break_net_quic PROPERTY C_STANDARD 11)
     target_compile_definitions(break_net_quic PRIVATE _POSIX_C_SOURCE=199309L)
+    target_compile_definitions(break_net_quic PRIVATE
+        $<$<BOOL:${ENGINE_BUILD_TESTS}>:BREAK_NET_QUIC_TESTING=1>)
     target_include_directories(break_net_quic PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
     # break_net supplies the envelope codec (no duplication), break_crypto the
@@ -8195,6 +8197,7 @@ endif()
         set_property(TARGET test_break_net_quic PROPERTY C_STANDARD 11)
         target_include_directories(test_break_net_quic PRIVATE ${TEST_INCLUDE_DIRS})
         target_compile_definitions(test_break_net_quic PRIVATE
+            BREAK_NET_QUIC_TESTING=1
             BREAK_TEST_SSL_FIXTURE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ssl)
         target_link_libraries(test_break_net_quic PRIVATE break_net_quic break_online)
         add_test(NAME test_break_net_quic COMMAND test_break_net_quic)
