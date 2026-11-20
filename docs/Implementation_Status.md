@@ -7,7 +7,8 @@
 - **既有 QEMU 偶发挂起（与本切片无关）**：首次干净容器运行与原生 `make -j6`/`ctest -j4` 并行，lane 内既有的 `test_runtime_io` 第 15 例 `io_request_double_release_aborts` 挂起，`timeout 300` 终止整个 CTest。复现：同一 arm64 二进制在 QEMU 8.2.2 下 12 路并行 180 次挂起 5 次，单独 60 次 0 次；原生 16 路并行 640 次 0 次。`-strace` 显示挂起点固定在 fork 出的子进程创建 worker 线程的 `clone(CLONE_VM|CLONE_THREAD...)` 未返回，子进程两个线程均停在 futex，父进程在阶段管道 `read` 上等待。判断为 qemu-user 在 fork 后创建线程的竞态，属于高负载宿主下的模拟器问题，而非产品缺陷；远端 job 历次均通过。不加重试、不屏蔽，验证改在空闲宿主上运行，后续可让该用例在 `BREAK_TEST_QEMU_USER=1` 时避免在 fork 子进程中启动线程。
 - **本地验证（2026-11-20 21:20 CST）**：原生全量 455 项零失败，4 个既有平台用例跳过，CTest 156.89 秒。空闲宿主上的干净 Ubuntu 24.04 容器按 workflow 原始步骤完成构建、对象检查与一百五十二项 CTest，152/152、CTest 180.02 秒；二十一个规则引擎分项数逐项与表一致（合计 643，其中 10 例为上述 Redis SKIP），全部既有分项/契约/e2e 成功，既有 ptrace 设置 skip 恰好一次。`git diff --check` 通过。
 - **独立评审**：只读评审逐名确认 131→152、差集恰为二十一项、派生名称与 executor stress/fuzz smoke 被拒绝、两处 regex 与构建列表字节一致、643 合计与各源码 `RUN_TEST` 数一致，hiredis 与 `TEST_SOURCE_ROOT` 说法成立。采纳 Important：「无 skip」改为如实说明 stream ext 中 10 例 Redis 用例只打印 SKIP；采纳 Minor：backward machine structure 四例的分工、Redis 未编译的真实原因（选项默认关闭）、`TEST_SOURCE_ROOT` 在 qemu-user 下可用的真实原因。
-- **验证边界**：远端 job 在实际完成后补记。Redis 路径、C11 并行执行器压力测试、fuzz、大规则集性能、Snowflake/QUIC、GPU 与物理设备仍不在本次覆盖内。
+- **远端验证**：[CI run 44739103555](https://github.com/konyka/break/actions/runs/44739103555) 的 [arm64 job 136297883692](https://github.com/konyka/break/actions/runs/44739103555/job/136297883692) 在提交 `24081a17` 上全部步骤成功。原始日志断言确认精确一百五十二项、`0 tests failed out of 152`、日志中无任何失败分项、二十一个规则引擎分项数逐项一致、全部既有契约/e2e，既有 ptrace 设置 skip 恰好一次。远端 CTest 171.23 秒，已占 lane `timeout 300` 的 57%；后续切片需在扩大选择前评估该上限。
+- **验证边界**：Redis 路径、C11 并行执行器压力测试、fuzz、大规则集性能、Snowflake/QUIC、GPU 与物理设备仍不在本次覆盖内。
 
 ## arm64 音频与一百三十一项 CTest（2026-11-20）
 
