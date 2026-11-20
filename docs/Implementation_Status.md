@@ -1,3 +1,11 @@
+## arm64 动画与九十四项 CTest（2026-11-20）
+
+- **最小场景**：新增八个直接可执行动画目标：animation 37 例、pose authority 2、morph 10、facial 8、compression 13、locomotion 1、skeleton socket 1、aim 1，共 73 个分项，只链接动画、数学、日志和 LOD CPU 源码（morph 另链接 `meshopt_c`）。
+- **未修改基线与 focused 复验**：原生与干净容器交叉均为 8/8，分项数一致，交叉 focused CTest 0.17 秒，无 skip。无需修改产品或测试源码。
+- **RED 与精确选择**：旧 workflow 因缺少八个构建目标按预期 RED。新增独立的 `test_(animation|anim_(pose_authority|morph|facial|compression|locomotion|aim)|skeleton_socket)$`，未改动既有表达式；真实选择为既有八十六项加八项，共九十四项，`*_extra`、`test_anim_morph2` 与 `test_myui_echart_animation` 被拒绝。
+- **覆盖缺口**：locomotion、socket、aim 各只有一个用例，其内部首个失败会让汇总只报 1 例。
+- **验证状态**：原生全量、最终干净容器、独立评审及远端 job 在实际完成后补记。GPU 蒙皮、渲染、跨架构逐位动画回放、Snowflake/QUIC、GPU 与物理设备仍不在本次覆盖内。
+
 ## arm64 扩展物理、角色控制与八十六项 CTest（2026-11-20）
 
 - **最小场景**：新增 slider、cloth、rope、soft-body、destructible 五个直接可执行目标，以及 character 30 例（链接 character.c 与 physics.c），至此所有以物理模块为主体的已注册测试均纳入 arm64（仅链接物理源码的 scene/script/core_app 测试除外）。五个扩展模块每项一个场景，静态断言点分别为 12/24/10/15/30（含循环，运行时检查次数更多）。
