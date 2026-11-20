@@ -29,4 +29,4 @@
 - [x] **Step 1:** Native full regression in `build-core-app-net`; require 455, zero failures, four established skips.
 - [x] **Step 2:** Final clean-container workflow; require 94/94 and exactly one existing ptrace setup skip.
 - [x] **Step 3:** Read-only review; fix adopted findings test-first. Fetch/rebase if needed and push without force.
-- [ ] **Step 4:** Run `build-core-app-net/assert_arm64_log.py <log> 94 test_animation=37 test_anim_pose_authority=2 test_anim_morph=10 test_anim_facial=8 test_anim_compression=13 test_anim_locomotion=1 test_skeleton_socket=1 test_anim_aim=1` on the exact-HEAD remote log. Record URLs, commit as `docs: record arm64 animation CI results`, and push.
+- [x] **Step 4:** Run `build-core-app-net/assert_arm64_log.py <log> 94 test_animation=37 test_anim_pose_authority=2 test_anim_morph=10 test_anim_facial=8 test_anim_compression=13 test_anim_locomotion=1 test_skeleton_socket=1 test_anim_aim=1` on the exact-HEAD remote log. Record URLs, commit as `docs: record arm64 animation CI results`, and push.
