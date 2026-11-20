@@ -3,7 +3,10 @@
 - **最小场景**：新增 RHI dispatch 44 项检查、capabilities 59 例、error contract 7 例、frame lifecycle 5 例和 render graph 22 例。五个直接可执行目标均由既有 QEMU 命令启动，使用 headless/stub 路径。
 - **未修改基线与 focused 复验**：原生和交叉均为 5/5、44 项 dispatch 检查及 59/7/5/22；最新 focused CTest 为 0.01/0.12 秒，无 skip。无需修改产品或测试源码。
 - **RED 与精确选择**：旧 workflow 因缺少五个构建目标按预期 RED。加入两个局部结尾锚定表达式后，真实原生选择为既有五十六项加五项，共六十一项；未来派生前缀被拒绝，显式集合断言通过。
-- **验证状态**：原生全量、最终干净容器、独立评审及远端 job 在实际完成后补记。运行时后端选择/rollout、WSI、shader 工具、真实 OpenGL/Vulkan、画面一致性、GPU 与物理设备仍不在本次覆盖内。
+- **本地验证（2026-11-20 18:04 CST）**：原生全量 455 项零失败，4 个既有平台用例跳过，CTest 156.42 秒。最终干净 Ubuntu 24.04 容器按 workflow 原始步骤完成构建、对象检查与六十一项 CTest，61/61、CTest 114.60 秒；44 项 dispatch 检查、59/7/5/22 分项及全部既有分项/契约/e2e 成功，既有 ptrace 设置 skip 恰好一次，无新增跳过。`git diff --check` 通过。
+- **独立评审**：只读评审未发现任何 Critical/Important/Minor 问题，确认精确 61 项选择、局部锚点、headless/stub 路径和文档边界。
+- **远端验证**：[CI run 44716660273](https://github.com/konyka/break/actions/runs/44716660273) 的 [arm64 job 136221672512](https://github.com/konyka/break/actions/runs/44716660273/job/136221672512) 在提交 `890ccd4a` 上全部步骤成功。原始日志断言确认精确六十一项、`0 tests failed out of 61`、44 项 dispatch 检查与 59/7/5/22 分项、全部既有分项/契约/e2e，既有 ptrace 设置 skip 恰好一次；非 root 权限分支实际执行，两个真实 LLVM Mach-O 子检查仍按工具缺失条件跳过。
+- **验证边界**：运行时后端选择/rollout、WSI、shader 工具、真实 OpenGL/Vulkan、画面一致性、GPU 与物理设备仍不在本次覆盖内。
 
 ## arm64 Asset/VFS/热加载与五十六项 CTest（2026-11-20）
 
