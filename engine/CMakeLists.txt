@@ -2809,6 +2809,7 @@ if(ENGINE_BUILD_TESTS)
         COMMAND ${CMAKE_COMMAND}
             -DPACKER=$<TARGET_FILE:packer>
             -DVERIFY=$<TARGET_FILE:verify_pak>
+            "-DTOOL_RUNNER=${CMAKE_CROSSCOMPILING_EMULATOR}"
             -DWORK=${CMAKE_CURRENT_BINARY_DIR}/packer-roundtrip
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_packer_roundtrip.cmake)
     set_tests_properties(test_packer_roundtrip PROPERTIES LABELS "headless;asset")
