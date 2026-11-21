@@ -1,3 +1,11 @@
+## 编辑器 shell 本地相机姿态用例误入远程门控块的修复（2026-11-21）
+
+- **现象**：为 arm64 lane 试跑 `test_editor_shell` 时，arm64（未启用 Snowflake）只跑 184 例，原生 Snowflake 构建跑 233 例。逐名比较差集：48 个 `remote_*`/`network_panel_*` 用例本应只在 `BREAK_ENABLE_SNOWFLAKE=ON` 时编译，另有一个纯本地用例 `camera_pose_whose_eye_collapses_onto_the_target_is_rejected` 也被排除。
+- **根因**：该用例的定义位于 `#ifdef BREAK_EDITOR_REMOTE_TESTS` 块内（远程 `CAMERA_SET` 用例之后），注册也夹在 `RUN_REMOTE_TEST` 列表中。用例本身只调用 `break_editor_shell_set_camera_pose` 与 `break_editor_shell_camera`，不用任何远程辅助函数，因此所有未启用 Snowflake 的构建都从未执行这条 f32 量化退化姿态的回归检查。
+- **修复**：把用例定义与 `RUN_TEST` 注册原样移出远程门控块，放在网络面板时钟辅助函数之后、远程块之前；diff 为 67 行移入、67 行移出，用例内容不变。
+- **RED/GREEN**：未启用 Snowflake 的构建（`build-core-app-master`）修复前 184 例且不含该用例，修复后 185 例并通过；Snowflake 构建仍为 233 例全部通过。
+- **覆盖缺口**：其余 48 个远程会话与网络面板用例仍需 Snowflake；arm64 lane 不配置 Snowflake，这部分在 arm64 上不覆盖。
+
 ## arm64 编辑器/core_app 纯 CPU 组件与二百三十六项 CTest（2026-11-21）
 
 - **最小场景**：新增六个既有纯 CPU 可执行目标：`test_editor_input_script` 8、`test_editor_settings` 7（环境变量只用于路径解析，实际保存与读取写入 `test_tmp` 临时目录）、`test_editor_fonts` 7、`test_editor_audio_sink` 5（FAKE 音频后端，不打开设备）、`test_core_app_mesh` 3、`test_core_app_runtime` 60 例（读取仓库 `assets/core_app`，含多线程音频压力用例，不 fork）。均不连接显示服务器或真实设备。
@@ -6,6 +14,8 @@
 - **完整干净容器验证**：以统一非 root 属主执行 workflow 原始构建和测试 step，236/236，CTest 138.37 秒。严格日志断言确认 51 组分项计数、全部旧契约/e2e、无失败分项、唯一 ptrace 设置 skip，无 root 权限跳过或 `Too many parentheses`；超时标记恰为 `test_fork_deadline` 的三条预期标记。
 - **字体用例的实际覆盖**：lane 未链接 arm64 fontconfig，真实系统用例改走内置路径表。构建目录是检出根目录的直接子目录时（lane 与完整容器验证均如此），经可执行文件相对路径找到仓库自带的 JetBrains Mono 与 Noto Sans SC，干净容器打印 `2 candidates, cjk`；focused 运行的构建目录在 `/tmp` 下，打印 `0 candidates`。托管 runner 若预装 DejaVu/Liberation，路径表会再加入它们，实际数量以远端日志为准。该用例只检查候选存在、不重复且不超过上限，不验证 fontconfig 发现。
 - **独立评审**：首轮结论为暂不可合入，唯一 Important 是字体用例描述只符合干净容器，托管 runner 上内置路径表可能加入系统字体；已改为如实描述并在远端日志中核对。评审核实六个目标只受 `ENGINE_BUILD_TESTS` 门控；settings 的环境变量只用于路径解析、读写在 `test_tmp` 下；audio_sink 全部使用 FAKE 后端（`noDevice`）；core_app_runtime 无 fork/exec/socket，写入经 `tmpfile()`，部分用例使用不打开硬件的 Null 后端，线程协调全部经互斥量与条件变量，不涉及已知的 qemu-user 问题；实测 230→236，差集恰为六项，捕获组仍为 31。已采纳的 Minor：排除 `test_core_app_voice` 的理由改为实测依据，构建目录位置的措辞收窄为检出根目录的直接子目录。
+- **远端 arm64 验证**：[CI run 44878718341](https://github.com/konyka/break/actions/runs/44878718341) 的 [arm64 job 136769073389](https://github.com/konyka/break/actions/runs/44878718341/job/136769073389) 在提交 `93239517` 上成功。原始日志严格断言确认精确 236 项、51 组分项计数、全部旧契约/e2e 和唯一 ptrace 设置 skip；无 root 权限跳过或 `Too many parentheses`，超时标记恰为 `test_fork_deadline`（#300）的三条预期标记，CTest 140.87 秒。字体真实系统用例在托管 runner 上打印 `3 candidates, cjk`：除仓库自带两款字体外，内置路径表找到了 runner 预装的一款系统字体，与评审预测一致。
+- **整体远端结果**：上述主 CI run 最终为 `completed / success`，包括 Linux、Windows、macOS、arm64、sanitizer、fuzz、图形及契约 lane；既有条件跳过仍按各 job 原义保留。独立 [Windows D3D12 run 44878718338](https://github.com/konyka/break/actions/runs/44878718338) 也为 `completed / success`。RHI CPU 收据提交 `f4c66dc5` 上主 CI、Windows D3D12 与 Proton D3D12 也均为 success。
 - **覆盖缺口**：系统字体发现（fontconfig）、真实音频设备、core_app 语音通道与 lifecycle 驱动脚本、编辑器 shell/Lua 与插件动态加载不在本切片内。
 
 ## arm64 RHI CPU 路径与二百三十项 CTest（2026-11-21）

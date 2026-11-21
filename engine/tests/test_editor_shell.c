@@ -7778,6 +7778,72 @@ static u64 net_test_clock(void *user) {
     return g_net_clock_us;
 }
 
+/* A pose can pass every range check and still collapse the view: at a target
+ * 1e6 away, a distance of 0.05 is smaller than one f32 step (0.0625), so the
+ * eye rounds onto the target and the look-at has no direction. The pose is
+ * rejected whole, the camera untouched, and the same distance near the origin
+ * is still fine. */
+TEST(camera_pose_whose_eye_collapses_onto_the_target_is_rejected)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorCamera ok, bad, before;
+    ASSERT_NOT_NULL(shell);
+    memset(&ok, 0, sizeof(ok));
+    ok.distance = 0.05f;
+    ok.fov_y = 0.9f;
+    ASSERT_TRUE(break_editor_shell_set_camera_pose(shell, &ok));   /* near the origin: fine */
+
+    /* the reported case: every axis offset (0.0289) is below half an f32 step
+     * (0.03125) of 1e6, so the eye rounds onto the target */
+    bad = ok;
+    bad.target[0] = bad.target[1] = bad.target[2] = 1e6f;
+    bad.yaw = 0.7853982f;
+    bad.pitch = 0.6154797f;
+    before = *break_editor_shell_camera(shell);
+    ASSERT_FALSE(break_editor_shell_set_camera_pose(shell, &bad));
+    ASSERT_TRUE(memcmp(&before, break_editor_shell_camera(shell), sizeof(before)) == 0);
+
+    /* a distance that survives the rounding on every axis: accepted */
+    bad.distance = 5.0f;
+    ASSERT_TRUE(break_editor_shell_set_camera_pose(shell, &bad));
+
+    /* only the DISTANCE is quantised (0.05 becomes 0.0625 along X), the look
+     * direction is intact: accepted */
+    {
+        BreakEditorCamera along = ok;
+        along.target[0] = 1e6f;
+        along.yaw = 1.5707963f;      /* looks along X */
+        along.distance = 0.05f;
+        ASSERT_TRUE(break_editor_shell_set_camera_pose(shell, &along));
+    }
+
+    /* the direction is distorted: at 1e6 the f32 step is 0.0625, so X moves
+     * 0.05 (rounds UP to 0.0625) but Y moves 0.025 (rounds to 0). The eye is
+     * placed along X alone while the pose asked for a 26.6 degree climb
+     * (cos^2 of the angle between them = 0.8): rejected */
+    {
+        BreakEditorCamera tilt = ok;
+        tilt.target[0] = tilt.target[1] = tilt.target[2] = 1e6f;
+        tilt.yaw = 1.5707963f;
+        tilt.pitch = 0.4636476f;     /* atan(0.5) */
+        tilt.distance = 0.0559017f;
+        before = *break_editor_shell_camera(shell);
+        ASSERT_FALSE(break_editor_shell_set_camera_pose(shell, &tilt));
+        ASSERT_TRUE(memcmp(&before, break_editor_shell_camera(shell), sizeof(before)) == 0);
+    }
+
+    /* the same pose at a coordinate where f32 still resolves it: accepted */
+    {
+        BreakEditorCamera fine = ok;
+        fine.target[0] = fine.target[1] = fine.target[2] = 1e3f;
+        fine.yaw = 1.5707963f;
+        fine.pitch = 0.4636476f;
+        fine.distance = 0.0559017f;
+        ASSERT_TRUE(break_editor_shell_set_camera_pose(shell, &fine));
+    }
+    break_editor_shell_destroy(shell);
+}
+
 #ifdef BREAK_EDITOR_REMOTE_TESTS
 typedef struct {
     u32 count;
@@ -9022,72 +9088,6 @@ TEST(remote_camera_set_applies_a_validated_pose)
 
     remote_client_close(&c);
     break_editor_remote_destroy(remote);
-    break_editor_shell_destroy(shell);
-}
-
-/* A pose can pass every range check and still collapse the view: at a target
- * 1e6 away, a distance of 0.05 is smaller than one f32 step (0.0625), so the
- * eye rounds onto the target and the look-at has no direction. The pose is
- * rejected whole, the camera untouched, and the same distance near the origin
- * is still fine. */
-TEST(camera_pose_whose_eye_collapses_onto_the_target_is_rejected)
-{
-    BreakEditorShell *shell = break_editor_shell_create_for_test();
-    BreakEditorCamera ok, bad, before;
-    ASSERT_NOT_NULL(shell);
-    memset(&ok, 0, sizeof(ok));
-    ok.distance = 0.05f;
-    ok.fov_y = 0.9f;
-    ASSERT_TRUE(break_editor_shell_set_camera_pose(shell, &ok));   /* near the origin: fine */
-
-    /* the reported case: every axis offset (0.0289) is below half an f32 step
-     * (0.03125) of 1e6, so the eye rounds onto the target */
-    bad = ok;
-    bad.target[0] = bad.target[1] = bad.target[2] = 1e6f;
-    bad.yaw = 0.7853982f;
-    bad.pitch = 0.6154797f;
-    before = *break_editor_shell_camera(shell);
-    ASSERT_FALSE(break_editor_shell_set_camera_pose(shell, &bad));
-    ASSERT_TRUE(memcmp(&before, break_editor_shell_camera(shell), sizeof(before)) == 0);
-
-    /* a distance that survives the rounding on every axis: accepted */
-    bad.distance = 5.0f;
-    ASSERT_TRUE(break_editor_shell_set_camera_pose(shell, &bad));
-
-    /* only the DISTANCE is quantised (0.05 becomes 0.0625 along X), the look
-     * direction is intact: accepted */
-    {
-        BreakEditorCamera along = ok;
-        along.target[0] = 1e6f;
-        along.yaw = 1.5707963f;      /* looks along X */
-        along.distance = 0.05f;
-        ASSERT_TRUE(break_editor_shell_set_camera_pose(shell, &along));
-    }
-
-    /* the direction is distorted: at 1e6 the f32 step is 0.0625, so X moves
-     * 0.05 (rounds UP to 0.0625) but Y moves 0.025 (rounds to 0). The eye is
-     * placed along X alone while the pose asked for a 26.6 degree climb
-     * (cos^2 of the angle between them = 0.8): rejected */
-    {
-        BreakEditorCamera tilt = ok;
-        tilt.target[0] = tilt.target[1] = tilt.target[2] = 1e6f;
-        tilt.yaw = 1.5707963f;
-        tilt.pitch = 0.4636476f;     /* atan(0.5) */
-        tilt.distance = 0.0559017f;
-        before = *break_editor_shell_camera(shell);
-        ASSERT_FALSE(break_editor_shell_set_camera_pose(shell, &tilt));
-        ASSERT_TRUE(memcmp(&before, break_editor_shell_camera(shell), sizeof(before)) == 0);
-    }
-
-    /* the same pose at a coordinate where f32 still resolves it: accepted */
-    {
-        BreakEditorCamera fine = ok;
-        fine.target[0] = fine.target[1] = fine.target[2] = 1e3f;
-        fine.yaw = 1.5707963f;
-        fine.pitch = 0.4636476f;
-        fine.distance = 0.0559017f;
-        ASSERT_TRUE(break_editor_shell_set_camera_pose(shell, &fine));
-    }
     break_editor_shell_destroy(shell);
 }
 
@@ -14956,6 +14956,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(assets_panel_live_refresh_survives_vanished_directory);
     RUN_TEST(hot_reload_overlong_scene_path_disables_watch_without_truncating);
     RUN_TEST(hot_reload_teardown_in_either_order_is_safe);
+    RUN_TEST(camera_pose_whose_eye_collapses_onto_the_target_is_rejected);
 #ifdef BREAK_EDITOR_REMOTE_TESTS
     RUN_REMOTE_TEST(remote_protocol_ids_live_in_default_registry);
     RUN_REMOTE_TEST(remote_describe_returns_version_entity_count_dirty);
@@ -14966,7 +14967,6 @@ TEST_MAIN_BEGIN()
     RUN_REMOTE_TEST(remote_load_reverts_configured_path_and_refuses_when_dirty);
     RUN_REMOTE_TEST(remote_view_toggles_view_state_without_touching_the_doc);
     RUN_REMOTE_TEST(remote_camera_set_applies_a_validated_pose);
-    RUN_TEST(camera_pose_whose_eye_collapses_onto_the_target_is_rejected);
     RUN_REMOTE_TEST(remote_history_reports_the_shared_undo_stack);
     RUN_REMOTE_TEST(remote_render_reports_the_render_debugger_rows);
     RUN_REMOTE_TEST(remote_render_reload_without_viewport_reports_zero);

@@ -21,5 +21,5 @@
 ## Task 3: review, push, receipts
 - [x] **Step 1:** Read-only independent review; reproduce and fix every Critical/Important finding.
 - [x] **Step 2:** Commit `ci: run arm64 editor and core_app cpu tests`, push, monitor the full CI and Windows D3D12 workflows.
-- [ ] **Step 3:** Download the raw arm64 log and assert 236 with all counted per-test numbers.
-- [ ] **Step 4:** Append local/remote receipts and remaining gaps to `docs/Implementation_Status.md` and `docs/cross_engine/missing_capabilities.md`; check off completed steps.
+- [x] **Step 3:** Download the raw arm64 log and assert 236 with all counted per-test numbers.
+- [x] **Step 4:** Append local/remote receipts and remaining gaps to `docs/Implementation_Status.md` and `docs/cross_engine/missing_capabilities.md`; check off completed steps.
