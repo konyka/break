@@ -1102,6 +1102,12 @@ TEST(component_bytes_survive_save_load) {
     ASSERT_TRUE(fields_match(doc, b, -17.75f));
 
     break_editor_doc_destroy(doc);
+    (void)remove(path);
+    {
+        char side[600];
+        (void)snprintf(side, sizeof(side), "%s.editor.json", path);
+        (void)remove(side);
+    }
 }
 
 /* A plugin-style component: a level (f32) and an active flag (bool). */

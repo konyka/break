@@ -7167,6 +7167,8 @@ TEST(window_title_names_the_scene_and_marks_unsaved_changes)
         ASSERT_TRUE(break_editor_shell_window_title_revision(shell) != rev);
     }
     remove(path);
+    snprintf(want, sizeof(want), "%s.editor.json", path);
+    remove(want);
     break_editor_shell_destroy(shell);
 }
 
