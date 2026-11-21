@@ -1,9 +1,17 @@
+## qemu-user 下 fork 子进程建线程偶发挂起的复查（2026-11-21）
+
+- **背景**：2026-11-20 记录过两次挂起：`test_runtime_reload` 的 `reload_destroy_requires_shutdown_aborts` 与 `test_runtime_io` 的 `io_request_double_release_aborts`，都在 fork 子进程中起 worker 线程后期待 abort，挂起时子进程两个线程停在 futex、父进程停在 `waitpid`。当时的待办是给这两例加子进程级超时，再缩小触发条件。
+- **现状**：两例都已经过 `test_waitpid_deadline` 以 30 秒上限等待子进程（`engine/tests/test_runtime_reload.c:1544`、`engine/tests/test_runtime_io.c:1086`），挂起时会在 30 秒内失败并给出诊断，不再拖住整条 lane；`test_fork_deadline` 单独覆盖该辅助函数并已在 arm64 lane 内运行。
+- **复查**：在干净 Ubuntu 24.04 容器中以 QEMU 8.2.2 交替运行 arm64 `test_runtime_reload` 与 `test_runtime_io` 各 60 次（每次外层 120 秒超时，挂起与失败分开计数），结果 0 次挂起、0 次失败。自 2026-11-20 以来，本地与远端 arm64 lane 的数十次完整运行也未再出现。
+- **结论**：仍无法复现，根因未定位；保留 30 秒子进程截止等待作为防护，不加重试、不屏蔽。若再次出现，截止等待的诊断会指出具体用例，届时再采集子进程线程栈。
+
 ## Compose 异步测试的跨线程等待加上限（2026-11-21）
 
 - **问题**：此前记录的后续项。`engine/tests/test_mycompose_async.c` 中主线程等待工作线程标志、工作线程等待 completion 落定与等待重试许可，都是不设上限的 `platform_thread_yield()` 自旋；任一方漏写标志时整个二进制挂住，直到 CTest 的全局超时才失败，且看不出卡在哪一例。
 - **修复**：新增 `wait_clock_ms()`（C11 `timespec_get`）、`wait_for_flag_within()` 与 `wait_for_settled_state()`，上限 `ASYNC_WAIT_LIMIT_MS` 为 10 秒。主线程的 `wait_for_flag` 超时时打印文件、行号与上限后 `abort()`：未写标志的工作线程仍持有本测试栈帧中的指针，直接返回会让它在已失效的栈上运行。工作线程侧超时则把最终状态留为 PENDING 并退出，主线程的既有断言会拒绝该状态。
 - **TDD**：新增用例 `bounded_wait_gives_up_on_a_flag_that_is_never_set`，断言永不置位的标志在 50 毫秒后返回失败且确实等待了至少 50 毫秒、已置位的标志立即成功；把超时分支改为空操作后该用例挂住（5 秒外层超时触发），恢复后通过。另做变异：删去工作线程写 `posted` 的一行并把上限调到 300 毫秒，修复前整个二进制会无限挂住，修复后第一例在 300 毫秒内打印 `worker flag not set within 300 ms; aborting` 并以 SIGABRT 结束。首版实现在超时后直接 `return`，该变异下出现 SIGSEGV，由此改为 `abort()`。
 - **验证**：原生 18/18（原 17 例加新增 1 例），连续三次通过；TSan 构建三次 18/18 且无报告；原生全量 456 项零失败，4 个既有平台用例跳过。arm64 lane 中该测试计数由 17 变为 18。
+- **远端验证**：[CI run 44895525010](https://github.com/konyka/break/actions/runs/44895525010) 在提交 `457d48d7` 上整体 `completed / success`，包括 Windows Clang、MinGW、MSVC（均编译 C11 `timespec_get`）与 Linux TSan；[arm64 job 136820227097](https://github.com/konyka/break/actions/runs/44895525010/job/136820227097) 原始日志严格断言确认精确 261 项、60 组分项计数（compose async 18 例且新用例通过）。独立 [Windows D3D12 run 44895525029](https://github.com/konyka/break/actions/runs/44895525029) 也为 `completed / success`。
 
 ## arm64 lane 外剩余 headless 测试的逐项结论（2026-11-21）
 

@@ -433,3 +433,4 @@
 - **资源包打包往返 arm64 验证追加**：2026-11-21 打包往返驱动接入 `TOOL_RUNNER`，`test_packer_roundtrip` 在 arm64 上经 QEMU 运行真实的 `packer` 与 `verify_pak`，统一选择达到二百六十项。原生全量 456 项零失败；非 root 干净容器中 arm64 260/260。运行时 VFS 挂载已由 lane 内的 `test_vfs` 覆盖；该测试不覆盖打包成功替换已有包的路径。
 - **编辑器插件清单命令行 arm64 验证追加**：2026-11-21 清单命令行驱动接入 `EDITOR_RUNNER`，lane 构建 `editor` 并经 QEMU 运行 `test_editor_plugin_manifest_cli`（非法清单在开窗前以退出码 2 拒绝、合法清单报告条目），统一选择达到二百六十一项。原生全量 456 项零失败；非 root 干净容器中 arm64 261/261。远端 CI run 44893304171 的 arm64 job 136813548754 在提交 `db25a513` 上以精确 261 项通过，主 CI 与独立 Windows D3D12 工作流均整体成功。开启 `BREAK_EDITOR_PLUGINS` 后的开窗加载路径与真实窗口仍未在 arm64 覆盖。
 - **arm64 lane 收尾结论**：2026-11-21 对 lane 外剩余五十项 headless 测试逐项归类：宿主契约、嵌套构建与符号检查、真实设备依赖、qemu-user binfmt 限制，以及实测通过但耗时 104 秒且依赖挂钟轮询的 `test_core_app_voice`，均不纳入 arm64 QEMU lane；lane 稳定在二百六十一项。
+- **qemu-user fork 挂起复查**：2026-11-21 两个 fork 后建线程的 abort 用例已有 30 秒子进程截止等待；arm64 QEMU 下交替运行各 60 次 0 次挂起，根因仍未定位，保持监测。
