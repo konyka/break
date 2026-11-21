@@ -191,3 +191,7 @@ hinge、cone-twist、slider 约束的角度原先由平台 `atan2f` 计算，gli
 ### 追加：确定性源码契约
 
 金标准哈希只在平台确实不同时失败（例如只有 glibc 2.44 能检出改回平台 `atan2f`），因此另有宿主契约 `test_physics_determinism_contract` 在任何主机上检查三条源码规则：物理不调用平台 `atan2`/`atan2f`、`fast_rsqrt` 为正确舍入的 `1.0f / sqrtf`、physics/math/`test_math.c` 在 `-ffp-contract=off` 列表中。
+
+### 追加：确定性 `math_sincosf`
+
+`quat_from_axis_angle`、软体创建与载具原先仍使用平台 `sinf`/`cosf`/`tanf`。现在 `math.h` 新增 `math_sincosf`（double 中 Cody-Waite 约减 + musl float 核，|x| ≤ 2^28 时误差低于 3e-8，结果与 FMA 收缩无关），前两处改用它，载具的 `tanf(0.55f)` 改为逐位相同的字面量。物理代码不再调用任何平台三角函数；`test_physics_determinism_contract` 禁止 `src/physics/` 调用 `sin`/`cos`/`tan`/`sincos`，并要求 `quat_from_axis_angle` 使用 `math_sincosf`。`test_math` 用与 glibc 舍入不同的输入固定位模式，因此回退到平台函数会在任何 libm 上失败。

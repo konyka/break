@@ -672,6 +672,77 @@ TEST(math_atan2f_bits_are_pinned) {
     }
 }
 
+/* math_sincosf feeds quat_from_axis_angle, which integrates every rotating
+ * body, so it must round the same on every libm like math_atan2f. */
+TEST(math_sincosf_is_accurate) {
+    double worst = 0.0;
+    for (int i = -4000; i <= 4000; i++) {
+        f32 x = (f32)i * 0.0137f;
+        if (i % 4 == 0) x = (f32)i * 67108.0f;
+        f32 s, c;
+        math_sincosf(x, &s, &c);
+        double es = fabs((double)s - sin((double)x));
+        double ec = fabs((double)c - cos((double)x));
+        if (es > worst) worst = es;
+        if (ec > worst) worst = ec;
+    }
+    ASSERT_TRUE(worst < 6e-8);
+    f32 s, c;
+    math_sincosf(0.0f, &s, &c);
+    ASSERT_TRUE(s == 0.0f && c == 1.0f);
+    math_sincosf(-0.0f, &s, &c);
+    ASSERT_TRUE(signbit(s) != 0 && c == 1.0f);
+    math_sincosf(1e-20f, &s, &c);
+    ASSERT_TRUE(s == 1e-20f && c == 1.0f);
+    math_sincosf(NAN, &s, &c);
+    ASSERT_TRUE(isnan(s) && isnan(c));
+    math_sincosf(INFINITY, &s, &c);
+    ASSERT_TRUE(isnan(s) && isnan(c));
+    math_sincosf(-INFINITY, &s, &c);
+    ASSERT_TRUE(isnan(s) && isnan(c));
+    math_sincosf(FLT_MAX, &s, &c);
+    ASSERT_TRUE(isfinite(s) && isfinite(c) && fabsf(s) <= 1.0f && fabsf(c) <= 1.0f);
+    math_sincosf(3.40000015e38f, &s, &c);
+    ASSERT_TRUE(isfinite(s) && isfinite(c));
+}
+
+/* 27.105299 and 39.8550987 are inputs where math_sincosf and glibc round
+ * cos differently, so a silent switch back to the platform sinf/cosf, or a
+ * change in the reduction or kernels, fails here on every libm. 3e8 sits
+ * just below the 2^28 fmod threshold, 1e12 and 3.4e38 above it. */
+TEST(math_sincosf_bits_are_pinned) {
+    static const f32 in[] = {0.3f, 1.2f, -2.5f, 3.14159274f, 6.0f, 100.0f, 0.785398185f,
+                             27.105299f, 39.8550987f, 3e8f, 1e12f, 3.40000015e38f};
+    static const u32 want[][2] = {
+        {0x3e974e6du, 0x3f7490efu}, {0x3f6e9a1du, 0x3eb986f3u}, {0xbf193578u, 0xbf4d17bfu},
+        {0xb3bbbd2eu, 0xbf800000u}, {0xbe8f0f8cu, 0x3f75cdb8u}, {0xbf01a12eu, 0x3f5cc0eeu},
+        {0x3f3504f3u, 0x3f3504f3u}, {0x3f6b9d9bu, 0xbec83669u}, {0x3f556742u, 0xbf0d675au},
+        {0xbee10cf7u, 0x3f65f18fu}, {0xbcaa1946u, 0x3f7ff1dfu}, {0x3e5e622fu, 0x3f79e3e2u}};
+    for (u32 i = 0; i < sizeof(in) / sizeof(in[0]); i++) {
+        volatile f32 x = in[i];
+        f32 s, c;
+        math_sincosf(x, &s, &c);
+        u32 bs, bc;
+        memcpy(&bs, &s, sizeof(bs));
+        memcpy(&bc, &c, sizeof(bc));
+        ASSERT_EQ(bs, want[i][0]);
+        ASSERT_EQ(bc, want[i][1]);
+    }
+}
+
+/* Half of 54.210598 is 27.105299, where glibc's cosf gives 0xbec8366a, so
+ * this fails if quat_from_axis_angle goes back to the platform functions. */
+TEST(quat_from_axis_angle_uses_math_sincosf) {
+    volatile f32 angle = 54.210598f;
+    Quat q = quat_from_axis_angle(vec3(0.0f, 2.0f, 0.0f), angle);
+    u32 w;
+    memcpy(&w, &q.e[3], sizeof(w));
+    ASSERT_EQ(w, 0xbec83669u);
+    f32 s, c;
+    math_sincosf(angle * 0.5f, &s, &c);
+    ASSERT_TRUE(q.e[0] == 0.0f && q.e[1] == s && q.e[2] == 0.0f && q.e[3] == c);
+}
+
 TEST_MAIN_BEGIN()
     /* R438: layout characterization */
     RUN_TEST(mat4_lookat_canonical_layout);
@@ -733,4 +804,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(mat4_perspective_extreme_aspect);
     RUN_TEST(math_atan2f_is_accurate_in_every_quadrant);
     RUN_TEST(math_atan2f_bits_are_pinned);
+    RUN_TEST(math_sincosf_is_accurate);
+    RUN_TEST(math_sincosf_bits_are_pinned);
+    RUN_TEST(quat_from_axis_angle_uses_math_sincosf);
 TEST_MAIN_END()

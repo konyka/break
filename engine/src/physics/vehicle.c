@@ -3,6 +3,11 @@
 #include <math.h>
 #include <string.h>
 
+/* The tangent of 0.55f as a literal (same bits as glibc, 0x3f1cf477): the
+ * wheels steer by at most 0.55 rad and the yaw rate uses its tangent. The
+ * literal keeps the platform tangent out of the physics step. */
+static const f32 vehicle_steer_tan = 0.61310521f;
+
 static bool vehicle_vec3_finite(Vec3 v) {
     return isfinite(v.e[0]) && isfinite(v.e[1]) && isfinite(v.e[2]);
 }
@@ -151,7 +156,7 @@ void vehicle_step(Vehicle *v, PhysicsWorld *pw, const VehicleInput *in, f32 dt) 
         b->velocity = vec3_add(vec3_sub(b->velocity, forward_velocity),
                                vec3_scale(forward_velocity, keep));
         if (vehicle_inverse_inertia(b, up) > 1e-12f) {
-            f32 target_yaw = control.steer * speed * tanf(0.55f) / 2.4f;
+            f32 target_yaw = control.steer * speed * vehicle_steer_tan / 2.4f;
             f32 yaw = vec3_dot(b->angular_velocity, up);
             f32 blend = 8.0f * dt;
             if (blend > 1.0f) blend = 1.0f;

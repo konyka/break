@@ -48,7 +48,7 @@ TEST(replay_scene_matches_the_cross_architecture_golden_hashes)
 
 /* Second golden that exercises rotation: a box with a non-zero inertia and a
  * constant angular velocity integrates its orientation every step through
- * quat_from_axis_angle (240 sinf and 240 cosf calls over 240 steps).
+ * quat_from_axis_angle (240 math_sincosf calls over 240 steps).
  * Measured equal on glibc 2.39 x86-64, glibc 2.44 x86-64 and glibc 2.39
  * arm64; other libm implementations are checked by CI. */
 TEST(spinning_body_matches_the_cross_architecture_golden_hashes)

@@ -438,3 +438,4 @@
 - **第 9 节（物理）追加**：带旋转的金标准用例（非零惯量与恒定角速度，240 步内 `sinf`/`cosf` 各调用 240 次）在 glibc 2.39/2.44 x86-64 与 glibc 2.39 arm64 上哈希一致，加入 `test_physics_replay`。仍缺：hinge、cone-twist、slider 约束（使用 `atan2f`，不同 glibc 间实测 1 ULP 差异）的跨平台金标准。
 - **第 9 节（物理）追加**：物理角度改用确定性 `math_atan2f`（只用 IEEE 基本运算，最大误差约 3.2e-7 弧度），带限位铰链在 glibc 2.39 与 2.44 间由分歧变为逐位一致，加入第三个金标准。仍缺：`sinf`/`cosf`（四元数积分与软体创建）与载具的常量 `tanf` 仍来自平台 libm（已测环境与 CI 一致），并行 solver。
 - **第 9 节（物理）追加**：新增宿主契约 `test_physics_determinism_contract`，在任何主机上阻止三类跨平台确定性回退（平台 `atan2f`、SSE 近似倒数平方根、缺少 `-ffp-contract=off`），弥补金标准只在特定 glibc 上失败的检测缺口。
+- **第 9 节（物理）追加**：2026-11-21 物理改用确定性 `math_sincosf`（`quat_from_axis_angle`、软体创建），载具 `tanf` 改为字面量，物理代码不再依赖任何平台三角函数，源码契约同步禁止。上一条中的「`sinf`/`cosf` 与载具 `tanf` 来自平台 libm」由此关闭。仍缺：并行 solver；MSVC 若启用 `/arch:AVX2` 需补 `/fp:contract-`。

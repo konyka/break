@@ -18,7 +18,9 @@ bool soft_body_create_count(SoftBody *body, PhysicsWorld *pw, Vec3 center, f32 r
     for (u32 i = 0; i < count; i++) {
         f32 ang = (f32)i * 6.2831853f / (f32)count;
         f32 lift = (i & 1u) ? radius : -radius;
-        offsets[i] = vec3(cosf(ang) * radius, lift * 0.5f, sinf(ang) * radius);
+        f32 s, c;
+        math_sincosf(ang, &s, &c);
+        offsets[i] = vec3(c * radius, lift * 0.5f, s * radius);
     }
     Vec3 mean = vec3(0, 0, 0);
     for (u32 i = 0; i < count; i++) mean = vec3_add(mean, offsets[i]);

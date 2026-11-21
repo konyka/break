@@ -170,13 +170,54 @@ static inline f32 math_atan2f(f32 y, f32 x) {
     return signbit(y) ? -r : r;
 }
 
+/* sin and cos built only from IEEE double + - * / and conversions, for the
+ * same reason as math_atan2f: quat_from_axis_angle integrates every rotating
+ * body, and the platform sinf/cosf are free to round differently between
+ * libm releases. The argument is reduced by k*pi/2 in double with a two-part
+ * pi/2 (Cody-Waite), and the musl float kernels are evaluated in double on
+ * [-pi/4, pi/4]; error below 3e-8 while |x| <= 2^28, where k*pi/2 is exact
+ * and the bits do not depend on FMA contraction. Beyond 2^28 the argument is
+ * first reduced with fmod by a rounded 2*pi (fmod itself is exact), so the
+ * result stays bounded and repeatable but loses accuracy as |x| grows. NaN
+ * and infinity give NaN; a signed zero gives sin = x, cos = 1. */
+static inline void math_sincosf(f32 x, f32 *sin_out, f32 *cos_out) {
+    if (x == 0.0f) {
+        *sin_out = x;
+        *cos_out = 1.0f;
+        return;
+    }
+    if (!isfinite(x)) {
+        *sin_out = NAN;
+        *cos_out = NAN;
+        return;
+    }
+    double d = (double)x;
+    if (fabs(d) > 268435456.0) d = fmod(d, 6.28318530717958647692);
+    double kd = d * 0.63661977236758134308;
+    long long k = (long long)(kd < 0.0 ? kd - 0.5 : kd + 0.5);
+    double r = d - (double)k * 1.57079631090164184570e+00;
+    r = r - (double)k * 1.58932547735281966916e-08;
+    double z = r * r;
+    double w = z * z;
+    double sr = (r + (z * r) * (-0.166666666416265235595 + z * 0.0083333293858894631756)) +
+                ((z * r) * w) * (-0.000198393348360966317347 + z * 0.0000027183114939898219064);
+    double cr = ((1.0 + z * -0.499999997251031003120) + w * 0.0416666233237390631894) +
+                (w * z) * (-0.00138867637746099294692 + z * 0.0000243904487962774090654);
+    switch ((unsigned)(k & 3)) {
+    case 0: *sin_out = (f32)sr; *cos_out = (f32)cr; break;
+    case 1: *sin_out = (f32)cr; *cos_out = (f32)-sr; break;
+    case 2: *sin_out = (f32)-sr; *cos_out = (f32)-cr; break;
+    default: *sin_out = (f32)-cr; *cos_out = (f32)sr; break;
+    }
+}
+
 static inline Quat quat_from_axis_angle(Vec3 axis, f32 angle) {
     f32 l = vec3_len(axis);
     if (l <= 1e-6f) return QUAT_IDENTITY;
     f32 inv = 1.0f / l;
-    f32 half = angle * 0.5f;
-    f32 s = sinf(half);
-    return BREAK_AGG(Quat){{axis.e[0]*inv*s, axis.e[1]*inv*s, axis.e[2]*inv*s, cosf(half)}};
+    f32 s, c;
+    math_sincosf(angle * 0.5f, &s, &c);
+    return BREAK_AGG(Quat){{axis.e[0]*inv*s, axis.e[1]*inv*s, axis.e[2]*inv*s, c}};
 }
 
 static inline Vec3 quat_rotate_vec3(Quat q, Vec3 v) {
