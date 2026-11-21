@@ -5,7 +5,7 @@
 - **修复**：在 `audio_extended.c` 三处握手的存储与读取之间加入 seq_cst 栅栏（混音读取、close、set_hrtf）。实时回调中不分配内存、不加锁，只多一条栅栏指令。
 - **TDD**：`test_audio_realtime_contract` 新增检查：三处握手存储后、首个原子读取前必须有 seq_cst 栅栏；去掉修复后契约 RED（`handshake store needs a seq_cst fence before its load`），恢复后 GREEN。修复后 arm64 QEMU 循环 400 次 0 失败；原生音频标签 30 项与 voice 相关 14 项全部通过；TSan 构建下 `test_voice_playback` 五次运行与 `test_audio_extended` 129 例均无报告。
 - **独立评审**：结论可合入，无 Critical/Important。评审者在独立容器中复现：试金石无栅栏 141013/200000（静态链接 152318）、有栅栏 0；修复前 arm64 二进制 3/100 崩溃，修复后手工构建 300/300 通过；并按 C11 全序论证三条路径与 `open_rate` 复用槽位均无竞态，原代码在 C11 下本已正确，问题是 qemu-user 翻译缺陷。已采纳的 Minor：契约改为匹配每处握手对应的具体读取（`&stream->open`/`&stream->reading`），重新验证去掉栅栏 RED、恢复 GREEN；源码注释改为准确描述 qemu-user 行为；Build_Guide 的 219/225 段落恢复为历史在前、当前在后。
-- **后续项**：仓库中其他使用默认 seq_cst 的存-读握手（如 `renderer/cmd_buffer.c`、`rule_engine/executor.c`）在 qemu-user 下可能有同类问题，尚未审计；`task.c` 已使用栅栏。
+- **同类握手审计**：在 `engine/src` 中检索全部默认 seq_cst 的 `atomic_store`/`atomic_load` 与显式 seq_cst 用法。`renderer/cmd_buffer.c` 的 `submit_pending`/`shutdown_requested` 读写都在 `submit_mutex` 内或经条件变量，排序由互斥量保证；`rule_engine/executor.c` 只读 `failure` 并以 RMW（`atomic_fetch_add`、CAS）推进，不构成存-读握手；`asset/async_loader.c`、`decode_pipeline.c` 的存储是启动/停止时的单变量标志；`task.c` 已有 seq_cst 栅栏。没有发现其他依赖 seq_cst 存-读排序的握手。另用试金石确认 qemu-user 下 RMW 形式（`swpal`）无栅栏也为 0/200000，只有普通 `stlr` 后接不同变量 `ldar` 会重排。
 - **覆盖缺口**：契约是源码结构检查，行为证据来自 QEMU 循环与试金石程序；arm64 真机未测。qemu-user 下 fork 后建线程偶发挂起是另一个问题，与本修复无关，仍未定位。
 
 ## arm64 平台输入/窗口与二百二十五项 CTest（2026-11-21）
@@ -14,6 +14,8 @@
 - **RED 与精确选择**：旧 workflow 在 `missing platform input build targets` 处 RED。真实原生集合从 219 增至 225，差集恰为这六项；单核输入变体、宿主 CMake 编译矩阵 `test_platform_wsi_lifecycle`/`test_platform_wsi_compile_matrix`/`test_platform_vk_surface_abi`、Vulkan 设备探测、`test_rhi_native` 与同名前缀扩展均被拒绝。完整表达式维持 31 个捕获组。CI 与 Build_Guide 的构建和测试命令逐字一致。
 - **原生与 focused 验证**：原生六项 6/6，计数 3/14/3/4/4/4；干净 Ubuntu 24.04 容器 arm64 六项 6/6，计数一致，QEMU 8.2.2。原生全量 456 项零失败，4 个既有平台用例跳过，CTest 170.13 秒。
 - **完整干净容器验证**：首次非 root 全量 224/225，既有 `test_voice_playback` SEGFAULT；定位与修复见上一条目。修复后以统一非 root 属主执行 workflow 原始构建和测试 step，225/225，CTest 130.25 秒。严格日志断言确认 43 组分项计数（含 `test_voice_playback` 4 例）、全部旧契约/e2e、无失败分项、唯一 ptrace 设置 skip，无 root 权限跳过或 `Too many parentheses`；超时标记恰为 `test_fork_deadline` 的三条预期标记。
+- **远端 arm64 验证**：[CI run 44873919545](https://github.com/konyka/break/actions/runs/44873919545) 的 [arm64 job 136754291598](https://github.com/konyka/break/actions/runs/44873919545/job/136754291598) 在提交 `f93cdbe7`（含音频握手栅栏修复）上成功。原始日志严格断言确认精确 225 项、43 组分项计数（含 `test_voice_playback` 4 例）、全部旧契约/e2e 和唯一 ptrace 设置 skip；无 root 权限跳过或 `Too many parentheses`，超时标记恰为 `test_fork_deadline`（#300）的三条预期标记，CTest 139.31 秒。
+- **整体远端结果**：上述主 CI run 最终为 `completed / success`，包括 Linux、Windows、macOS、arm64、sanitizer、fuzz、图形及契约 lane；既有条件跳过仍按各 job 原义保留。独立 [Windows D3D12 run 44873919548](https://github.com/konyka/break/actions/runs/44873919548) 也为 `completed / success`。
 - **覆盖缺口**：真实输入设备、显示服务器与合成器交互、单核亲和性变体和宿主 CMake 编译矩阵不在本切片内。
 
 ## arm64 C++20 对等层、fork 截止等待与二百一十九项 CTest（2026-11-21）
