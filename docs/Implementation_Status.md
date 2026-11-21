@@ -112,6 +112,7 @@
 - **最小场景**：新增 `.github/workflows/quic-weak-network.yml`，把四个既有 `weak_network` CTest 放入独立 macOS 15 工作流；支持 `workflow_dispatch`，并在 QUIC/语音/replay/代理源码、测试或 Snowflake pin 变化时触发。构建只针对 `test_break_net_quic` 与 `test_break_net_quic_cpp20`，测试以 `-j4` 并行，日志断言精确 `4/4` 并上传 artifact。
 - **私有依赖边界**：Snowflake 匿名 HTTPS 不可读，工作流通过仅具 `contents:read` 的 `SNOWFLAKE_READ_TOKEN` 检出 pin `4ab761fc58a9d15970f295e231003c99a7d44df8`。未配置 secret 时明确记录 UNAVAILABLE，不执行测试也不宣称通过；token 存在但无效则正常失败。
 - **本地验证**：PyYAML 解析与六个 shell step 的 `bash -n` 全部通过；`git diff --check` 通过。既有四个独立场景本机已并行 `4/4`、连续十轮 `10/10`，本次没有修改其产品或测试代码。
+- **干净 CI 等价复验（2026-11-21）**：在远程基线 `f894c566` 上使用独立 Snowflake 工作副本和全新 Ninja 构建目录，逐字执行工作流配置参数；brew OpenSSL 3.5.9 满足 QUIC TLS 下限，pin `4ab761fc` 校验通过，267 个构建步骤完成，`test_break_net_quic` 与 C++20 目标均链接成功，四项 `weak_network` CTest 并行 `4/4`，CTest 1.05 秒。临时依赖副本与构建目录已删除。这证明 macOS 配置、构建和测试命令可运行，但不替代远程凭据配置后的 Actions 证据。
 - **远端验证**：首次 [CI run 44767600117](https://github.com/konyka/break/actions/runs/44767600117) 的 [macOS job 136396306439](https://github.com/konyka/break/actions/runs/44767600117/job/136396306439) 在提交 `da410f91` 上按预期完成 UNAVAILABLE 分支：Break 检出和凭据检查成功，Snowflake 检出、依赖安装、构建、四项测试及日志上传均显示 skipped，未上传测试 artifact。这是依赖不可用的诚实收据，不是弱网测试通过；配置 `SNOWFLAKE_READ_TOKEN` 后仍需重新运行并验证精确 `4/4`。
 
 
