@@ -7778,6 +7778,249 @@ static u64 net_test_clock(void *user) {
     return g_net_clock_us;
 }
 
+/* ---------------- Phase 4 Task 2: --remote CLI (default OFF) ------------- */
+
+#include "editor_remote.h"
+
+static bool remote_cli(int argc, const char **argv, BreakEditorRemoteCli *cli) {
+    char err[160];
+    err[0] = '\0';
+    return break_editor_remote_cli_parse(argc, (char **)argv, cli, err,
+                                         sizeof(err));
+}
+
+TEST(remote_cli_default_off_and_fail_closed_flags)
+{
+    static const char k_hex64[] =
+        "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+    BreakEditorRemoteCli cli;
+    BreakEditorRemoteConfig cfg;
+    char err[160];
+    u32 i;
+    {
+        const char *argv[] = {"editor"};
+        ASSERT_TRUE(remote_cli(1, argv, &cli));
+        ASSERT_FALSE(cli.enabled); /* no flag: no remote, no listener */
+        ASSERT_TRUE(cli.scene_path == NULL);
+    }
+    {
+        const char *argv[] = {"editor", "scene.bscn"};
+        ASSERT_TRUE(remote_cli(2, argv, &cli));
+        ASSERT_FALSE(cli.enabled);
+        ASSERT_STR_EQ(cli.scene_path, "scene.bscn");
+    }
+    {
+        /* --remote requires TLS cert/key AND a PSK: fail closed */
+        const char *argv[] = {"editor", "--remote"};
+        err[0] = '\0';
+        ASSERT_FALSE(break_editor_remote_cli_parse(2, (char **)argv, &cli, err,
+                                                   sizeof(err)));
+        ASSERT_TRUE(err[0] != '\0');
+    }
+    {
+        const char *argv[] = {"editor", "--remote", "--remote-cert", "c.pem",
+                              "--remote-key", "k.pem"};
+        ASSERT_FALSE(remote_cli(6, argv, &cli));
+    }
+    {
+        const char *argv[] = {"editor", "--remote", "--remote-psk-hex", k_hex64};
+        ASSERT_FALSE(remote_cli(4, argv, &cli)); /* no cert/key */
+    }
+    {
+        /* remote options without --remote are rejected (no silent no-op) */
+        const char *argv[] = {"editor", "--remote-port", "5000"};
+        ASSERT_FALSE(remote_cli(3, argv, &cli));
+    }
+    {
+        const char *argv[] = {"editor", "--remote", "--remote-port", "70000",
+                              "--remote-cert", "c.pem", "--remote-key", "k.pem",
+                              "--remote-psk-hex", k_hex64};
+        ASSERT_FALSE(remote_cli(10, argv, &cli));
+    }
+    {
+        const char *argv[] = {"editor", "--remote", "--remote-cert", "c.pem",
+                              "--remote-key", "k.pem", "--remote-psk-hex",
+                              "0011"};
+        ASSERT_FALSE(remote_cli(8, argv, &cli)); /* short PSK */
+    }
+    {
+        const char *argv[] = {"editor", "--remote", "--remote-cert", "c.pem",
+                              "--remote-key", "k.pem", "--remote-psk-hex",
+                              k_hex64, "--remote-key-id-hex", "zz00000000000000"};
+        ASSERT_FALSE(remote_cli(10, argv, &cli)); /* non-hex key id */
+    }
+    {
+        const char *argv[] = {"editor", "--remote", "--remote-bogus"};
+        ASSERT_FALSE(remote_cli(3, argv, &cli));
+    }
+    {
+        /* an inline "=value" is never echoed: it may be the PSK */
+        char argbuf[96];
+        const char *argv[] = {"editor", "--remote", argbuf};
+        snprintf(argbuf, sizeof(argbuf), "--remote-psk-hex=%s", k_hex64);
+        err[0] = '\0';
+        ASSERT_FALSE(break_editor_remote_cli_parse(3, (char **)argv, &cli, err,
+                                                   sizeof(err)));
+        ASSERT_TRUE(strstr(err, "--remote-psk-hex") != NULL);
+        ASSERT_TRUE(strstr(err, "0001020304") == NULL);
+    }
+    {
+        const char *argv[] = {"editor", "--remote", "--remote-cert"};
+        ASSERT_FALSE(remote_cli(3, argv, &cli)); /* missing value */
+    }
+    {
+        const char *argv[] = {"editor",          "--remote",
+                              "--remote-port",   "5000",
+                              "--remote-cert",   "c.pem",
+                              "--remote-key",    "k.pem",
+                              "--remote-ca",     "ca.pem",
+                              "--remote-psk-hex", k_hex64,
+                              "--remote-key-id-hex", "6564697430303031",
+                              "my.bscn"};
+        ASSERT_TRUE(remote_cli(15, argv, &cli));
+        ASSERT_TRUE(cli.enabled);
+        ASSERT_EQ(cli.port, 5000u);
+        ASSERT_STR_EQ(cli.cert_file, "c.pem");
+        ASSERT_STR_EQ(cli.key_file, "k.pem");
+        ASSERT_STR_EQ(cli.ca_file, "ca.pem");
+        ASSERT_STR_EQ(cli.scene_path, "my.bscn");
+        ASSERT_TRUE(cli.has_psk);
+        for (i = 0u; i < 32u; i++) {
+            ASSERT_EQ(cli.psk[i], (u8)i);
+        }
+        ASSERT_TRUE(memcmp(cli.key_id, "edit0001", 8u) == 0);
+        break_editor_remote_cli_to_config(&cli, &cfg);
+        ASSERT_STR_EQ(cfg.bind_host, "127.0.0.1"); /* loopback-first */
+        ASSERT_EQ(cfg.bind_port, 5000u);
+        ASSERT_TRUE(cfg.use_tls); /* TLS is required for --remote */
+        ASSERT_STR_EQ(cfg.tls_cert_file, "c.pem");
+        ASSERT_EQ(cfg.rate_global_per_sec,
+                  BREAK_EDITOR_REMOTE_DEFAULT_RATE_PER_SEC);
+        ASSERT_EQ(cfg.rate_global_burst, BREAK_EDITOR_REMOTE_DEFAULT_RATE_BURST);
+        ASSERT_EQ(cfg.rate_per_ip_per_minute,
+                  BREAK_EDITOR_REMOTE_DEFAULT_RATE_PER_IP_PER_MIN);
+        ASSERT_TRUE(cfg.rate_global_per_sec != 0u &&
+                    cfg.rate_global_burst != 0u &&
+                    cfg.rate_per_ip_per_minute != 0u);
+        /* --remote always evicts peers that never authenticate */
+        ASSERT_EQ(cfg.auth_timeout_ms, BREAK_EDITOR_REMOTE_DEFAULT_AUTH_TIMEOUT_MS);
+        ASSERT_TRUE(cfg.auth_timeout_ms != 0u);
+        break_editor_remote_cli_wipe(&cli);
+        ASSERT_FALSE(cli.has_psk);
+        for (i = 0u; i < 32u; i++) {
+            ASSERT_EQ(cli.psk[i], 0u);
+        }
+        break_editor_remote_cli_wipe(NULL);
+    }
+    {
+        /* default port + all-zero key id when not given; dev PSK file of
+         * exactly 32 raw bytes */
+        char k_psk_path[256];
+        FILE *f;
+        test_tmp(k_psk_path, sizeof(k_psk_path), "editor_remote_cli_test.psk");
+        f = fopen(k_psk_path, "wb");
+        u8 raw[33];
+        ASSERT_NOT_NULL(f);
+        for (i = 0u; i < 33u; i++) {
+            raw[i] = (u8)(0xa0u + i);
+        }
+        ASSERT_EQ(fwrite(raw, 1u, 32u, f), 32u);
+        fclose(f);
+        {
+            const char *argv[] = {"editor", "--remote", "--remote-cert", "c.pem",
+                                  "--remote-key", "k.pem", "--remote-psk-file",
+                                  k_psk_path};
+            ASSERT_TRUE(remote_cli(8, argv, &cli));
+            ASSERT_EQ(cli.port, BREAK_EDITOR_REMOTE_DEFAULT_PORT);
+            ASSERT_TRUE(memcmp(cli.psk, raw, 32u) == 0);
+            for (i = 0u; i < 8u; i++) {
+                ASSERT_EQ(cli.key_id[i], 0u);
+            }
+            ASSERT_TRUE(cli.ca_file == NULL);
+        }
+        f = fopen(k_psk_path, "wb");
+        ASSERT_NOT_NULL(f);
+        ASSERT_EQ(fwrite(raw, 1u, 33u, f), 33u); /* wrong size: rejected */
+        fclose(f);
+        {
+            const char *argv[] = {"editor", "--remote", "--remote-cert", "c.pem",
+                                  "--remote-key", "k.pem", "--remote-psk-file",
+                                  k_psk_path};
+            ASSERT_FALSE(remote_cli(8, argv, &cli));
+        }
+        remove(k_psk_path);
+        {
+            const char *argv[] = {"editor", "--remote", "--remote-cert", "c.pem",
+                                  "--remote-key", "k.pem", "--remote-psk-file",
+                                  k_psk_path};
+            ASSERT_FALSE(remote_cli(8, argv, &cli)); /* missing file */
+        }
+    }
+    {
+        /* --remote-keyring-file: one "<16 hex id> <64 hex psk>" per line,
+         * '#' comments and blank lines skipped, <= 8 keys, no duplicate
+         * ids; exclusive with --remote-psk-hex/--remote-psk-file */
+        char k_ring[256];
+        static const char *k_good =
+            "# devices\n"
+            "6465766963653031 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff\n"
+            "\n"
+            "6465766963653032 ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100\n";
+        static const char *k_bad[] = {
+            "6465766963653031 0011\n",                       /* short psk */
+            "zz65766963653031 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff\n",
+            /* duplicate key_id across two valid lines must reject the ring */
+            "6465766963653031 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff\n6465766963653031 ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100\n",
+            "# empty ring\n"};
+        const char *argv[] = {"editor", "--remote", "--remote-cert", "c.pem",
+                              "--remote-key", "k.pem", "--remote-keyring-file",
+                              NULL};
+        FILE *f;
+        test_tmp(k_ring, sizeof(k_ring), "editor_remote_cli_test.keyring");
+        argv[7] = k_ring;
+        f = fopen(k_ring, "wb");
+        usize b;
+        ASSERT_NOT_NULL(f);
+        fputs(k_good, f);
+        fclose(f);
+        ASSERT_TRUE(remote_cli(8, argv, &cli));
+        ASSERT_TRUE(cli.has_psk);
+        ASSERT_EQ(cli.key_count, 2u);
+        ASSERT_TRUE(memcmp(cli.keys[0].key_id, "device01", 8u) == 0);
+        ASSERT_TRUE(memcmp(cli.keys[1].key_id, "device02", 8u) == 0);
+        ASSERT_EQ(cli.keys[0].psk[1], 0x11u);
+        ASSERT_EQ(cli.keys[1].psk[31], 0x00u);
+        ASSERT_EQ(cli.keys[1].psk[0], 0xffu);
+        break_editor_remote_cli_wipe(&cli);
+        ASSERT_EQ(cli.key_count, 0u);
+        ASSERT_EQ(cli.keys[0].psk[1], 0u);
+        {
+            const char *both[] = {"editor", "--remote", "--remote-cert", "c.pem",
+                                  "--remote-key", "k.pem", "--remote-keyring-file",
+                                  k_ring, "--remote-psk-hex",
+                                  "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"};
+            ASSERT_FALSE(remote_cli(10, both, &cli));
+        }
+        for (b = 0u; b < sizeof(k_bad) / sizeof(k_bad[0]); b++) {
+            f = fopen(k_ring, "wb");
+            ASSERT_NOT_NULL(f);
+            fputs(k_bad[b], f);
+            fclose(f);
+            ASSERT_FALSE(remote_cli(8, argv, &cli));
+            ASSERT_EQ(cli.key_count, 0u);
+        }
+        f = fopen(k_ring, "wb");
+        ASSERT_NOT_NULL(f);
+        for (b = 0u; b < 9u; b++) {
+            fprintf(f, "64657669636530%02x 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff\n",
+                    (unsigned)b);
+        }
+        fclose(f);
+        ASSERT_FALSE(remote_cli(8, argv, &cli)); /* 9 keys: over the ring */
+        remove(k_ring);
+    }
+}
+
 /* A pose can pass every range check and still collapse the view: at a target
  * 1e6 away, a distance of 0.05 is smaller than one f32 step (0.0625), so the
  * eye rounds onto the target and the look-at has no direction. The pose is
@@ -10301,242 +10544,6 @@ TEST(network_panel_refresh_never_mutates_remote_state)
     remote_client_close(&c);
     break_editor_remote_destroy(remote);
     break_editor_shell_destroy(shell);
-}
-
-/* ---------------- Phase 4 Task 2: --remote CLI (default OFF) ------------- */
-
-static bool remote_cli(int argc, const char **argv, BreakEditorRemoteCli *cli) {
-    char err[160];
-    err[0] = '\0';
-    return break_editor_remote_cli_parse(argc, (char **)argv, cli, err,
-                                         sizeof(err));
-}
-
-TEST(remote_cli_default_off_and_fail_closed_flags)
-{
-    static const char k_hex64[] =
-        "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
-    BreakEditorRemoteCli cli;
-    BreakEditorRemoteConfig cfg;
-    char err[160];
-    u32 i;
-    {
-        const char *argv[] = {"editor"};
-        ASSERT_TRUE(remote_cli(1, argv, &cli));
-        ASSERT_FALSE(cli.enabled); /* no flag: no remote, no listener */
-        ASSERT_TRUE(cli.scene_path == NULL);
-    }
-    {
-        const char *argv[] = {"editor", "scene.bscn"};
-        ASSERT_TRUE(remote_cli(2, argv, &cli));
-        ASSERT_FALSE(cli.enabled);
-        ASSERT_STR_EQ(cli.scene_path, "scene.bscn");
-    }
-    {
-        /* --remote requires TLS cert/key AND a PSK: fail closed */
-        const char *argv[] = {"editor", "--remote"};
-        err[0] = '\0';
-        ASSERT_FALSE(break_editor_remote_cli_parse(2, (char **)argv, &cli, err,
-                                                   sizeof(err)));
-        ASSERT_TRUE(err[0] != '\0');
-    }
-    {
-        const char *argv[] = {"editor", "--remote", "--remote-cert", "c.pem",
-                              "--remote-key", "k.pem"};
-        ASSERT_FALSE(remote_cli(6, argv, &cli));
-    }
-    {
-        const char *argv[] = {"editor", "--remote", "--remote-psk-hex", k_hex64};
-        ASSERT_FALSE(remote_cli(4, argv, &cli)); /* no cert/key */
-    }
-    {
-        /* remote options without --remote are rejected (no silent no-op) */
-        const char *argv[] = {"editor", "--remote-port", "5000"};
-        ASSERT_FALSE(remote_cli(3, argv, &cli));
-    }
-    {
-        const char *argv[] = {"editor", "--remote", "--remote-port", "70000",
-                              "--remote-cert", "c.pem", "--remote-key", "k.pem",
-                              "--remote-psk-hex", k_hex64};
-        ASSERT_FALSE(remote_cli(10, argv, &cli));
-    }
-    {
-        const char *argv[] = {"editor", "--remote", "--remote-cert", "c.pem",
-                              "--remote-key", "k.pem", "--remote-psk-hex",
-                              "0011"};
-        ASSERT_FALSE(remote_cli(8, argv, &cli)); /* short PSK */
-    }
-    {
-        const char *argv[] = {"editor", "--remote", "--remote-cert", "c.pem",
-                              "--remote-key", "k.pem", "--remote-psk-hex",
-                              k_hex64, "--remote-key-id-hex", "zz00000000000000"};
-        ASSERT_FALSE(remote_cli(10, argv, &cli)); /* non-hex key id */
-    }
-    {
-        const char *argv[] = {"editor", "--remote", "--remote-bogus"};
-        ASSERT_FALSE(remote_cli(3, argv, &cli));
-    }
-    {
-        /* an inline "=value" is never echoed: it may be the PSK */
-        char argbuf[96];
-        const char *argv[] = {"editor", "--remote", argbuf};
-        snprintf(argbuf, sizeof(argbuf), "--remote-psk-hex=%s", k_hex64);
-        err[0] = '\0';
-        ASSERT_FALSE(break_editor_remote_cli_parse(3, (char **)argv, &cli, err,
-                                                   sizeof(err)));
-        ASSERT_TRUE(strstr(err, "--remote-psk-hex") != NULL);
-        ASSERT_TRUE(strstr(err, "0001020304") == NULL);
-    }
-    {
-        const char *argv[] = {"editor", "--remote", "--remote-cert"};
-        ASSERT_FALSE(remote_cli(3, argv, &cli)); /* missing value */
-    }
-    {
-        const char *argv[] = {"editor",          "--remote",
-                              "--remote-port",   "5000",
-                              "--remote-cert",   "c.pem",
-                              "--remote-key",    "k.pem",
-                              "--remote-ca",     "ca.pem",
-                              "--remote-psk-hex", k_hex64,
-                              "--remote-key-id-hex", "6564697430303031",
-                              "my.bscn"};
-        ASSERT_TRUE(remote_cli(15, argv, &cli));
-        ASSERT_TRUE(cli.enabled);
-        ASSERT_EQ(cli.port, 5000u);
-        ASSERT_STR_EQ(cli.cert_file, "c.pem");
-        ASSERT_STR_EQ(cli.key_file, "k.pem");
-        ASSERT_STR_EQ(cli.ca_file, "ca.pem");
-        ASSERT_STR_EQ(cli.scene_path, "my.bscn");
-        ASSERT_TRUE(cli.has_psk);
-        for (i = 0u; i < 32u; i++) {
-            ASSERT_EQ(cli.psk[i], (u8)i);
-        }
-        ASSERT_TRUE(memcmp(cli.key_id, "edit0001", 8u) == 0);
-        break_editor_remote_cli_to_config(&cli, &cfg);
-        ASSERT_STR_EQ(cfg.bind_host, "127.0.0.1"); /* loopback-first */
-        ASSERT_EQ(cfg.bind_port, 5000u);
-        ASSERT_TRUE(cfg.use_tls); /* TLS is required for --remote */
-        ASSERT_STR_EQ(cfg.tls_cert_file, "c.pem");
-        ASSERT_EQ(cfg.rate_global_per_sec,
-                  BREAK_EDITOR_REMOTE_DEFAULT_RATE_PER_SEC);
-        ASSERT_EQ(cfg.rate_global_burst, BREAK_EDITOR_REMOTE_DEFAULT_RATE_BURST);
-        ASSERT_EQ(cfg.rate_per_ip_per_minute,
-                  BREAK_EDITOR_REMOTE_DEFAULT_RATE_PER_IP_PER_MIN);
-        ASSERT_TRUE(cfg.rate_global_per_sec != 0u &&
-                    cfg.rate_global_burst != 0u &&
-                    cfg.rate_per_ip_per_minute != 0u);
-        /* --remote always evicts peers that never authenticate */
-        ASSERT_EQ(cfg.auth_timeout_ms, BREAK_EDITOR_REMOTE_DEFAULT_AUTH_TIMEOUT_MS);
-        ASSERT_TRUE(cfg.auth_timeout_ms != 0u);
-        break_editor_remote_cli_wipe(&cli);
-        ASSERT_FALSE(cli.has_psk);
-        for (i = 0u; i < 32u; i++) {
-            ASSERT_EQ(cli.psk[i], 0u);
-        }
-        break_editor_remote_cli_wipe(NULL);
-    }
-    {
-        /* default port + all-zero key id when not given; dev PSK file of
-         * exactly 32 raw bytes */
-        static const char *k_psk_path = "editor_remote_cli_test.psk";
-        FILE *f = fopen(k_psk_path, "wb");
-        u8 raw[33];
-        ASSERT_NOT_NULL(f);
-        for (i = 0u; i < 33u; i++) {
-            raw[i] = (u8)(0xa0u + i);
-        }
-        ASSERT_EQ(fwrite(raw, 1u, 32u, f), 32u);
-        fclose(f);
-        {
-            const char *argv[] = {"editor", "--remote", "--remote-cert", "c.pem",
-                                  "--remote-key", "k.pem", "--remote-psk-file",
-                                  k_psk_path};
-            ASSERT_TRUE(remote_cli(8, argv, &cli));
-            ASSERT_EQ(cli.port, BREAK_EDITOR_REMOTE_DEFAULT_PORT);
-            ASSERT_TRUE(memcmp(cli.psk, raw, 32u) == 0);
-            for (i = 0u; i < 8u; i++) {
-                ASSERT_EQ(cli.key_id[i], 0u);
-            }
-            ASSERT_TRUE(cli.ca_file == NULL);
-        }
-        f = fopen(k_psk_path, "wb");
-        ASSERT_NOT_NULL(f);
-        ASSERT_EQ(fwrite(raw, 1u, 33u, f), 33u); /* wrong size: rejected */
-        fclose(f);
-        {
-            const char *argv[] = {"editor", "--remote", "--remote-cert", "c.pem",
-                                  "--remote-key", "k.pem", "--remote-psk-file",
-                                  k_psk_path};
-            ASSERT_FALSE(remote_cli(8, argv, &cli));
-        }
-        remove(k_psk_path);
-        {
-            const char *argv[] = {"editor", "--remote", "--remote-cert", "c.pem",
-                                  "--remote-key", "k.pem", "--remote-psk-file",
-                                  k_psk_path};
-            ASSERT_FALSE(remote_cli(8, argv, &cli)); /* missing file */
-        }
-    }
-    {
-        /* --remote-keyring-file: one "<16 hex id> <64 hex psk>" per line,
-         * '#' comments and blank lines skipped, <= 8 keys, no duplicate
-         * ids; exclusive with --remote-psk-hex/--remote-psk-file */
-        static const char *k_ring = "editor_remote_cli_test.keyring";
-        static const char *k_good =
-            "# devices\n"
-            "6465766963653031 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff\n"
-            "\n"
-            "6465766963653032 ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100\n";
-        static const char *k_bad[] = {
-            "6465766963653031 0011\n",                       /* short psk */
-            "zz65766963653031 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff\n",
-            /* duplicate key_id across two valid lines must reject the ring */
-            "6465766963653031 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff\n6465766963653031 ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100\n",
-            "# empty ring\n"};
-        const char *argv[] = {"editor", "--remote", "--remote-cert", "c.pem",
-                              "--remote-key", "k.pem", "--remote-keyring-file",
-                              k_ring};
-        FILE *f = fopen(k_ring, "wb");
-        usize b;
-        ASSERT_NOT_NULL(f);
-        fputs(k_good, f);
-        fclose(f);
-        ASSERT_TRUE(remote_cli(8, argv, &cli));
-        ASSERT_TRUE(cli.has_psk);
-        ASSERT_EQ(cli.key_count, 2u);
-        ASSERT_TRUE(memcmp(cli.keys[0].key_id, "device01", 8u) == 0);
-        ASSERT_TRUE(memcmp(cli.keys[1].key_id, "device02", 8u) == 0);
-        ASSERT_EQ(cli.keys[0].psk[1], 0x11u);
-        ASSERT_EQ(cli.keys[1].psk[31], 0x00u);
-        ASSERT_EQ(cli.keys[1].psk[0], 0xffu);
-        break_editor_remote_cli_wipe(&cli);
-        ASSERT_EQ(cli.key_count, 0u);
-        ASSERT_EQ(cli.keys[0].psk[1], 0u);
-        {
-            const char *both[] = {"editor", "--remote", "--remote-cert", "c.pem",
-                                  "--remote-key", "k.pem", "--remote-keyring-file",
-                                  k_ring, "--remote-psk-hex",
-                                  "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"};
-            ASSERT_FALSE(remote_cli(10, both, &cli));
-        }
-        for (b = 0u; b < sizeof(k_bad) / sizeof(k_bad[0]); b++) {
-            f = fopen(k_ring, "wb");
-            ASSERT_NOT_NULL(f);
-            fputs(k_bad[b], f);
-            fclose(f);
-            ASSERT_FALSE(remote_cli(8, argv, &cli));
-            ASSERT_EQ(cli.key_count, 0u);
-        }
-        f = fopen(k_ring, "wb");
-        ASSERT_NOT_NULL(f);
-        for (b = 0u; b < 9u; b++) {
-            fprintf(f, "64657669636530%02x 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff\n",
-                    (unsigned)b);
-        }
-        fclose(f);
-        ASSERT_FALSE(remote_cli(8, argv, &cli)); /* 9 keys: over the ring */
-        remove(k_ring);
-    }
 }
 
 #ifdef BREAK_ENABLE_CRYPTO
@@ -14957,6 +14964,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(hot_reload_overlong_scene_path_disables_watch_without_truncating);
     RUN_TEST(hot_reload_teardown_in_either_order_is_safe);
     RUN_TEST(camera_pose_whose_eye_collapses_onto_the_target_is_rejected);
+    RUN_TEST(remote_cli_default_off_and_fail_closed_flags);
 #ifdef BREAK_EDITOR_REMOTE_TESTS
     RUN_REMOTE_TEST(remote_protocol_ids_live_in_default_registry);
     RUN_REMOTE_TEST(remote_describe_returns_version_entity_count_dirty);
@@ -14985,7 +14993,6 @@ TEST_MAIN_BEGIN()
     RUN_REMOTE_TEST(remote_tick_wiring_polls_adapter_every_frame);
     RUN_REMOTE_TEST(remote_config_validation_and_snapshot);
     RUN_REMOTE_TEST(remote_null_and_bounded_calls_are_safe);
-    RUN_REMOTE_TEST(remote_cli_default_off_and_fail_closed_flags);
     RUN_REMOTE_TEST(network_panel_rows_match_session_stats_and_reactor_accessors);
     RUN_REMOTE_TEST(network_panel_shell_destroyed_before_attached_remote);
     RUN_REMOTE_TEST(network_panel_rows_bounded_with_more_than_11_connections);

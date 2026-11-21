@@ -1,3 +1,10 @@
+## 编辑器远程 CLI 解析用例移出 Snowflake 门控并改用临时目录（2026-11-21）
+
+- **问题**：插件/Lua/shell 切片的独立评审指出，`remote_cli_default_off_and_fail_closed_flags` 只调用 `break_editor_remote_cli_parse`、`_cli_to_config`、`_cli_wipe`。这三个函数在 `editor_remote.c` 的 Snowflake 门控之外，两种构建都编译，但用例本身仍在 `#ifdef BREAK_EDITOR_REMOTE_TESTS` 块内，未启用 Snowflake 的构建从不执行 `--remote` 参数的失败即关闭检查。另外该用例把 `editor_remote_cli_test.psk` 与 `.keyring` 写在当前工作目录。
+- **修复**：用例及其 `remote_cli` 辅助函数、所属小节注释原样移到远程门控块之前，并包含只依赖 `core/types.h` 与 `editor_panels.h` 的 `editor_remote.h`（`#pragma once`，门控块内的再次包含无副作用）；注册从 `RUN_REMOTE_TEST` 改为 `RUN_TEST`。两个夹具文件路径改由 `test_tmp()` 生成，argv 在运行时填入。用例断言内容不变。
+- **RED/GREEN**：修复前未启用 Snowflake 的构建为 185 例且不含该用例；修复后 186 例并通过，Snowflake 构建仍为 233 例全部通过。两种构建运行后工作目录与 `/tmp` 下均无残留夹具文件。原生全量 456 项零失败，4 个既有平台用例跳过。arm64 lane 中 shell 计数相应由 185 变为 186。
+- **范围**：`remote_null_and_bounded_calls_are_safe` 在非 Snowflake 构建下只会测试桩函数，仍留在门控内；`remote_tls_cli_keyring_file_installs_all_keys` 需要 TLS，同样不动。
+
 ## arm64 插件动态加载、编辑器 Lua 与 shell 和二百四十项 CTest（2026-11-21）
 
 - **最小场景**：新增四个既有可执行目标：`test_break_plugin` 11 例（经系统插件加载器对已校验的 memfd 副本 `dlopen` 五个真实 arm64 共享库测试插件，含 ABI 不符、注册失败与缺少入口；越权夹具在校验后被替换到原路径，测试断言其构造函数从未执行）、`test_editor_plugin_load` 5 例（编辑器夹具插件）、`test_editor_lua` 37 例（编辑器 Lua 控制台核心）、`test_editor_shell` 185 例（无头编辑器 shell，含上一条目移出远程门控的相机姿态用例）。
@@ -6,6 +13,8 @@
 - **完整干净容器验证**：以统一非 root 属主执行 workflow 原始构建和测试 step，240/240，CTest 144.26 秒，shell 10.93 秒，仍远低于外层 600 秒守护。严格日志断言确认 55 组分项计数（shell 185 例，含相机姿态用例）、全部旧契约/e2e、无失败分项、唯一的平台 setup skip（ptrace，#419；另有规则引擎既有的 10 个 Redis 子用例跳过，因未安装 hiredis），无 root 权限跳过或 `Too many parentheses`；超时标记恰为 `test_fork_deadline` 的三条预期标记。
 - **独立评审**：结论可合入，无 Critical/Important。评审核实相机姿态用例的移动逐字一致（67 行移入与移出完全相同），只依赖非门控的 shell 接口，两种构建都执行；门控块内 48 个用例与运行列表一一对应；八个共享库夹具随测试目标构建，在 qemu-aarch64 下经 memfd 副本 `dlopen` 成功；shell 与 Lua 不需要显示、GPU、网络或 fork，文件写入均经 `test_tmp()`，线程协调为显式 acquire/release 与有界轮询；实测 236→240，差集恰为四项，捕获组仍为 31。已采纳的 Minor：插件加载数量改为五个加一个被证明未加载的越权夹具；跳过描述写明 Redis 子用例。
 - **后续项**：门控块内 `remote_cli_default_off_and_fail_closed_flags` 只做参数解析、`remote_null_and_bounded_calls_are_safe` 只做空参数调用，可考虑移出门控，但前者在工作目录写 `.psk`/`.keyring`，移出前需改用 `test_tmp()`；另一个既有 shell 用例删除 `.bscn` 时遗留 `/tmp` 下的 `.editor.json` 旁路文件。
+- **远端 arm64 验证**：[CI run 44881560470](https://github.com/konyka/break/actions/runs/44881560470) 的 [arm64 job 136777765750](https://github.com/konyka/break/actions/runs/44881560470/job/136777765750) 在提交 `e91bb19c` 上成功。原始日志严格断言确认精确 240 项、55 组分项计数（shell 185 例，含相机姿态用例）、全部旧契约/e2e 和唯一的平台 setup skip；无 root 权限跳过或 `Too many parentheses`，超时标记恰为 `test_fork_deadline`（#300）的三条预期标记。shell 在托管 runner 的 QEMU 下 12.15 秒，CTest 162.11 秒，占外层 600 秒守护的 27%。
+- **整体远端结果**：上述主 CI run 最终为 `completed / success`，包括 Linux、Windows、macOS、arm64、sanitizer、fuzz、图形及契约 lane；既有条件跳过仍按各 job 原义保留。独立 [Windows D3D12 run 44881560456](https://github.com/konyka/break/actions/runs/44881560456) 也为 `completed / success`。相机用例修复提交 `43a19336` 上主 CI、Windows D3D12 与 Proton D3D12 也均为 success。
 - **覆盖缺口**：shell 的 48 个远程会话与网络面板用例需要 Snowflake，arm64 lane 不覆盖；插件 manifest CLI 与系统目标契约为宿主 CMake 驱动；编辑器 GPU/窗口呈现不在本切片内。
 
 ## 编辑器 shell 本地相机姿态用例误入远程门控块的修复（2026-11-21）
