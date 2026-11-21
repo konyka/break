@@ -22,6 +22,7 @@
   - 默认阈值由 32 提高到实测盈亏点 4096，并提供每世界设置；
   - 修正 `bvh.h` 注释（差异只可能出现在自构建后未变化的子树，涉及带符号零与 NaN）、补充调度器契约（每步最多调用两次，返回前必须让 job 的写入可见）、深度循环改为 `depth >= 2u`、缓冲增长加上界。
   未采纳：x87（`FLT_EVAL_METHOD == 2`）下重放把 `post_speed2` 舍入为 f32 可能与串行表达式不同，仓库没有这种目标。
+- **远端收据**：提交 `ea98c271` 的主 CI run 44919653471 全部成功，包括 Windows MSVC/Clang/MinGW、macOS Metal 与 MoltenVK、Linux ASan/UBSan、TSan 和 arm64 QEMU。arm64 job 136892701233 的原始日志经严格断言，确认恰好 261 项、60 组分项计数，没有失败用例。windows-d3d12 run 44919653372 与 QUIC Weak Network run 44919653369 也成功。
 
 ## 物理改用确定性 `math_sincosf`，不再依赖平台三角函数（2026-11-21）
 
