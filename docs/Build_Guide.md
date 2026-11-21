@@ -953,6 +953,27 @@ Lua 与 shell 测试），无冲突、无本地改动。确认该用例只定义
 graphics **6/6**，MoltenVK **414/418**，跳过项同前；全量构建无 error。只改了测试与 CI，
 渲染代码未变，本轮未重新截图。未发现需要修复的问题。证据等级不变。
 
+2026-11-21 第四次复核：rebase 到 `@6392fa34`（远程 CLI 参数解析用例移出 Snowflake 门控，
+非 Snowflake 构建的 `test_editor_shell` 增至 186 例，本机两套构建都执行通过）。本轮审查
+发现并修复 2 个问题：
+- **编辑器字体链重复**：在 `engine/` 下运行编辑器（这是文档要求的运行方式）时，
+  `$BREAK_ASSET_DIR/assets/fonts/...` 与 cwd 相对的 `./assets/fonts/...` 是同一个文件，
+  但只按路径字符串去重，两份都进链，6 个槽位里重复项占了 2 个，内置 Noto Sans SC 被挤到
+  第 3 位、系统字体被挤出。`test_editor_fonts` 的 `fonts_bundled_jetbrains_mono_leads_the_chain`
+  在 `engine/` 下运行必定失败，只是 CTest 的工作目录是构建目录，所以一直没暴露。
+  `editor_fonts.c` 的 `chain_add` 增加按文件身份去重（POSIX 比较 `st_dev`/`st_ino`，Windows
+  比较 `GetFullPathNameA` 结果）；新增 `fonts_same_file_through_two_paths_is_listed_once`，
+  它自己切换到 `engine/`，修复前失败、修复后通过。用例数变为 Linux 8、macOS 6、Windows 7；
+  上文 arm64 切片里的 `test_editor_fonts` 7 例是当时的计数。
+- **测试在 `/tmp` 留残留**：`component_bytes_survive_save_load` 不删 `.bscn` 和
+  `.editor.json`，标题测试不删 `.editor.json`，字体测试只删文件、不删 `touch()` 建的目录，
+  空根目录用例完全不清理。每跑一次全量 CTest 就多 5 个条目，本机已积累约 140 个。修复后这几个
+  测试运行前后 `/tmp` 条目数不变。其余 `break_core_app_assets_*`、`break_rtio`、
+  `break_test_vfs_*` 等残留来自别的测试，本轮没有处理。
+
+修复后 Metal CTest **411/415**、graphics **6/6**，MoltenVK **414/418**，跳过项同前；全量
+构建无 error。证据等级不变。
+
 RHI 第一阶段还提供统一的设备健康状态查询 `rhi_device_get_status()`。`UNKNOWN` 表示
 没有有效设备，`READY` 表示设备可用，`LOST` 表示后端报告设备丢失；该接口是后续 Vulkan、
 Metal、D3D12 后端共用的生命周期合同。
