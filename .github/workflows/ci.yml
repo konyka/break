@@ -117,7 +117,7 @@ jobs:
 
       - name: Install hiredis and Redis (macOS)
         if: runner.os == 'macOS'
-        run: brew install ninja hiredis redis
+        run: brew install ninja hiredis redis shaderc spirv-cross
 
       - name: Configure
         run: |
