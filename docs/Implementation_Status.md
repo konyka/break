@@ -1,3 +1,17 @@
+## AI 感知、避让、行为树与路径跟随测试补充（2026-11-22）
+
+- **问题**：`missing_capabilities.md` AI 验证条目记录 nav follow、perception、behavior、steer 各只有单个用例。
+- **新增用例**：
+  - `test_break_perception` 1→4 例：距离上限含边界、视点自身被排除、只对锥内且在范围内的目标做射线检测；视锥是三维的（抬高 45 度的目标被水平视线排除、被上仰视线看到）；非法参数在任何射线检测之前被拒且不改计数，零目标合法。
+  - `test_break_steer` 1→5 例：不重叠（含恰好相切）的邻居不改变期望；侧移垂直于期望、保持速率并偏离邻居所在一侧；零期望得到单位侧移；只考虑前 `BREAK_STEER_MAX_NEIGHBORS` 个邻居。
+  - `test_break_behavior` 1→4 例：sequence 遇到第一个失败即停止；chase 缺少跟随器或已知位置时失败，selector 落到下一个子节点，仅有记忆位置也能追；越界子节点、未知节点或叶子、越界根、超过 16 层、自引用都在执行任何叶子前失败。
+  - `test_break_nav_follow` 1→5 例：到达半径内的点一次跳过、步长不越过下一个点；完整走过拐角并到达；reset 复制路径、负半径夹到 0、NULL 路径视为空；非有限速度或 dt 不推进。
+- **验证**：八种变异均被检出：距离上限改为开区间、点积忽略竖直分量、侧移转向邻居、不限邻居数、sequence 失败后继续、深度上限放宽、步长越过目标点、半径不夹取。原生 CTest 458/458；arm64 计数文件追加这四项分项数。
+
+## 任务取消的远端收据（2026-11-22）
+
+- 提交 `a5c948b3` 的主 CI run 44922896704 全部成功（22 个成功，3 个按设计跳过），其中 Windows MSVC、Clang、MinGW 都编译并运行了 `test_task`（含 5 个取消用例），macOS 与 arm64 QEMU 也通过；windows-d3d12 run 44922896665 成功。上文「未验证：本机没有 MSVC」由此确认。
+
 ## 动画 locomotion、socket、aim 测试补充（2026-11-22）
 
 - **问题**：`missing_capabilities.md` 动画验证条目记录 locomotion、socket、aim 各只有单个用例。
