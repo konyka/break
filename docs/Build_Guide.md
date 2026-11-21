@@ -922,6 +922,20 @@ macOS 测试适配等），无冲突、无本地改动。**发现并修复 1 个
 （`SSL_set1_host`）本机没有 3.x，未编译验证；`break_http` 的 TLS 端到端测试在本机通过，
 崩溃上传、更新服务器等没有 macOS 实机场景。证据等级不变。
 
+2026-11-21 复核：从 `@63d7e33b` 快进到 `@2891bc9b`（429 个远程提交：中性命名重构、
+`core_app` 与 kernel/runtime、音频/网络/编辑器扩展、arm64 与 QUIC 弱网 CI 等），无冲突、
+无本地改动。Metal 与 MoltenVK 全量构建无 error。**发现并修复 1 个测试误报**：
+`test_repo_naming_contract` 对 `engine/CMakeLists.txt` 用了 `GLOB_RECURSE`，会匹配
+`engine/build-*/` 里 `core_app_ctest_config_contract` 生成的源码拷贝（本机
+`engine/build-macos-metal/` 下 15 处），在保留旧构建目录的开发机上必定失败；CI 的干净
+checkout 碰不到。改为直接列出顶层 `engine/CMakeLists.txt`，修复前失败、修复后通过。修复后
+Metal CTest **411/415**、graphics **6/6**，MoltenVK **414/418**；跳过项都是预期的：
+D3D12 dependency gate（非 Windows）和 3 个 `core_app_nm_*` 契约（只在没有 `nm` 时生效）。
+`engine_demo` 文档机位两后端截图目视确认地形/角色/UI 正常，平均 RGB 约 143/146/140，
+Metal 与 MoltenVK 平均像素差 1.04；Metal 日志里的 `MegaBuffer: merged group indirect init
+failed` 警告之前就有，不影响画面。编辑器实机脚本、iOS 模拟器、arm64 Linux 与 QUIC 弱网
+场景本轮未在本机验证。证据等级不变。
+
 RHI 第一阶段还提供统一的设备健康状态查询 `rhi_device_get_status()`。`UNKNOWN` 表示
 没有有效设备，`READY` 表示设备可用，`LOST` 表示后端报告设备丢失；该接口是后续 Vulkan、
 Metal、D3D12 后端共用的生命周期合同。
