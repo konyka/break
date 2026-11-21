@@ -1074,6 +1074,7 @@ src/renderer/lens_effects.c
     src/ecs/ecs_system.c
     src/task/task.c
     src/physics/physics.c
+    src/physics/physics_task.c
     src/physics/physics_replay.c
     src/physics/physics_sync.c
     src/physics/ragdoll.c
@@ -7530,6 +7531,23 @@ endif()
     target_link_libraries(test_physics_replay PRIVATE m)
     add_test(NAME test_physics_replay COMMAND test_physics_replay)
     set_tests_properties(test_physics_replay PROPERTIES LABELS "headless;physics")
+    add_executable(test_physics_parallel tests/test_physics_parallel.c src/physics/physics_task.c
+        src/physics/physics.c src/physics/bvh.c src/math/math.c src/task/task.c src/core/log.c)
+    target_include_directories(test_physics_parallel PRIVATE ${TEST_INCLUDE_DIRS})
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_physics_parallel PRIVATE ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_physics_parallel PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "qnx")
+        target_compile_definitions(test_physics_parallel PRIVATE ENGINE_PLATFORM_QNX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_physics_parallel PRIVATE m)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_physics_parallel PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_physics_parallel PRIVATE kernel32)
+    else()
+        target_link_libraries(test_physics_parallel PRIVATE m)
+    endif()
+    add_test(NAME test_physics_parallel COMMAND test_physics_parallel)
+    set_tests_properties(test_physics_parallel PROPERTIES LABELS "headless;physics")
     add_test(NAME test_physics_determinism_contract
         COMMAND ${CMAKE_COMMAND}
             -DENGINE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}

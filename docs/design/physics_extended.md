@@ -195,3 +195,7 @@ hinge、cone-twist、slider 约束的角度原先由平台 `atan2f` 计算，gli
 ### 追加：确定性 `math_sincosf`
 
 `quat_from_axis_angle`、软体创建与载具原先仍使用平台 `sinf`/`cosf`/`tanf`。现在 `math.h` 新增 `math_sincosf`（double 中 Cody-Waite 约减 + musl float 核，|x| ≤ 2^28 时误差低于 3e-8，结果与 FMA 收缩无关），前两处改用它，载具的 `tanf(0.55f)` 改为逐位相同的字面量。物理代码不再调用任何平台三角函数；`test_physics_determinism_contract` 禁止 `src/physics/` 调用 `sin`/`cos`/`tan`/`sincos`，并要求 `quat_from_axis_angle` 使用 `math_sincosf`。`test_math` 用与 glibc 舍入不同的输入固定位模式，因此回退到平台函数会在任何 libm 上失败。
+
+### 追加：并行接触求解与批量 BVH refit
+
+`physics_world_set_parallel_for` 让接触阶段在多个 job 上运行（`physics_task_parallel_for` 基于引擎 `TaskSystem`）。宽相配对按 BVH 子树任务并行收集，并按遍历顺序拼接；有质量刚体按配对连成岛，岛内按原顺序求解；无质量刚体与世界统计由串行重放按配对顺序写入。因此结果与串行逐位相同，与 job 数和执行顺序无关。设置接触回调、配对数低于阈值（默认 4096，可按世界设置）或只有一个岛时保持串行。两轮 BVH refit 改为先写叶子、再按节点下标倒序一次性重算内部节点，32k 刚体串行步长由 10.5 ms 降到 3.6 ms，状态哈希不变。`test_physics_parallel` 在多种 job 数与执行顺序下逐步比较串行与并行世界。

@@ -84,6 +84,24 @@ typedef struct {
 typedef void (*PhysicsContactFn)(const Contact *c, void *user);
 typedef struct PhysicsWorld PhysicsWorld;
 typedef void (*PhysicsPostStepFn)(PhysicsWorld *pw, void *user);
+
+/* Parallel contact solve. physics_step calls the dispatcher with job_count
+ * jobs; it must run fn(job_ctx, i) once for every i in [0, job_count), in
+ * any order and on any threads, and return only when all jobs are done.
+ * Jobs touch disjoint bodies (islands of bodies with mass, solved in the
+ * serial pair order) and the world statistics are replayed in pair order,
+ * so the step is bit-identical to the serial solve. physics_step calls the
+ * dispatcher up to twice per step (pair collection, then the solve), and it
+ * must make the jobs' writes visible to the caller before it returns. The
+ * solve stays serial while a contact callback is set, for steps with fewer
+ * pairs than the world's minimum (default PHYSICS_PARALLEL_MIN_PAIRS, the
+ * measured break-even on a 16-thread x86-64 host) or fewer than two
+ * islands, and if the scratch buffers cannot be allocated. */
+typedef void (*PhysicsJobFn)(void *job_ctx, u32 job_index);
+typedef void (*PhysicsParallelForFn)(void *user, PhysicsJobFn fn, void *job_ctx, u32 job_count);
+#define PHYSICS_MAX_PARALLEL_JOBS 32u
+#define PHYSICS_PARALLEL_MIN_PAIRS 4096u
+typedef struct PhysicsPairRecord PhysicsPairRecord;
 #define PHYSICS_MAX_POST_STEPS 16u
 #define PHYSICS_MAX_CONSTRAINTS 64
 
@@ -142,6 +160,17 @@ typedef struct PhysicsWorld {
     void              *post_step_user[PHYSICS_MAX_POST_STEPS];
     u32                post_step_count;
     u32                transaction_depth;
+    PhysicsParallelForFn parallel_for;
+    void                *parallel_user;
+    u32                  parallel_max_jobs;
+    u32                  parallel_min_pairs;
+    u32                  _last_pair_count;
+    PhysicsPairRecord   *_pair_records;
+    u32                  _pair_cap;
+    PhysicsPairRecord   *_job_pairs[PHYSICS_MAX_PARALLEL_JOBS];
+    u32                  _job_pair_cap[PHYSICS_MAX_PARALLEL_JOBS];
+    u32                 *_solve_words;
+    usize                _solve_words_cap;
 } PhysicsWorld;
 
 static inline bool physics_body_is_parked(const RigidBody *b) {
@@ -161,6 +190,12 @@ void          physics_body_park(PhysicsWorld *pw, PhysicsBodyHandle body);
 PhysicsBodyHandle physics_body_revive(PhysicsWorld *pw, PhysicsBodyHandle body, f32 mass, bool is_static, u32 frame);
 RigidBody    *physics_body_resolve(PhysicsWorld *pw, PhysicsBodyHandle body);
 void          physics_set_contact_callback(PhysicsWorld *pw, PhysicsContactFn fn, void *user);
+/* fn = NULL or max_jobs < 2 returns to the serial solve. max_jobs is capped
+ * at PHYSICS_MAX_PARALLEL_JOBS. */
+void          physics_world_set_parallel_for(PhysicsWorld *pw, PhysicsParallelForFn fn, void *user,
+                                             u32 max_jobs);
+/* Smallest pair count solved in parallel; 0 restores PHYSICS_PARALLEL_MIN_PAIRS. */
+void          physics_world_set_parallel_min_pairs(PhysicsWorld *pw, u32 min_pairs);
 bool          physics_add_post_step(PhysicsWorld *pw, PhysicsPostStepFn fn, void *user);
 PhysicsConstraintHandle physics_constraint_add_distance(PhysicsWorld *pw, PhysicsBodyHandle body_a, PhysicsBodyHandle body_b, f32 rest_length);
 PhysicsConstraintHandle physics_constraint_add_ball(PhysicsWorld *pw, PhysicsBodyHandle body_a, PhysicsBodyHandle body_b, Vec3 anchor_a, Vec3 anchor_b);

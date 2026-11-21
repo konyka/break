@@ -405,6 +405,21 @@ void bvh_refit(BVH *bvh, u32 object_index, BVHAABB new_bounds) {
     }
 }
 
+void bvh_set_leaf_bounds(BVH *bvh, u32 object_index, BVHAABB new_bounds) {
+    if (!bvh->nodes || !bvh->leaf_map || bvh->root == BVH_NULL) return;
+    if (object_index >= bvh->object_count) return;
+    bvh->nodes[bvh->leaf_map[object_index]].bounds = new_bounds;
+}
+
+void bvh_refit_internal(BVH *bvh) {
+    if (!bvh->nodes || !bvh->leaf_map || bvh->root == BVH_NULL) return;
+    for (u32 i = bvh->node_count; i > 0u; i--) {
+        BVHNode *node = &bvh->nodes[i - 1u];
+        if (node->object_index != BVH_NULL) continue;
+        node->bounds = bvhaabb_union(bvh->nodes[node->left].bounds, bvh->nodes[node->right].bounds);
+    }
+}
+
 /* ---- Query: AABB overlap ---- */
 static void bvh_query_aabb_recursive(const BVH *bvh, u32 node_idx,
                                      BVHAABB query, u32 *results,
@@ -495,6 +510,55 @@ static void bvh_query_pairs_dual(const BVH *bvh, u32 nodeA, u32 nodeB,
 void bvh_query_pairs(const BVH *bvh, BVHPairCallback callback, void *ctx) {
     if (bvh->root == BVH_NULL || bvh->object_count == 0) return;
     bvh_query_pairs_dual(bvh, bvh->root, bvh->root, callback, ctx);
+}
+
+/* Mirrors bvh_query_pairs_dual, but stops at max_depth (or at a leaf pair)
+ * and records the node pair instead of descending, so the tasks appear in
+ * the order the traversal would reach them. */
+static void bvh_pair_tasks_dual(const BVH *bvh, u32 nodeA, u32 nodeB, u32 depth, u32 max_depth,
+                                BVHPairTask *out, u32 cap, u32 *count) {
+    if (nodeA == BVH_NULL || nodeB == BVH_NULL) return;
+    const BVHNode *nA = &bvh->nodes[nodeA];
+    const BVHNode *nB = &bvh->nodes[nodeB];
+    if (!bvhaabb_overlap(nA->bounds, nB->bounds)) return;
+    bool leafA = (nA->object_index != BVH_NULL);
+    bool leafB = (nB->object_index != BVH_NULL);
+    if ((leafA && leafB) || depth >= max_depth) {
+        if (*count < cap) {
+            out[*count].node_a = nodeA;
+            out[*count].node_b = nodeB;
+        }
+        (*count)++;
+        return;
+    }
+    u32 d = depth + 1u;
+    if (leafA) {
+        bvh_pair_tasks_dual(bvh, nodeA, nB->left, d, max_depth, out, cap, count);
+        bvh_pair_tasks_dual(bvh, nodeA, nB->right, d, max_depth, out, cap, count);
+    } else if (leafB) {
+        bvh_pair_tasks_dual(bvh, nA->left, nodeB, d, max_depth, out, cap, count);
+        bvh_pair_tasks_dual(bvh, nA->right, nodeB, d, max_depth, out, cap, count);
+    } else if (nodeA == nodeB) {
+        bvh_pair_tasks_dual(bvh, nA->left, nB->left, d, max_depth, out, cap, count);
+        bvh_pair_tasks_dual(bvh, nA->right, nB->right, d, max_depth, out, cap, count);
+        bvh_pair_tasks_dual(bvh, nA->left, nB->right, d, max_depth, out, cap, count);
+    } else {
+        bvh_pair_tasks_dual(bvh, nA->left, nB->left, d, max_depth, out, cap, count);
+        bvh_pair_tasks_dual(bvh, nA->left, nB->right, d, max_depth, out, cap, count);
+        bvh_pair_tasks_dual(bvh, nA->right, nB->left, d, max_depth, out, cap, count);
+        bvh_pair_tasks_dual(bvh, nA->right, nB->right, d, max_depth, out, cap, count);
+    }
+}
+
+u32 bvh_pair_tasks(const BVH *bvh, u32 max_depth, BVHPairTask *out, u32 cap) {
+    if (!bvh || bvh->root == BVH_NULL || bvh->object_count == 0) return 0u;
+    u32 count = 0u;
+    bvh_pair_tasks_dual(bvh, bvh->root, bvh->root, 0u, max_depth, out, cap, &count);
+    return count;
+}
+
+void bvh_query_pairs_from(const BVH *bvh, BVHPairTask task, BVHPairCallback callback, void *ctx) {
+    bvh_query_pairs_dual(bvh, task.node_a, task.node_b, callback, ctx);
 }
 
 /* ---- Raycast ---- */

@@ -39,10 +39,34 @@ void bvh_build(BVH *bvh, const BVHAABB *aabbs, u32 count);
 
 /* Incremental update */
 void bvh_refit(BVH *bvh, u32 object_index, BVHAABB new_bounds);
+/* Batched refit: bvh_set_leaf_bounds writes leaves without walking up, then
+ * bvh_refit_internal recomputes every internal node once, children before
+ * parents (bvh_build allocates nodes in preorder, so a parent's index is
+ * below its children's). Each internal node becomes union(left, right) of
+ * its final children, which is exactly what bvh_refit per changed leaf
+ * gives for every node above a changed leaf; subtrees with no change since
+ * the build can differ from their build-time fold only where min/max
+ * depends on operand order (signed zeros, NaN bounds). O(nodes) instead of
+ * O(changed leaves * depth). */
+void bvh_set_leaf_bounds(BVH *bvh, u32 object_index, BVHAABB new_bounds);
+void bvh_refit_internal(BVH *bvh);
 
 /* Query */
 typedef void (*BVHPairCallback)(u32 a, u32 b, void *ctx);
 void bvh_query_pairs(const BVH *bvh, BVHPairCallback callback, void *ctx);
+
+/* Splits bvh_query_pairs into independent subtree pairs. Running
+ * bvh_query_pairs_from on every task in order reports exactly the pairs of
+ * bvh_query_pairs in the same order, so the tasks can run on different
+ * threads and their results be concatenated. Expands the traversal to
+ * max_depth; returns the number of tasks, which may exceed cap (only the
+ * first cap are written). */
+typedef struct {
+    u32 node_a;
+    u32 node_b;
+} BVHPairTask;
+u32 bvh_pair_tasks(const BVH *bvh, u32 max_depth, BVHPairTask *out, u32 cap);
+void bvh_query_pairs_from(const BVH *bvh, BVHPairTask task, BVHPairCallback callback, void *ctx);
 
 typedef struct {
     u32 object_index;

@@ -134,6 +134,9 @@ PhysicsWorld *physics_world_create(u32 max_bodies) {
 void physics_world_destroy(PhysicsWorld *pw) {
     if (!pw) return;
     bvh_destroy(&pw->bvh);
+    free(pw->_pair_records);
+    free(pw->_solve_words);
+    for (u32 j = 0; j < PHYSICS_MAX_PARALLEL_JOBS; j++) free(pw->_job_pairs[j]);
     /* Single free: bodies and _bvh_staging are within the same block as pw */
     free(pw);
 }
@@ -297,6 +300,24 @@ PhysicsBodyHandle physics_body_create_capsule(PhysicsWorld *pw, Vec3 pos, f32 ra
 void physics_body_set_ccd(PhysicsWorld *pw, PhysicsBodyHandle body, bool enable) {
     RigidBody *b = physics_body_resolve(pw, body);
     if (b) b->ccd = enable;
+}
+
+void physics_world_set_parallel_for(PhysicsWorld *pw, PhysicsParallelForFn fn, void *user,
+                                    u32 max_jobs) {
+    if (!pw) return;
+    if (max_jobs > PHYSICS_MAX_PARALLEL_JOBS) max_jobs = PHYSICS_MAX_PARALLEL_JOBS;
+    if (!fn || max_jobs < 2u) {
+        fn = NULL;
+        user = NULL;
+        max_jobs = 0u;
+    }
+    pw->parallel_for = fn;
+    pw->parallel_user = user;
+    pw->parallel_max_jobs = max_jobs;
+}
+
+void physics_world_set_parallel_min_pairs(PhysicsWorld *pw, u32 min_pairs) {
+    if (pw) pw->parallel_min_pairs = min_pairs;
 }
 
 void physics_set_contact_callback(PhysicsWorld *pw, PhysicsContactFn fn, void *user) {
@@ -1344,6 +1365,352 @@ static void physics_collision_callback(u32 i, u32 j, void *ctx) {
     pw->collision_center_count++;
 }
 
+/* ---- Parallel contact solve ----
+ *
+ * The serial solve resolves pairs in BVH traversal order, and each pair
+ * reads and writes its two bodies. Bodies with mass are linked into islands
+ * by the pairs between them; a body without mass is never moved by a
+ * contact, so it does not link islands. Each island's pairs run on one job
+ * in traversal order, which gives every body with mass the same sequence of
+ * operations as the serial solve. Writes to bodies without mass (contact
+ * bookkeeping and collision counts) and the world statistics depend on the
+ * global order, so jobs record them and a serial pass replays them in pair
+ * order afterwards. */
+
+#define PHYSICS_NO_ISLAND UINT32_MAX
+
+struct PhysicsPairRecord {
+    u32  a;
+    u32  b;
+    u32  island;
+    bool hit;
+    u32  count_a;
+    u32  count_b;
+    Vec3 normal;
+    f32  depth;
+    f32  speed2;
+    f32  post_speed2;
+    Vec3 mid;
+};
+
+static bool physics_pair_buffer_reserve(PhysicsPairRecord **buffer, u32 *cap, usize need) {
+    if (need <= *cap) return true;
+    if (need > UINT32_MAX / 2u) return false;
+    usize grown_cap = *cap ? *cap : 256u;
+    while (grown_cap < need) grown_cap *= 2u;
+    usize bytes = grown_cap * sizeof(PhysicsPairRecord);
+    if (bytes / sizeof(PhysicsPairRecord) != grown_cap) return false;
+    PhysicsPairRecord *grown = (PhysicsPairRecord *)realloc(*buffer, bytes);
+    if (!grown) return false;
+    *buffer = grown;
+    *cap = (u32)grown_cap;
+    return true;
+}
+
+/* Broadphase collection. Node bounds do not change while contacts are
+ * resolved, so collecting every pair first and solving afterwards visits
+ * the pairs in the same order as solving during the traversal. The
+ * traversal is split into subtree tasks in traversal order; jobs take
+ * contiguous task ranges into their own buffers, which are concatenated in
+ * job order. */
+#define PHYSICS_PAIR_TASK_DEPTH 10u
+#define PHYSICS_PAIR_TASK_CAP 1024u
+
+typedef struct {
+    PhysicsWorld *pw;
+    PhysicsPairRecord *pairs;
+    u32  *cap;
+    u32   count;
+    bool  failed;
+} PhysicsPairSink;
+
+static void physics_collect_pair(u32 i, u32 j, void *ctx) {
+    PhysicsPairSink *sink = (PhysicsPairSink *)ctx;
+    if (sink->failed) return;
+    if (sink->pw->bodies[i].is_static && sink->pw->bodies[j].is_static) return;
+    if (!physics_pair_buffer_reserve(&sink->pairs, sink->cap, (usize)sink->count + 1u)) {
+        sink->failed = true;
+        return;
+    }
+    sink->pairs[sink->count].a = i;
+    sink->pairs[sink->count].b = j;
+    sink->count++;
+}
+
+typedef struct {
+    PhysicsWorld      *pw;
+    const BVHPairTask *tasks;
+    u32                task_begin[PHYSICS_MAX_PARALLEL_JOBS + 1u];
+    PhysicsPairSink    sinks[PHYSICS_MAX_PARALLEL_JOBS];
+} PhysicsCollectJobs;
+
+static void physics_collect_job(void *raw, u32 job) {
+    PhysicsCollectJobs *c = (PhysicsCollectJobs *)raw;
+    PhysicsPairSink *sink = &c->sinks[job];
+    for (u32 t = c->task_begin[job]; t < c->task_begin[job + 1u]; t++) {
+        bvh_query_pairs_from(&c->pw->bvh, c->tasks[t], physics_collect_pair, sink);
+    }
+}
+
+/* Returns false if a buffer could not grow; nothing has been changed then.
+ * Collects on jobs only when parallel is set; both ways give the same pairs
+ * in the same order. */
+static bool physics_collect_pairs(PhysicsWorld *pw, bool parallel, u32 *out_count) {
+    BVHPairTask tasks[PHYSICS_PAIR_TASK_CAP];
+    u32 task_count = PHYSICS_PAIR_TASK_CAP + 1u;
+    for (u32 depth = PHYSICS_PAIR_TASK_DEPTH; parallel && depth >= 2u && task_count > PHYSICS_PAIR_TASK_CAP;
+         depth -= 2u) {
+        task_count = bvh_pair_tasks(&pw->bvh, depth, tasks, PHYSICS_PAIR_TASK_CAP);
+    }
+    u32 jobs = pw->parallel_max_jobs;
+    if (task_count > PHYSICS_PAIR_TASK_CAP || task_count < jobs * 2u || !parallel) {
+        PhysicsPairSink sink = {pw, pw->_pair_records, &pw->_pair_cap, 0u, false};
+        bvh_query_pairs(&pw->bvh, physics_collect_pair, &sink);
+        pw->_pair_records = sink.pairs;
+        *out_count = sink.count;
+        return !sink.failed;
+    }
+    PhysicsCollectJobs c;
+    c.pw = pw;
+    c.tasks = tasks;
+    for (u32 j = 0; j < jobs; j++) {
+        c.task_begin[j] = (u32)((u64)task_count * j / jobs);
+        c.sinks[j].pw = pw;
+        c.sinks[j].pairs = pw->_job_pairs[j];
+        c.sinks[j].cap = &pw->_job_pair_cap[j];
+        c.sinks[j].count = 0u;
+        c.sinks[j].failed = false;
+    }
+    c.task_begin[jobs] = task_count;
+    pw->parallel_for(pw->parallel_user, physics_collect_job, &c, jobs);
+    usize total = 0u;
+    bool failed = false;
+    for (u32 j = 0; j < jobs; j++) {
+        pw->_job_pairs[j] = c.sinks[j].pairs;
+        failed = failed || c.sinks[j].failed;
+        total += c.sinks[j].count;
+    }
+    if (failed || !physics_pair_buffer_reserve(&pw->_pair_records, &pw->_pair_cap, total)) return false;
+    u32 at = 0u;
+    for (u32 j = 0; j < jobs; j++) {
+        if (c.sinks[j].count == 0u) continue;
+        memcpy(pw->_pair_records + at, c.sinks[j].pairs, (usize)c.sinks[j].count * sizeof(PhysicsPairRecord));
+        at += c.sinks[j].count;
+    }
+    *out_count = at;
+    return true;
+}
+
+static u32 physics_island_find(u32 *parent, u32 i) {
+    while (parent[i] != i) {
+        parent[i] = parent[parent[i]];
+        i = parent[i];
+    }
+    return i;
+}
+
+typedef struct {
+    PhysicsWorld      *pw;
+    PhysicsPairRecord *records;
+    const u32         *order;
+    const u32         *island_start;
+    u32                job_begin[PHYSICS_MAX_PARALLEL_JOBS + 1u];
+    u32                job_count;
+} PhysicsSolveJobs;
+
+/* Same operations, in the same order, as physics_collision_callback for the
+ * bodies with mass; the rest is recorded for the replay. */
+static void physics_solve_pair(PhysicsWorld *pw, PhysicsPairRecord *r) {
+    RigidBody *a = &pw->bodies[r->a];
+    RigidBody *b = &pw->bodies[r->b];
+    Contact contact;
+    r->hit = physics_collide(a, b, &contact);
+    if (!r->hit) return;
+    bool dyn_a = a->inv_mass > 0.0f;
+    bool dyn_b = b->inv_mass > 0.0f;
+    Vec3 relative_velocity = vec3_sub(a->velocity, b->velocity);
+    f32 speed2 = vec3_dot(relative_velocity, relative_velocity);
+    if (dyn_a) {
+        a->contact_active = true;
+        a->contact_speed2 = speed2;
+        a->contact_normal = contact.normal;
+    }
+    if (dyn_b) {
+        b->contact_active = true;
+        b->contact_speed2 = speed2;
+        b->contact_normal = vec3_scale(contact.normal, -1.0f);
+    }
+    resolve_contact(a, b, contact.normal, contact.depth);
+    if (dyn_a) r->count_a = ++a->collision_count;
+    if (dyn_b) r->count_b = ++b->collision_count;
+    r->normal = contact.normal;
+    r->depth = contact.depth;
+    r->speed2 = speed2;
+    Vec3 rel_v = vec3_sub(a->velocity, b->velocity);
+    r->post_speed2 = rel_v.e[0]*rel_v.e[0] + rel_v.e[1]*rel_v.e[1] + rel_v.e[2]*rel_v.e[2];
+    r->mid = vec3_scale(vec3_add(a->position, b->position), 0.5f);
+}
+
+static void physics_solve_job(void *raw, u32 job) {
+    PhysicsSolveJobs *s = (PhysicsSolveJobs *)raw;
+    if (job >= s->job_count) return;
+    for (u32 island = s->job_begin[job]; island < s->job_begin[job + 1u]; island++) {
+        for (u32 o = s->island_start[island]; o < s->island_start[island + 1u]; o++) {
+            physics_solve_pair(s->pw, &s->records[s->order[o]]);
+        }
+    }
+}
+
+static void physics_replay_pair(PhysicsWorld *pw, const PhysicsPairRecord *r) {
+    RigidBody *a = &pw->bodies[r->a];
+    RigidBody *b = &pw->bodies[r->b];
+    bool dyn_a = a->inv_mass > 0.0f;
+    bool dyn_b = b->inv_mass > 0.0f;
+    if (!dyn_a) {
+        a->contact_active = true;
+        a->contact_speed2 = r->speed2;
+        a->contact_normal = r->normal;
+        a->collision_count++;
+    }
+    if (!dyn_b) {
+        b->contact_active = true;
+        b->contact_speed2 = r->speed2;
+        b->contact_normal = vec3_scale(r->normal, -1.0f);
+        b->collision_count++;
+    }
+    u32 count_a = dyn_a ? r->count_a : a->collision_count;
+    u32 count_b = dyn_b ? r->count_b : b->collision_count;
+    pw->collision_count++;
+    pw->total_impulse_axis = vec3_add(pw->total_impulse_axis, vec3_scale(r->normal, r->depth));
+    pw->total_collision_speed += r->post_speed2;
+    if (count_a + count_b > pw->hot_pair_count) {
+        pw->hot_pair_a = r->a;
+        pw->hot_pair_b = r->b;
+        pw->hot_pair_count = count_a + count_b;
+    }
+    pw->last_collision_pos = r->mid;
+    pw->collision_center = vec3_add(pw->collision_center, r->mid);
+    pw->collision_center_count++;
+}
+
+static void physics_solve_contacts_serial(PhysicsWorld *pw, u32 pair_count) {
+    for (u32 k = 0; k < pair_count; k++) {
+        physics_collision_callback(pw->_pair_records[k].a, pw->_pair_records[k].b, pw);
+    }
+}
+
+static void physics_solve_contacts(PhysicsWorld *pw) {
+    if (!pw->parallel_for || pw->on_contact) {
+        bvh_query_pairs(&pw->bvh, physics_collision_callback, pw);
+        return;
+    }
+    u32 min_pairs = pw->parallel_min_pairs ? pw->parallel_min_pairs : PHYSICS_PARALLEL_MIN_PAIRS;
+    u32 pairs = 0u;
+    /* the previous step's pair count predicts whether collecting on jobs pays */
+    if (!physics_collect_pairs(pw, pw->_last_pair_count >= min_pairs, &pairs)) {
+        /* collecting changed nothing, so the direct traversal is still exact */
+        pw->_last_pair_count = 0u;
+        bvh_query_pairs(&pw->bvh, physics_collision_callback, pw);
+        return;
+    }
+    pw->_last_pair_count = pairs;
+    u32 bodies = pw->count;
+    if (pairs < min_pairs) {
+        physics_solve_contacts_serial(pw, pairs);
+        return;
+    }
+    /* parent[bodies], island_of[bodies], order[pairs], island_start[pairs + 1] */
+    usize words = 2u * (usize)bodies + 2u * (usize)pairs + 1u;
+    if (words > pw->_solve_words_cap) {
+        usize bytes = words * sizeof(u32);
+        u32 *grown = (bytes / sizeof(u32) == words) ? (u32 *)realloc(pw->_solve_words, bytes) : NULL;
+        if (!grown) {
+            physics_solve_contacts_serial(pw, pairs);
+            return;
+        }
+        pw->_solve_words = grown;
+        pw->_solve_words_cap = words;
+    }
+    u32 *parent = pw->_solve_words;
+    u32 *island_of = parent + bodies;
+    u32 *order = island_of + bodies;
+    u32 *island_start = order + pairs;
+    PhysicsPairRecord *records = pw->_pair_records;
+    for (u32 i = 0; i < bodies; i++) {
+        parent[i] = i;
+        island_of[i] = PHYSICS_NO_ISLAND;
+    }
+    for (u32 k = 0; k < pairs; k++) {
+        u32 a = records[k].a;
+        u32 b = records[k].b;
+        if (pw->bodies[a].inv_mass > 0.0f && pw->bodies[b].inv_mass > 0.0f) {
+            u32 ra = physics_island_find(parent, a);
+            u32 rb = physics_island_find(parent, b);
+            if (ra < rb) parent[rb] = ra;
+            else if (rb < ra) parent[ra] = rb;
+        }
+    }
+    /* island ids in order of first appearance, so the layout is reproducible */
+    u32 islands = 0u;
+    for (u32 k = 0; k < pairs; k++) {
+        u32 a = records[k].a;
+        u32 b = records[k].b;
+        u32 body = pw->bodies[a].inv_mass > 0.0f ? a : (pw->bodies[b].inv_mass > 0.0f ? b : UINT32_MAX);
+        if (body == UINT32_MAX) {
+            records[k].island = PHYSICS_NO_ISLAND;
+            continue;
+        }
+        u32 root = physics_island_find(parent, body);
+        if (island_of[root] == PHYSICS_NO_ISLAND) island_of[root] = islands++;
+        records[k].island = island_of[root];
+    }
+    if (islands < 2u) {
+        physics_solve_contacts_serial(pw, pairs);
+        return;
+    }
+    /* stable counting sort of pair indices by island */
+    for (u32 i = 0; i <= islands; i++) island_start[i] = 0u;
+    for (u32 k = 0; k < pairs; k++) {
+        if (records[k].island != PHYSICS_NO_ISLAND) island_start[records[k].island + 1u]++;
+    }
+    for (u32 i = 0; i < islands; i++) island_start[i + 1u] += island_start[i];
+    u32 dynamic_pairs = island_start[islands];
+    for (u32 k = 0; k < pairs; k++) {
+        u32 island = records[k].island;
+        if (island != PHYSICS_NO_ISLAND) order[island_start[island]++] = k;
+    }
+    for (u32 i = islands; i > 0u; i--) island_start[i] = island_start[i - 1u];
+    island_start[0] = 0u;
+
+    PhysicsSolveJobs jobs;
+    jobs.pw = pw;
+    jobs.records = records;
+    jobs.order = order;
+    jobs.island_start = island_start;
+    jobs.job_count = pw->parallel_max_jobs < islands ? pw->parallel_max_jobs : islands;
+    /* contiguous island ranges of about dynamic_pairs / job_count pairs each */
+    u32 island = 0u;
+    for (u32 j = 0; j < jobs.job_count; j++) {
+        jobs.job_begin[j] = island;
+        u64 target = (u64)dynamic_pairs * (j + 1u) / jobs.job_count;
+        u32 islands_left_for_later = jobs.job_count - 1u - j;
+        while (island < islands - islands_left_for_later &&
+               (island_start[island] < target || island == jobs.job_begin[j])) {
+            island++;
+        }
+    }
+    jobs.job_begin[jobs.job_count] = islands;
+    pw->parallel_for(pw->parallel_user, physics_solve_job, &jobs, jobs.job_count);
+
+    for (u32 k = 0; k < pairs; k++) {
+        if (records[k].island == PHYSICS_NO_ISLAND) {
+            physics_collision_callback(records[k].a, records[k].b, pw);
+        } else if (records[k].hit) {
+            physics_replay_pair(pw, &records[k]);
+        }
+    }
+}
+
 /* ---- Continuous collision detection (swept sphere vs AABBs; R435: statics + dynamics) ---- */
 
 static f32 body_bound_radius(const RigidBody *b) {
@@ -1608,6 +1975,7 @@ void physics_step(PhysicsWorld *pw, f32 dt) {
 
     /* BVH broadphase: rebuild/refit BEFORE integration so CCD can query it */
     bool bvh_rebuilt = pw->bvh_dirty;
+    u32 leaves_changed = 0u;
     physics_ensure_bvh(pw);
     if (!bvh_rebuilt) {
         for (u32 i = 0; i < pw->count; i++) {
@@ -1621,8 +1989,10 @@ void physics_step(PhysicsWorld *pw, f32 dt) {
             BVHAABB bvh_box;
             bvh_box.min = box.min;
             bvh_box.max = box.max;
-            bvh_refit(&pw->bvh, i, bvh_box);
+            bvh_set_leaf_bounds(&pw->bvh, i, bvh_box);
+            leaves_changed++;
         }
+        if (leaves_changed > 0u) bvh_refit_internal(&pw->bvh);
     }
 
 #if SIMD_SSE2
@@ -1679,7 +2049,10 @@ void physics_step(PhysicsWorld *pw, f32 dt) {
      * motion was never pair-tested, letting fast non-CCD bodies tunnel and
      * resolving ordinary contacts a frame late. Same skip policy as the
      * pre-integration refit (statics never move; resting bodies' AABBs are
-     * unchanged). bvh_refit is a no-op on an unbuilt tree. */
+     * unchanged). Leaves are written first and the internal nodes refit once
+     * afterwards, skipped when no leaf moved; both are no-ops on an unbuilt
+     * tree. */
+    leaves_changed = 0u;
     for (u32 i = 0; i < pw->count; i++) {
         if (pw->bodies[i].is_static) continue;
         if (pw->bodies[i].rest_frames > 2) continue;
@@ -1687,11 +2060,13 @@ void physics_step(PhysicsWorld *pw, f32 dt) {
         BVHAABB bvh_box;
         bvh_box.min = box.min;
         bvh_box.max = box.max;
-        bvh_refit(&pw->bvh, i, bvh_box);
+        bvh_set_leaf_bounds(&pw->bvh, i, bvh_box);
+        leaves_changed++;
     }
+    if (leaves_changed > 0u) bvh_refit_internal(&pw->bvh);
 
-    /* BVH broadphase collision pair query */
-    bvh_query_pairs(&pw->bvh, physics_collision_callback, pw);
+    /* BVH broadphase collision pair query and contact solve */
+    physics_solve_contacts(pw);
 
     /* R435: distance-constraint position projection runs after contact
      * resolution (contacts see a consistent pre-constraint state) and before

@@ -1,3 +1,23 @@
+## 物理并行接触求解与批量 BVH refit（2026-11-21）
+
+- **问题**：`missing_capabilities.md` 第 9 节一直记着“并行 solver”缺口。`physics_step` 的宽相配对、接触求解与两轮 BVH refit 全部在单线程上，32k 刚体场景每步约 10.5 ms，其中两轮逐叶 `bvh_refit` 各约 4.2 ms（每个移动刚体都从叶子走到根）。
+- **批量 refit**：`bvh.h` 新增 `bvh_set_leaf_bounds` 与 `bvh_refit_internal`。`physics_step` 先只写变化的叶子，再按节点下标倒序把每个内部节点重算一次（`bvh_build` 按前序分配节点，父节点下标小于子节点）；没有叶子变化时跳过。每个内部节点都等于其最终子节点的 `union`，与逐叶 refit 在所有有变化的路径上逐位相同。同机串行实测：1k/4k/16k/32k 刚体由 0.240/1.079/4.965/10.540 ms 降为 0.100/0.425/1.711/3.551 ms，四种规模的状态哈希与修改前完全一致，三个物理金标准不变。
+- **并行接触求解**：`physics_world_set_parallel_for(pw, fn, user, max_jobs)` 设置调度器（`PhysicsParallelForFn`，最多 `PHYSICS_MAX_PARALLEL_JOBS` = 32 个 job），`physics_task.h` 的 `physics_task_parallel_for` 用引擎 `TaskSystem` 实现它。启用后接触阶段分三步：
+  1. 收集配对：`bvh.h` 新增 `bvh_pair_tasks`/`bvh_query_pairs_from`，把双树遍历在固定深度切成按遍历顺序排列的子树任务；各 job 取连续任务段写入自己的缓冲，再按 job 顺序拼接，结果与 `bvh_query_pairs` 的顺序完全相同。
+  2. 划分岛：用并查集把两端都有质量（`inv_mass > 0`）的配对连成岛。无质量刚体不会被接触移动，不连接岛。岛按首次出现的顺序编号，配对按岛做稳定计数排序。
+  3. 求解与重放：各 job 处理连续的岛段，岛内按原配对顺序求解，所以每个有质量刚体经历的运算序列与串行相同；无质量刚体的接触记录、碰撞计数和世界统计（`collision_count`、`hot_pair_*`、`total_collision_speed`、`collision_center` 等）由串行重放按配对顺序写入。两端都无质量的配对在重放中走原串行回调。
+  结果与串行逐位相同，与 job 数和执行顺序无关。以下情况保持串行：设置了接触回调（回调可能在求解中途读取世界）、配对数少于每世界阈值（`physics_world_set_parallel_min_pairs`，默认 `PHYSICS_PARALLEL_MIN_PAIRS` = 4096，是本机实测的盈亏点）、岛少于两个、临时缓冲分配失败。收集阶段用上一步的配对数判断是否值得分发。
+- **调度适配器**：`physics_task_parallel_for` 用每次调用的原子计数等待（release/acquire），不用任务句柄。原因是任务池在进程累计提交 4096 个任务后改发堆回退句柄，等待这种句柄会退化为等待系统中所有任务。超出 32 的 job、提交失败的 job，以及在 worker 线程上调用时的全部 job，都在调用线程上内联执行。
+- **TDD**：新增 `test_physics_parallel`（标签 `headless;physics`，12 例）。用例覆盖：含多个小岛、一个大岛、球/盒/胶囊混合、多个堆叠共享的无质量平台的场景，240 步内每步比较全部刚体字节与世界统计，分别在正序、倒序、job 数 1/2/3/7/32 与真实 `TaskSystem` 下与串行逐位相同；子树任务在深度 0~14 下拼接结果等于完整遍历；接触回调、小场景、默认阈值、清除调度器时不分发；适配器在 40 个 job 时每个只执行一次，在 worker 上内联执行。变异检查均 RED：岛内倒序求解、重放中 hot pair 判定偏移、并查集漏掉部分配对、子树任务顺序交换、收集缓冲倒序拼接、去掉超限内联、去掉 worker 内联。三次 TSan 运行均无报告，ASan/UBSan 干净。原生 CTest 458/458（新增一项）；arm64 QEMU 下数学、物理、ragdoll、vehicle、soft body 与 `test_physics_parallel`（12 例，含真实 `TaskSystem`）共 13 项全部通过。
+- **性能**：16 线程 x86-64，接触阶段并行后，32k 刚体由 3.77 降为 3.65 ms/步，16k 由 2.33 降为 2.21 ms；4k 以下与串行持平（阈值使其保持串行）。批量 refit 之后，剩余时间主要在积分、两轮 refit 和串行的岛划分与重放上，所以接触并行的总收益有限。
+- **独立评审**：结论无 blocker。评审用随机世界做模糊测试，世界含约 12% 无质量非静态刚体、CCD、距离约束、中途 park：40 个种子 × 300 步、job 随机执行顺序下零差异；ASan/UBSan 15 个种子、TSan（每 job 一个真实线程，以及 4 worker 的 `TaskSystem`）零告警；修改前后 32k 场景哈希相同。评审逐字段核对了重放与串行回调等价：无质量刚体在 job 内只读，`physics_collide` 与 `resolve_contact` 不写无质量刚体，计数与 hot pair 取值时机一致，任务切分与遍历分支顺序一致，job 区间不为空、不越界，`bvh_refit_internal` 的前序假设成立。已采纳：
+  - 静止场景下 `bvh_refit_internal` 每步 O(节点) 回归 +28%，改为无叶子变化时跳过；
+  - 适配器改为原子计数等待，worker 上内联执行；
+  - 超出 32 的 job 改为内联而不是丢弃；
+  - 默认阈值由 32 提高到实测盈亏点 4096，并提供每世界设置；
+  - 修正 `bvh.h` 注释（差异只可能出现在自构建后未变化的子树，涉及带符号零与 NaN）、补充调度器契约（每步最多调用两次，返回前必须让 job 的写入可见）、深度循环改为 `depth >= 2u`、缓冲增长加上界。
+  未采纳：x87（`FLT_EVAL_METHOD == 2`）下重放把 `post_speed2` 舍入为 f32 可能与串行表达式不同，仓库没有这种目标。
+
 ## 物理改用确定性 `math_sincosf`，不再依赖平台三角函数（2026-11-21）
 
 - **问题**：上一批记录的剩余缺口：`quat_from_axis_angle`（每个旋转刚体每步积分都调用）的 `sinf`/`cosf`、软体创建时的 `sinf`/`cosf` 和载具中常量参数的 `tanf` 仍来自平台 libm。这些函数在不同 libm 版本间可以合法地舍入不同，已测环境一致只是巧合。
