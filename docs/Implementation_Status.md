@@ -1,3 +1,10 @@
+## 任务系统跨帧 continuation（2026-11-22）
+
+- **问题**：`missing_capabilities.md` 第 4 节记录任务系统缺跨帧 continuation：没有“到第 N 帧再执行”的机制，调用方只能自己维护列表。
+- **实现**：`engine/src/task/task_frame.h/.c` 新增 `TaskFrameQueue`（固定容量，单一所有者线程）、`task_frame_defer`、`task_frame_run`、`task_frame_pending`、`task_frame_cancelled`，并加入 `engine` 库。行为见 `docs/design/runtime_thread_model.md`「跨帧 continuation」：到期即执行（跳帧不丢），按帧号再按登记顺序；执行期间新登记的工作留到下一次调用；可选在 `TaskSystem` 上并行执行并等待完成，提交失败时内联执行；支持取消令牌。
+- **TDD**：新增 `test_task_frame`（4 例），覆盖：跨帧顺序与跳帧（包括后登记但帧号更早的工作先执行）、续体为本帧再登记时留到下一次调用、容量满与取消、在 2 个 worker 的 `TaskSystem` 上 40 项分两帧执行且返回时已全部完成。变异检查均被检出：不按帧号排序、执行时不先摘出本批（原地执行）、不等待任务完成、忽略取消、容量差一。TSan 三次无报告；ASan/UBSan 首次运行发现测试本身对活队列重复 init 的泄漏，修正测试并在头文件写明约束后干净。原生 CTest 460/460。arm64 lane 加入 `test_task_frame`，选择由 265 项增至 266 项；arm64 QEMU 容器中 4 例通过。
+- **仍缺**：任务图可视化、工作窃取调优。
+
 ## 规则引擎性能切片的远端收据（2026-11-22）
 
 | 提交 | 内容 | 主 CI | windows-d3d12 | arm64 job（265 项、86 组分项计数，严格断言） |

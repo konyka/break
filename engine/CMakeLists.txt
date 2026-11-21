@@ -1073,6 +1073,7 @@ src/renderer/lens_effects.c
     src/ecs/ecs.c
     src/ecs/ecs_system.c
     src/task/task.c
+    src/task/task_frame.c
     src/physics/physics.c
     src/physics/physics_task.c
     src/physics/physics_replay.c
@@ -4876,6 +4877,22 @@ endif()
     add_test(NAME test_shadow COMMAND test_shadow)
 
     # test_task: needs task.c + log.c
+    add_executable(test_task_frame tests/test_task_frame.c src/task/task_frame.c src/task/task.c src/core/log.c)
+    target_include_directories(test_task_frame PRIVATE ${TEST_INCLUDE_DIRS})
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_task_frame PRIVATE ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_task_frame PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "qnx")
+        target_compile_definitions(test_task_frame PRIVATE ENGINE_PLATFORM_QNX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_task_frame PRIVATE m)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_task_frame PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_task_frame PRIVATE kernel32)
+    else()
+        target_link_libraries(test_task_frame PRIVATE m)
+    endif()
+    add_test(NAME test_task_frame COMMAND test_task_frame)
+
     add_executable(test_task tests/test_task.c src/task/task.c src/core/log.c)
     target_include_directories(test_task PRIVATE ${TEST_INCLUDE_DIRS})
     if(ENGINE_PLATFORM STREQUAL "linux")

@@ -453,3 +453,4 @@
 - **规则引擎验证追加**：2026-11-22 没有 retract 标志时跳过 retract 门控扫描，1000 条规则单次求值降至约 171 ms（最初约 390 ms）。仍缺：按读集增量重算、条件求值中的字符串分配、Redis 路径。
 - **规则引擎验证追加**：2026-11-22 条件求值的帧栈与规则栈改为栈上内置数组，简单条件匹配不再分配堆内存，1000 条规则单次求值降至约 152 ms（最初约 390 ms）。仍缺：按读集增量重算、Redis 路径。
 - **规则引擎验证追加**：2026-11-22 新增 CI lane `lane-rule-engine-redis`，以 libhiredis 构建原生 Redis 提供者，并对临时 redis-server 运行规则引擎测试（不允许任何 SKIP）。上文「Redis 路径」在 Linux 上由此关闭；仍缺：Windows/macOS 上的 Redis 路径、按读集增量重算。
+- **第 4 节（任务）追加**：2026-11-22 新增跨帧 continuation 队列 `TaskFrameQueue`（到第 N 帧执行，可在 TaskSystem 上并行并支持取消）。上文「跨帧 continuation」由此交付。仍缺：任务图可视化、工作窃取调优。

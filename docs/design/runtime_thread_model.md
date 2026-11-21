@@ -329,3 +329,7 @@ arm64 lane 新增 `test_task`（16 例）和 `test_task_singleton`（1 例），
 ### 追加：任务取消（2026-11-22）
 
 `task.h` 新增协作式取消。`TaskCancelToken` 由调用方持有，`task_cancel` 置位后不再复位。`task_submit_cancellable(ts, fn, ctx, prio, token, deps, dep_count)` 提交带令牌的任务，令牌为 NULL 时等同普通任务，`task_submit_dep` 现在也走同一路径。任务即将执行时（无论在 worker 上，还是在内联执行任务的线程上），如果令牌已置位，就跳过 `fn`；任务仍照常完成：释放依赖它的任务，`task_wait`/`task_wait_handle` 返回，`task_cancelled_count` 计数。已在运行的任务不会被打断，`fn` 可以轮询 `task_cancel_requested` 提前返回，所以调用方释放 `ctx` 前仍须等待。令牌使用前要先初始化，有任务未完成时不能重新初始化，并且必须比使用它的任务活得更久。父任务被跳过后，持有其他令牌或无令牌的子任务仍会执行，要整棵子树一起丢弃就共用一个令牌。`test_task` 覆盖四种情况：开始前取消、未取消时照常运行、父任务运行中取消后子任务被跳过且孙任务照常执行、运行中的任务观察到取消后退出。
+
+### 追加：跨帧 continuation（2026-11-22）
+
+`task/task_frame.h` 新增 `TaskFrameQueue`：所有者线程用 `task_frame_defer(q, frame, fn, ctx, token)` 登记在某一帧执行的工作，每帧调用 `task_frame_run(q, frame, ts)`。帧号不大于当前帧的工作都会执行，先按帧号从旧到新，同一帧内按登记顺序；跳过的帧不会丢失工作。执行期间新登记的工作留到下一次调用，即使它属于当前帧，所以续体反复为本帧登记自己也不会死循环。`ts` 为 NULL 时在调用线程上内联执行；否则每项作为任务提交给 `TaskSystem`，全部完成后才返回，提交失败的项内联执行。令牌在执行开始时已取消的项被跳过并计入 `task_frame_cancelled`。队列容量固定，满时返回 `TASK_FRAME_FULL`，已排队的工作不受影响；同一队列上的 `task_frame_run` 不会嵌套。队列只属于一个所有者线程。
