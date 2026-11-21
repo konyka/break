@@ -1,3 +1,13 @@
+## arm64 lane 开启 C11 并行规则执行器（2026-11-22）
+
+- **问题**：`missing_capabilities.md` 规则引擎验证条目记录 C11 并行执行器压力测试与 fuzz 没有在 arm64 上运行。`RULE_ENGINE_ENABLE_C11_PARALLEL` 默认关闭，任何 CI lane 都没有打开它，所以 `test_rule_engine_executor_stress` 在哪里都没有构建；`rule_engine_fuzz_smoke` 虽然注册了，但不在 arm64 选择中。
+- **变更**：`.github/workflows/ci.yml` 的 arm64 QEMU lane 以 `-DRULE_ENGINE_ENABLE_C11_PARALLEL=ON` 配置，构建并选择 `test_rule_engine_executor_stress` 与 `rule_engine_fuzz_smoke`。正则在已有的规则引擎分组里追加 `executor_stress`，再追加不带括号的 `rule_engine_fuzz_smoke$` 分支，捕获组仍为 31 个。arm64 统一选择由 263 项增至 265 项。
+- **验证**：本机 x86-64 打开该选项后两项通过；arm64 QEMU 容器（Ubuntu 24.04 交叉 GCC，`threads.h` 可用）打开该选项后两项通过。本地构建目录也打开该选项，原生 CTest 共 459 项全部通过。
+
+## 昼夜、贴花与道路测试的远端收据（2026-11-22）
+
+- 提交 `d27b82f4` 的 arm64 job 136913963095 原始日志严格断言为 263 项、80 组分项计数（含 time_of_day 3、decal 4、road 4）；windows-d3d12 run 44926607321 成功。提交 `563be544` 的主 CI run 44926051221 全部成功（22 个成功，3 个按设计跳过），windows-d3d12 run 44926051118 成功。
+
 ## 网格暂存与流式应用测试补充（2026-11-22）
 
 - **新增用例**：
