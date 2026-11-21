@@ -27,20 +27,20 @@
 - Modify: `.github/workflows/ci.yml`
 - Modify: `docs/Build_Guide.md`
 
-- [ ] **Step 1:** Require build suffix `test_editor_audio test_editor_plugin_cmds test_editor_plugin_host test_editor_plugin_sections test_editor_plugin_panels test_editor_plugin_manifest`, final alternative `|test_editor_plugin_cmds$|test_editor_plugin_host$|test_editor_plugin_sections$|test_editor_plugin_panels$|test_editor_plugin_manifest$)`, exact old/new native sets 190/195, and a five-element difference. Add negative probes for manifest_cli, plugin_load, flow, shell and prefix-derived names.
-- [ ] **Step 2:** Run the contract on the old workflow; require RED at the missing plugin build targets.
-- [ ] **Step 3:** Append the five targets after `test_editor_audio` and the alternative after `test_editor_audio$` in both workflow and guide. Update title, intro and current-count paragraph to 195 while retaining the 190 editor-audio baseline as history.
-- [ ] **Step 4:** Require selection and lane-budget contracts GREEN, byte-identical commands, valid YAML and clean `git diff --check`.
+- [x] **Step 1:** Require build suffix `test_editor_audio test_editor_plugin_cmds test_editor_plugin_host test_editor_plugin_sections test_editor_plugin_panels test_editor_plugin_manifest`, final alternative `|test_editor_plugin_cmds$|test_editor_plugin_host$|test_editor_plugin_sections$|test_editor_plugin_panels$|test_editor_plugin_manifest$)`, exact old/new native sets 190/195, and a five-element difference. Add negative probes for manifest_cli, plugin_load, flow, shell and prefix-derived names.
+- [x] **Step 2:** Run the contract on the old workflow; require RED at the missing plugin build targets.
+- [x] **Step 3:** Append the five targets after `test_editor_audio` and the alternative after `test_editor_audio$` in both workflow and guide. Update title, intro and current-count paragraph to 195 while retaining the 190 editor-audio baseline as history.
+- [x] **Step 4:** Require selection and lane-budget contracts GREEN, byte-identical commands, valid YAML and clean `git diff --check`.
 
 ### Task 2: Verify native and arm64 behavior
 
 **Files:**
 - Verify only: the five existing `engine/tests/test_editor_plugin_*.c` registrations
 
-- [ ] **Step 1:** Run the five native tests; require 5/5 and 7/8/5/9/10 cases.
-- [ ] **Step 2:** Build and run the same five in a clean arm64 QEMU container; require 5/5 and identical counts.
-- [ ] **Step 3:** Run the full native suite; require 456 tests, zero failures and only the four established platform skips.
-- [ ] **Step 4:** Execute exact workflow build/test steps in a clean non-root container; require 195/195, all five plugin counts, all previous editor counts, old contracts/e2e, exactly one ptrace setup skip and no root-permission skip.
+- [x] **Step 1:** Run the five native tests; require 5/5 and 7/8/5/9/10 cases.
+- [x] **Step 2:** Build and run the same five in a clean arm64 QEMU container; require 5/5 and identical counts.
+- [x] **Step 3:** Run the full native suite; require 456 tests, zero failures and only the four established platform skips.
+- [x] **Step 4:** Execute exact workflow build/test steps in a clean non-root container; require 195/195, all five plugin counts, all previous editor counts, old contracts/e2e, exactly one ptrace setup skip and no root-permission skip.
 
 ### Task 3: Review, push and record evidence
 
@@ -50,7 +50,7 @@
 - Modify: `docs/Build_Guide.md`
 - Modify: `docs/superpowers/plans/2026-11-21-arm64-qemu-editor-plugin-core.md`
 
-- [ ] **Step 1:** Obtain read-only independent review of the final diff, exact set, dependencies and docs; reproduce and fix every Critical/Important issue.
-- [ ] **Step 2:** Commit with `ci: run arm64 editor plugin core tests`, push to `origin/master`, and monitor complete CI and Windows D3D12 workflows.
-- [ ] **Step 3:** Download the raw arm64 log and assert 195 with all five plugin counts and all previous editor counts.
-- [ ] **Step 4:** Append local/remote receipts and remaining dynamic-loader, CLI, shell/UI and physical-device gaps. Check off only completed steps.
+- [x] **Step 1:** Obtain read-only independent review of the final diff, exact set, dependencies and docs; reproduce and fix every Critical/Important issue.
+- [x] **Step 2:** Commit with `ci: run arm64 editor plugin core tests`, push to `origin/master`, and monitor complete CI and Windows D3D12 workflows.
+- [x] **Step 3:** Download the raw arm64 log and assert 195 with all five plugin counts and all previous editor counts.
+- [x] **Step 4:** Append local/remote receipts and remaining dynamic-loader, CLI, shell/UI and physical-device gaps. Check off only completed steps.

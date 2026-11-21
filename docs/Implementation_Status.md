@@ -5,7 +5,9 @@
 - **CTest 捕获组边界**：初版聚合 alternative 使完整表达式从 31 个捕获组变成 32 个，真实 CTest 报 `RegularExpression::compile(): Too many parentheses` 并以退出码 0 返回零项。改为五个独立精确 alternative `test_editor_plugin_cmds$|test_editor_plugin_host$|test_editor_plugin_sections$|test_editor_plugin_panels$|test_editor_plugin_manifest$`，保持 31 组且选择集合不变；契约新增组数上限和严格集合差，防止把空选择误当通过。
 - **原生与 focused 验证**：原生五项 5/5，计数 7/8/5/9/10；干净 Ubuntu 24.04 容器 arm64 五项 5/5，计数一致，QEMU 8.2.2。原生全量 456 项零失败，4 个既有平台用例跳过，CTest 165.94 秒。未修改产品或测试源码。
 - **完整干净容器验证**：以统一非 root 属主执行 workflow 原始构建和测试 step，195/195，CTest 129.44 秒。严格日志断言确认 15 组编辑器分项计数、全部旧契约/e2e、无失败分项、唯一 ptrace 设置 skip，且无 root 权限跳过、`CHILD TIMEOUT`、`PIPE TIMEOUT` 或 `Too many parentheses`。
-- **独立评审**：只读评审确认扁平化不是放宽选择、旧 190 项严格保留、依赖边界和 39 合计，无 Critical/Important/Minor；其等待的 focused 与完整 arm64 证据随后全部取得。
+- **独立评审**：只读评审确认扁平化不是放宽选择、旧 190 项严格保留、依赖边界和 39 合计，无 Critical/Important/Minor；其等待的 focused 与完整 arm64 证据随后全部取得，复审为 Ready to merge: Yes。
+- **远端 arm64 验证**：[CI run 44860821764](https://github.com/konyka/break/actions/runs/44860821764) 的 [arm64 job 136713543834](https://github.com/konyka/break/actions/runs/44860821764/job/136713543834) 在提交 `07e0aec0` 上成功。原始日志严格断言确认精确 195 项、15 组编辑器计数、全部旧契约/e2e 和唯一 ptrace 设置 skip；无 root 权限跳过、`CHILD TIMEOUT`、`PIPE TIMEOUT` 或 `Too many parentheses`，CTest 137.28 秒。
+- **整体远端结果**：上述主 CI run 最终为 `completed / success`，包括 Linux、Windows、macOS、arm64、sanitizer、fuzz、图形及契约 lane；既有条件跳过仍按各 job 原义保留。独立 [Windows D3D12 run 44860821598](https://github.com/konyka/break/actions/runs/44860821598) 也为 `completed / success`。
 - **覆盖缺口**：动态库加载、manifest CLI、插件面板交互、编辑器 shell/UI、Lua 集成和物理设备行为不在本切片内。
 
 ## arm64 编辑器音频核心与一百九十项 CTest（2026-11-21）
