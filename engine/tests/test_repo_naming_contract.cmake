@@ -27,8 +27,12 @@ foreach(scan_root IN LISTS scan_roots)
         list(APPEND globs "${root}/${scan_root}/*.${ext}")
     endforeach()
 endforeach()
-list(APPEND globs "${root}/engine/CMakeLists.txt")
 file(GLOB_RECURSE files LIST_DIRECTORIES false ${globs})
+# A recursive glob on engine/CMakeLists.txt would also match copies inside
+# engine/build-*/ trees, so the top-level engine build file is listed directly.
+if(EXISTS "${root}/engine/CMakeLists.txt")
+    list(APPEND files "${root}/engine/CMakeLists.txt")
+endif()
 if(STAGE GREATER_EQUAL 4)
     # docs/ue5.8.3 is a large third-party reference; never walk into it.
     file(GLOB doc_files LIST_DIRECTORIES false "${root}/docs/*.md")
