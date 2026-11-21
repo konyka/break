@@ -411,7 +411,90 @@ TEST(cancellable_rejects_bad_arguments)
     task_wait(g_ts);
 }
 
+/* ---- Per-worker statistics ---- */
+
+static void spin_fn(void *ctx) {
+    (void)ctx;
+    volatile u32 x = 0;
+    for (u32 i = 0; i < 20000u; i++) x = x + i;
+    (void)x;
+    atomic_fetch_add(&g_counter, 1);
+}
+
+/* Worker counters account for every task that ran on a worker: executed
+ * sums to the tasks run there, stolen is a subset of executed, and the
+ * calling thread's inline drains are reported separately. Out-of-range ids
+ * and NULL arguments are rejected. */
+TEST(worker_stats_account_for_every_task) {
+    TaskWorkerStats before[8];
+    u32 workers = task_worker_count(g_ts);
+    ASSERT_TRUE(workers >= 1u && workers <= 8u);
+    for (u32 w = 0; w < workers; w++) ASSERT_TRUE(task_worker_stats(g_ts, w, &before[w]));
+    u64 inline_before = task_inline_executed(g_ts);
+    atomic_store(&g_counter, 0);
+    for (i32 i = 0; i < 200; i++) task_submit(g_ts, spin_fn, NULL);
+    /* wait on the counter instead of task_wait, which would drain the
+     * global queue on this thread and leave the workers idle */
+    for (i32 spin = 0; spin < 100000000 && atomic_load(&g_counter) < 200; spin++) platform_thread_yield();
+    task_wait(g_ts);
+    ASSERT_EQ(atomic_load(&g_counter), 200);
+    u64 executed = 0, stolen = 0;
+    for (u32 w = 0; w < workers; w++) {
+        TaskWorkerStats now;
+        ASSERT_TRUE(task_worker_stats(g_ts, w, &now));
+        ASSERT_TRUE(now.executed >= before[w].executed);
+        ASSERT_TRUE(now.stolen >= before[w].stolen);
+        ASSERT_TRUE(now.stolen - before[w].stolen <= now.executed - before[w].executed);
+        executed += now.executed - before[w].executed;
+        stolen += now.stolen - before[w].stolen;
+    }
+    u64 inline_ran = task_inline_executed(g_ts) - inline_before;
+    ASSERT_EQ(executed + inline_ran, 200u);
+    /* with 200 tasks some reach a worker */
+    ASSERT_TRUE(executed > 0u);
+    TaskWorkerStats none;
+    ASSERT_FALSE(task_worker_stats(g_ts, workers, &none));
+    ASSERT_FALSE(task_worker_stats(g_ts, 0, NULL));
+    ASSERT_FALSE(task_worker_stats(NULL, 0, &none));
+    ASSERT_EQ(task_inline_executed(NULL), 0u);
+    ASSERT_TRUE(stolen <= executed);
+}
+
 /* ----------------------------------------------------------------------- */
+
+static _Atomic i32 g_blocked;
+static _Atomic i32 g_release;
+static void block_fn(void *ctx) {
+    (void)ctx;
+    atomic_fetch_add(&g_blocked, 1);
+    while (!atomic_load(&g_release)) platform_thread_yield();
+}
+
+static void release_fn(void *ctx) {
+    (void)ctx;
+    atomic_store(&g_release, 1);
+}
+
+/* When every worker is busy, task_wait runs queued tasks on the calling
+ * thread; those count as inline executions, not worker executions. */
+TEST(inline_drains_are_counted_separately) {
+    u32 workers = task_worker_count(g_ts);
+    atomic_store(&g_blocked, 0);
+    atomic_store(&g_release, 0);
+    for (u32 w = 0; w < workers; w++) task_submit(g_ts, block_fn, NULL);
+    for (i32 spin = 0; spin < 100000000 && atomic_load(&g_blocked) < (i32)workers; spin++)
+        platform_thread_yield();
+    i32 blocked = atomic_load(&g_blocked);
+    u64 inline_before = task_inline_executed(g_ts);
+    /* only this thread is free, so task_wait must run release_fn here */
+    task_submit(g_ts, release_fn, NULL);
+    task_wait(g_ts);
+    u64 inline_ran = task_inline_executed(g_ts) - inline_before;
+    atomic_store(&g_release, 1);
+    task_wait(g_ts);
+    ASSERT_EQ(blocked, (i32)workers);
+    ASSERT_EQ(inline_ran, 1u);
+}
 
 TEST_MAIN_BEGIN()
     g_ts = task_system_create(2);
@@ -437,6 +520,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(cancel_skips_pending_children_and_keeps_the_graph_moving);
     RUN_TEST(running_task_observes_cancellation);
     RUN_TEST(cancellable_rejects_bad_arguments);
+    RUN_TEST(worker_stats_account_for_every_task);
+    RUN_TEST(inline_drains_are_counted_separately);
     /* R414: these exhaust the shared task pool — keep them last. */
     RUN_TEST(out_of_range_priority_is_clamped);
     RUN_TEST(beyond_pool_capacity_all_execute);

@@ -1,3 +1,11 @@
+## 任务系统每 worker 诊断计数（2026-11-22）
+
+- **问题**：`missing_capabilities.md` 第 4 节还缺工作窃取调优，但任务系统没有任何每 worker 的计数，无法测量负载分布和窃取比例，调优无从下手。
+- **实现**：`Worker` 增加 `executed`、`stolen`、`idle_sleeps` 三个原子计数，`TaskSystem` 增加 `inline_executed`。`execute_task` 按当前线程是否为 worker 计入对应计数；worker 主循环在窃取成功时计 `stolen`，退避睡眠时计 `idle_sleeps`。新增 `task_worker_stats` 与 `task_inline_executed`（`engine/src/task/task.h`），语义见 `docs/design/runtime_thread_model.md`「任务系统诊断计数」。
+- **TDD**：`test_task` 新增 2 例，共 23 例。`worker_stats_account_for_every_task`：200 个任务在 worker 上执行，各 worker 的 executed 增量与 inline 增量之和恰为 200，stolen 不超过 executed，越界 id 与 NULL 被拒。`inline_drains_are_counted_separately`：所有 worker 被阻塞时，`task_wait` 在调用线程上执行的任务计为 inline。第一版用例用 `task_wait` 等待 200 个任务，主线程会把全局队列全部内联执行，worker 计数为 0，导致不稳定；改为在计数器上等待后，10 次连跑稳定。变异检查均被检出：不计 inline、不计 worker、id 上界差一。TSan 三次无报告；原生 CTest 460/460。
+- **测量**：16 个父任务各派生 64 个子任务，在 15 个 worker 上，每个 worker 执行 65~81 个任务，1040 个中 716 个由窃取得到，没有任务在调用线程上执行。
+- **仍缺**：基于这些计数的窃取策略调优（例如批量窃取、按负载选择受害者）、任务图可视化。
+
 ## 任务系统跨帧 continuation（2026-11-22）
 
 - **问题**：`missing_capabilities.md` 第 4 节记录任务系统缺跨帧 continuation：没有“到第 N 帧再执行”的机制，调用方只能自己维护列表。

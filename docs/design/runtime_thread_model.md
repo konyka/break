@@ -333,3 +333,7 @@ arm64 lane 新增 `test_task`（16 例）和 `test_task_singleton`（1 例），
 ### 追加：跨帧 continuation（2026-11-22）
 
 `task/task_frame.h` 新增 `TaskFrameQueue`：所有者线程用 `task_frame_defer(q, frame, fn, ctx, token)` 登记在某一帧执行的工作，每帧调用 `task_frame_run(q, frame, ts)`。帧号不大于当前帧的工作都会执行，先按帧号从旧到新，同一帧内按登记顺序；跳过的帧不会丢失工作。执行期间新登记的工作留到下一次调用，即使它属于当前帧，所以续体反复为本帧登记自己也不会死循环。`ts` 为 NULL 时在调用线程上内联执行；否则每项作为任务提交给 `TaskSystem`，全部完成后才返回，提交失败的项内联执行。令牌在执行开始时已取消的项被跳过并计入 `task_frame_cancelled`。队列容量固定，满时返回 `TASK_FRAME_FULL`，已排队的工作不受影响；同一队列上的 `task_frame_run` 不会嵌套。队列只属于一个所有者线程。
+
+### 追加：任务系统诊断计数（2026-11-22）
+
+`task_worker_stats(ts, id, &out)` 返回第 `id` 个 worker 的 `executed`（在该 worker 线程上执行的任务数，含被取消跳过的）、`stolen`（其中从其他 worker 队列窃取的）与 `idle_sleeps`（找不到任务而退避睡眠的次数）；`task_inline_executed(ts)` 返回在非 worker 线程上执行的任务数（例如 `task_wait` 帮忙执行）。计数单调递增、使用 relaxed 原子操作：任务运行中读取是近似值，`task_wait` 之后读取是精确值。这些计数为工作窃取调优提供测量：16 个父任务各派生 64 个子任务的探针在 15 个 worker 上分布均匀（每个 65~81 个），其中约 69% 由窃取得到。

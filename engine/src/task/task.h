@@ -79,6 +79,10 @@ typedef struct {
     _Atomic bool   active;
     u32            steal_attempts;
     u32            backoff_ns;
+    /* Diagnostics (relaxed counters, read with task_worker_stats). */
+    _Atomic u64    executed; /* tasks run on this worker's thread */
+    _Atomic u64    stolen;   /* of those, taken from another worker's deque */
+    _Atomic u64    idle_sleeps;
     PlatformThread thread;
 } ENGINE_ALIGN(64) Worker;
 
@@ -93,6 +97,7 @@ typedef struct {
     _Atomic u64   total_tasks_submitted;
     _Atomic u64   next_handle;
     _Atomic u64   total_tasks_cancelled;
+    _Atomic u64   inline_executed; /* tasks run on a non-worker thread */
 
     /* Global submit queue (for external thread submissions) */
     /* R420: use the platform mutex type directly; task.c passes &ts->submit_mutex
@@ -182,3 +187,21 @@ TaskHandle task_submit_cancellable(TaskSystem *ts, TaskFn fn, void *ctx, TaskPri
 
 /** Tasks skipped because their token was set before they ran. */
 u64 task_cancelled_count(TaskSystem *ts);
+
+/* ---- Diagnostics ----
+ * Per-worker counters for measuring work distribution and stealing. A task
+ * counts toward the worker whose thread runs it (or toward
+ * task_inline_executed when a non-worker thread, such as one inside
+ * task_wait, runs it), cancelled tasks included. `stolen` counts tasks a
+ * worker took from another worker's deque in its own loop. Counters are
+ * monotonic and relaxed: a snapshot taken while tasks run is approximate,
+ * one taken after task_wait is exact. */
+typedef struct TaskWorkerStats {
+    u64 executed;
+    u64 stolen;
+    u64 idle_sleeps;
+} TaskWorkerStats;
+
+/** False for a NULL system or output, or worker_id >= task_worker_count. */
+bool task_worker_stats(TaskSystem *ts, u32 worker_id, TaskWorkerStats *out);
+u64 task_inline_executed(TaskSystem *ts);

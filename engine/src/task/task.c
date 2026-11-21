@@ -303,6 +303,11 @@ static bool drain_submitted_inline(TaskSystem *ts) {
  * ============================================================ */
 
 static void execute_task(TaskSystem *ts, Worker *self, Task *task) {
+    (void)self;
+    if (tls_worker_id >= 0 && (u32)tls_worker_id < ts->worker_count)
+        atomic_fetch_add_explicit(&ts->workers[tls_worker_id].executed, 1, memory_order_relaxed);
+    else
+        atomic_fetch_add_explicit(&ts->inline_executed, 1, memory_order_relaxed);
     if (task->cancel && atomic_load_explicit(&task->cancel->cancelled, memory_order_acquire)) {
         atomic_fetch_add_explicit(&ts->total_tasks_cancelled, 1, memory_order_relaxed);
     } else {
@@ -388,6 +393,7 @@ static PLATFORM_THREAD_RET worker_entry(PLATFORM_THREAD_ARG arg) {
                     task = deque_steal(&ts->workers[victim].queues[prio]);
                 }
             }
+            if (task) atomic_fetch_add_explicit(&self->stolen, 1, memory_order_relaxed);
         }
 
         /* 4. Execute or backoff */
@@ -398,6 +404,7 @@ static PLATFORM_THREAD_RET worker_entry(PLATFORM_THREAD_ARG arg) {
         } else {
             self->steal_attempts++;
             if (self->steal_attempts > ts->worker_count * 2) {
+                atomic_fetch_add_explicit(&self->idle_sleeps, 1, memory_order_relaxed);
                 platform_sleep_ns(self->backoff_ns);
                 /* R414: cap backoff at 50us (was 1ms) — see Windows path. */
                 if (self->backoff_ns < 50000) {
@@ -447,6 +454,7 @@ TaskSystem *task_system_create(i32 worker_count) {
     atomic_store_explicit(&ts->running, true, memory_order_relaxed);
     atomic_store_explicit(&ts->total_tasks_completed, 0, memory_order_relaxed);
     atomic_store_explicit(&ts->total_tasks_cancelled, 0, memory_order_relaxed);
+    atomic_store_explicit(&ts->inline_executed, 0, memory_order_relaxed);
     atomic_store_explicit(&ts->total_tasks_submitted, 0, memory_order_relaxed);
     atomic_store_explicit(&ts->next_handle, 0, memory_order_relaxed);
     atomic_store_explicit(&ts->submit_count, 0, memory_order_relaxed);
@@ -464,6 +472,9 @@ TaskSystem *task_system_create(i32 worker_count) {
         w->id = (u32)i;
         w->steal_attempts = 0;
         w->backoff_ns = 100;
+        atomic_init(&w->executed, 0u);
+        atomic_init(&w->stolen, 0u);
+        atomic_init(&w->idle_sleeps, 0u);
         atomic_store_explicit(&w->active, false, memory_order_relaxed);
         for (int p = 0; p < TASK_PRIORITY_COUNT; p++) {
             if (!deque_init(&w->queues[p], DEQUE_CAPACITY)) {
@@ -891,6 +902,19 @@ void task_cancel(TaskCancelToken *token) {
 
 bool task_cancel_requested(const TaskCancelToken *token) {
     return token && atomic_load_explicit(&token->cancelled, memory_order_acquire);
+}
+
+bool task_worker_stats(TaskSystem *ts, u32 worker_id, TaskWorkerStats *out) {
+    if (!ts || !out || worker_id >= ts->worker_count) return false;
+    const Worker *w = &ts->workers[worker_id];
+    out->executed = atomic_load_explicit(&w->executed, memory_order_relaxed);
+    out->stolen = atomic_load_explicit(&w->stolen, memory_order_relaxed);
+    out->idle_sleeps = atomic_load_explicit(&w->idle_sleeps, memory_order_relaxed);
+    return true;
+}
+
+u64 task_inline_executed(TaskSystem *ts) {
+    return ts ? atomic_load_explicit(&ts->inline_executed, memory_order_relaxed) : 0u;
 }
 
 u64 task_cancelled_count(TaskSystem *ts) {
