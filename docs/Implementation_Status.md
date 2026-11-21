@@ -4,7 +4,10 @@
 - **RED 与精确选择**：旧 workflow 在 `missing system/misc build targets` 处 RED。真实原生集合从 200 增至 205，差集恰为这五项；插件动态加载、system 目标契约、编辑器字体/设置/输入脚本及同名前缀扩展均被拒绝。完整表达式维持 31 个捕获组，契约同时检查组数、`Too many parentheses` 输出和严格集合差。CI 与 Build_Guide 的构建和测试命令逐字一致。
 - **原生与 focused 验证**：原生五项 5/5，计数 12/13/3/7/59；干净 Ubuntu 24.04 容器 arm64 五项 5/5，计数一致，QEMU 8.2.2。原生全量 456 项零失败，4 个既有平台用例跳过，CTest 170.24 秒。未修改产品或测试源码。
 - **完整干净容器验证**：以统一非 root 属主执行 workflow 原始构建和测试 step，205/205，CTest 129.24 秒。严格日志断言确认 25 组分项计数、全部旧契约/e2e、无失败分项、唯一 ptrace 设置 skip，且无 root 权限跳过、`CHILD TIMEOUT`、`PIPE TIMEOUT` 或 `Too many parentheses`。
-- **证据边界**：`test_shader_io` 的大部分用例经相对路径读取着色器与引擎源码，检查源码结构和变体路径映射，arm64 通过不代表 GPU 运行或着色器编译器证据。
+- **证据边界**：`test_shader_io` 的大部分用例经相对路径读取着色器与引擎源码，检查源码结构和变体路径映射，arm64 通过不代表 GPU 运行或着色器编译器证据。CI 布局下 `../shaders`、`../src` 不存在，实际依赖 `__FILE__` 的绝对源码路径；读文件均在断言内，找不到会失败而非跳过。
+- **独立评审**：只读评审实测旧/新表达式选中 200/205 项、差集恰为五项、无 `Too many parentheses`，确认 `break_system` 在 arm64 lane 已构建、五项无 fork/线程/插件/环境变量依赖、用例数 12/13/3/7/59；无 Critical/Important。采纳 Minor：文档补充 `test_shader_io` 依赖 `__FILE__` 绝对路径及 prefix-map 风险。
+- **远端 arm64 验证**：[CI run 44865662299](https://github.com/konyka/break/actions/runs/44865662299) 的 [arm64 job 136728628102](https://github.com/konyka/break/actions/runs/44865662299/job/136728628102) 在提交 `1323cfe7` 上成功。原始日志严格断言确认精确 205 项、25 组分项计数、全部旧契约/e2e 和唯一 ptrace 设置 skip；无 root 权限跳过、`CHILD TIMEOUT`、`PIPE TIMEOUT` 或 `Too many parentheses`，CTest 138.90 秒。`test_shader_io` 在远端经 `__FILE__` 绝对路径同样 59/59。
+- **整体远端结果**：上述主 CI run 最终为 `completed / success`，包括 Linux、Windows、macOS、arm64、sanitizer、fuzz、图形及契约 lane；既有条件跳过仍按各 job 原义保留。独立 [Windows D3D12 run 44865662301](https://github.com/konyka/break/actions/runs/44865662301) 也为 `completed / success`。
 - **覆盖缺口**：插件动态加载（`test_break_plugin*`、`test_editor_plugin_load`）、编辑器字体/设置/输入脚本和 shell/UI 不在本切片内。
 
 ## arm64 Compose 核心与二百项 CTest（2026-11-21）
