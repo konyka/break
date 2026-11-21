@@ -998,6 +998,16 @@ core_app 生命周期与 voice lane 驱动走交叉模拟器、记录 LD_PRELOAD
 判断来自本仓库之外的进程，未处理。Metal CTest **411/415**、graphics **6/6**，MoltenVK
 **414/418**，跳过项同前；全量构建无 error。证据等级不变。
 
+2026-11-21 第六次复核：快进同步 `7390174e..13b99255`（8 个远程提交），无冲突。涉及本平台的
+是物理跨架构逐位一致：`fast_rsqrt` 去掉 SSE `rsqrtss` 路径，所有架构都用 `1.0f / sqrtf`；
+`src/physics`、`src/math` 与 `tests/test_math.c` 以源文件属性加 `-ffp-contract=off`；约束角度
+改用确定性 `math_atan2f`。本机 Apple Clang 21 的 `compile_commands.json` 确认，`physics.c`、
+`ragdoll.c` 在引擎库和每个直接编译它们的测试目标里都带该选项。本机（arm64 macOS）上
+`test_physics_replay` 的 3 组跨架构金标准哈希（静止、旋转、带限位铰链）与 `test_math` 中
+`math_atan2f` 的固定位模式全部通过，说明 AppleClang 关闭 FMA 收缩后与 Linux x86-64/arm64
+结果一致。Metal CTest **411/415**、graphics **6/6**，MoltenVK **414/418**，跳过项同前；全量
+构建无 error，`/tmp` 下 `break_*` 条目数前后都是 733。未发现需要修复的问题。证据等级不变。
+
 RHI 第一阶段还提供统一的设备健康状态查询 `rhi_device_get_status()`。`UNKNOWN` 表示
 没有有效设备，`READY` 表示设备可用，`LOST` 表示后端报告设备丢失；该接口是后续 Vulkan、
 Metal、D3D12 后端共用的生命周期合同。
