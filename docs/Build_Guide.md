@@ -974,6 +974,30 @@ graphics **6/6**，MoltenVK **414/418**，跳过项同前；全量构建无 erro
 修复后 Metal CTest **411/415**、graphics **6/6**，MoltenVK **414/418**，跳过项同前；全量
 构建无 error。证据等级不变。
 
+2026-11-21 第五次复核：快进同步 `be816983..bdf28587`（7 个远程提交：arm64 可移植合同、
+core_app 生命周期与 voice lane 驱动走交叉模拟器、记录 LD_PRELOAD 故障注入在 qemu-aarch64
+下失败），无冲突。处理上一轮遗留的 `/tmp` 残留：把 415 条 CTest 逐条单独运行，对比每条运行
+前后的 `ls -A /tmp`，定位到 7 个测试会留下按 pid 命名的文件或目录，均已在测试结束时清理：
+- `test_break_update_client`：`no_tmp_residue` 复用同一个 root 建第二个目录前没有删第一个
+  （`break_upc_notmp_<pid>`）。
+- `test_runtime_io`：`break_rtio_<pid>` 从不删除；`io_request_double_release_aborts` 里故意
+  abort 的子进程也留下一份，现在由父进程在 `waitpid` 后按子进程 pid 删除。
+- `test_runtime_reload`：`break_rtreload_<pid>` 及其中 7 个 fixture 文件从不删除。
+- `test_script_lua`：两个热重载用例不删 `test_break_reload.lua` / `test_break_noreload.lua`。
+- `test_vfs`：`vfs_mount_priority` 的 a/b 两个目录、共享的 `test_vfs_dir`（含 `hello.txt`）
+  与 `test_vfs.pak` 不删；R476 截断用例只删了 `aaaa…` 深层目录，没删其下 `make_truncation_prefix`
+  建的 `bbbb…` 目录，导致整棵树都删不掉。
+- `test_myui_echart_adapter`：写出的 `phase5_echart_adapter.ppm` 没有任何脚本或 CI 读取，
+  写完即删（仍然验证写入过程）。
+- `test_core_app_assets`：两份烘焙输出 `core_app_assets_a/b`（各 12 个文件）不删，
+  `test_core_app_baker_diagnostics` 启动的同源诊断变体也因此留残留；现在 main 结束前清空并删除。
+
+修复后这 7 个测试和 `test_core_app_baker_diagnostics` 单独运行前后 `/tmp` 条目没有新增；两套
+全量 CTest 跑完后 `/tmp` 下 `break_*` 条目数保持 733 不变（这些是历史残留，未自动删除）。
+扫描中出现的 `/tmp/r1434`、`/tmp/r1434-matrix.log` 单独重跑不复现、仓库里也没有这个名字，
+判断来自本仓库之外的进程，未处理。Metal CTest **411/415**、graphics **6/6**，MoltenVK
+**414/418**，跳过项同前；全量构建无 error。证据等级不变。
+
 RHI 第一阶段还提供统一的设备健康状态查询 `rhi_device_get_status()`。`UNKNOWN` 表示
 没有有效设备，`READY` 表示设备可用，`LOST` 表示后端报告设备丢失；该接口是后续 Vulkan、
 Metal、D3D12 后端共用的生命周期合同。
