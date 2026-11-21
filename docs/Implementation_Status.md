@@ -1,3 +1,13 @@
+## arm64 编辑器/core_app 纯 CPU 组件与二百三十六项 CTest（2026-11-21）
+
+- **最小场景**：新增六个既有纯 CPU 可执行目标：`test_editor_input_script` 8、`test_editor_settings` 7（环境变量只用于路径解析，实际保存与读取写入 `test_tmp` 临时目录）、`test_editor_fonts` 7、`test_editor_audio_sink` 5（FAKE 音频后端，不打开设备）、`test_core_app_mesh` 3、`test_core_app_runtime` 60 例（读取仓库 `assets/core_app`，含多线程音频压力用例，不 fork）。均不连接显示服务器或真实设备。
+- **RED 与精确选择**：旧 workflow 在 `missing editor/core_app cpu build targets` 处 RED。真实原生集合从 230 增至 236，差集恰为这六项；`test_core_app_voice`（原生约 12 秒，以 `time_sleep_us` 轮询，对模拟器下的时序敏感，未在 QEMU 下测量）、`test_core_app_voice_lane`、core_app lifecycle/资产契约、编辑器 shell/Lua、插件动态加载与同名前缀扩展均被拒绝。完整表达式维持 31 个捕获组。CI 与 Build_Guide 的构建和测试命令逐字一致。
+- **原生与 focused 验证**：原生六项 6/6，计数 8/7/7/5/3/60；干净 Ubuntu 24.04 容器 arm64 六项 6/6，计数一致，QEMU 8.2.2。原生全量 456 项零失败，4 个既有平台用例跳过，CTest 189.13 秒。未修改产品或测试源码。
+- **完整干净容器验证**：以统一非 root 属主执行 workflow 原始构建和测试 step，236/236，CTest 138.37 秒。严格日志断言确认 51 组分项计数、全部旧契约/e2e、无失败分项、唯一 ptrace 设置 skip，无 root 权限跳过或 `Too many parentheses`；超时标记恰为 `test_fork_deadline` 的三条预期标记。
+- **字体用例的实际覆盖**：lane 未链接 arm64 fontconfig，真实系统用例改走内置路径表。构建目录是检出根目录的直接子目录时（lane 与完整容器验证均如此），经可执行文件相对路径找到仓库自带的 JetBrains Mono 与 Noto Sans SC，干净容器打印 `2 candidates, cjk`；focused 运行的构建目录在 `/tmp` 下，打印 `0 candidates`。托管 runner 若预装 DejaVu/Liberation，路径表会再加入它们，实际数量以远端日志为准。该用例只检查候选存在、不重复且不超过上限，不验证 fontconfig 发现。
+- **独立评审**：首轮结论为暂不可合入，唯一 Important 是字体用例描述只符合干净容器，托管 runner 上内置路径表可能加入系统字体；已改为如实描述并在远端日志中核对。评审核实六个目标只受 `ENGINE_BUILD_TESTS` 门控；settings 的环境变量只用于路径解析、读写在 `test_tmp` 下；audio_sink 全部使用 FAKE 后端（`noDevice`）；core_app_runtime 无 fork/exec/socket，写入经 `tmpfile()`，部分用例使用不打开硬件的 Null 后端，线程协调全部经互斥量与条件变量，不涉及已知的 qemu-user 问题；实测 230→236，差集恰为六项，捕获组仍为 31。已采纳的 Minor：排除 `test_core_app_voice` 的理由改为实测依据，构建目录位置的措辞收窄为检出根目录的直接子目录。
+- **覆盖缺口**：系统字体发现（fontconfig）、真实音频设备、core_app 语音通道与 lifecycle 驱动脚本、编辑器 shell/Lua 与插件动态加载不在本切片内。
+
 ## arm64 RHI CPU 路径与二百三十项 CTest（2026-11-21）
 
 - **最小场景**：新增五个既有纯 CPU RHI 可执行目标：`test_rhi_rollout_log`（rollout 结构化日志，只打印 `OK`）、`test_rhi_runtime_select`（49 项运行时后端选择检查，探测结果由 `BREAK_RHI_RUNTIME_TESTING` 注入，只打印 `OK: 49 ...`）、`test_rhi_fault_injection` 6 例与 `test_rhi_wsi_attach` 3 例（在 `ENGINE_RHI_TEST` 内存设备上注入失败、检查头文件内联的 WSI 附着状态机；`engine_rhi_headless` 只提供拒绝工作的后端桩）、`test_rhi_golden_parity`（比较仓库中已提交的 Vulkan 与 OpenGL 参考 PPM，只读文件、不渲染）。均不访问 GPU、窗口系统或真实设备。
