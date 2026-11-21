@@ -1,6 +1,7 @@
 # editor --plugin-manifest: a broken manifest exits 2 before any window
 # opens; a valid one is reported on stderr.
 # -DEDITOR=<path> -DWORK_DIR=<dir> [-DPLUGINS=ON when built with BREAK_EDITOR_PLUGINS]
+# [-DEDITOR_RUNNER=<emulator list>] runs the editor in a cross build; empty natively.
 if(NOT DEFINED EDITOR OR NOT DEFINED WORK_DIR)
     message(FATAL_ERROR "EDITOR and WORK_DIR are required")
 endif()
@@ -18,7 +19,7 @@ endif()
 
 function(run_editor out_rc out_err)
     execute_process(COMMAND "${CMAKE_COMMAND}" -E env --unset=DISPLAY
-                            --unset=WAYLAND_DISPLAY "${EDITOR}" ${ARGN}
+                            --unset=WAYLAND_DISPLAY ${EDITOR_RUNNER} "${EDITOR}" ${ARGN}
         RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err TIMEOUT 20)
     set(${out_rc} "${rc}" PARENT_SCOPE)
     set(${out_err} "${err}" PARENT_SCOPE)

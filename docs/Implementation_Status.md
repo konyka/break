@@ -1,3 +1,13 @@
+## 编辑器插件清单命令行驱动接入交叉模拟器与 arm64 二百六十一项 CTest（2026-11-21）
+
+- **问题**：`test_editor_plugin_manifest_cli` 的宿主驱动 `engine/tests/test_editor_plugin_manifest_cli.cmake` 经 `cmake -E env` 直接运行 `editor`，交叉构建中无法在宿主上执行；arm64 lane 的构建列表也未包含 `editor` 目标。
+- **修复**：唯一启动处在 `editor` 前加 `${EDITOR_RUNNER}`，`engine/CMakeLists.txt` 中该测试传入 `-DEDITOR_RUNNER=${CMAKE_CROSSCOMPILING_EMULATOR}`（原生为空），驱动头注释说明该参数。
+- **RED/GREEN**：契约 `manifest_cli_runner_contract.py` 要求 editor 启动经 runner、`add_test` 传入模拟器；对 HEAD 的驱动与 CMakeLists RED（`editor launch without EDITOR_RUNNER: 1 of 1`），工作树 GREEN，原生通过。干净 Ubuntu 24.04 容器中 arm64 在 QEMU 下通过，0.16 秒。
+- **lane 纳入（260→261）**：选择契约要求构建列表追加 `editor`、唯一新增的平铺精确 alternative 位于末尾、完整表达式仍为 31 个捕获组、原生集合 260→261 且差集恰为该项；旧 workflow RED（`missing editor build target`），实现后 GREEN，前缀扩展与 `test_editor_plugin_load2`、`test_break_system_target_contract` 被拒绝。lane 以 `PLUGINS=OFF` 运行，插件按“未加载”报告。原生全量 456 项零失败，4 个既有平台用例跳过，CTest 159.33 秒。
+- **完整干净容器验证**：非 root 干净容器执行 workflow 原始 step，261/261，CTest 162.73 秒，manifest CLI 0.16 秒；严格日志断言确认 60 组分项计数、全部旧契约/e2e、唯一的平台 setup skip，超时标记恰为 `test_fork_deadline` 的三条预期标记。
+- **独立评审**：结论可合入，无 Critical/Important。评审核实 `cmake -E env` 以第一个既非 `NAME=VALUE` 也非 `--unset=` 的词为命令，空 runner 展开为零个词；`DISPLAY`/`WAYLAND_DISPLAY` 在启动 qemu 前清除并原样传给被模拟程序；`editor_main.c` 中清单解析与 `--remote` 拒绝都在 `platform_create` 之前，驱动的五种情况均在开窗前以 2 退出，编辑器不触及显示或 GPU；lane 构建 `editor` 只多 56 个 ninja 步骤，构建步骤约 44 秒、整个 job 约 4.5 分钟，远低于 25 分钟上限；实测 260→261，差集恰为该项，捕获组仍为 31。
+- **覆盖缺口**：开启 `BREAK_EDITOR_PLUGINS` 时“开窗后加载”的路径与真实窗口不在 arm64 lane 内；插件动态加载本身由 lane 内的 `test_editor_plugin_load` 覆盖。
+
 ## 资源包打包往返驱动接入交叉模拟器与 arm64 二百六十项 CTest（2026-11-21）
 
 - **问题**：`test_packer_roundtrip` 的宿主驱动 `engine/tests/test_packer_roundtrip.cmake` 七处直接 `execute_process` 运行 `packer` 与 `verify_pak`，交叉构建中无法在宿主上执行。
@@ -6,6 +16,8 @@
 - **lane 纳入（259→260）**：选择契约要求构建列表追加 `packer verify_pak`、唯一新增的平铺精确 alternative 位于末尾、完整表达式仍为 31 个捕获组、原生集合 259→260 且差集恰为该项；旧 workflow RED（`missing packer build targets`），实现后 GREEN，前缀扩展与 `test_core_app_assets`、`test_core_app_baker_diagnostics` 被拒绝。原生全量 456 项零失败，4 个既有平台用例跳过，CTest 176.75 秒。
 - **完整干净容器验证**：非 root 干净容器执行 workflow 原始 step，260/260，CTest 162.42 秒，packer roundtrip 0.43 秒；严格日志断言确认 60 组分项计数、全部旧契约/e2e、唯一的平台 setup skip，超时标记恰为 `test_fork_deadline` 的三条预期标记。
 - **独立评审**：结论可合入，无 Critical/Important。评审核实七处 `execute_process` 均经 runner，驱动只写 `${WORK}`（构建目录下，首尾删除），`packer` 只写 `<output>.tmp` 再改名，`verify_pak` 只读；`packer` 与 `verify_pak` 目标不在任何 `if()` 内，只有 `add_test` 受 `ENGINE_BUILD_TESTS` 门控；实测 259→260，差集恰为该项，捕获组仍为 31。已采纳的 Minor：Build_Guide 段落改为驱动实际断言的内容（`3 pak entries`、孤儿条目指出 `sub/b.lua`、超容量不留 `many.pak`、失败时不覆盖已有包且不留 `.tmp`），missing_capabilities 条目补上覆盖缺口说明。
+- **远端 arm64 验证**：[CI run 44891967894](https://github.com/konyka/break/actions/runs/44891967894) 的 [arm64 job 136809547766](https://github.com/konyka/break/actions/runs/44891967894/job/136809547766) 在提交 `f3c6f70a` 上成功，原始日志严格断言确认精确 260 项、60 组分项计数、全部旧契约/e2e 与唯一的平台 setup skip，超时标记恰为 `test_fork_deadline`（#300）的三条预期标记，packer roundtrip 0.33 秒，CTest 169.30 秒。语音通道收据提交 `b1e3de15` 与故障注入实测提交 `bdf28587` 上主 CI 与 Windows D3D12 均为 success。
+- **整体远端结果**：上述主 CI run 最终为 `completed / success`，包括 Linux、Windows、macOS、arm64、sanitizer、fuzz、图形及契约 lane；独立 [Windows D3D12 run 44891967916](https://github.com/konyka/break/actions/runs/44891967916) 也为 `completed / success`。
 - **覆盖缺口**：该测试只覆盖资源包工具的文件级往返，不涉及运行时 VFS 挂载（已由 `test_vfs` 在 lane 内覆盖）。
 
 ## core_app 语音通道驱动接入交叉模拟器与 arm64 二百五十九项 CTest（2026-11-21）

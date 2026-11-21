@@ -6197,6 +6197,7 @@ endif()
     add_test(NAME test_editor_plugin_manifest_cli
         COMMAND ${CMAKE_COMMAND}
             -DEDITOR=$<TARGET_FILE:editor>
+            "-DEDITOR_RUNNER=${CMAKE_CROSSCOMPILING_EMULATOR}"
             -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/editor-plugin-manifest-cli
             -DPLUGINS=${BREAK_EDITOR_PLUGINS}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_editor_plugin_manifest_cli.cmake)
