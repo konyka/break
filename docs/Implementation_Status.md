@@ -1,3 +1,21 @@
+## 跨 cell authority 交接（2026-11-22）
+
+- **问题**：大世界缺口中的“跨分区 authority handoff”没有任何实现：AoI 能决定谁看见什么，但实体从一个 cell 交给另一个 cell 时，没有协议保证不会同时出现两个权威、不会丢失写入。
+- **实现**：新增 `engine/src/network/break_cell_handoff.{h,c}`，加入 `break_replication_core`。与传输无关：消息经 `send` 回调发出，由 `break_cell_receive` 收入，`break_cell_tick` 负责重传与 offer 超时。协议使用五种消息：OFFER、ACCEPT（带目标的记录 nonce）、COMMIT（源发送前放弃权威，epoch 加一，携带最新状态）、COMMIT_ACK、ABORT。正确性论证见 `docs/design/cell_handoff.md`。
+- **TDD**：先写 `test_break_cell_handoff`，链接失败 83 处，再实现。第一版混沌测试只有丢包、重复和乱序，有 5 个变异未被检出。加入最多 30 步的延迟后，其中 3 个被检出。又补了一个“过期重复 OFFER 在旧源等待 ACK 时出现”的定向用例，第 4 个也被检出。最后剩下的 2 个经分析是等价或只影响释放速度的，写入设计文档。最终 8 例：8 种网络模式各 20 个种子，每次 3000 步，每种模式实际完成 8,600~51,000 次交接。每一步都检查最多一个权威、epoch 不回退；结束时检查唯一所有者、无进行中记录，且计数器等于被接受的写入数。
+- **验证**：ASan+UBSan 无报告；原生全量 466/466 通过；arm64 lane 加入 `test_break_cell_handoff`（选择数 271；QEMU 容器内 8/8 通过，耗时 12 秒）。
+- **仍缺**：cell 划分与负载均衡、跨进程传输接线、持久化、AoI 与客户端连接随交接迁移。
+
+## 远端收据：物理调度器与消息总线（2026-11-22）
+
+| 提交 | 内容 | 主 CI | arm64 严格断言 |
+|---|---|---|---|
+| `974c7ae2` | 主循环启用物理调度器 | 44949840398 成功 | 136985121137：269 项、91 组（`test_physics_parallel=17`） |
+| `c1396e73` | 消息总线 | 44950942978 成功 | 136988506570：270 项、92 组（`test_runtime_bus=8`） |
+| `2b340cf6` | 总线优先级与配额 | 44951474590 成功 | 136990133893：270 项、92 组（`test_runtime_bus=10`） |
+
+`974c7ae2` 的 windows-d3d12 run 44949840405 成功。
+
 ## 消息总线：按 kind 的优先级与配额（2026-11-22）
 
 - **实现**：`BreakRuntimeBusKind` 末尾新增 `control` 与 `max_per_tick`。控制 kind 的副本带 `BREAK_RUNTIME_MESSAGE_FLAG_CONTROL`，可以使用订阅者队列的预留控制槽位；普通 kind 的副本由总线清除该标志。`max_per_tick` 限制两次 `break_runtime_bus_tick` 之间接受的发布次数，超出时返回 OVERLOAD、不投递，并计入 `quota_rejects`。拓扑导出同步增加这三个字段。设计见 `docs/design/runtime_message_model.md`「按 kind 的优先级与配额」。

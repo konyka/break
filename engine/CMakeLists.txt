@@ -856,7 +856,8 @@ endif()
 add_library(break_replication_core STATIC
     src/network/break_aoi.c
     src/network/break_replication.c
-    src/network/break_replication_fragment.c)
+    src/network/break_replication_fragment.c
+    src/network/break_cell_handoff.c)
 set_property(TARGET break_replication_core PROPERTY C_STANDARD 11)
 target_include_directories(break_replication_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -6812,6 +6813,14 @@ endif()
     add_test(NAME test_break_replication_fragment COMMAND test_break_replication_fragment)
     set_tests_properties(test_break_replication_fragment PROPERTIES
         TIMEOUT 20 LABELS "network;replication;fragmentation")
+
+    add_executable(test_break_cell_handoff tests/test_break_cell_handoff.c)
+    target_include_directories(test_break_cell_handoff PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_break_cell_handoff PRIVATE break_replication_core)
+    add_test(NAME test_break_cell_handoff COMMAND test_break_cell_handoff)
+    set_tests_properties(test_break_cell_handoff PROPERTIES
+        TIMEOUT 120 LABELS "network;replication;world")
 
     # Adapter-backed test executables link the formal top-level break_net
     # target (defined independent of ENGINE_BUILD_TESTS when

@@ -1,0 +1,48 @@
+# 跨分区 authority 交接
+
+## 目标
+
+大世界会被分成多个 cell，每个实体在任一时刻只由一个 cell 权威模拟。实体越过边界时，要把权威从一个 cell 交给相邻 cell，并满足三点：任何时刻最多一个 cell 是权威，交接过程中不丢失写入，网络丢包、重复和乱序都不破坏前两点。`BreakCell`（`engine/src/network/break_cell_handoff.{h,c}`，属于 `break_replication_core`）实现一个 cell 在交接中的一方。它与传输无关：发出的消息交给配置的 `send` 回调，收到的消息交给 `break_cell_receive`，重传和超时由 `break_cell_tick` 驱动。
+
+不在范围内：cell 的划分与负载均衡、跨进程传输、持久化、AoI 可见性迁移、客户端连接迁移。
+
+## 协议
+
+源 cell S、目标 cell T，每次发起交接 S 分配一个事务号 txn：
+
+| 消息 | 方向 | 含义 |
+|---|---|---|
+| OFFER(txn, epoch, state) | S → T | S 仍是权威，仍可写 |
+| ACCEPT(txn, nonce) | T → S | T 建立 receiving 记录，nonce 标识这条记录；没有空间时回 REJECT |
+| COMMIT(txn, nonce, epoch + 1, 最新状态) | S → T | S 在发送前放弃权威 |
+| COMMIT_ACK(txn, nonce) | T → S | T 成为权威（只对该 nonce 的记录生效）；S 收到后删除记录 |
+| ABORT(txn, nonce 或 0) | S → T | offer 超时，或回应 S 无法使用的 ACCEPT；T 删除对应的 receiving 记录 |
+
+OFFER 和 COMMIT 重传到得到回应为止，ACCEPT 重传到记录被提交或中止为止。offer 只在 S 仍是权威时才会超时，COMMIT 从不放弃。
+
+## 为什么最多一个权威
+
+- S 在发送 COMMIT 之前放弃权威，T 只在收到与自己 nonce 相同的 COMMIT 时才成为权威。所以两者不会同时是权威。
+- receiving 记录只会因两种原因消失：被提交，或收到 ABORT。而 S 从不中止已经提交的事务。因此一条找不到 receiving 记录的 COMMIT 一定已经生效过，T 直接回 COMMIT_ACK 是安全的。
+- 一个 OFFER 如果其 epoch 不低于 S 提交时的 epoch，就只可能来自已经应用了该提交的 T（只有 T 能产生这个 epoch），所以它也能立即释放 S。COMMIT_ACK 丢失后实体又被交回 S 时，靠这一条立即接受交回；没有这一条，S 重传的 COMMIT 到达 T 后也会被确认（T 已没有 receiving 记录），只是要多等一个重传周期。
+- epoch 只在提交时加一，所以权威的 epoch 单调增长。
+
+## 写入不丢失
+
+交接期间 S 仍可写。COMMIT 携带 S 放弃权威那一刻的状态，T 从这个状态继续。
+
+## 测试
+
+`test_break_cell_handoff`（8 例）：
+- 生成、写入、读取、容量上限与参数校验；
+- 干净交接：OFFER 期间的写入随 COMMIT 送达，epoch 加一，S 的记录在 ACK 后释放；
+- 目标已满时拒绝，源保留实体；
+- 超时中止后，迟到的 ACCEPT 收到 ABORT，目标删除记录，再次交接正常；
+- COMMIT_ACK 丢失时，交回的 OFFER 释放旧源；
+- 畸形或过时的消息被忽略并计数；
+- 旧源等待 ACK 时，过期的重复 OFFER 在目标上建立陈旧记录，旧源用 ABORT 清掉它，之后 COMMIT 重传得到确认，旧源被释放；
+- 混沌测试：4 个 cell、12 个实体，8 种网络模式（含丢包、重复、乱序和最多 30 步的延迟）各 20 个种子，每次 3000 步随机写入与交接。每一步都检查最多一个权威、epoch 不回退；网络恢复后检查每个实体恰好一个所有者、没有进行中的记录，计数器等于被接受的写入次数。每种模式实际发生 8,600~51,000 次交接。
+
+变异检查。以下变异均被检出：COMMITTING 仍算权威、忽略 COMMIT 的 nonce、提交时不加 epoch、COMMITTING 收到任何 OFFER 都释放、陈旧 OFFER 替换活动记录、对已提交事务的任何 ACCEPT 都不回 ABORT、收到无法使用的 ACCEPT 时不回 ABORT、COMMIT 不带状态。有两处未被检出，原因已核实：
+- ABORT 的 nonce 检查：带 nonce 的 ABORT 只会遇到同一事务的陈旧记录，删除它同样安全，所以这项检查只是防御性的；
+- 把“epoch 不低于”改为“高于”：只影响释放的快慢，不影响正确性（见上文）。
