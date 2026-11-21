@@ -183,3 +183,7 @@ arm64 lane 新增 slider、cloth、rope、soft-body、destructible 五项和 cha
 ### 追加：带旋转的金标准
 
 上面的金标准场景不调用三角函数。`test_physics_replay` 新增 `spinning_body_matches_the_cross_architecture_golden_hashes`：盒子经 `physics_body_set_pose` 设置非零转动惯量与恒定角速度，240 步内调用 `sinf` 与 `cosf` 各 240 次（以链接期包装函数计数确认）。第 40、120、240 步哈希 `861e49280274a41b`、`edda241ce0d8ffa8`、`ac68585b95a1886d` 在 glibc 2.39 x86-64、glibc 2.44 x86-64 与 glibc 2.39 arm64（QEMU）上完全一致。注意：只设置 `angular_velocity` 而不设置转动惯量时，零惯量轴被视为无限大惯量，方向不积分、也不调用三角函数。`atan2f` 在 glibc 版本间的 1 ULP 差异仍只影响 hinge、cone-twist、slider 约束，这些路径尚无金标准。
+
+### 追加：确定性 `math_atan2f`
+
+hinge、cone-twist、slider 约束的角度原先由平台 `atan2f` 计算，glibc 2.39 与 2.44 之间有 1 ULP 差异，带限位铰链场景因此在两台 x86-64 机器上第 40 步分歧。物理现改用 `math.h` 中只由 IEEE 加减乘除与比较构成的 `math_atan2f`（最大误差约 3.2e-7 弧度，要求包含文件以 `-ffp-contract=off` 编译），`test_physics_replay` 新增铰链金标准，`test_math` 固定其位模式并能检出 FMA 收缩。物理中仍依赖平台 libm 的有 `quat_from_axis_angle` 的 `sinf`/`cosf`（已测环境与 CI 各平台一致）、软体创建时的 `sinf`/`cosf`，以及载具中常量参数的 `tanf`。铰链金标准只在 glibc 2.44 主机上能检出回退到平台 `atan2f`。

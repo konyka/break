@@ -436,3 +436,4 @@
 - **qemu-user fork 挂起复查**：2026-11-21 两个 fork 后建线程的 abort 用例已有 30 秒子进程截止等待；arm64 QEMU 下交替运行各 60 次 0 次挂起，根因仍未定位，保持监测。
 - **第 9 节（物理）追加**：2026-11-21 x86-64 与 arm64 的物理结果已逐位一致：根因是 `fast_rsqrt` 在 SSE 平台用近似 `rsqrtss`，现在所有架构都用正确舍入的 `1.0f / sqrtf`，物理与数学源码另以 `-ffp-contract=off` 禁止 FMA 融合（否则 AppleClang 与 x86-64-v3 构建会得到不同哈希）；`test_physics_replay` 以金标准哈希守住，x86 与 arm64 CI 同时运行。仍缺：金标准场景不含旋转，libm 三角函数的跨版本/跨平台差异（`atan2f` 实测 1 ULP）尚未纳入；Windows/macOS 已由 CI 7e6fb69d 验证通过；并行 solver。
 - **第 9 节（物理）追加**：带旋转的金标准用例（非零惯量与恒定角速度，240 步内 `sinf`/`cosf` 各调用 240 次）在 glibc 2.39/2.44 x86-64 与 glibc 2.39 arm64 上哈希一致，加入 `test_physics_replay`。仍缺：hinge、cone-twist、slider 约束（使用 `atan2f`，不同 glibc 间实测 1 ULP 差异）的跨平台金标准。
+- **第 9 节（物理）追加**：物理角度改用确定性 `math_atan2f`（只用 IEEE 基本运算，最大误差约 3.2e-7 弧度），带限位铰链在 glibc 2.39 与 2.44 间由分歧变为逐位一致，加入第三个金标准。仍缺：`sinf`/`cosf`（四元数积分与软体创建）与载具的常量 `tanf` 仍来自平台 libm（已测环境与 CI 一致），并行 solver。

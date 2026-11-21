@@ -2,6 +2,7 @@
 #include <physics/physics_replay.h>
 #include <math.h>
 #include <stdint.h>
+#include <string.h>
 
 #define REPLAY_CAP 64u
 
@@ -63,6 +64,34 @@ TEST(spinning_body_matches_the_cross_architecture_golden_hashes)
         if (i == 39u) ASSERT_EQ(physics_state_hash(pw), UINT64_C(0x861e49280274a41b));
         if (i == 119u) ASSERT_EQ(physics_state_hash(pw), UINT64_C(0xedda241ce0d8ffa8));
         if (i == 239u) ASSERT_EQ(physics_state_hash(pw), UINT64_C(0xac68585b95a1886d));
+    }
+    physics_world_destroy(pw);
+}
+
+/* Third golden: a limited hinge. hinge_twist and the limit clamp go through
+ * math_atan2f; with the platform atan2f this scene's step-40 hash differed
+ * between glibc 2.39 and 2.44 (both x86-64). */
+TEST(limited_hinge_matches_the_cross_platform_golden_hashes)
+{
+    PhysicsWorld *pw = physics_world_create(8);
+    ASSERT_NOT_NULL(pw);
+    PhysicsBodyHandle a = physics_body_create(pw, vec3(0, 3, 0), vec3(0.2f, 0.2f, 0.2f), 0.0f, true, 0);
+    PhysicsBodyHandle b = physics_body_create(pw, vec3(0.4f, 3.5f, 0.1f), vec3(0.2f, 0.3f, 0.2f), 1.0f, false, 0);
+    PhysicsPose pose = {{{0.0f, 0.0f, 0.0f, 1.0f}}, {{0.3f, 2.1f, -0.2f}}, {{0.2f, 0.3f, 0.25f}}};
+    physics_body_set_pose(pw, b, &pose);
+    HingeDesc hinge;
+    memset(&hinge, 0, sizeof(hinge));
+    hinge.body_a = a;
+    hinge.body_b = b;
+    hinge.axis_local_a = vec3(0, 1, 0);
+    hinge.anchor_local_b = vec3(0, -0.5f, 0);
+    hinge.limit_min = -0.6f;
+    hinge.limit_max = 0.8f;
+    ASSERT_TRUE(physics_constraint_handle_is_valid(physics_constraint_add_hinge(pw, &hinge)));
+    for (u32 i = 0; i < 120u; i++) {
+        physics_step(pw, 1.0f / 60.0f);
+        if (i == 39u) ASSERT_EQ(physics_state_hash(pw), UINT64_C(0xc6a1515ccfdc775a));
+        if (i == 119u) ASSERT_EQ(physics_state_hash(pw), UINT64_C(0x933f43b684b50e2a));
     }
     physics_world_destroy(pw);
 }
@@ -238,4 +267,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(replay_decode_rejects_malformed_data);
     RUN_TEST(replay_scene_matches_the_cross_architecture_golden_hashes);
     RUN_TEST(spinning_body_matches_the_cross_architecture_golden_hashes);
+    RUN_TEST(limited_hinge_matches_the_cross_platform_golden_hashes);
 TEST_MAIN_END()

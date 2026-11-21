@@ -547,7 +547,7 @@ static void integrate_orientation(RigidBody *b, f32 dt) {
 static f32 hinge_twist(Quat qa, Quat qb, Vec3 axis_local) {
     Quat rel = quat_mul(quat_inverse(qa), qb);
     f32 dot = rel.e[0] * axis_local.e[0] + rel.e[1] * axis_local.e[1] + rel.e[2] * axis_local.e[2];
-    return 2.0f * atan2f(dot, rel.e[3]);
+    return 2.0f * math_atan2f(dot, rel.e[3]);
 }
 
 static void clamp_hinge(RigidBody *a, RigidBody *b, const DistanceConstraint *c) {
@@ -640,7 +640,7 @@ static void clamp_cone_twist(RigidBody *a, RigidBody *b, const DistanceConstrain
     Vec3 axis_b = quat_rotate_vec3(qb, c->cone_axis_b);
     Vec3 cross = vec3_cross(axis_b, axis_a);
     f32 sine = vec3_len(cross);
-    f32 angle = atan2f(sine, vec3_dot(axis_a, axis_b));
+    f32 angle = math_atan2f(sine, vec3_dot(axis_a, axis_b));
     if (angle > c->swing_max) {
         Vec3 axis = sine > 1e-8f ? vec3_scale(cross, 1.0f / sine) : cone_perpendicular(axis_a);
         cone_apply_angular_delta(a, b, axis, angle - c->swing_max);
@@ -654,7 +654,7 @@ static void clamp_cone_twist(RigidBody *a, RigidBody *b, const DistanceConstrain
     axis_a = quat_rotate_vec3(qa, c->hinge_axis);
     Quat rel = cone_relative_twist(c, qa, qb);
     Vec3 imag = vec3(rel.e[0], rel.e[1], rel.e[2]);
-    f32 twist = 2.0f * atan2f(vec3_dot(imag, c->hinge_axis), rel.e[3]);
+    f32 twist = 2.0f * math_atan2f(vec3_dot(imag, c->hinge_axis), rel.e[3]);
     if (twist > pi) twist -= 2.0f * pi;
     if (twist < -pi) twist += 2.0f * pi;
     if (twist > c->twist_max) {
@@ -1590,7 +1590,7 @@ void physics_step(PhysicsWorld *pw, f32 dt) {
         Quat rel = quat_mul(quat_inverse(qa), qb);
         Vec3 imag = vec3(rel.e[0], rel.e[1], rel.e[2]);
         f32 vlen = vec3_len(imag);
-        f32 angle = 2.0f * atan2f(vlen, rel.e[3]);
+        f32 angle = 2.0f * math_atan2f(vlen, rel.e[3]);
         Vec3 axis = vlen > 1e-8f ? quat_rotate_vec3(qa, vec3_scale(imag, 1.0f / vlen)) : vec3(0, 1, 0);
         f32 target_w = -torsion * angle / dt;
         f32 along = vec3_dot(b->angular_velocity, axis);

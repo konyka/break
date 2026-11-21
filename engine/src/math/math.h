@@ -139,6 +139,37 @@ static inline Quat quat_nlerp(Quat a, Quat b, f32 t) {
     return quat_normalize(r);
 }
 
+/* atan2 built only from IEEE + - * / and comparisons, so it rounds the same
+ * on every libm and architecture provided the including file is compiled
+ * with -ffp-contract=off (engine/CMakeLists.txt sets it for src/physics,
+ * src/math and tests/test_math.c); the platform atan2f differs by 1 ULP
+ * between glibc releases, which broke cross-machine physics lockstep.
+ * Octant reduction to t = min/max in [0, 1], then an odd polynomial; max
+ * error about 3.2e-7 rad. Signed zeros follow IEEE (the sign of y picks
+ * -0 or -pi); (inf, inf) returns NaN. Physics uses this for hinge,
+ * cone-twist and slider angles. */
+static inline f32 math_atan2f(f32 y, f32 x) {
+    f32 ax = fabsf(x);
+    f32 ay = fabsf(y);
+    f32 hi = ax > ay ? ax : ay;
+    f32 lo = ax > ay ? ay : ax;
+    if (hi == 0.0f) return signbit(y) ? -0.0f : 0.0f;
+    f32 t = lo / hi;
+    f32 t2 = t * t;
+    f32 p = -0.0040540580f;
+    p = p * t2 + 0.0218612288f;
+    p = p * t2 - 0.0559098861f;
+    p = p * t2 + 0.0964200441f;
+    p = p * t2 - 0.1390853351f;
+    p = p * t2 + 0.1994653599f;
+    p = p * t2 - 0.3332985605f;
+    p = p * t2 + 0.9999993329f;
+    f32 r = p * t;
+    if (ay > ax) r = 1.57079637f - r;
+    if (x < 0.0f) r = 3.14159274f - r;
+    return signbit(y) ? -r : r;
+}
+
 static inline Quat quat_from_axis_angle(Vec3 axis, f32 angle) {
     f32 l = vec3_len(axis);
     if (l <= 1e-6f) return QUAT_IDENTITY;

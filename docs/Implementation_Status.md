@@ -1,3 +1,15 @@
+## 物理角度函数改用确定性 `math_atan2f`，铰链在不同 glibc 间逐位一致（2026-11-21）
+
+- **问题**：上一条记录的剩余缺口。物理的 hinge、cone-twist、slider 约束用平台 `atan2f` 计算角度，而 glibc 2.39 与 2.44 的 `atan2f` 实测有 1 ULP 差异。一个带限位的铰链场景在两台 x86-64 机器上第 40 步哈希不同：glibc 2.44（Fedora）为 `933f43b684b50e2a`，glibc 2.39（Ubuntu x86-64 与 arm64）为 `c6a1515ccfdc775a`；240 步内调用 `atan2f` 960 次。
+- **修复**：`engine/src/math/math.h` 新增 `math_atan2f`，只用 IEEE 加减乘除与比较实现（按八分区化为 `t = min/max ∈ [0,1]` 后求奇次多项式），因此在任何 libm 与架构上舍入结果相同；`engine/src/physics/physics.c` 的四处 `atan2f` 全部改用它。物理与数学源码已有 `-ffp-contract=off`，多项式不会被融合成 FMA。
+- **精度**：与双精度 `atan2` 的最大误差约 3.2e-7 弧度（评审以 1 亿点扫描测得；平台 `atan2f` 约 1.2e-7），单次调用约 3.9 纳秒（glibc `atan2f` 约 8.3 纳秒）；象限、坐标轴、`(0,0)` 与带符号零均有断言：`y` 为 `-0` 时按 IEEE 返回 `-π` 或 `-0`（首版用 `y < 0` 判号，`(-0,-1)` 返回 `+π`，新增断言先 RED 后改用 `signbit` GREEN），避免 `hinge_twist` 的 `2·atan2` 在 `-0` 上跳变 2π。
+- **FMA 收缩**：`math_atan2f` 是头文件内联函数，按包含它的文件的编译选项编译；`engine/CMakeLists.txt` 把 `tests/test_math.c` 加入 `-ffp-contract=off` 源文件列表。固定位用例加入 `(0.3, 0.8)`，它在收缩时舍入为 `…c9` 而非 `…ca`，并以 `volatile` 输入防止编译期常量折叠：从列表中移除 `test_math.c` 后以 Clang Release `-march=x86-64-v3 -ffp-contract=fast` 构建，该用例失败（RED），恢复后通过（GREEN）。首版用例因编译期折叠而无法发现收缩。
+- **TDD**：`test_math` 新增精度与逐位固定两个用例（四个输入的位模式在 Fedora GCC/Clang、Ubuntu x86-64 与 arm64 上相同，100 万点扫描的哈希也相同）。`test_physics_replay` 新增 `limited_hinge_matches_the_cross_platform_golden_hashes`：在 Fedora 上把物理暂时改回平台 `atan2f` 时第 40 步失败（RED），改用 `math_atan2f` 后通过（GREEN）；Ubuntu x86-64 与 arm64 QEMU 也通过。
+- **验证**：原生全量 456 项零失败，4 个既有平台用例跳过；干净 Ubuntu 24.04 容器中 arm64 的 math、physics、physics_replay（含三个金标准）、physics_sync、hinge、cone-twist、slider、ragdoll 与 core_app 模拟/往返生命周期 10/10 通过。
+- **独立评审**：结论可合入，无 Critical。评审核实 `math_atan2f` 在各象限、坐标轴、±inf 与次正规输入上正确，八分区边界单调；带符号零的差异只影响 `hinge_twist` 在 `q_b = -q_a` 时的极限选择，并已按 IEEE 修正；NaN 透传，`(inf, inf)` 返回 NaN，物理输入受单位四元数约束。物理文件在所有目标中都带 `-ffp-contract=off`。已采纳的 Important：文档中“只有 sinf/cosf 来自 libm”“tanf 不影响物理”不准确，已改正；固定位用例原先无法捕获 FMA 收缩，已加入敏感输入与 `volatile`。Minor：误差数字改为约 3.2e-7，头文件注释写明需要 `-ffp-contract=off` 以及带符号零与 `(inf, inf)` 的行为，记录了 `test_math.c` 加入 CMake 列表，并注明铰链金标准只在 glibc 2.44 主机上能检出回退。
+- **前一提交的远端结果**：带旋转金标准的提交 `cab7abb5` 在 [CI run 44901559354](https://github.com/konyka/break/actions/runs/44901559354) 与 [Windows D3D12 run 44901559278](https://github.com/konyka/break/actions/runs/44901559278) 上均为 `completed / success`，即 `sinf`/`cosf` 路径在 macOS（Apple libm）、Windows（MSVC CRT、MinGW）与 Linux 上都得到相同哈希。
+- **仍未覆盖**：物理中仍依赖平台 libm 的有 `quat_from_axis_angle` 的 `sinf`/`cosf`（已在三个本地环境与 CI 各平台上一致，但无形式保证）、`soft_body.c` 创建软体时的 `sinf`/`cosf`，以及 `vehicle.c` 中常量参数的 `tanf(0.55f)`（编译期可折叠）。铰链金标准第 40 步与 glibc 2.39 上旧实现的结果相同，因此在 Ubuntu 24.04 CI 上回退到平台 `atan2f` 不会被发现，只有 glibc 2.44 主机能检出；第 120 步为最终静止状态，对修复不敏感。
+
 ## 物理在 x86-64 与 arm64 上逐位一致：`fast_rsqrt` 改为正确舍入（2026-11-21）
 
 - **问题**：`missing_capabilities.md` 记录的缺口之一是跨架构物理确定性。实测同一物理场景在 x86-64 与 arm64 上第 35 步起状态哈希不同；在无 FMA 的 x86-64 基线上与 `-ffp-contract` 无关。

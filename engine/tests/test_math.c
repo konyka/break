@@ -1,4 +1,5 @@
 #include "test_framework.h"
+#include <string.h>
 #include <math/math.h>
 #include <math.h>
 #include <float.h>
@@ -621,6 +622,56 @@ TEST(mat4_inv_perspective_extreme_fov) {
             ASSERT_TRUE(isfinite(ip.e[c][r]));
 }
 
+/* math_atan2f is the physics angle function. It is built only from IEEE
+ * + - * / and comparisons, so it gives the same bits on every libm: the
+ * platform atan2f differs by 1 ULP between glibc 2.39 and 2.44, which made
+ * hinge scenes diverge across machines. */
+TEST(math_atan2f_is_accurate_in_every_quadrant) {
+    static const f32 ys[] = {0.0f, 1e-6f, 0.1f, 0.5f, 1.0f, 2.0f, 37.0f, -0.3f, -1.0f, -5.0f};
+    static const f32 xs[] = {1.0f, 0.7f, 1e-7f, -0.2f, -1.0f, -9.0f, 0.0f, 3.0f};
+    double worst = 0.0;
+    for (u32 i = 0; i < sizeof(ys) / sizeof(ys[0]); i++) {
+        for (u32 j = 0; j < sizeof(xs) / sizeof(xs[0]); j++) {
+            double want = atan2((double)ys[i], (double)xs[j]);
+            double err = fabs((double)math_atan2f(ys[i], xs[j]) - want);
+            if (err > worst) worst = err;
+        }
+    }
+    ASSERT_TRUE(worst < 4e-7);
+    ASSERT_FLOAT_EQ(math_atan2f(0.0f, -1.0f), 3.14159265f, 1e-6f);
+    ASSERT_FLOAT_EQ(math_atan2f(1.0f, 0.0f), 1.57079633f, 1e-6f);
+    ASSERT_FLOAT_EQ(math_atan2f(-1.0f, 0.0f), -1.57079633f, 1e-6f);
+    ASSERT_TRUE(math_atan2f(0.0f, 0.0f) == 0.0f);
+    /* signed zero follows IEEE atan2: the sign of y picks +pi or -pi, so
+     * 2*atan2(dot, w) in hinge_twist cannot jump by 2*pi on a -0 dot */
+    ASSERT_FLOAT_EQ(math_atan2f(-0.0f, -1.0f), -3.14159265f, 1e-6f);
+    ASSERT_TRUE(signbit(math_atan2f(-0.0f, 1.0f)) != 0);
+    ASSERT_TRUE(signbit(math_atan2f(0.0f, 1.0f)) == 0);
+}
+
+/* Pinned bits: a change to the coefficients or the evaluation order, or FMA
+ * contraction of the polynomial, shows up here on every architecture rather
+ * than only as a cross-machine physics divergence. */
+TEST(math_atan2f_bits_are_pinned) {
+    /* (0.3, 0.8) rounds to ...c9 instead of ...ca when the Horner chain is
+     * contracted into FMA, so this test also catches a missing
+     * -ffp-contract=off on this file. */
+    static const f32 in[][2] = {{0.1f, 0.7f}, {0.5f, -0.2f}, {-1.0f, 3.0f}, {2.0f, 1e-7f},
+                                {0.3f, 0.8f}};
+    static const u32 want[] = {0x3e114d75u, 0x3ff9c44au, 0xbea4bc7eu, 0x3fc90fdbu,
+                               0x3eb7b0cau};
+    for (u32 i = 0; i < sizeof(want) / sizeof(want[0]); i++) {
+        /* volatile keeps the compiler from folding the call at build time,
+         * which would hide how the runtime code is compiled */
+        volatile f32 y = in[i][0];
+        volatile f32 x = in[i][1];
+        f32 r = math_atan2f(y, x);
+        u32 bits;
+        memcpy(&bits, &r, sizeof(bits));
+        ASSERT_EQ(bits, want[i]);
+    }
+}
+
 TEST_MAIN_BEGIN()
     /* R438: layout characterization */
     RUN_TEST(mat4_lookat_canonical_layout);
@@ -680,4 +731,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(quat_normalize_zero);
     RUN_TEST(vec3_len_large_values);
     RUN_TEST(mat4_perspective_extreme_aspect);
+    RUN_TEST(math_atan2f_is_accurate_in_every_quadrant);
+    RUN_TEST(math_atan2f_bits_are_pinned);
 TEST_MAIN_END()
