@@ -7609,6 +7609,12 @@ endif()
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_physics_determinism_contract.cmake)
     set_tests_properties(test_physics_determinism_contract PROPERTIES
         LABELS "headless;physics;platform_contract")
+    add_test(NAME test_main_physics_dispatch_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DENGINE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_main_physics_dispatch_contract.cmake)
+    set_tests_properties(test_main_physics_dispatch_contract PROPERTIES
+        LABELS "headless;physics;platform_contract")
 
     add_executable(test_physics_sync tests/test_physics_sync.c src/physics/physics_sync.c
         src/physics/physics.c src/physics/bvh.c src/math/math.c src/core/log.c)

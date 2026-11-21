@@ -55,6 +55,7 @@
 #include <ecs/ecs_system.h>
 #include <physics/physics.h>
 #include <physics/character.h>
+#include <physics/physics_task.h>
 #include <task/task.h>
 #include <audio/audio.h>
 #include <audio/audio_stream.h>
@@ -5195,6 +5196,9 @@ int engine_demo_main(int argc, char **argv, const EngineConfig *host_config) {
     }
 
     TaskSystem *tasks = task_system_create(2);
+    /* Contacts and integration run on the workers once the scene is large
+     * enough (bit-identical to the serial step); detached before shutdown. */
+    if (tasks) physics_world_set_parallel_for(physics, physics_task_parallel_for, tasks, PHYSICS_MAX_PARALLEL_JOBS);
     /* Single alloc: instance_data (f32[]) + unified_udc_buf (GPUCullDrawCmd[]) + unified_uobj_buf (GPUCullObject[]) */
     #define INSTANCE_DATA_CAP 10000
     usize id_bytes = (usize)INSTANCE_DATA_CAP * 32 * sizeof(f32);
@@ -11826,6 +11830,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
     motion_history_destroy(&node_motion_history);
     motion_history_destroy(&entity_motion_history);
     LOG_INFO("  world done");
+    physics_world_set_parallel_for(physics, NULL, NULL, 0u);
     task_system_destroy(tasks);
     free(render_buf); /* single free: instance_data + unified_udc_buf + unified_uobj_buf */
     free(inst_mesh_idx); /* R445 */

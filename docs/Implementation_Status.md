@@ -1,3 +1,10 @@
+## 主循环启用物理并行调度器（2026-11-22）
+
+- **问题**：并行接触求解和并行积分都已实现，但引擎主循环从未设置调度器，实际运行时始终串行。
+- **实现**：`engine/src/main.c` 创建 `TaskSystem` 后挂接 `physics_task_parallel_for`，在 `task_system_destroy` 前解除。是否并行仍由阈值决定（配对 4096、刚体 8192），结果与串行逐位相同。设计见 `docs/design/physics_extended.md`「主循环启用物理并行调度器」。
+- **TDD**：新增源码契约 `test_main_physics_dispatch_contract`（CMake 脚本，标签 `headless;physics;platform_contract`）。改动前失败 3 项：缺少头文件、未挂接、未解除；改动后通过。把解除移到 `task_system_destroy` 之后的变异会被检出。
+- **验证**：Wayland 上真实运行 `engine_demo --frames 120`：退出码 0，日志显示 18 个物理刚体，`tasks done` 与 `physics done` 都正常打印。原生全量 464/464 通过。
+
 ## MSVC 构建修复：任务追踪类型前置声明（2026-11-22）
 
 - `06431ad1` 在 `TaskSystem` 中声明 `_Atomic(struct TaskTraceLog *) trace`。MSVC `/W4 /WX` 把括号内首次出现的结构体名视为警告 C4115 并当作错误，Windows + MSVC (headless) 作业 136978477742 失败。`engine/src/task/task.h` 改为先 `typedef struct TaskTraceLog TaskTraceLog;`，字段写成 `_Atomic(TaskTraceLog *)`。gcc 与 clang 在 `-Wall -Wextra -Werror -pedantic` 下通过，原生全量 463/463 通过；本地没有 MSVC，以远端作业为准。

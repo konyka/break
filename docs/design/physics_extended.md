@@ -209,3 +209,7 @@ hinge、cone-twist、slider 约束的角度原先由平台 `atan2f` 计算，gli
 积分前的 refit 仍然串行。它只被 CCD 扫掠读取，而有 CCD 刚体时积分本就串行，拆到 job 上收益很小，也无法用测试区分对错。
 
 在 16 线程 x86-64 上，刚体全部醒着且无接触时，每步耗时如下（串行 → 并行）：2048 个刚体 0.128 → 0.129 ms，8192 个 0.540 → 0.468 ms，32768 个 2.725 → 2.267 ms。剩余时间主要是串行的积分前 refit、内部节点 refit、配对查询和步末的 kill-floor 与睡眠检查。`test_physics_parallel` 新增 5 例：逆序 job 下 240 步逐位一致且每步只派发一次；在 `TaskSystem` worker 上逐位一致；醒着的 CCD 刚体使积分保持串行；带 CCD 刚体时接触并行、积分串行，仍逐位一致；默认阈值使测试场景保持串行。世界比较另外包含所有 BVH 节点的包围盒。
+
+### 追加：主循环启用物理并行调度器（2026-11-22）
+
+`engine/src/main.c` 在创建 `TaskSystem` 后调用 `physics_world_set_parallel_for(physics, physics_task_parallel_for, tasks, PHYSICS_MAX_PARALLEL_JOBS)`，在 `task_system_destroy` 前调用 `physics_world_set_parallel_for(physics, NULL, NULL, 0u)` 解除。接触求解和积分是否真的并行仍由各自的阈值决定（配对数 4096、刚体数 8192），并行结果与串行逐位相同。演示场景只有 18 个刚体，所以现在仍是串行；场景变大后会自动使用 worker。源码契约 `test_main_physics_dispatch_contract` 检查三件事：包含了 `physics/physics_task.h`；挂接位于 `task_system_create` 之后、第一次 `physics_step` 之前；解除位于 `task_system_destroy` 之前。
