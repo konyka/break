@@ -1788,9 +1788,9 @@ if(FAULT_SUPPORTED AND NOT CORE_APP_RUNNER)
         record_error("io_second_wait_fail: frames continued after the fatal wait: ${blocked_trace}")
     endif()
 elseif(FAULT_SUPPORTED)
-    # qemu-user passes the environment through, so the host loader sees the
-    # arm64 preload (and warns) before the guest loader would apply it; the
-    # stderr checks and the fault hooks are unverified under emulation.
+    # Measured under qemu-aarch64: ld.so reports the arm64 preload as
+    # "cannot be preloaded ... ignored", the fault hooks never fire and all
+    # five fault scenarios fail, so the block only runs natively.
     message(STATUS "UNVERIFIED: LD_PRELOAD lifecycle fault injection is skipped under CORE_APP_RUNNER")
 else()
     message(STATUS "UNVERIFIED: LD_PRELOAD lifecycle fault injection requires Linux")
