@@ -1,3 +1,10 @@
+## arm64 Compose/myui 集成、渲染 CPU 路径与扩展输入和二百一十二项 CTest（2026-11-21）
+
+- **最小场景**：新增七个既有纯 CPU 可执行目标：`test_mycompose_myui` 18、`test_mycompose_widget_primitives` 7、`test_render_features` 4、`test_rt_trace` 2、`test_rhi_tlas_instance_encode` 2、`test_rhi_metal_format_mapping` 5、`test_input_extended` 21 例，共 59 例。两个 Compose/myui 测试使用 dummy PAL 的无头窗口对象；rt_trace 链接 `engine_rhi_headless`；Metal 格式映射在非 Apple 构建中只编译五个平台无关用例；input_extended 使用线程但不设置 CPU 亲和性。均不 fork、不连接显示服务器、不用 GPU 或真实设备。
+- **RED 与精确选择**：旧 workflow 在 `missing ui/render cpu build targets` 处 RED。真实原生集合从 205 增至 212，差集恰为这七项；`test_input_extended_single_cpu`、`test_rhi_device_type`、`test_rhi_native`、C++20 对等层、GPU Compose、`test_packer_roundtrip` 及同名前缀扩展均被拒绝。完整表达式维持 31 个捕获组，契约检查组数、`Too many parentheses` 输出和严格集合差。CI 与 Build_Guide 的构建和测试命令逐字一致。
+- **原生与 focused 验证**：原生七项 7/7，计数 18/7/4/2/2/5/21；干净 Ubuntu 24.04 容器 arm64 七项 7/7，计数一致，QEMU 8.2.2。原生全量 456 项零失败，4 个既有平台用例跳过，CTest 165.06 秒。未修改产品或测试源码。
+- **覆盖缺口**：单核亲和性输入变体、Vulkan 设备类型探测、GPU 渲染与光追硬件、真实输入设备不在本切片内。
+
 ## arm64 CVar/XML、着色器 I/O 与编辑器 flow/image 和二百零五项 CTest（2026-11-21）
 
 - **最小场景**：新增五个既有纯 CPU 可执行目标：`test_break_cvar` 12、`test_break_xml` 13、`test_editor_flow` 3、`test_editor_image` 7、`test_shader_io` 59 例，共 94 例。CVar 与 XML 链接可选库 `break_system`（lane 已构建 `break_integrity`，该库因此已配置）；flow 与 image 链接 `break_editor_test`；shader I/O 只编入 `shader_io.c` 与 `log.c`。均不 fork、不起线程、不加载插件、不读环境变量。
