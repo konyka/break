@@ -46,3 +46,20 @@ OFFER 和 COMMIT 重传到得到回应为止，ACCEPT 重传到记录被提交�
 变异检查。以下变异均被检出：COMMITTING 仍算权威、忽略 COMMIT 的 nonce、提交时不加 epoch、COMMITTING 收到任何 OFFER 都释放、陈旧 OFFER 替换活动记录、对已提交事务的任何 ACCEPT 都不回 ABORT、收到无法使用的 ACCEPT 时不回 ABORT、COMMIT 不带状态。有两处未被检出，原因已核实：
 - ABORT 的 nonce 检查：带 nonce 的 ABORT 只会遇到同一事务的陈旧记录，删除它同样安全，所以这项检查只是防御性的；
 - 把“epoch 不低于”改为“高于”：只影响释放的快慢，不影响正确性（见上文）。
+
+## 分区（2026-11-22）
+
+`BreakCellPartition`（`engine/src/network/break_cell_partition.{h,c}`，属于 `break_replication_core`）把 XZ 平面划分为均匀网格。cell id 按行优先排列，即 `行 * 列数 + 列`，x 增大时列号增大，z 增大时行号增大。每个 cell 在两个轴上都覆盖左闭右开区间 `[min + i * size, min + (i + 1) * size)`。网格外的位置归最近的边缘 cell，所以每个位置恰好属于一个 cell，边缘 cell 永远不会把实体迁出网格。坐标不是有限值时映射到第 0 列或第 0 行。
+
+`break_cell_partition_migrate_target(p, current, x, z, hysteresis)` 决定权威 cell 何时发起交接：实体到当前 cell 矩形的欧氏距离超过 `hysteresis` 时，才返回 `locate` 的结果，否则返回 `current`。所以在边界附近来回移动的实体不会被反复交接。`hysteresis` 为 0 时完全按 `locate` 判定。位置不是有限值时不迁移。当前 cell 未知，或 `hysteresis` 为负或非有限时，退回 `locate`。
+
+调用方式：权威 cell 每次更新实体位置后调用一次；返回值与当前 cell 不同时，调用 `break_cell_begin_handoff`。分区是普通值类型，不分配内存，只读访问是线程安全的。
+
+测试 `test_break_cell_partition`（5 例）：
+- 行优先映射、左闭右开边界、越界钳制与非有限坐标；
+- 非法网格参数，包括 cell 总数溢出；
+- 滞后带：恰好等于阈值时不迁移，对角方向按欧氏距离计算，阈值为 0 时与 `locate` 一致，网格外缘不迁出，非有限位置不迁移；
+- 端到端：实体沿直线穿过 3 个 cell，由 `BreakCell` 交接两次，最终归第 3 个 cell，始终只有一个权威；
+- 在边界两侧 0.8 范围内来回抖动（阈值 1.0）200 步，没有发生任何交接。
+
+变异检查（均被检出）：去掉滞后、按轴判定代替欧氏距离、阈值比较改为严格小于、边界越界判定差一、非有限位置照常迁移。分区只处理二维均匀网格；按负载拆分或合并 cell 尚未实现。

@@ -1,3 +1,10 @@
+## Cell 分区与滞后迁移（2026-11-22）
+
+- **实现**：新增 `engine/src/network/break_cell_partition.{h,c}`，加入 `break_replication_core`（该库在非 Windows 平台上同时链接 `m`）。均匀网格把 XZ 位置映射到行优先的 cell id，越界的位置钳制到边缘 cell。`break_cell_partition_migrate_target` 只在实体到当前 cell 的欧氏距离超过滞后阈值时，才返回新的 cell。设计见 `docs/design/cell_handoff.md`「分区」。
+- **TDD**：新增 `test_break_cell_partition`（5 例），先确认链接失败 25 处。第一版实现在阈值为 0 时与 `locate` 的左闭右开边界不一致，被测试发现并修正。端到端用例让 `BreakCell` 根据分区结果交接：直线行走两次交接，边界抖动 200 步零交接。
+- **变异检查**：第一轮有 3 个未被检出：外缘轴的“开放”标记（与钳制后的 `locate` 等价，已删除这段代码）、非有限位置的守卫（补了一个不在第 0 行或第 0 列的用例）、负坐标取整方式（与钳制等价）。修正后其余变异均被检出：去掉滞后、按轴判定、严格比较、边界差一、非有限位置迁移。
+- **验证**：原生全量 467/467 通过；arm64 lane 加入 `test_break_cell_partition`（选择数 272）。
+
 ## 跨 cell authority 交接（2026-11-22）
 
 - **问题**：大世界缺口中的“跨分区 authority handoff”没有任何实现：AoI 能决定谁看见什么，但实体从一个 cell 交给另一个 cell 时，没有协议保证不会同时出现两个权威、不会丢失写入。
