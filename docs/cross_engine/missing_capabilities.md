@@ -449,3 +449,4 @@
 - **无头 world 验证追加**：2026-11-22 time_of_day、decal、road、voxel、world_stream、vegetation、visarea、mesh_stage、world_stream_job 都补到 3~5 例，期间修复 `visarea_visible` 对 NULL 房间数组的读取崩溃。上文「十项只有单个用例」中九项由此关闭；`test_mesh_gpu` 的上传与绘制需要真实设备，保持单个无头用例。仍缺：GPU 呈现与真实设备渲染的 arm64 验证。
 - **规则引擎验证追加**：2026-11-22 arm64 lane 打开 `RULE_ENGINE_ENABLE_C11_PARALLEL`，C11 并行执行器压力测试与 `rule_engine_fuzz_smoke` 在 arm64 上运行。上文「C11 并行执行器压力测试与 fuzz 的 arm64 运行」由此关闭。仍缺：Redis 路径、大规则集性能。
 - **规则引擎验证追加**：2026-11-22 `rule_engine_bench` 新增 100/300/1000 条规则场景。冷加载与规则数成线性，热求值约为 n²（1000 条规则单次约 390 ms），原因是每次触发后重新求值全部已见规则。上文「大规则集性能」由此有了测量；仍缺：按读集增量重算以消除 n² 增长、Redis 路径。
+- **规则引擎验证追加**：2026-11-22 议程已触发键改为哈希索引查找，1000 条规则单次求值由约 390 ms 降至约 225 ms，去重语义不变。仍缺：按读集增量重算、`retracted_root` 线性扫描事实、Redis 路径。

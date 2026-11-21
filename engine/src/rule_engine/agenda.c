@@ -26,6 +26,67 @@ static int entry_matches(const re_agenda_entry_internal_t *entry, size_t rule_in
            memcmp(entry->premises, sorted, premise_count * sizeof(*sorted)) == 0;
 }
 
+static uint64_t entry_key_hash(size_t rule_index, const re_fact_id_t *sorted, size_t premise_count) {
+    uint64_t hash = 1469598103934665603ull;
+    size_t i;
+    hash = (hash ^ (uint64_t)rule_index) * 1099511628211ull;
+    hash = (hash ^ (uint64_t)premise_count) * 1099511628211ull;
+    for (i = 0u; i < premise_count; ++i) {
+        hash = (hash ^ sorted[i].slot) * 1099511628211ull;
+        hash = (hash ^ sorted[i].generation) * 1099511628211ull;
+    }
+    return hash ^ (hash >> 29);
+}
+
+static void fired_index_insert(re_agenda_t *agenda, size_t fired_pos) {
+    const re_agenda_entry_internal_t *entry = &agenda->fired[fired_pos];
+    size_t mask = agenda->fired_index_cap - 1u;
+    size_t at = (size_t)entry_key_hash(entry->rule_index, entry->premises, entry->premise_count) & mask;
+    while (agenda->fired_index[at] != 0u) at = (at + 1u) & mask;
+    agenda->fired_index[at] = fired_pos + 1u;
+}
+
+/* Keeps the index able to hold fired_count + 1 keys at most half full. On
+ * allocation failure the index is dropped and lookups fall back to the
+ * linear scan, so correctness never depends on it. */
+static void fired_index_reserve(re_agenda_t *agenda) {
+    size_t need = (agenda->fired_count + 1u) * 2u;
+    size_t cap;
+    size_t i;
+    size_t *grown;
+    if (agenda->fired_index != NULL && agenda->fired_index_cap >= need) return;
+    cap = agenda->fired_index_cap != 0u ? agenda->fired_index_cap : 16u;
+    while (cap < need) {
+        if (cap > (size_t)-1 / 2u / sizeof(size_t)) { cap = 0u; break; }
+        cap *= 2u;
+    }
+    grown = cap != 0u ? re_alloc(&agenda->allocator, cap * sizeof(*grown)) : NULL;
+    re_free(&agenda->allocator, agenda->fired_index);
+    agenda->fired_index = grown;
+    agenda->fired_index_cap = grown != NULL ? cap : 0u;
+    if (grown == NULL) return;
+    memset(grown, 0, cap * sizeof(*grown));
+    for (i = 0u; i < agenda->fired_count; ++i) fired_index_insert(agenda, i);
+}
+
+static int fired_contains(const re_agenda_t *agenda, size_t rule_index,
+                          const re_fact_id_t *sorted, size_t premise_count) {
+    size_t i;
+    if (agenda->fired_index != NULL) {
+        size_t mask = agenda->fired_index_cap - 1u;
+        size_t at = (size_t)entry_key_hash(rule_index, sorted, premise_count) & mask;
+        while (agenda->fired_index[at] != 0u) {
+            if (entry_matches(&agenda->fired[agenda->fired_index[at] - 1u], rule_index, sorted,
+                              premise_count)) return 1;
+            at = (at + 1u) & mask;
+        }
+        return 0;
+    }
+    for (i = 0u; i < agenda->fired_count; ++i)
+        if (entry_matches(&agenda->fired[i], rule_index, sorted, premise_count)) return 1;
+    return 0;
+}
+
 static re_status_t grow_entries(const re_allocator_impl_t *allocator,
                                 re_agenda_entry_internal_t **entries, size_t *capacity) {
     size_t grown_cap;
@@ -60,6 +121,7 @@ void re_agenda_destroy_internal(re_agenda_t *agenda) {
     if (agenda == NULL) return;
     re_free(&agenda->allocator, agenda->pending);
     re_free(&agenda->allocator, agenda->fired);
+    re_free(&agenda->allocator, agenda->fired_index);
     re_free(&agenda->allocator, agenda);
 }
 
@@ -72,19 +134,18 @@ void re_agenda_reset(re_agenda_t *agenda) {
     if (agenda == NULL) return;
     agenda->pending_count = 0u;
     agenda->fired_count = 0u;
+    if (agenda->fired_index != NULL)
+        memset(agenda->fired_index, 0, agenda->fired_index_cap * sizeof(*agenda->fired_index));
 }
 
 int re_agenda_refracted(const re_agenda_t *agenda, size_t rule_index,
                         const re_fact_id_t *premises, size_t premise_count) {
     re_fact_id_t sorted[RE_AGENDA_MAX_PREMISES];
-    size_t i;
     if (agenda == NULL || premise_count > RE_AGENDA_MAX_PREMISES) return 0;
     if (premise_count != 0u && premises == NULL) return 0;
     if (premise_count != 0u) memcpy(sorted, premises, premise_count * sizeof(*sorted));
     sort_premises(sorted, premise_count);
-    for (i = 0u; i < agenda->fired_count; ++i)
-        if (entry_matches(&agenda->fired[i], rule_index, sorted, premise_count)) return 1;
-    return 0;
+    return fired_contains(agenda, rule_index, sorted, premise_count);
 }
 
 re_status_t re_agenda_push(re_agenda_t *agenda, size_t rule_index, int32_t salience,
@@ -107,9 +168,7 @@ re_status_t re_agenda_push_full(re_agenda_t *agenda, size_t rule_index, int32_t 
     for (i = 0u; i < agenda->pending_count; ++i)
         if (entry_matches(&agenda->pending[i], rule_index, sorted, premise_count))
             return RE_STATUS_OK;
-    for (i = 0u; i < agenda->fired_count; ++i)
-        if (entry_matches(&agenda->fired[i], rule_index, sorted, premise_count))
-            return RE_STATUS_OK;
+    if (fired_contains(agenda, rule_index, sorted, premise_count)) return RE_STATUS_OK;
     if (agenda->pending_count == agenda->pending_cap) {
         re_status_t status = grow_entries(&agenda->allocator, &agenda->pending,
                                           &agenda->pending_cap);
@@ -137,7 +196,9 @@ re_status_t re_agenda_mark_fired(re_agenda_t *agenda, const re_agenda_entry_inte
                                           &agenda->fired_cap);
         if (status != RE_STATUS_OK) return status;
     }
+    fired_index_reserve(agenda);
     agenda->fired[agenda->fired_count++] = *entry;
+    if (agenda->fired_index != NULL) fired_index_insert(agenda, agenda->fired_count - 1u);
     return RE_STATUS_OK;
 }
 

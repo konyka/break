@@ -1715,7 +1715,42 @@ TEST(focus_stack_survives_persistent_agenda_across_runs) {
     re_engine_destroy(engine);
 }
 
+/* Refraction stays exact past many fired keys: the fired-key index grows
+ * several times, every fired key still blocks a re-push (in any premise
+ * order), distinct keys still enter, and reset forgets them all. */
+TEST(agenda_refraction_holds_across_index_growth_and_reset) {
+    re_agenda_t *agenda = NULL;
+    ASSERT_EQ(re_agenda_create_internal(NULL, &agenda), RE_STATUS_OK);
+    for (uint64_t i = 0; i < 3000u; i++) {
+        re_fact_id_t premises[2] = {{i, 7u}, {i + 1u, 9u}};
+        re_agenda_entry_internal_t entry;
+        ASSERT_EQ(re_agenda_push(agenda, i % 13u, 0, premises, 2u), RE_STATUS_OK);
+        ASSERT_TRUE(re_agenda_pop_highest(agenda, &entry));
+        ASSERT_EQ(re_agenda_mark_fired(agenda, &entry), RE_STATUS_OK);
+    }
+    ASSERT_EQ(agenda->fired_count, (size_t)3000u);
+    for (uint64_t i = 0; i < 3000u; i += 37u) {
+        re_fact_id_t reversed[2] = {{i + 1u, 9u}, {i, 7u}};
+        ASSERT_TRUE(re_agenda_refracted(agenda, i % 13u, reversed, 2u));
+        ASSERT_EQ(re_agenda_push(agenda, i % 13u, 0, reversed, 2u), RE_STATUS_OK);
+        ASSERT_EQ(agenda->pending_count, 0u);
+        /* same premises under another rule, or another generation, are new */
+        ASSERT_FALSE(re_agenda_refracted(agenda, (i % 13u) + 13u, reversed, 2u));
+        re_fact_id_t other[2] = {{i, 8u}, {i + 1u, 9u}};
+        ASSERT_FALSE(re_agenda_refracted(agenda, i % 13u, other, 2u));
+    }
+    re_fact_id_t none[1] = {{0u, 0u}};
+    ASSERT_FALSE(re_agenda_refracted(agenda, 99u, none, 0u));
+    re_agenda_reset(agenda);
+    re_fact_id_t first[2] = {{0u, 7u}, {1u, 9u}};
+    ASSERT_FALSE(re_agenda_refracted(agenda, 0u, first, 2u));
+    ASSERT_EQ(re_agenda_push(agenda, 0u, 0, first, 2u), RE_STATUS_OK);
+    ASSERT_EQ(agenda->pending_count, 1u);
+    re_agenda_destroy_internal(agenda);
+}
+
 TEST_MAIN_BEGIN()
+    RUN_TEST(agenda_refraction_holds_across_index_growth_and_reset);
     RUN_TEST(agenda_create_destroy);
     RUN_TEST(agenda_push_dedups_pending_order_insensitive);
     RUN_TEST(agenda_pop_orders_by_salience_then_sequence);

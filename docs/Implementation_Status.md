@@ -1,3 +1,11 @@
+## 规则引擎已触发键哈希索引（2026-11-22）
+
+- **问题**：上一条测量显示，1000 条规则的单次求值约 390 ms，gprof 中 `re_agenda_push_full` 占 27%。每次推入激活都线性扫描全部已触发键，做去重（refraction）判断；一次运行有约 3.7 万次推入、500 个已触发键。
+- **修复**：`re_agenda_t` 新增对 `fired[]` 的开放寻址哈希索引（`fired_index`，FNV 风格的键哈希，覆盖规则号、前提数与排序后的前提 (slot, generation)）。`re_agenda_push_full` 与 `re_agenda_refracted` 改为查索引，`re_agenda_mark_fired` 在追加时维护索引，容量保持至少为已触发数的两倍，`re_agenda_reset` 清空索引，`re_agenda_destroy_internal` 释放索引。索引分配失败时退回线性扫描，正确性不依赖索引。待处理（pending）列表仍线性扫描，它在每次弹出后都会缩短。键比较仍用原有的 `entry_matches`，所以去重语义完全不变。
+- **效果**：`rule_engine_bench` 的 large_1000 单次热求值由约 390 ms 降至约 225 ms，large_300 由 27 ms 降至 22 ms。小规则集不受影响（sparse、dense 与修改前相同）。剩余时间主要在条件求值（`bound_fact_path` 23%、`retracted_root` 16%），仍随“规则数 × 触发次数”增长。
+- **TDD**：`test_rule_engine_agenda` 新增 `agenda_refraction_holds_across_index_growth_and_reset`：3000 个已触发键使索引多次扩容，抽样确认每个键在任意前提顺序下都被拒绝推入，换规则号或换 generation 的键不被误判，reset 后全部遗忘。变异检查：reset 不清索引（3 例失败，包括已有用例 `agenda_clear_pending_keeps_fired_reset_clears_both`）；索引只比较规则号、哈希漏掉最后一个前提（5 例失败）。`test_rule_engine_agenda` 共 46 例，ASan/UBSan 干净；C11 并行执行器压力测试通过；原生 CTest 459/459。
+- **仍缺**：按读集增量重算（只重新求值读到被写入事实的规则），以及 `retracted_root` 每次线性扫描全部事实的问题。
+
 ## 规则引擎大规则集基准与扩展性测量（2026-11-22）
 
 - **问题**：`missing_capabilities.md` 规则引擎验证条目记录“大规则集性能”未知。原 `rule_engine_bench` 只有 2 条和 5 条规则的场景。

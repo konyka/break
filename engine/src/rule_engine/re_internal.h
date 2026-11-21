@@ -447,6 +447,11 @@ struct re_agenda_t {
     re_agenda_entry_internal_t *fired;
     size_t fired_count;
     size_t fired_cap; /* refraction keys */
+    /* Open-addressing index over fired[] (slot = fired index + 1, 0 empty),
+     * so a push or refraction probe does not scan every fired key. Sized to
+     * a power of two at least twice fired_count; rebuilt on growth. */
+    size_t *fired_index;
+    size_t fired_index_cap;
     uint64_t next_sequence;
     /* Owning engine (NULL for standalone agendas); lets re_agenda_peek
      * resolve rule names through the installed program. */
