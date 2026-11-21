@@ -1,6 +1,9 @@
 #include "test_framework.h"
 
 #include <stdatomic.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <time.h>
 
 #include "core/platform_thread.h"
 
@@ -222,8 +225,48 @@ static MyComposeStatus dispatch_intent(Fixture *fixture, uint32_t type,
     return my_compose_store_dispatch(fixture->store, &intent);
 }
 
-static void wait_for_flag(atomic_bool *flag) {
-    while (!atomic_load_explicit(flag, memory_order_acquire)) platform_thread_yield();
+#define ASYNC_WAIT_LIMIT_MS 10000u
+
+static uint64_t wait_clock_ms(void) {
+    struct timespec now;
+    if (timespec_get(&now, TIME_UTC) != TIME_UTC) return 0u;
+    return (uint64_t)now.tv_sec * 1000u + (uint64_t)now.tv_nsec / 1000000u;
+}
+
+/* Bounded spin: a worker that never sets the flag fails the case after
+ * ASYNC_WAIT_LIMIT_MS instead of hanging the whole binary. */
+static bool wait_for_flag_within(atomic_bool *flag, uint32_t limit_ms) {
+    uint64_t start = wait_clock_ms();
+    while (!atomic_load_explicit(flag, memory_order_acquire)) {
+        if (wait_clock_ms() - start >= limit_ms) return false;
+        platform_thread_yield();
+    }
+    return true;
+}
+
+/* A timeout aborts instead of returning: the worker that missed the flag
+ * still holds pointers into this test's stack frame. */
+#define wait_for_flag(flag) do { \
+    if (!wait_for_flag_within((flag), ASYNC_WAIT_LIMIT_MS)) { \
+        printf("  FAIL: %s:%d: worker flag not set within %u ms; aborting\n", \
+            __FILE__, __LINE__, ASYNC_WAIT_LIMIT_MS); \
+        fflush(stdout); \
+        abort(); \
+    } \
+} while (0)
+
+/* Worker-side counterpart: returns PENDING when the completion has not
+ * settled within the limit, which every caller's assertions reject. */
+static MyComposeCompletionState wait_for_settled_state(
+    MyComposeCompletionContext *completion, uint32_t limit_ms) {
+    uint64_t start = wait_clock_ms();
+    MyComposeCompletionState state;
+    for (;;) {
+        state = my_compose_completion_state(completion);
+        if (state != MY_COMPOSE_COMPLETION_PENDING) return state;
+        if (wait_clock_ms() - start >= limit_ms) return state;
+        platform_thread_yield();
+    }
 }
 
 static int post_worker_main(void *argument) {
@@ -233,10 +276,7 @@ static int post_worker_main(void *argument) {
         my_compose_completion_post(worker->completion, worker->result),
         memory_order_release);
     atomic_store_explicit(&worker->posted, true, memory_order_release);
-    do {
-        state = my_compose_completion_state(worker->completion);
-        if (state == MY_COMPOSE_COMPLETION_PENDING) platform_thread_yield();
-    } while (state == MY_COMPOSE_COMPLETION_PENDING);
+    state = wait_for_settled_state(worker->completion, ASYNC_WAIT_LIMIT_MS);
     atomic_store_explicit(&worker->final_state, state, memory_order_release);
     my_compose_completion_unref(worker->completion);
     return 0;
@@ -366,16 +406,18 @@ typedef struct RetryWorker {
 
 static int retry_worker_main(void *argument) {
     RetryWorker *worker = argument;
-    MyComposeCompletionState state;
     atomic_store_explicit(&worker->first_status,
         my_compose_completion_post(worker->completion, 99u), memory_order_release);
     atomic_store_explicit(&worker->posted, true, memory_order_release);
-    do {
-        state = my_compose_completion_state(worker->completion);
-        if (state == MY_COMPOSE_COMPLETION_PENDING) platform_thread_yield();
-    } while (state == MY_COMPOSE_COMPLETION_PENDING);
+    (void)wait_for_settled_state(worker->completion, ASYNC_WAIT_LIMIT_MS);
     atomic_store_explicit(&worker->callback_done, true, memory_order_release);
-    while (!atomic_load_explicit(&worker->retry, memory_order_acquire)) platform_thread_yield();
+    if (!wait_for_flag_within(&worker->retry, ASYNC_WAIT_LIMIT_MS)) {
+        /* main thread never released the retry: report it as unsettled */
+        atomic_store_explicit(&worker->final_state, MY_COMPOSE_COMPLETION_PENDING,
+            memory_order_release);
+        my_compose_completion_unref(worker->completion);
+        return 0;
+    }
     atomic_store_explicit(&worker->retry_status,
         my_compose_completion_post(worker->completion, 99u), memory_order_release);
     atomic_store_explicit(&worker->final_state,
@@ -837,6 +879,18 @@ TEST(click_effect_outliving_deleted_owner_is_stale_in_both_stores) {
     fixture_destroy(&fixture);
 }
 
+TEST(bounded_wait_gives_up_on_a_flag_that_is_never_set) {
+    atomic_bool never;
+    atomic_bool ready;
+    uint64_t start;
+    atomic_init(&never, false);
+    atomic_init(&ready, true);
+    start = wait_clock_ms();
+    ASSERT_FALSE(wait_for_flag_within(&never, 50u));
+    ASSERT_TRUE(wait_clock_ms() - start >= 50u);
+    ASSERT_TRUE(wait_for_flag_within(&ready, 50u));
+}
+
 TEST_MAIN_BEGIN()
 RUN_TEST(completion_roundtrip_enters_store_only_from_ui_command);
 RUN_TEST(worker_direct_store_complete_is_rejected_by_owner_thread_guard);
@@ -855,4 +909,5 @@ RUN_TEST(runtime_pump_rejects_non_owner_thread);
 RUN_TEST(myui_pump_uses_independent_adapter_contexts);
 RUN_TEST(event_callback_direct_myui_pump_returns_conflict);
 RUN_TEST(click_effect_outliving_deleted_owner_is_stale_in_both_stores);
+RUN_TEST(bounded_wait_gives_up_on_a_flag_that_is_never_set);
 TEST_MAIN_END()
