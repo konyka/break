@@ -899,6 +899,7 @@ endif()
 add_library(runtime_core STATIC
     src/runtime/runtime_coordinator.c
     src/runtime/runtime_message.c
+    src/runtime/runtime_bus.c
     src/runtime/runtime_queue.c
     src/runtime/runtime_task.c
     src/runtime/runtime_thread.c
@@ -6515,6 +6516,7 @@ endif()
     # production runtime_core target stays hook-free.
     add_library(runtime_core_test STATIC
         src/runtime/runtime_message.c
+        src/runtime/runtime_bus.c
         src/runtime/runtime_queue.c
         src/runtime/runtime_task.c
         src/runtime/runtime_thread.c
@@ -6542,6 +6544,23 @@ endif()
     target_link_libraries(test_runtime_facade PRIVATE runtime_core_test)
     add_test(NAME test_runtime_facade COMMAND test_runtime_facade)
     set_tests_properties(test_runtime_facade PROPERTIES
+        LABELS "headless;runtime_core")
+
+    add_executable(test_runtime_bus tests/test_runtime_bus.c)
+    target_include_directories(test_runtime_bus PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_runtime_bus PRIVATE BREAK_RUNTIME_TESTING=1)
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_runtime_bus PRIVATE
+            ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_runtime_bus PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_runtime_bus PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_runtime_bus PRIVATE kernel32)
+    endif()
+    target_link_libraries(test_runtime_bus PRIVATE runtime_core_test)
+    add_test(NAME test_runtime_bus COMMAND test_runtime_bus)
+    set_tests_properties(test_runtime_bus PROPERTIES
         LABELS "headless;runtime_core")
 
     # Formal thread + IO/VFS facade focused tests (Task 5). vfs.c/log.c are

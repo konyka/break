@@ -1,3 +1,12 @@
+## Runtime Core 消息总线（2026-11-22）
+
+- **问题**：Runtime Core 有 owned message 和有界 MPSC 队列，但没有 kind 注册表、按 kind 的预算与版本策略、一对多的发布订阅，也看不到消息拓扑（`docs/design/runtime_message_model.md` §2.3 列为设计目标）。
+- **实现**：新增 `engine/src/runtime/runtime_bus.{h,c}`，加入 `runtime_core` 与 `runtime_core_test`（目标契约同步）。kind 注册表最多 64 个（版本上限、payload 预算、名字），订阅者最多 32 个，各持有自己的有界队列。发布时为每个订阅者复制一份并入队；队列满、已关闭或复制失败时只丢弃该份，并计数；返回 OVERLOAD 和实际投递份数，从不阻塞。一把互斥锁保护注册表和扇出，锁顺序固定为总线 → 队列，退订是同步的。`break_runtime_bus_export_topology` 导出 JSON 拓扑。设计见 `docs/design/runtime_message_model.md`「消息总线」。
+- **TDD**：新增 `test_runtime_bus`（8 例），先确认链接失败，再实现到通过，连续 5 次通过。并发用例中 3 个发布线程各发 2000 条消息，同时反复订阅和退订；每份消息不是投递就是被计为丢弃，退订后被退订队列的计数不再变化。
+- **变异检查**：7 个变异中 6 个被检出：放宽版本上限、放宽 payload 预算、入队失败时泄漏副本（测试版消息登记表耗尽后中止）、丢弃时不返回 OVERLOAD、忽略订阅的 kind 过滤、退订不清除槽位。第 7 个只改写了 kind 查找的比较表达式，行为不变（等价变异）。
+- **验证**：TSan、ASan+UBSan 各 3 次无报告；arm64 lane 加入 `test_runtime_bus`（选择数 270，QEMU 容器内 8/8 通过）；原生全量 465/465 通过。
+- **仍缺**：把各线程域的现有队列接到总线上；按 kind 的优先级与配额。
+
 ## 主循环启用物理并行调度器（2026-11-22）
 
 - **问题**：并行接触求解和并行积分都已实现，但引擎主循环从未设置调度器，实际运行时始终串行。
@@ -7,8 +16,8 @@
 
 ## MSVC 构建修复：任务追踪类型前置声明（2026-11-22）
 
-- `06431ad1` 在 `TaskSystem` 中声明 `_Atomic(struct TaskTraceLog *) trace`。MSVC `/W4 /WX` 把括号内首次出现的结构体名视为警告 C4115 并当作错误，Windows + MSVC (headless) 作业 136978477742 失败。`engine/src/task/task.h` 改为先 `typedef struct TaskTraceLog TaskTraceLog;`，字段写成 `_Atomic(TaskTraceLog *)`。gcc 与 clang 在 `-Wall -Wextra -Werror -pedantic` 下通过，原生全量 463/463 通过；本地没有 MSVC，以远端作业为准。
-- 同一轮远端结果：`df095c56` 的 windows-d3d12 run 44947678709 成功；arm64 job 136978477564 严格断言通过（269 项、91 组）。
+- `06431ad1` 在 `TaskSystem` 中声明 `_Atomic(struct TaskTraceLog *) trace`。MSVC `/W4 /WX` 把括号内首次出现的结构体名视为警告 C4115 并当作错误，Windows + MSVC (headless) 作业 136978477742 失败。`engine/src/task/task.h` 改为先 `typedef struct TaskTraceLog TaskTraceLog;`，字段写成 `_Atomic(TaskTraceLog *)`。gcc 与 clang 在 `-Wall -Wextra -Werror -pedantic` 下通过，原生全量 463/463 通过。远端 Windows + MSVC (headless) 作业 136983373762（run 44949267083）在 `175baee1` 上成功。
+- 同一轮远端结果：`df095c56` 的 windows-d3d12 run 44947678709 成功；arm64 job 136978477564 严格断言通过（269 项、91 组）。`175baee1` 的 arm64 job 136983373858 严格断言通过（269 项、91 组）。
 
 ## 物理并行积分与积分后 BVH refit（2026-11-22）
 

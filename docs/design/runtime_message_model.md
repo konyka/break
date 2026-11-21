@@ -336,3 +336,17 @@ C++11 framework 在 `Init/Tick/DeInit` 建立 runtime；每 tick 由 LogicThread
 测试：`test_runtime_facade` 的 `message_copy_keeps_correlation_id`、`correlation_next_is_unique_across_threads`（4 线程 × 1000 个 ID，全部非 0 且互不相同），以及 `test_runtime_reload` 的 `profiler_correlated_events_export_cid`（跨线程共享 ID、0 不输出、`UINT64_MAX` 不截断）。
 
 仍未做：`BreakNetEnvelope` 线格式里的关联 ID、Chrome trace flow 事件（ph:"s"/"f"）、统一 trace schema。计划：`docs/superpowers/plans/2026-11-15-runtime-correlation-id.md`。
+
+## 补充（2026-11-22）：消息总线
+
+§2.3 中的“消息类型 registry、per-kind byte budget、未知 kind/version 策略”和“mailbox 拓扑”现在有了 formal Runtime Core 实现：`engine/src/runtime/runtime_bus.{h,c}`，属于 `runtime_core` 与 `runtime_core_test`，仍不链入 `engine`/`engine_demo`/`dxx_break`。
+
+- **kind registry**：`break_runtime_bus_register_kind` 登记 kind、可接受的最高版本（接受 1..max_version）、每 kind 的 payload 预算（不超过 `BREAK_RUNTIME_MAX_MESSAGE_PAYLOAD`）和名字（1~31 个 `[A-Za-z0-9._-]` 字符）。最多 64 个 kind，重复登记返回 INVALID。
+- **订阅**：订阅者有名字，持有自己的有界 `BreakRuntimeQueue`，并列出要接收的 kind（每个必须已登记，最多 16 个，不能重复）。总线只借用队列。最多 32 个订阅者；id 非 0 且不重用。
+- **发布**：未登记的 kind 或版本返回 REJECTED，payload 超过预算返回 OVERLOAD，都不投递，并按总线或 kind 计数。合法消息按订阅顺序给每个订阅者复制一份 owned message，用队列的当前 generation 入队。发布者从不等待：队列已满、已关闭或复制失败时，只丢弃该订阅者的这一份，计入订阅者和 kind 的 `dropped`，其他订阅者照常收到；此时返回 OVERLOAD（背压），`*out_delivered` 给出实际入队的份数。
+- **线程模型**：所有调用都可以在任意线程上进行。一把互斥锁串行化注册表和扇出过程，锁顺序固定为“总线 → 队列”，队列不会回调总线。所以 `unsubscribe` 返回后，总线不会再访问那个队列，队列所有者此后才能销毁它。`destroy` 要求没有其他调用在进行。
+- **可观测拓扑**：`break_runtime_bus_export_topology` 输出一个 JSON 对象，包含未知 kind 计数、每个 kind 的登记信息与计数（published/delivered/dropped/version_rejects/size_rejects），以及每个订阅者的 id、名字、kind 列表、delivered/dropped 和其队列的 enqueued/dequeued/high_water/overload_rejects。
+
+测试 `test_runtime_bus`（8 例）：登记校验与上限；按 kind 扇出且每个订阅者得到独立副本；未知 kind、版本越界、超预算、空指针；慢订阅者队列满时发布不阻塞、快订阅者不受影响、计数准确，排空后恢复，关闭的队列计为丢弃；订阅校验、退订、id 不重用、订阅者上限；拓扑导出内容与缓冲区不足时的长度；复制分配失败被计为丢弃；3 个发布线程各 2000 条消息，同时反复订阅/退订，每份消息不是投递就是计为丢弃，退订后队列计数不再变化。
+
+仍未做：把 LogicThread、Task workers、Network/IO、PAL/MainLoop 和 Profiler 的现有队列实际接到总线上；按 kind 的优先级与配额（目前只有队列的 reserved control 容量）。

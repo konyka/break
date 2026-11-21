@@ -23,6 +23,7 @@ string(FIND "${cmake_text}" "add_library(engine STATIC" engine_target_pos)
 foreach(runtime_src
         src/runtime/runtime_coordinator.c
         src/runtime/runtime_message.c
+        src/runtime/runtime_bus.c
         src/runtime/runtime_queue.c
         src/runtime/runtime_task.c
         src/runtime/runtime_thread.c
