@@ -1,3 +1,10 @@
+## 规则引擎原生 Redis 提供者纳入 CI（2026-11-22）
+
+- **问题**：`missing_capabilities.md` 规则引擎验证条目记录 Redis 路径未覆盖。`RULE_ENGINE_ENABLE_REDIS` 默认关闭，任何 CI lane 都没有 hiredis，所以 `redis_provider.c` 从未编译，`test_rule_engine_stream_ext` 中的 Redis 用例只打印 SKIP。
+- **变更**：`.github/workflows/ci.yml` 新增 `lane-rule-engine-redis`（Ubuntu 24.04，GCC Debug）：安装 Ubuntu 的 `libhiredis-dev` 与 `redis-server`，以 `-DRULE_ENGINE_ENABLE_REDIS=ON` 构建 `test_rule_engine` 与 `test_rule_engine_stream_ext`，启动只监听 127.0.0.1:6391 的临时 redis-server（不持久化），设 `RE_TEST_REDIS_URL` 后运行。步骤要求 `redis_roundtrip_when_service_available ... OK` 出现在日志中，并且日志中不能有任何 `SKIP:`，否则失败。该 lane 不使用 CI 镜像，镜像相关契约不变。
+- **本地验证**：本机用 Redis 8.10.1 源码树自带的 hiredis（`-DRULE_ENGINE_REDIS_SOURCE_DIR`）构建，对本地 redis-server 运行：`test_rule_engine_stream_ext` 57 例、`test_rule_engine` 98 例全部通过，往返、PSETEX/TTL、删除、超长键与超大值拒绝等用例实际执行；结束后数据库为空。Ubuntu 24.04 容器中以系统 `libhiredis-dev` 与 `redis-server` 重复同一流程，两个测试全部通过，日志中没有 `SKIP:`。
+- **仍缺**：Windows 与 macOS 上的 Redis 路径；按读集增量重算。
+
 ## 规则引擎条件求值免堆分配（2026-11-22）
 
 - **问题**：每次匹配一条规则，`match_rule_impl` 都为求值帧栈和规则栈各分配一次堆内存，结束时再释放；1000 条规则的一次运行要做约 1 亿次分配与释放。

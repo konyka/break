@@ -83,6 +83,45 @@ jobs:
           name: evidence-receipt-headless-linux-clang
           path: receipt.json
 
+  lane-rule-engine-redis:
+    # The native Redis state provider is off by default (it needs hiredis and
+    # a service). This lane builds it against Ubuntu's libhiredis and runs the
+    # rule-engine suites with a throwaway local redis-server, so the provider's
+    # roundtrip, TTL and error paths execute instead of printing SKIP.
+    name: Linux + GCC (rule engine with native Redis provider)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install hiredis and Redis
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build libhiredis-dev redis-server \
+            libwayland-dev wayland-protocols libxkbcommon-dev libgl-dev libegl-dev libopengl-dev libssl-dev
+
+      - name: Configure
+        run: cmake -S engine -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DENGINE_RHI_BACKEND=opengl -DRULE_ENGINE_ENABLE_REDIS=ON
+
+      - name: Build
+        run: cmake --build build --parallel --target test_rule_engine test_rule_engine_stream_ext
+
+      - name: Test against a local redis-server
+        run: |
+          set -o pipefail
+          redis-server --port 6391 --bind 127.0.0.1 --save "" --appendonly no --daemonize yes
+          for i in $(seq 50); do redis-cli -p 6391 ping >/dev/null 2>&1 && break; sleep 0.1; done
+          RE_TEST_REDIS_URL=redis://127.0.0.1:6391 ctest --test-dir build --output-on-failure -V \
+            -R '^test_rule_engine(_stream_ext)?$' | tee /tmp/redis-ctest.log
+          grep -q "redis_roundtrip_when_service_available ... OK" /tmp/redis-ctest.log
+          if grep -q "SKIP:" /tmp/redis-ctest.log; then
+            grep "SKIP:" /tmp/redis-ctest.log
+            echo "::error::Redis cases were skipped"; exit 1
+          fi
+
   lane-headless-linux-gcc-asan:
     name: Linux + GCC (ASan + UBSan, headless)
     runs-on: ubuntu-24.04
