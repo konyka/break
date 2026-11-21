@@ -30,7 +30,7 @@
 - Consumes: the existing `lane-cross-aarch64-linux` build/run steps and native CTest registry.
 - Produces: an exact 189-test set and a locally anchored editor alternative.
 
-- [ ] **Step 1:** Copy the verified world-selection helper and change its new target set and alternative to:
+- [x] **Step 1:** Copy the verified world-selection helper and change its new target set and alternative to:
 
 ```python
 targets = 'test_editor_doc test_editor_cmd test_editor_scene test_editor_components test_editor_viewport test_editor_gizmo test_editor_assets test_editor_i18n test_editor_scene_textures'
@@ -44,7 +44,7 @@ assert len(selected) == 189
 
   Add negative probes for `test_editor_audio`, `test_editor_shell`, `test_editor_plugin_cmds`, `test_editor_plugin_manifest_cli`, `test_editor_lua`, `test_editor_fonts`, `test_editor_audio_sink`, `test_editor_doc_extra`, and `test_break_editor_target_contract_x`.
 
-- [ ] **Step 2:** Run `python3 build-core-app-net/editor_core_selection_contract.py` on the unmodified workflow. Expected: FAIL with `missing editor-core build targets`; do not edit product code to address this CI-selection failure.
+- [x] **Step 2:** Run `python3 build-core-app-net/editor_core_selection_contract.py` on the unmodified workflow. Expected: FAIL with `missing editor-core build targets`; do not edit product code to address this CI-selection failure.
 
 ### Task 2: Add only the CI wiring and usage documentation
 
@@ -53,20 +53,20 @@ assert len(selected) == 189
 - Modify: `docs/Build_Guide.md` (mirror command and current-selection explanation)
 - Modify: `docs/superpowers/plans/2026-11-21-arm64-qemu-editor-core.md` (check off completed evidence only)
 
-- [ ] **Step 1:** Append the nine executable targets after `test_world_stream_world` in both build commands and append the exact editor alternative at the end of both `-R` expressions. Do not reformat unrelated workflow jobs or historical guide sections.
-- [ ] **Step 2:** Replace the guide's single current-count paragraph with a 189-test paragraph: 179 prior tests plus nine editor executables (177 cases) plus one host target contract. Keep the preceding 164-test world-baseline paragraph as history.
-- [ ] **Step 3:** Run the selection contract and `python3 build-core-app-net/lane_budget_contract.py`. Expected: `exact 189-test editor-core selection and anchor contract passed`; lane budget reports 189 with the unchanged 600-second guard and 25-minute job cap.
-- [ ] **Step 4:** Run `git diff --check` and parse the workflow with PyYAML. Expected: no whitespace errors and valid YAML.
+- [x] **Step 1:** Append the nine executable targets after `test_world_stream_world` in both build commands and append the exact editor alternative at the end of both `-R` expressions. Do not reformat unrelated workflow jobs or historical guide sections.
+- [x] **Step 2:** Replace the guide's single current-count paragraph with a 189-test paragraph: 179 prior tests plus nine editor executables (177 cases) plus one host target contract. Keep the preceding 164-test world-baseline paragraph as history.
+- [x] **Step 3:** Run the selection contract and `python3 build-core-app-net/lane_budget_contract.py`. Expected: `exact 189-test editor-core selection and anchor contract passed`; lane budget reports 189 with the unchanged 600-second guard and 25-minute job cap.
+- [x] **Step 4:** Run `git diff --check` and parse the workflow with PyYAML. Expected: no whitespace errors and valid YAML.
 
 ### Task 3: Verify unmodified behavior natively and under arm64 QEMU
 
 **Files:**
 - Verify only: the nine existing editor test sources and `engine/tests/test_break_editor_target_contract.cmake`
 
-- [ ] **Step 1:** Run the focused native expression; require 10/10 with no skip and per-test counts 12/30/18/27/22/30/21/8/9.
-- [ ] **Step 2:** In a clean Ubuntu 24.04 Podman container, reproduce the workflow's multiarch configure command and build the nine targets before changing CI. Run the focused expression under `qemu-aarch64 -L /`; require 10/10 and identical per-test counts. The host CMake contract is not executed by QEMU.
-- [ ] **Step 3:** Run the native full suite from `build-core-app-net`; require 456 tests, zero failures, and only the four established platform skips.
-- [ ] **Step 4:** Run the full arm64 selection in the clean container using the exact workflow environment and `timeout 600`; require 189/189, all 177 editor cases, and exactly one established ptrace setup skip. No retry or parallel CTest.
+- [x] **Step 1:** Run the focused native expression; require 10/10 with no skip and per-test counts 12/30/18/27/22/30/21/8/9.
+- [x] **Step 2:** In a clean Ubuntu 24.04 Podman container, reproduce the workflow's multiarch configure command and build the nine targets before changing CI. Run the focused expression under `qemu-aarch64 -L /`; require 10/10 and identical per-test counts. The host CMake contract is not executed by QEMU.
+- [x] **Step 3:** Run the native full suite from `build-core-app-net`; require 456 tests, zero failures, and only the four established platform skips.
+- [x] **Step 4:** Run the full arm64 selection in the clean container using the exact workflow environment and `timeout 600`; require 189/189, all 177 editor cases, and exactly one established ptrace setup skip. No retry or parallel CTest.
 
 ### Task 4: Independent review, push, and evidence closeout
 
@@ -75,7 +75,7 @@ assert len(selected) == 189
 - Modify: `docs/cross_engine/missing_capabilities.md` (append editor-core arm64 evidence and remaining boundaries)
 - Modify: `docs/Build_Guide.md`, `docs/superpowers/plans/2026-11-21-arm64-qemu-editor-core.md` (final measured evidence)
 
-- [ ] **Step 1:** Obtain a read-only independent review of the final diff and exact selected set. Address every Critical/Important finding with a failing reproduction before a fix; record accepted Minor clarifications.
-- [ ] **Step 2:** Commit the reviewed CI/documentation change with `ci: run arm64 headless editor core tests`, push to `origin/master`, and monitor the arm64 job plus the overall workflow.
-- [ ] **Step 3:** Download the raw arm64 log and run the existing `assert_arm64_log.py` adapted for 189 and the nine editor counts. Require zero failed tests, all existing contract/e2e evidence, and exactly one ptrace setup skip.
-- [ ] **Step 4:** Append the local and remote receipts, review disposition, and explicit non-coverage: editor shell/UI, audio editor, plugins, Lua editor integration, font/platform behavior, Snowflake remote session, GPU/window rendering, and physical arm64 devices.
+- [x] **Step 1:** Obtain a read-only independent review of the final diff and exact selected set. Address every Critical/Important finding with a failing reproduction before a fix; record accepted Minor clarifications.
+- [x] **Step 2:** Commit the reviewed CI/documentation change with `ci: run arm64 headless editor core tests`, push to `origin/master`, and monitor the arm64 job plus the overall workflow.
+- [x] **Step 3:** Download the raw arm64 log and run the existing `assert_arm64_log.py` adapted for 189 and the nine editor counts. Require zero failed tests, all existing contract/e2e evidence, and exactly one ptrace setup skip.
+- [x] **Step 4:** Append the local and remote receipts, review disposition, and explicit non-coverage: editor shell/UI, audio editor, plugins, Lua editor integration, font/platform behavior, Snowflake remote session, GPU/window rendering, and physical arm64 devices.

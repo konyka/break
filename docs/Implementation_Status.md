@@ -4,7 +4,9 @@
 - **RED 与精确选择**：旧 workflow 因缺少九个构建目标按预期 RED。新增局部锚定 `test_editor_(doc|cmd|scene|components|viewport|gizmo|assets|i18n|scene_textures)$|test_break_editor_target_contract$`，真实原生集合为既有 179 项加十项，共 189 项；旧集合逐项保留，audio/shell/plugin/Lua/fonts/settings/remote/GPU/window 及同名前缀派生测试均被拒绝。CI 与 Build_Guide 的构建和测试命令逐字一致，600 秒守护和 25 分钟 job 上限不变。
 - **原生与 focused 验证**：原生 focused 10/10，九个分项数逐项一致。干净 Ubuntu 24.04 容器交叉 focused 10/10，九个分项数逐项一致，QEMU 8.2.2；未修改产品或测试源码。原生全量 456 项零失败，4 个既有平台用例跳过，CTest 159.41 秒。第一次全量因既有 `/tmp/snowflake-pin` 已消失而有 13 项 Snowflake/TLS/远程测试失败；在构建目录内恢复精确 pin `4ab761fc58a9d15970f295e231003c99a7d44df8` 后，失败组及完整套件重跑通过，没有把该环境失败记为产品回归或通过。
 - **完整干净容器验证**：按 workflow 原始构建与测试 step 执行 189 项，CTest 127.37 秒。严格日志断言确认精确 189 项、全部 177 个编辑器分项、全部既有契约/e2e、无失败分项、既有 ptrace 设置 skip 恰好一次，且无 root 权限跳过。初次 root 容器运行跳过不可写文件场景；第一次非 root 复跑还暴露挂载源码中 0600 测试私钥属主不匹配，改为容器内复制源码并统一交给非 root 用户后，TLS、更新与崩溃 e2e 均实际执行并通过。
-- **独立评审**：只读评审逐名确认 179→189、两处命令字节一致、177 合计及依赖边界，无 Critical，发现一项 Important：Build_Guide 1.5 导语仍写 179。先以文档契约复现 RED，再把标题和导语改为 189 并明确宿主/目标边界，契约及完整选择复核转绿；无 Minor。
+- **独立评审**：只读评审逐名确认 179→189、两处命令字节一致、177 合计及依赖边界，无 Critical，发现一项 Important：Build_Guide 1.5 导语仍写 179。先以文档契约复现 RED，再把标题和导语改为 189 并明确宿主/目标边界，契约及完整选择复核转绿；无 Minor。复审确认该 Important 已关闭，无新增问题，结论 Ready to merge: Yes。
+- **远端 arm64 验证**：[CI run 44852395640](https://github.com/konyka/break/actions/runs/44852395640) 的 [arm64 job 136686557790](https://github.com/konyka/break/actions/runs/44852395640/job/136686557790) 在提交 `819579b8` 上成功。原始日志严格断言确认精确 189 项、全部 177 个编辑器分项、全部旧契约/e2e、无失败分项和唯一 ptrace 设置 skip；无 root 权限跳过、`CHILD TIMEOUT` 或 `PIPE TIMEOUT`，CTest 177.25 秒。
+- **整体远端结果**：上述主 CI run 最终为 `completed / success`，包括 Linux、Windows、macOS、arm64、sanitizer、fuzz、图形及契约 lane；既有条件跳过仍按各 job 原义保留，不改写为执行通过。独立 [Windows D3D12 run 44852395560](https://github.com/konyka/break/actions/runs/44852395560) 也为 `completed / success`。
 - **覆盖缺口**：编辑器 shell/UI、音频编辑器、插件、Lua 编辑器集成、字体/平台设置、Snowflake 远程会话、GPU/窗口渲染和物理 arm64 设备不在本切片内。本切片是精确选择的交叉验证扩展，不宣称完整编辑器或全量 arm64 CTest。
 
 ## QUIC 弱网独立 CI（2026-11-20）
