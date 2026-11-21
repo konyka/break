@@ -41,6 +41,6 @@
 ### Task 3: Review, push and record evidence
 
 - [x] **Step 1:** Read-only independent review; reproduce and fix every Critical/Important finding.
-- [ ] **Step 2:** Commit `ci: run arm64 compose core tests`, push to `origin/master`, monitor the full CI and Windows D3D12 workflows.
-- [ ] **Step 3:** Download the raw arm64 log and assert 200 with all 20 per-test counts.
-- [ ] **Step 4:** Append local/remote receipts and remaining gaps (Compose myui/widget integration, C++20 parity on arm64, GPU compose) to `docs/Implementation_Status.md` and `docs/cross_engine/missing_capabilities.md`; check off completed steps.
+- [x] **Step 2:** Commit `ci: run arm64 compose core tests`, push to `origin/master`, monitor the full CI and Windows D3D12 workflows.
+- [x] **Step 3:** Download the raw arm64 log and assert 200 with all 20 per-test counts.
+- [x] **Step 4:** Append local/remote receipts and remaining gaps (Compose myui/widget integration, C++20 parity on arm64, GPU compose) to `docs/Implementation_Status.md` and `docs/cross_engine/missing_capabilities.md`; check off completed steps.
