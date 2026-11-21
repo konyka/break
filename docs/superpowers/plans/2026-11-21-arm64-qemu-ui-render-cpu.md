@@ -40,6 +40,6 @@
 ### Task 3: Review, push and record evidence
 
 - [x] **Step 1:** Read-only independent review; reproduce and fix every Critical/Important finding.
-- [ ] **Step 2:** Commit `ci: run arm64 ui and render cpu tests`, push, monitor the full CI and Windows D3D12 workflows.
-- [ ] **Step 3:** Download the raw arm64 log and assert 212 with all 32 per-test counts.
-- [ ] **Step 4:** Append local/remote receipts and remaining gaps (single-CPU input variant, Vulkan device-type probe, GPU rendering, real input devices) to `docs/Implementation_Status.md` and `docs/cross_engine/missing_capabilities.md`; check off completed steps.
+- [x] **Step 2:** Commit `ci: run arm64 ui and render cpu tests`, push, monitor the full CI and Windows D3D12 workflows.
+- [x] **Step 3:** Download the raw arm64 log and assert 212 with all 32 per-test counts.
+- [x] **Step 4:** Append local/remote receipts and remaining gaps (single-CPU input variant, Vulkan device-type probe, GPU rendering, real input devices) to `docs/Implementation_Status.md` and `docs/cross_engine/missing_capabilities.md`; check off completed steps.

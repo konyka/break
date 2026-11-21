@@ -3,6 +3,10 @@
 - **最小场景**：新增七个既有纯 CPU 可执行目标：`test_mycompose_myui` 18、`test_mycompose_widget_primitives` 7、`test_render_features` 4、`test_rt_trace` 2、`test_rhi_tlas_instance_encode` 2、`test_rhi_metal_format_mapping` 5、`test_input_extended` 21 例，共 59 例。两个 Compose/myui 测试使用 dummy PAL 的无头窗口对象；rt_trace 链接 `engine_rhi_headless`；Metal 格式映射在非 Apple 构建中只编译五个平台无关用例；input_extended 使用线程但不设置 CPU 亲和性。均不 fork、不连接显示服务器、不用 GPU 或真实设备。
 - **RED 与精确选择**：旧 workflow 在 `missing ui/render cpu build targets` 处 RED。真实原生集合从 205 增至 212，差集恰为这七项；`test_input_extended_single_cpu`、`test_rhi_device_type`、`test_rhi_native`、C++20 对等层、GPU Compose、`test_packer_roundtrip` 及同名前缀扩展均被拒绝。完整表达式维持 31 个捕获组，契约检查组数、`Too many parentheses` 输出和严格集合差。CI 与 Build_Guide 的构建和测试命令逐字一致。
 - **原生与 focused 验证**：原生七项 7/7，计数 18/7/4/2/2/5/21；干净 Ubuntu 24.04 容器 arm64 七项 7/7，计数一致，QEMU 8.2.2。原生全量 456 项零失败，4 个既有平台用例跳过，CTest 165.06 秒。未修改产品或测试源码。
+- **完整干净容器验证**：以统一非 root 属主执行 workflow 原始构建和测试 step，212/212，CTest 130.08 秒。严格日志断言确认 32 组分项计数、全部旧契约/e2e、无失败分项、唯一 ptrace 设置 skip，且无 root 权限跳过、`CHILD TIMEOUT`、`PIPE TIMEOUT` 或 `Too many parentheses`。
+- **独立评审**：只读评审实测旧/新表达式选中 205/212 项、差集恰为七项、`test_input_extended$` 不匹配 single_cpu 变体；确认 Metal 格式映射在非 Apple 构建中实际为 5 个用例、rt_trace 的测试设备只是内存对象；无 Critical/Important。采纳 Minor：Build_Guide 注明二百项段落中列为独立切片的 Compose/myui 两项由本切片纳入。
+- **远端 arm64 验证**：[CI run 44867577433](https://github.com/konyka/break/actions/runs/44867577433) 的 [arm64 job 136734595535](https://github.com/konyka/break/actions/runs/44867577433/job/136734595535) 在提交 `351a5dfa` 上成功。原始日志严格断言确认精确 212 项、32 组分项计数、全部旧契约/e2e 和唯一 ptrace 设置 skip；无 root 权限跳过、`CHILD TIMEOUT`、`PIPE TIMEOUT` 或 `Too many parentheses`，CTest 138.67 秒。
+- **整体远端结果**：上述主 CI run 最终为 `completed / success`，包括 Linux、Windows、macOS、arm64、sanitizer、fuzz、图形及契约 lane；既有条件跳过仍按各 job 原义保留。独立 [Windows D3D12 run 44867577371](https://github.com/konyka/break/actions/runs/44867577371) 也为 `completed / success`。
 - **覆盖缺口**：单核亲和性输入变体、Vulkan 设备类型探测、GPU 渲染与光追硬件、真实输入设备不在本切片内。
 
 ## arm64 CVar/XML、着色器 I/O 与编辑器 flow/image 和二百零五项 CTest（2026-11-21）
