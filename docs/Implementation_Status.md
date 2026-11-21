@@ -1,3 +1,10 @@
+## core_app 语音通道驱动接入交叉模拟器（2026-11-21）
+
+- **问题**：`test_core_app_voice_lane` 的宿主驱动 `engine/tests/test_core_app_voice_lane.cmake` 两处直接 `execute_process` 启动 `core_app`，交叉构建中无法在宿主上执行，与生命周期驱动修复前相同。
+- **修复**：两处启动前加 `${CORE_APP_RUNNER}`，`engine/CMakeLists.txt` 中该测试传入 `-DCORE_APP_RUNNER=${CMAKE_CROSSCOMPILING_EMULATOR}`（原生为空，行为不变）。该驱动不使用 `LD_PRELOAD`，无需额外门控。
+- **RED/GREEN**：契约 `voice_lane_runner_contract.py` 要求每处 core_app 启动均经 runner、`add_test` 传入模拟器；旧驱动 RED（`core_app launch without CORE_APP_RUNNER: 2 of 2`），实现后 GREEN。原生 `test_core_app_voice_lane` 与 `test_core_app_lifecycle_load_unload` 均通过。
+- **未验证**：arm64 QEMU 试跑与纳入 lane 尚未进行。本机此时到 GitHub 与 Ubuntu 软件源的网络均不可达（HTTPS 返回 000、SSH 连接被关闭），容器无法安装交叉工具链；网络恢复后先在 QEMU 下试跑，通过且在时间预算内再按既有流程纳入 lane。
+
 ## core_app 生命周期驱动支持交叉模拟器与 arm64 二百五十八项 CTest（2026-11-21）
 
 - **问题**：十二个 `test_core_app_lifecycle_*` 由宿主 `cmake -P engine/tests/test_core_app_lifecycle.cmake` 驱动，驱动直接 `execute_process` 启动 `core_app`。交叉构建中 `core_app` 是 arm64 二进制，宿主无法直接执行，因此这些真实进程生命周期测试从未在 arm64 上运行。`test_core_app_network.cmake` 已有 `CORE_APP_RUNNER`，生命周期驱动缺少同样的接线。

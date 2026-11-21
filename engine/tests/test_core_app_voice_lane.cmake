@@ -36,7 +36,7 @@ file(WRITE "${scenario}"
 function(run_app name out_trace)
     set(trace "${WORK}/${name}.trace")
     execute_process(
-        COMMAND "${CORE_APP}" --render=record --audio=record --fixed-step
+        COMMAND ${CORE_APP_RUNNER} "${CORE_APP}" --render=record --audio=record --fixed-step
             --assets "${ASSET_ROOT}" --scenario "${scenario}" --trace "${trace}" ${ARGN}
         RESULT_VARIABLE rc
         OUTPUT_VARIABLE out
@@ -168,7 +168,7 @@ endif()
 foreach(bad_args "--voice=bogus" "--voice=device" "--voice-null-capture"
                  "--voice=fake;--voice-null-capture")
     execute_process(
-        COMMAND "${CORE_APP}" --render=record --audio=record --fixed-step
+        COMMAND ${CORE_APP_RUNNER} "${CORE_APP}" --render=record --audio=record --fixed-step
             --assets "${ASSET_ROOT}" --scenario "${scenario}" ${bad_args}
         RESULT_VARIABLE rc
         OUTPUT_VARIABLE out
