@@ -6,6 +6,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if !defined(_WIN32)
+#include <sys/stat.h>
+#endif
+
 #if defined(__linux__)
 #include <unistd.h>
 /* The engine compiles with _POSIX_C_SOURCE=199309L, where unistd.h does not
@@ -71,6 +75,22 @@ static bool file_exists(const char *path) {
     return true;
 }
 
+/* True when a and b name the same file, even through different strings
+ * ("/repo/engine/assets/x" and "./assets/x" from engine/). */
+static bool same_file(const char *a, const char *b) {
+#if defined(_WIN32)
+    char fa[MAX_PATH], fb[MAX_PATH];
+    DWORD na = GetFullPathNameA(a, MAX_PATH, fa, NULL);
+    DWORD nb = GetFullPathNameA(b, MAX_PATH, fb, NULL);
+    return na > 0u && na < MAX_PATH && nb > 0u && nb < MAX_PATH &&
+           _stricmp(fa, fb) == 0;
+#else
+    struct stat sa, sb;
+    return stat(a, &sa) == 0 && stat(b, &sb) == 0 &&
+           sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;
+#endif
+}
+
 static void chain_add(BreakEditorFontChain *c, const char *root,
                       const char *path, int face, bool cjk) {
     usize root_len = root != NULL ? strlen(root) : 0u;
@@ -100,6 +120,11 @@ static void chain_add(BreakEditorFontChain *c, const char *root,
     }
     if (!file_exists(dst)) {
         return;
+    }
+    for (usize i = 0u; i < c->count; i++) {
+        if (same_file(c->paths[i], dst)) {
+            return; /* the same file under another path */
+        }
     }
     c->sources[c->count].path = dst;
     c->sources[c->count].face_index = face;

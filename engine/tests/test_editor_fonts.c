@@ -6,6 +6,14 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#if defined(_WIN32)
+#define TEST_GETCWD(buf, cap) _getcwd((buf), (int)(cap))
+#define TEST_CHDIR(path) _chdir(path)
+#else
+#define TEST_GETCWD(buf, cap) getcwd((buf), (cap))
+#define TEST_CHDIR(path) chdir(path)
+#endif
+
 static void mkdirs(const char *path) {
     char buf[512];
     size_t n = strlen(path);
@@ -38,10 +46,23 @@ static void touch(const char *root, const char *rel) {
 
 static void remove_tree(const char *root, const char *const *rels, size_t n) {
     char path[512];
+    size_t root_len = strlen(root);
     for (size_t i = 0u; i < n; i++) {
         snprintf(path, sizeof(path), "%s%s", root, rels[i]);
         remove(path);
     }
+    /* then the directories touch() made, deepest first; rmdir leaves any
+     * still shared with another file */
+    for (size_t i = 0u; i < n; i++) {
+        char *slash;
+        snprintf(path, sizeof(path), "%s%s", root, rels[i]);
+        while ((slash = strrchr(path, '/')) != NULL &&
+               (size_t)(slash - path) > root_len) {
+            *slash = '\0';
+            (void)TEST_RMDIR(path);
+        }
+    }
+    (void)TEST_RMDIR(root);
 }
 
 #if !defined(__APPLE__) && !defined(_WIN32)
@@ -214,6 +235,7 @@ TEST(fonts_empty_root_finds_nothing_and_bad_args_are_bounded)
         ASSERT_EQ(break_editor_font_candidates(BREAK_EDITOR_LANG_EN_US,
                                                longroot, false, &c), 0u);
     }
+    (void)TEST_RMDIR(root);
 }
 
 /* the real system through fontconfig (when built with it): every candidate
@@ -274,6 +296,33 @@ TEST(fonts_bundled_jetbrains_mono_leads_the_chain)
     ASSERT_EQ(TEST_UNSETENV("BREAK_ASSET_DIR"), 0);
 }
 
+/* The editor runs from engine/, where BREAK_ASSET_DIR and the cwd-relative
+ * "./assets" candidate name the same files through different strings. Each
+ * file must appear once, or the duplicates use up the six slots and push the
+ * bundled Chinese face and the system fonts down or out of the chain. */
+TEST(fonts_same_file_through_two_paths_is_listed_once)
+{
+    BreakEditorFontChain c;
+    char cwd[1024];
+    usize n;
+    ASSERT_NOT_NULL(TEST_GETCWD(cwd, sizeof(cwd)));
+    ASSERT_EQ(TEST_CHDIR(BREAK_TEST_ENGINE_SOURCE_DIR), 0);
+    ASSERT_EQ(TEST_SETENV("BREAK_ASSET_DIR", BREAK_TEST_ENGINE_SOURCE_DIR), 0);
+    n = break_editor_font_candidates(BREAK_EDITOR_LANG_EN_US, NULL, false, &c);
+    ASSERT_EQ(TEST_UNSETENV("BREAK_ASSET_DIR"), 0);
+    ASSERT_EQ(TEST_CHDIR(cwd), 0);
+    ASSERT_TRUE(n >= 2u);
+    ASSERT_TRUE(strstr(c.paths[0], "JetBrainsMono-Regular.ttf") != NULL);
+    ASSERT_TRUE(strstr(c.paths[1], "NotoSansSC-VF.ttf") != NULL);
+    for (usize i = 0u; i < n; i++) {
+        const char *bi = strrchr(c.paths[i], '/');
+        for (usize j = 0u; j < i; j++) {
+            const char *bj = strrchr(c.paths[j], '/');
+            ASSERT_TRUE(bi == NULL || bj == NULL || strcmp(bi, bj) != 0);
+        }
+    }
+}
+
 TEST(cli_take_lang_strips_option_and_keeps_other_arguments)
 {
     char a0[] = "editor", a1[] = "--lang", a2[] = "zh-CN", a3[] = "scene.bscn",
@@ -326,5 +375,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(fonts_empty_root_finds_nothing_and_bad_args_are_bounded);
     RUN_TEST(fonts_real_system_candidates_exist_and_are_unique);
     RUN_TEST(fonts_bundled_jetbrains_mono_leads_the_chain);
+    RUN_TEST(fonts_same_file_through_two_paths_is_listed_once);
     RUN_TEST(cli_take_lang_strips_option_and_keeps_other_arguments);
 TEST_MAIN_END()
