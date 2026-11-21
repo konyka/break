@@ -1150,3 +1150,63 @@ assertions; the `RE_STATUS_NOT_SUPPORTED` boundary is still asserted. This shows
 the C99 core is self-consistent inside one arm64 build. Redis-backed paths are
 not compiled in the arm64 tree, and the C11 parallel executor stress test,
 fuzzing, and large-rule-set performance are not covered.
+
+## Incremental recompute (design, 2026-11-22; not implemented)
+
+**Cost today.** `re_engine_run` re-runs `compute_rule_activations` for every
+rule already visited after each firing, and relies on agenda refraction to
+drop duplicates. With n rules and f firings that is about n x f condition
+matches (1000 rules and 500 firings: about 500,000 matches per run). The
+fired-key index, the retract fast path and inline frames reduced the cost of
+each match; the count of matches is unchanged.
+
+**Goal.** Re-match a rule only when something it read changed, and produce
+exactly the activations, order and refraction keys of today.
+
+**What a rule's match depends on.** For a *pure* linear condition (the
+`pure_conditions` flag; function calls, accumulate, `test()` and stream
+patterns are impure and already match only on the first pass) the result is
+a function of:
+
+1. the values of the facts on its read-set (`re_ir_read_set_t`, recorded by
+   `re_ir_match_rule_readset`);
+2. which facts exist under a quantifier prefix (`exists`/`forall` iterate
+   candidates by prefix, so an inserted or retracted candidate changes the
+   answer without touching any recorded path);
+3. the retract flags `_retracted_<root>` of the roots it read;
+4. the run-static gates (module focus, dates, agenda focus, no-loop,
+   lock-on-active, activation groups), which the loop already checks before
+   matching.
+
+**Blockers found while reading the code.**
+
+- The read-set is capped at `RE_IR_MAX_READ_PATHS` (8) and stops silently on
+  overflow, so a rule with more reads would look unaffected by a write to its
+  ninth path. A dependency index needs an overflow flag that marks the rule
+  "always re-match".
+- Quantifier candidates (point 2) are not recorded at all; a rule with a
+  quantifier must be treated as depending on every fact under its prefix, or
+  on every insert and retract.
+- Writes reach facts through several paths: `re_facts_set_impl`,
+  `re_facts_set_path`, `re_facts_set_member` (structured members), insert,
+  retract, TMS cascades and transaction commit (which swaps the whole entry
+  array). All of them bump `mutation_serial`, but none records which fact
+  changed. A per-run "dirty slots since the last pass" set would have to be
+  fed from every one of these.
+- RETE-attached rules already get token-level change detection from their
+  network; only linear rules need the new index.
+
+**Proposed shape.** Keep a per-run dirty-slot bitmap fed by the fact write
+paths (cleared at the start of each pass), and per rule the last read-set
+resolved to slots plus a flag for "depends on candidates or overflowed".
+On a later pass, skip `compute_rule_activations` for a pure linear rule whose
+read slots are all clean and whose flag is clear; everything else behaves as
+today. Because a skipped rule would have produced only deduplicated pushes
+(its premise fingerprints are unchanged), the agenda contents and order stay
+identical.
+
+**Acceptance.** Every existing rule-engine suite (including the agenda,
+TMS, transaction and RETE-incremental tests) unchanged; a differential test
+that runs random programs with and without the skip and compares the callback
+trace, the final facts and the agenda history; `large_1000` warm evaluation
+proportional to rules plus firings rather than their product.

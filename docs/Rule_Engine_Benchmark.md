@@ -67,3 +67,26 @@ when hiredis headers and a library are discovered. This check does not claim a
 live integration service. A Redis source checkout can be supplied with
 `-DRULE_ENGINE_REDIS_SOURCE_DIR=/path/to/redis`; CMake then builds its bundled
 `deps/hiredis` sources as a private static dependency.
+
+## Addendum (2026-11-22): large rule sets
+
+The benchmark also runs `large_100`, `large_300` and `large_1000`: n rules
+`Customer.Score > i` over one fact, so n/2 rules fire, each writing one of 50
+flag facts. Cold load is one `re_program_load`; warm evaluation runs the
+installed program 100, 10 and 2 times. These cases stay under the default
+`max_rules` (1024).
+
+Measured on one x86-64 Fedora host, Debug build, `clock()` CPU time, per warm
+run (the numbers locate costs; they are not committed performance claims):
+
+| step | large_300 | large_1000 |
+|---|---|---|
+| before (commit `0f548f81`) | 27 ms | 390 ms |
+| fired-key hash index (`2b303baf`) | 22 ms | 225 ms |
+| retract gate fast path (`e7d0d9b3`) | 18 ms | 171 ms |
+| inline evaluation frames (`7260c7d9`) | 16 ms | 152 ms |
+
+Cold load grows linearly with the source (0.28, 0.83 and 2.4 ms). Warm
+evaluation still grows with rules x firings, because each firing re-matches
+every rule seen so far; see "Incremental recompute (design)" in
+`Rule_Engine_Design.md`.
