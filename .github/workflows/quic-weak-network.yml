@@ -121,6 +121,15 @@ jobs:
             echo 'No test ran. Configure SNOWFLAKE_READ_TOKEN with contents:read access to konyka/snowflake.'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Record passed weak-network evidence
+        if: success() && steps.snow_access.outputs.available == 'true'
+        run: |
+          {
+            echo '## QUIC weak network: PASS'
+            echo 'All four independent CTest scenarios passed on macOS with the pinned Snowflake checkout.'
+            echo 'See the quic-weak-network-log artifact for the original CTest output.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload weak-network log
         if: always() && steps.snow_access.outputs.available == 'true'
         uses: actions/upload-artifact@v6
