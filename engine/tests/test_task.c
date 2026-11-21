@@ -255,6 +255,162 @@ TEST(task_wait_from_worker_returns_immediately)
     ASSERT_EQ(atomic_load(&g_counter), 1);
 }
 
+/* ---- Cancellation ---- */
+
+typedef struct {
+    _Atomic i32 *ran;
+    _Atomic i32 *started;
+    _Atomic i32 *release;
+} CancelProbe;
+
+static void cancel_probe_fn(void *ctx)
+{
+    CancelProbe *p = (CancelProbe *)ctx;
+    atomic_fetch_add(p->ran, 1);
+}
+
+/* A token cancelled before the task starts skips fn, but the task still
+ * completes: task_wait and task_wait_handle return and the skip is counted. */
+TEST(cancelled_before_start_skips_fn)
+{
+    TaskCancelToken token;
+    task_cancel_token_init(&token);
+    _Atomic i32 ran = 0;
+    CancelProbe p = {&ran, NULL, NULL};
+    task_cancel(&token);
+    ASSERT_TRUE(task_cancel_requested(&token));
+    u64 before = task_cancelled_count(g_ts);
+    TaskHandle h = task_submit_cancellable(g_ts, cancel_probe_fn, &p, TASK_PRIORITY_NORMAL,
+                                           &token, NULL, 0);
+    ASSERT_NEQ(h, TASK_HANDLE_INVALID);
+    task_wait_handle(g_ts, h);
+    task_wait(g_ts);
+    ASSERT_EQ(atomic_load(&ran), 0);
+    ASSERT_EQ(task_cancelled_count(g_ts), before + 1u);
+}
+
+TEST(uncancelled_token_runs_fn)
+{
+    TaskCancelToken token;
+    task_cancel_token_init(&token);
+    _Atomic i32 ran = 0;
+    CancelProbe p = {&ran, NULL, NULL};
+    u64 before = task_cancelled_count(g_ts);
+    TaskHandle h = task_submit_cancellable(g_ts, cancel_probe_fn, &p, TASK_PRIORITY_NORMAL,
+                                           &token, NULL, 0);
+    ASSERT_NEQ(h, TASK_HANDLE_INVALID);
+    task_wait(g_ts);
+    ASSERT_EQ(atomic_load(&ran), 1);
+    ASSERT_EQ(task_cancelled_count(g_ts), before);
+    ASSERT_FALSE(task_cancel_requested(&token));
+    /* NULL token behaves like task_submit_dep */
+    h = task_submit_cancellable(g_ts, cancel_probe_fn, &p, TASK_PRIORITY_NORMAL, NULL, NULL, 0);
+    ASSERT_NEQ(h, TASK_HANDLE_INVALID);
+    task_wait(g_ts);
+    ASSERT_EQ(atomic_load(&ran), 2);
+    ASSERT_FALSE(task_cancel_requested(NULL));
+}
+
+static void gate_fn(void *ctx)
+{
+    CancelProbe *p = (CancelProbe *)ctx;
+    atomic_store(p->started, 1);
+    while (!atomic_load(p->release)) platform_thread_yield();
+}
+
+/* Cancelling while the parent runs skips the waiting children, which still
+ * complete in dependency order, so a grandchild on another token runs. */
+TEST(cancel_skips_pending_children_and_keeps_the_graph_moving)
+{
+    TaskCancelToken token;
+    TaskCancelToken other;
+    task_cancel_token_init(&token);
+    task_cancel_token_init(&other);
+    _Atomic i32 ran = 0;
+    _Atomic i32 started = 0;
+    _Atomic i32 release = 0;
+    CancelProbe gate = {&ran, &started, &release};
+    CancelProbe child = {&ran, NULL, NULL};
+    CancelProbe grandchild = {&ran, NULL, NULL};
+    TaskHandle parent = task_submit_ex(g_ts, gate_fn, &gate, TASK_PRIORITY_NORMAL);
+    ASSERT_NEQ(parent, TASK_HANDLE_INVALID);
+    TaskHandle c1 = task_submit_cancellable(g_ts, cancel_probe_fn, &child, TASK_PRIORITY_NORMAL,
+                                            &token, &parent, 1);
+    TaskHandle c2 = task_submit_cancellable(g_ts, cancel_probe_fn, &child, TASK_PRIORITY_HIGH,
+                                            &token, &parent, 1);
+    ASSERT_NEQ(c1, TASK_HANDLE_INVALID);
+    ASSERT_NEQ(c2, TASK_HANDLE_INVALID);
+    TaskHandle both[] = {c1, c2};
+    TaskHandle g = task_submit_cancellable(g_ts, cancel_probe_fn, &grandchild,
+                                           TASK_PRIORITY_NORMAL, &other, both, 2);
+    ASSERT_NEQ(g, TASK_HANDLE_INVALID);
+    u64 before = task_cancelled_count(g_ts);
+    for (i32 spin = 0; spin < 1000000 && !atomic_load(&started); spin++) platform_thread_yield();
+    i32 seen_start = atomic_load(&started);
+    task_cancel(&token);
+    atomic_store(&release, 1);
+    task_wait_handle(g_ts, g);
+    task_wait(g_ts);
+    ASSERT_EQ(seen_start, 1);
+    ASSERT_EQ(atomic_load(&ran), 1);
+    ASSERT_EQ(task_cancelled_count(g_ts), before + 2u);
+}
+
+typedef struct {
+    TaskCancelToken *token;
+    _Atomic i32 *started;
+    _Atomic i32 *iterations;
+} CooperativeProbe;
+
+static void cooperative_fn(void *ctx)
+{
+    CooperativeProbe *p = (CooperativeProbe *)ctx;
+    atomic_store(p->started, 1);
+    do {
+        atomic_fetch_add(p->iterations, 1);
+        platform_thread_yield();
+    } while (!task_cancel_requested(p->token));
+}
+
+/* A running task observes cancellation through the token and stops. */
+TEST(running_task_observes_cancellation)
+{
+    TaskCancelToken token;
+    task_cancel_token_init(&token);
+    _Atomic i32 started = 0;
+    _Atomic i32 iterations = 0;
+    CooperativeProbe p = {&token, &started, &iterations};
+    TaskHandle h = task_submit_cancellable(g_ts, cooperative_fn, &p, TASK_PRIORITY_NORMAL,
+                                           &token, NULL, 0);
+    ASSERT_NEQ(h, TASK_HANDLE_INVALID);
+    for (i32 spin = 0; spin < 1000000 && !atomic_load(&started); spin++) platform_thread_yield();
+    i32 seen_start = atomic_load(&started);
+    /* cancel and wait before any assert, so a failure cannot leave the task
+     * spinning on this frame's variables */
+    task_cancel(&token);
+    task_wait(g_ts);
+    ASSERT_EQ(seen_start, 1);
+    i32 after = atomic_load(&iterations);
+    ASSERT_TRUE(after > 0);
+    /* the loop has returned, so the count no longer moves */
+    for (i32 i = 0; i < 1000; i++) platform_thread_yield();
+    ASSERT_EQ(atomic_load(&iterations), after);
+}
+
+TEST(cancellable_rejects_bad_arguments)
+{
+    TaskCancelToken token;
+    task_cancel_token_init(&token);
+    ASSERT_EQ(task_submit_cancellable(g_ts, NULL, NULL, TASK_PRIORITY_NORMAL, &token, NULL, 0),
+              TASK_HANDLE_INVALID);
+    ASSERT_EQ(task_submit_cancellable(g_ts, increment_fn, NULL, TASK_PRIORITY_NORMAL, &token,
+                                      NULL, 1),
+              TASK_HANDLE_INVALID);
+    task_cancel(NULL);
+    task_cancel_token_init(NULL);
+    task_wait(g_ts);
+}
+
 /* ----------------------------------------------------------------------- */
 
 TEST_MAIN_BEGIN()
@@ -276,6 +432,11 @@ TEST_MAIN_BEGIN()
     RUN_TEST(submit_dep_null_deps_rejected);
     RUN_TEST(submit_n_null_ctxs_ignored);
     RUN_TEST(submit_null_fn_rejected);
+    RUN_TEST(cancelled_before_start_skips_fn);
+    RUN_TEST(uncancelled_token_runs_fn);
+    RUN_TEST(cancel_skips_pending_children_and_keeps_the_graph_moving);
+    RUN_TEST(running_task_observes_cancellation);
+    RUN_TEST(cancellable_rejects_bad_arguments);
     /* R414: these exhaust the shared task pool — keep them last. */
     RUN_TEST(out_of_range_priority_is_clamped);
     RUN_TEST(beyond_pool_capacity_all_execute);

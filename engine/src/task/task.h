@@ -18,6 +18,23 @@ typedef enum {
 typedef u64 TaskHandle;
 #define TASK_HANDLE_INVALID ((TaskHandle)0)
 
+/* ---- Cancellation ----
+ * A caller-owned token shared by any number of tasks. Initialize it with
+ * task_cancel_token_init (or zero it) before use, and do not re-initialize
+ * it while tasks that use it are outstanding. task_cancel sets it; it stays
+ * set. A task submitted with a token is skipped (fn is not called) if the
+ * token is set when the task is about to run, on a worker or on a thread
+ * that drains tasks inline; it still completes: its dependents are
+ * released, task_wait and task_wait_handle return, and
+ * task_cancelled_count counts it. A task that is already running is not
+ * interrupted; fn can poll task_cancel_requested and return early, so the
+ * caller must still wait before freeing ctx. Dependents with a different
+ * or no token still run after a skipped parent; give a whole subtree one
+ * token to drop it together. The token must outlive every task using it. */
+typedef struct {
+    _Atomic bool cancelled;
+} TaskCancelToken;
+
 /* ---- Task Node ---- */
 typedef struct TaskWaitLink TaskWaitLink;
 struct TaskWaitLink {
@@ -33,7 +50,8 @@ typedef struct Task {
     TaskWaitLink *waiters;      /* R173: tasks waiting on this one (fan-out) */
     TaskPriority priority;
     TaskHandle   handle;
-    _Atomic bool completed;     /* set true after fn() returns */
+    _Atomic bool completed;     /* set true after fn() returns or is skipped */
+    const TaskCancelToken *cancel; /* NULL = not cancellable */
 } Task;
 
 /* ---- Chase-Lev Work-Stealing Deque ---- */
@@ -74,6 +92,7 @@ typedef struct {
     _Atomic u64   total_tasks_completed;
     _Atomic u64   total_tasks_submitted;
     _Atomic u64   next_handle;
+    _Atomic u64   total_tasks_cancelled;
 
     /* Global submit queue (for external thread submissions) */
     /* R420: use the platform mutex type directly; task.c passes &ts->submit_mutex
@@ -145,3 +164,21 @@ void task_wait_handle(TaskSystem *ts, TaskHandle handle);
 
 /** Get worker thread count. */
 u32 task_worker_count(TaskSystem *ts);
+
+/* ---- Cancellation API ---- */
+
+void task_cancel_token_init(TaskCancelToken *token);
+/** Request cancellation (release); idempotent, NULL is ignored. */
+void task_cancel(TaskCancelToken *token);
+/** True once task_cancel was called (acquire); false for NULL. */
+bool task_cancel_requested(const TaskCancelToken *token);
+
+/** Like task_submit_dep with a priority and an optional token (NULL makes
+ * it an ordinary task). Fails like task_submit_dep: NULL fn, deps == NULL
+ * with dep_count > 0, a heap-fallback dependency, or allocation failure. */
+TaskHandle task_submit_cancellable(TaskSystem *ts, TaskFn fn, void *ctx, TaskPriority prio,
+                                   const TaskCancelToken *token, TaskHandle *deps,
+                                   u32 dep_count);
+
+/** Tasks skipped because their token was set before they ran. */
+u64 task_cancelled_count(TaskSystem *ts);

@@ -1,3 +1,14 @@
+## 任务系统协作式取消（2026-11-22）
+
+- **问题**：`missing_capabilities.md` 第 4 节列出任务系统缺“取消”。原来只能等任务执行完；依赖图中途作废时，已提交但未开始的任务仍会全部执行。
+- **实现**：`engine/src/task/task.h` 新增 `TaskCancelToken`（调用方持有的原子标志）、`task_cancel_token_init`/`task_cancel`/`task_cancel_requested`、`task_submit_cancellable(ts, fn, ctx, prio, token, deps, dep_count)` 与 `task_cancelled_count`。`task_submit_dep` 改为调用同一内部实现（行为不变）。`execute_task` 在调用 `fn` 前以 acquire 读取令牌：已置位就跳过 `fn` 并计数，其余完成步骤（完成标志、完成计数、释放依赖它的任务）照常执行，所以依赖图和等待不会卡住。已在运行的任务不会被打断，可以自行轮询 `task_cancel_requested`。
+- **TDD**：`test_task` 新增 5 例，共 21 例：开始前取消则跳过并计数、`task_wait_handle` 照常返回；未取消照常执行（NULL 令牌等同普通任务）；父任务运行中取消，两个子任务被跳过，依赖它们的另一令牌孙任务照常执行；运行中的任务观察到取消后退出循环；参数校验。两种变异均 RED：去掉跳过判断、提交时丢弃令牌。TSan 连跑 5 次干净，原生 CTest 458/458。
+- **独立评审**：结论无 blocker。评审在 200 次循环、单核绑定 1000 次、TSan 220 次、ASan/UBSan 200 次下全部通过；核实了取消与完成计数的内存序、跳过路径照常执行全部完成步骤、所有执行路径都经过 `execute_task`、`task_submit_dep` 行为不变、池复用时 `memset` 清除令牌，以及没有 C++ 翻译单元包含 `task.h`。已采纳的意见：
+  - “运行中的任务观察到取消”用例在“设置 started”与“首次检查令牌”之间被抢占时会失败（评审注入 2 ms 延迟后复现），改为先计数再检查；注入同样延迟后修复版 5 次全部通过。
+  - 两个等待用例改为先取消、放行、等待，再断言，失败时不会留下任务在已返回的栈帧上自旋。
+  - 头文件注释改正：跳过也可能发生在内联执行任务的线程上，令牌须初始化且不得在任务未完成时重新初始化，调用方释放 `ctx` 前仍须等待，不同令牌的子任务在父任务被跳过后仍会执行，`completed` 的注释包含跳过。
+  未验证：本机没有 MSVC，Windows 编译交给 CI。arm64 QEMU 下 `test_task` 21 例、`test_task_singleton` 与 `test_physics_parallel` 全部通过。
+
 ## arm64 lane 纳入并行物理与确定性契约（2026-11-21）
 
 - **变更**：`.github/workflows/ci.yml` 的 arm64 QEMU lane 构建并选择 `test_physics_parallel`（12 例，含 4 worker 的真实 `TaskSystem` 与在 worker 上内联执行），并把 `test_physics_determinism_contract`（宿主 `cmake -P`）纳入选择。正则在原有物理分组中追加 `_parallel|_determinism_contract`，捕获组仍为 31 个（CTest 上限）。统一选择由 261 项增至 263 项。

@@ -303,7 +303,11 @@ static bool drain_submitted_inline(TaskSystem *ts) {
  * ============================================================ */
 
 static void execute_task(TaskSystem *ts, Worker *self, Task *task) {
-    task->fn(task->ctx);
+    if (task->cancel && atomic_load_explicit(&task->cancel->cancelled, memory_order_acquire)) {
+        atomic_fetch_add_explicit(&ts->total_tasks_cancelled, 1, memory_order_relaxed);
+    } else {
+        task->fn(task->ctx);
+    }
 
     /* Mark completed BEFORE dependency resolution so wait_handle can see it. */
     atomic_store_explicit(&task->completed, true, memory_order_release);
@@ -442,6 +446,7 @@ TaskSystem *task_system_create(i32 worker_count) {
 
     atomic_store_explicit(&ts->running, true, memory_order_relaxed);
     atomic_store_explicit(&ts->total_tasks_completed, 0, memory_order_relaxed);
+    atomic_store_explicit(&ts->total_tasks_cancelled, 0, memory_order_relaxed);
     atomic_store_explicit(&ts->total_tasks_submitted, 0, memory_order_relaxed);
     atomic_store_explicit(&ts->next_handle, 0, memory_order_relaxed);
     atomic_store_explicit(&ts->submit_count, 0, memory_order_relaxed);
@@ -653,15 +658,33 @@ TaskHandle task_submit_ex(TaskSystem *ts, TaskFn fn, void *ctx, TaskPriority pri
     return h;
 }
 
+static TaskHandle task_submit_with(TaskSystem *ts, TaskFn fn, void *ctx, TaskPriority prio,
+                                   const TaskCancelToken *token, TaskHandle *deps,
+                                   u32 dep_count);
+
 TaskHandle task_submit_dep(TaskSystem *ts, TaskFn fn, void *ctx,
                            TaskHandle *deps, u32 dep_count) {
+    return task_submit_with(ts, fn, ctx, TASK_PRIORITY_NORMAL, NULL, deps, dep_count);
+}
+
+TaskHandle task_submit_cancellable(TaskSystem *ts, TaskFn fn, void *ctx, TaskPriority prio,
+                                   const TaskCancelToken *token, TaskHandle *deps,
+                                   u32 dep_count) {
+    if ((u32)prio >= TASK_PRIORITY_COUNT) prio = TASK_PRIORITY_NORMAL;
+    return task_submit_with(ts, fn, ctx, prio, token, deps, dep_count);
+}
+
+static TaskHandle task_submit_with(TaskSystem *ts, TaskFn fn, void *ctx, TaskPriority prio,
+                                   const TaskCancelToken *token, TaskHandle *deps,
+                                   u32 dep_count) {
     /* R420: deps==NULL with dep_count>0 dereferenced NULL below — fail the
      * submission instead of segfaulting. */
     if (dep_count > 0 && !deps) return TASK_HANDLE_INVALID;
     /* R424: a NULL fn would crash a worker in execute_task — reject it. */
     if (!fn) return TASK_HANDLE_INVALID;
-    Task *t = task_alloc(ts, fn, ctx, TASK_PRIORITY_NORMAL);
+    Task *t = task_alloc(ts, fn, ctx, prio);
     if (!t) return TASK_HANDLE_INVALID;  /* R156: calloc failure */
+    t->cancel = token;
     TaskHandle h = t->handle;
 
     /* R173: Count toward task_wait even while blocked on deps. */
@@ -856,4 +879,20 @@ i32 task_worker_id(TaskSystem *ts) {
 
 u32 task_worker_count(TaskSystem *ts) {
     return ts->worker_count;
+}
+
+void task_cancel_token_init(TaskCancelToken *token) {
+    if (token) atomic_init(&token->cancelled, false);
+}
+
+void task_cancel(TaskCancelToken *token) {
+    if (token) atomic_store_explicit(&token->cancelled, true, memory_order_release);
+}
+
+bool task_cancel_requested(const TaskCancelToken *token) {
+    return token && atomic_load_explicit(&token->cancelled, memory_order_acquire);
+}
+
+u64 task_cancelled_count(TaskSystem *ts) {
+    return ts ? atomic_load_explicit(&ts->total_tasks_cancelled, memory_order_relaxed) : 0u;
 }

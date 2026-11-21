@@ -325,3 +325,7 @@ Slice A 的 target 边界与 Slice B/C/D 的首批基元已交付（2026-10-22/2
 arm64 lane 新增 `test_task`（16 例）和 `test_task_singleton`（1 例），并加入 platform config/null-safety/fs-write/size-semantics 四项 PAL 测试，统一选择达到七十二项。原生与交叉 focused 均为 6/6，任务/单例汇总 16/1，PAL 汇总 10/1/11/3，无新增 skip。
 
 覆盖任务提交、优先级、依赖、容量、worker 行为和进程级所有权，以及配置、空平台查询、原子写入和尺寸语义。这些是直接 QEMU 单元测试，不涉及窗口后端、X11、WSI 或物理设备。
+
+### 追加：任务取消（2026-11-22）
+
+`task.h` 新增协作式取消。`TaskCancelToken` 由调用方持有，`task_cancel` 置位后不再复位。`task_submit_cancellable(ts, fn, ctx, prio, token, deps, dep_count)` 提交带令牌的任务，令牌为 NULL 时等同普通任务，`task_submit_dep` 现在也走同一路径。任务即将执行时（无论在 worker 上，还是在内联执行任务的线程上），如果令牌已置位，就跳过 `fn`；任务仍照常完成：释放依赖它的任务，`task_wait`/`task_wait_handle` 返回，`task_cancelled_count` 计数。已在运行的任务不会被打断，`fn` 可以轮询 `task_cancel_requested` 提前返回，所以调用方释放 `ctx` 前仍须等待。令牌使用前要先初始化，有任务未完成时不能重新初始化，并且必须比使用它的任务活得更久。父任务被跳过后，持有其他令牌或无令牌的子任务仍会执行，要整棵子树一起丢弃就共用一个令牌。`test_task` 覆盖四种情况：开始前取消、未取消时照常运行、父任务运行中取消后子任务被跳过且孙任务照常执行、运行中的任务观察到取消后退出。

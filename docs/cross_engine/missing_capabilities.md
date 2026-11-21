@@ -440,3 +440,4 @@
 - **第 9 节（物理）追加**：新增宿主契约 `test_physics_determinism_contract`，在任何主机上阻止三类跨平台确定性回退（平台 `atan2f`、SSE 近似倒数平方根、缺少 `-ffp-contract=off`），弥补金标准只在特定 glibc 上失败的检测缺口。
 - **第 9 节（物理）追加**：2026-11-21 物理改用确定性 `math_sincosf`（`quat_from_axis_angle`、软体创建），载具 `tanf` 改为字面量，物理代码不再依赖任何平台三角函数，源码契约同步禁止。上一条中的「`sinf`/`cosf` 与载具 `tanf` 来自平台 libm」由此关闭。仍缺：并行 solver；MSVC 若启用 `/arch:AVX2` 需补 `/fp:contract-`。
 - **第 9 节（物理）追加**：2026-11-21 新增并行接触求解：按刚体岛分发到 job，世界统计按配对顺序重放，与串行逐位相同；BVH refit 改为批量，32k 刚体串行步长 10.5→3.6 ms。上文「并行 solver」中的接触部分由此交付。仍缺：距离/铰链等约束求解、积分与 refit 的并行；引擎主循环（`main.c`）尚未启用调度器；MSVC 若启用 `/arch:AVX2` 需补 `/fp:contract-`。
+- **第 4 节（任务）追加**：2026-11-22 任务系统新增协作式取消：调用方持有 `TaskCancelToken`，`task_submit_cancellable` 提交的任务在令牌置位后不再执行 `fn`，但仍完成并释放依赖它的任务；运行中的任务可轮询 `task_cancel_requested`。见 [`docs/design/runtime_thread_model.md`](../design/runtime_thread_model.md)「任务取消」。上文「取消」由此交付。仍缺：跨帧 continuation、任务图可视化、工作窃取调优。
