@@ -1,3 +1,12 @@
+## arm64 Compose 核心与二百项 CTest（2026-11-21）
+
+- **最小场景**：新增五个既有 `headless;compose` 可执行目标：mycompose tree 28、remember 8、store 27、runtime 8、async 17 例，共 88 例。前四项只链接 `mycompose`（它自带线程库）；async 链接 `mycompose_myui`、dummy PAL 与线程库，只创建 dummy PAL 的无头窗口对象，不连接显示服务器、不用 GPU、不 fork。均由生成的 QEMU 命令直接启动。
+- **RED 与精确选择**：旧 workflow 在 `missing compose build targets` 处 RED。真实原生集合从 195 增至 200，差集恰为这五项；myui 集成、widget primitives、全部 C++20 对等层与 GPU 测试及同名前缀扩展均被拒绝。完整表达式已处在 CTest 的 31 个捕获组上限，因此只追加五个平铺精确 alternative，契约同时检查组数上限、`Too many parentheses` 输出和严格集合差。CI 与 Build_Guide 的构建和测试命令逐字一致，600 秒守护与 25 分钟 job 上限不变。
+- **原生与 focused 验证**：原生五项 5/5，计数 28/8/27/8/17；干净 Ubuntu 24.04 容器 arm64 五项 5/5，计数一致，QEMU 8.2.2。原生全量 456 项零失败，4 个既有平台用例跳过，CTest 174.22 秒。未修改产品或测试源码。
+- **完整干净容器验证**：以统一非 root 属主执行 workflow 原始构建和测试 step，200/200，CTest 138.04 秒。严格日志断言确认 20 组分项计数（5 组 Compose 与 15 组编辑器）、全部旧契约/e2e、无失败分项、唯一 ptrace 设置 skip，且无 root 权限跳过、`CHILD TIMEOUT`、`PIPE TIMEOUT` 或 `Too many parentheses`。
+- **独立评审**：只读评审实测旧/新表达式分别选中 195/200 项、差集恰为五项，并以追加一个分组的对照复现 `Too many parentheses`，确认平铺写法是必需的；无 Critical/Important。采纳 Minor：async 实际创建 dummy PAL 无头窗口对象，文档措辞已从“不开窗口”改为准确描述。记录未处理的 Minor：async 的跨线程自旋等待没有单项超时，`test_thread_create` 返回值被忽略，建线程失败时只能由外层 `timeout 600` 兜底；本切片不改测试源码，留作后续给这五项加 CTest `TIMEOUT` 或检查返回值。
+- **覆盖缺口**：Compose 与 myui 控件集成（`test_mycompose_myui`、`test_mycompose_widget_primitives`）、C++20 对等层在 arm64 上的运行和 GPU 呈现不在本切片内。
+
 ## arm64 编辑器插件核心与一百九十五项 CTest（2026-11-21）
 
 - **最小场景**：新增五个既有 `headless;editor` 可执行目标：plugin cmds 7、host 8、sections 5、panels 9、manifest 10 例，共 39 例。均复用 `break_editor_test` 和生成的 QEMU 命令，只覆盖命令注册、宿主桥、检查器区块、面板模型与 manifest 解析；不包含动态库加载、CLI、shell/UI 或 worker。
