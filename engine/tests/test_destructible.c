@@ -24,7 +24,9 @@ TEST(destructible_breaks_only_past_the_threshold) {
         ASSERT_TRUE(fabsf(frag->position.e[2]) <= 0.5f + 1e-4f);
     }
     physics_world_destroy(pw);
+}
 
+TEST(destructible_without_room_for_fragments_stays_whole) {
     PhysicsWorld *tiny = physics_world_create(2);
     physics_body_create(tiny, vec3(0, -1, 0), vec3(1, 0.2f, 1), 0, true, 0);
     Destructible stuck;
@@ -34,7 +36,9 @@ TEST(destructible_breaks_only_past_the_threshold) {
     ASSERT_FALSE(stuck.broken);
     ASSERT_FALSE(physics_body_is_parked(&tiny->bodies[stuck.root.index]));
     physics_world_destroy(tiny);
+}
 
+TEST(destructible_fragments_break_again_into_a_second_generation) {
     PhysicsWorld *deep = physics_world_create(80);
     physics_body_create(deep, vec3(0, -2, 0), vec3(4, 0.2f, 4), 0, true, 0);
     Destructible again;
@@ -54,7 +58,9 @@ TEST(destructible_breaks_only_past_the_threshold) {
     ASSERT_EQ(again.generation, 2u);
     ASSERT_EQ(again.fragment_count, 64u);
     physics_world_destroy(deep);
+}
 
+TEST(destructible_third_generation_and_sub_threshold_hits) {
     PhysicsWorld *third = physics_world_create(600);
     physics_body_create(third, vec3(0, -2, 0), vec3(4, 0.2f, 4), 0, true, 0);
     Destructible fine;
@@ -76,4 +82,7 @@ TEST(destructible_breaks_only_past_the_threshold) {
 
 TEST_MAIN_BEGIN()
     RUN_TEST(destructible_breaks_only_past_the_threshold);
+    RUN_TEST(destructible_without_room_for_fragments_stays_whole);
+    RUN_TEST(destructible_fragments_break_again_into_a_second_generation);
+    RUN_TEST(destructible_third_generation_and_sub_threshold_hits);
 TEST_MAIN_END()

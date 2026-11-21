@@ -79,7 +79,9 @@ TEST(slider_kills_perpendicular_offset_and_respects_the_limit) {
     physics_step(pw, 0.02f);
     ASSERT_TRUE(fabsf(pw->bodies[b.index].angular_velocity.e[1]) > 2.0f);
     physics_world_destroy(pw);
+}
 
+TEST(slider_is_refused_when_no_constraint_slot_is_free) {
     PhysicsWorld *full = physics_world_create(4);
     PhysicsBodyHandle c = physics_body_create(full, vec3(0, 0, 0), vec3(0.1f, 0.1f, 0.1f), 1, false, 0);
     PhysicsBodyHandle d = physics_body_create(full, vec3(1, 0, 0), vec3(0.1f, 0.1f, 0.1f), 1, false, 0);
@@ -97,4 +99,5 @@ TEST(slider_kills_perpendicular_offset_and_respects_the_limit) {
 
 TEST_MAIN_BEGIN()
     RUN_TEST(slider_kills_perpendicular_offset_and_respects_the_limit);
+    RUN_TEST(slider_is_refused_when_no_constraint_slot_is_free);
 TEST_MAIN_END()

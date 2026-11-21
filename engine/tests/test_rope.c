@@ -1,7 +1,7 @@
 #include "test_framework.h"
 #include <physics/rope.h>
 
-TEST(rope_links_nodes_and_refuses_a_full_world) {
+TEST(rope_links_nodes_between_the_end_points) {
     PhysicsWorld *pw = physics_world_create(16);
     Rope rope;
     memset(&rope, 0, sizeof(rope));
@@ -13,7 +13,9 @@ TEST(rope_links_nodes_and_refuses_a_full_world) {
     ASSERT_FLOAT_EQ(pw->bodies[rope.nodes[4].index].position.e[2], 4.0f, 1e-4);
     ASSERT_EQ(physics_constraint_count(pw), 4u);
     physics_world_destroy(pw);
+}
 
+TEST(rope_refuses_a_world_without_free_constraints) {
     PhysicsWorld *full = physics_world_create(32);
     PhysicsBodyHandle a = physics_body_create(full, vec3(0, 0, 0), vec3(0.1f, 0.1f, 0.1f), 1, false, 0);
     PhysicsBodyHandle b = physics_body_create(full, vec3(1, 0, 0), vec3(0.1f, 0.1f, 0.1f), 1, false, 0);
@@ -29,5 +31,6 @@ TEST(rope_links_nodes_and_refuses_a_full_world) {
 }
 
 TEST_MAIN_BEGIN()
-    RUN_TEST(rope_links_nodes_and_refuses_a_full_world);
+    RUN_TEST(rope_links_nodes_between_the_end_points);
+    RUN_TEST(rope_refuses_a_world_without_free_constraints);
 TEST_MAIN_END()

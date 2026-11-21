@@ -17,7 +17,10 @@ TEST(soft_body_restores_offsets_when_stiff) {
     ASSERT_FLOAT_EQ(offset.e[0], rest0.e[0], 1e-4);
     ASSERT_FLOAT_EQ(offset.e[1], rest0.e[1], 1e-4);
     ASSERT_FLOAT_EQ(offset.e[2], rest0.e[2], 1e-4);
+    physics_world_destroy(pw);
+}
 
+TEST(soft_body_with_zero_stiffness_leaves_nodes_alone) {
     PhysicsWorld *loose = physics_world_create(8);
     SoftBody floppy;
     memset(&floppy, 0, sizeof(floppy));
@@ -27,7 +30,9 @@ TEST(soft_body_restores_offsets_when_stiff) {
     soft_body_step(&floppy, loose);
     ASSERT_FLOAT_EQ(loose->bodies[floppy.nodes[0].index].position.e[0], moved, 1e-5);
     physics_world_destroy(loose);
+}
 
+TEST(soft_body_volume_stiffness_restores_the_spread) {
     PhysicsWorld *bulk = physics_world_create(8);
     SoftBody inflated;
     memset(&inflated, 0, sizeof(inflated));
@@ -52,7 +57,10 @@ TEST(soft_body_restores_offsets_when_stiff) {
     }
     after *= 0.25f;
     ASSERT_FLOAT_EQ(after, before, before * 0.05f + 1e-4f);
+    physics_world_destroy(bulk);
+}
 
+TEST(soft_body_node_count_limits) {
     PhysicsWorld *wide = physics_world_create(12);
     SoftBody six;
     memset(&six, 0, sizeof(six));
@@ -67,10 +75,11 @@ TEST(soft_body_restores_offsets_when_stiff) {
     ASSERT_FALSE(soft_body_create_count(&dozen, many, vec3(0, 0, 0), 0.2f, 1.0f, 1.0f, 0.0f, 129u));
     physics_world_destroy(many);
     physics_world_destroy(wide);
-    physics_world_destroy(bulk);
-    physics_world_destroy(pw);
 }
 
 TEST_MAIN_BEGIN()
     RUN_TEST(soft_body_restores_offsets_when_stiff);
+    RUN_TEST(soft_body_with_zero_stiffness_leaves_nodes_alone);
+    RUN_TEST(soft_body_volume_stiffness_restores_the_spread);
+    RUN_TEST(soft_body_node_count_limits);
 TEST_MAIN_END()

@@ -99,7 +99,9 @@ TEST(cloth_pins_the_top_row_and_pulls_back) {
     apart = sqrtf(dx * dx + dy * dy + dz * dz);
     ASSERT_TRUE(apart > 0.15f);
     physics_world_destroy(pw);
+}
 
+TEST(cloth_is_refused_when_no_constraint_slot_is_free) {
     PhysicsWorld *full = physics_world_create(32);
     PhysicsBodyHandle a = physics_body_create(full, vec3(0, 0, 0), vec3(0.1f, 0.1f, 0.1f), 1, false, 0);
     PhysicsBodyHandle b = physics_body_create(full, vec3(1, 0, 0), vec3(0.1f, 0.1f, 0.1f), 1, false, 0);
@@ -112,7 +114,9 @@ TEST(cloth_pins_the_top_row_and_pulls_back) {
     ASSERT_FALSE(cloth_create(&refused, full, vec3(0, 2, 0), 0.5f, 2, 2, 0.2f));
     ASSERT_EQ(full->count, count);
     physics_world_destroy(full);
+}
 
+TEST(cloth_is_refused_when_no_post_step_slot_is_free) {
     PhysicsWorld *hooks = physics_world_create(16);
     for (u32 i = 0; i < PHYSICS_MAX_POST_STEPS; i++) {
         ASSERT_TRUE(physics_add_post_step(hooks, cloth_test_post_step, NULL));
@@ -124,7 +128,9 @@ TEST(cloth_pins_the_top_row_and_pulls_back) {
     ASSERT_FALSE(cloth_create(&blocked, hooks, vec3(0, 2, 0), 0.5f, 2, 2, 0.2f));
     ASSERT_EQ(hooks->count, hooked);
     physics_world_destroy(hooks);
+}
 
+TEST(cloth_sheets_share_the_post_step_slots) {
     PhysicsWorld *many = physics_world_create(48);
     Cloth sheets[8];
     for (u32 i = 0; i < 8u; i++) {
@@ -133,7 +139,9 @@ TEST(cloth_pins_the_top_row_and_pulls_back) {
     }
     ASSERT_EQ(many->post_step_count, 8u);
     physics_world_destroy(many);
+}
 
+TEST(cloth_created_after_others_separates_its_own_nodes) {
     PhysicsWorld *fifth = physics_world_create(40);
     Cloth small[4];
     for (u32 i = 0; i < 4u; i++) {
@@ -159,14 +167,18 @@ TEST(cloth_pins_the_top_row_and_pulls_back) {
     fifth->bodies[late_left.index].position = vec3(0, 1, 0);
     fifth->bodies[late_right.index].position = vec3(0, 1, 0);
     physics_step(fifth, 0.016f);
-    dx = fifth->bodies[late_left.index].position.e[0] - fifth->bodies[late_right.index].position.e[0];
-    dy = fifth->bodies[late_left.index].position.e[1] - fifth->bodies[late_right.index].position.e[1];
-    dz = fifth->bodies[late_left.index].position.e[2] - fifth->bodies[late_right.index].position.e[2];
-    apart = sqrtf(dx * dx + dy * dy + dz * dz);
+    f32 dx = fifth->bodies[late_left.index].position.e[0] - fifth->bodies[late_right.index].position.e[0];
+    f32 dy = fifth->bodies[late_left.index].position.e[1] - fifth->bodies[late_right.index].position.e[1];
+    f32 dz = fifth->bodies[late_left.index].position.e[2] - fifth->bodies[late_right.index].position.e[2];
+    f32 apart = sqrtf(dx * dx + dy * dy + dz * dz);
     ASSERT_TRUE(apart > 0.15f);
     physics_world_destroy(fifth);
 }
 
 TEST_MAIN_BEGIN()
     RUN_TEST(cloth_pins_the_top_row_and_pulls_back);
+    RUN_TEST(cloth_is_refused_when_no_constraint_slot_is_free);
+    RUN_TEST(cloth_is_refused_when_no_post_step_slot_is_free);
+    RUN_TEST(cloth_sheets_share_the_post_step_slots);
+    RUN_TEST(cloth_created_after_others_separates_its_own_nodes);
 TEST_MAIN_END()
