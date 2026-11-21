@@ -27,20 +27,20 @@
 - Modify: `.github/workflows/ci.yml`
 - Modify: `docs/Build_Guide.md`
 
-- [ ] **Step 1:** Write a contract that requires the build suffix `test_editor_scene_textures test_editor_audio`, the final alternative `|test_editor_audio$)`, exact old/new native CTest sets 189/190, and a one-element difference containing only `test_editor_audio`. Reject `test_editor_audio_sink`, `test_editor_audio_extra`, `test_editor_shell`, `test_core_app_audio_device`, and `test_core_app_voice`.
-- [ ] **Step 2:** Run the contract on the old workflow; require RED at the missing build target.
-- [ ] **Step 3:** Append `test_editor_audio` after `test_editor_scene_textures` in the workflow and guide build commands; append `|test_editor_audio$)` to both test expressions. Update the section title, intro and current-count paragraph to 190 while retaining the 189 editor-core baseline as history.
-- [ ] **Step 4:** Require the selection and lane-budget contracts GREEN, byte-identical workflow/guide commands, valid YAML and clean `git diff --check`.
+- [x] **Step 1:** Write a contract that requires the build suffix `test_editor_scene_textures test_editor_audio`, the final alternative `|test_editor_audio$)`, exact old/new native CTest sets 189/190, and a one-element difference containing only `test_editor_audio`. Reject `test_editor_audio_sink`, `test_editor_audio_extra`, `test_editor_shell`, `test_core_app_audio_device`, and `test_core_app_voice`.
+- [x] **Step 2:** Run the contract on the old workflow; require RED at the missing build target.
+- [x] **Step 3:** Append `test_editor_audio` after `test_editor_scene_textures` in the workflow and guide build commands; append `|test_editor_audio$)` to both test expressions. Update the section title, intro and current-count paragraph to 190 while retaining the 189 editor-core baseline as history.
+- [x] **Step 4:** Require the selection and lane-budget contracts GREEN, byte-identical workflow/guide commands, valid YAML and clean `git diff --check`.
 
 ### Task 2: Verify native and arm64 behavior
 
 **Files:**
 - Verify only: `engine/tests/test_editor_audio.c` and its existing CMake registration
 
-- [ ] **Step 1:** Run native `test_editor_audio`; require 23/23 and no skip.
-- [ ] **Step 2:** Build and run it in a clean Ubuntu 24.04 arm64 QEMU container; require 23/23 with the same test command shape as the other editor tests.
-- [ ] **Step 3:** Run the full native suite; require 456 tests, zero failures and only the four established platform skips.
-- [ ] **Step 4:** Execute the exact workflow build/test steps in a clean non-root container with source and build files owned by that user; require 190/190, audio 23/23, all previous editor counts, all old contracts/e2e, exactly one ptrace setup skip, and no root-permission skip.
+- [x] **Step 1:** Run native `test_editor_audio`; require 23/23 and no skip.
+- [x] **Step 2:** Build and run it in a clean Ubuntu 24.04 arm64 QEMU container; require 23/23 with the same test command shape as the other editor tests.
+- [x] **Step 3:** Run the full native suite; require 456 tests, zero failures and only the four established platform skips.
+- [x] **Step 4:** Execute the exact workflow build/test steps in a clean non-root container with source and build files owned by that user; require 190/190, audio 23/23, all previous editor counts, all old contracts/e2e, exactly one ptrace setup skip, and no root-permission skip.
 
 ### Task 3: Review, push and record evidence
 
@@ -50,7 +50,7 @@
 - Modify: `docs/Build_Guide.md`
 - Modify: `docs/superpowers/plans/2026-11-21-arm64-qemu-editor-audio.md`
 
-- [ ] **Step 1:** Obtain read-only independent review of the final diff, exact set, test dependency boundary and documentation. Reproduce and fix every Critical/Important issue before commit.
-- [ ] **Step 2:** Commit with `ci: run arm64 editor audio test`, push to `origin/master`, and monitor the complete CI and Windows D3D12 workflows.
-- [ ] **Step 3:** Download the raw arm64 job log and run `assert_arm64_log.py` for 190 with `test_editor_audio=23` plus all nine previous editor counts; require success.
-- [ ] **Step 4:** Append local/remote receipts and remaining gaps: editor audio UI/shell and real listening/device validation are not covered by this pure-CPU slice. Check off only completed steps.
+- [x] **Step 1:** Obtain read-only independent review of the final diff, exact set, test dependency boundary and documentation. Reproduce and fix every Critical/Important issue before commit.
+- [x] **Step 2:** Commit with `ci: run arm64 editor audio test`, push to `origin/master`, and monitor the complete CI and Windows D3D12 workflows.
+- [x] **Step 3:** Download the raw arm64 job log and run `assert_arm64_log.py` for 190 with `test_editor_audio=23` plus all nine previous editor counts; require success.
+- [x] **Step 4:** Append local/remote receipts and remaining gaps: editor audio UI/shell and real listening/device validation are not covered by this pure-CPU slice. Check off only completed steps.

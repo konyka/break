@@ -4,7 +4,9 @@
 - **RED 与精确选择**：旧 workflow 在 `missing editor audio build target` 处 RED。构建列表追加一个目标，测试表达式追加精确 `test_editor_audio$`，真实原生集合从 189 增至 190，差集仅此一项；audio_sink、audio_extra、shell、core_app 音频/语音/设备测试及同名前缀扩展均被拒绝。CI 与 Build_Guide 的构建和测试命令逐字一致，600 秒守护与 25 分钟 job 上限不变。
 - **原生与 focused 验证**：原生音频 23/23；干净 Ubuntu 24.04 容器 arm64 音频 23/23，QEMU 8.2.2。原生全量 456 项零失败，4 个既有平台用例跳过，CTest 179.18 秒。未修改产品或测试源码。
 - **完整干净容器验证**：以统一非 root 属主执行 workflow 原始构建和测试 step，190/190，CTest 128.15 秒。严格日志断言确认音频 23/23、此前九个编辑器分项计数、全部旧契约/e2e、无失败分项、唯一 ptrace 设置 skip，且无 root 权限跳过、`CHILD TIMEOUT` 或 `PIPE TIMEOUT`。
-- **独立评审**：只读评审确认旧集合逐项保留、两处命令一致、23 个 `RUN_TEST` 和无设备/UI/worker 依赖，无 Critical/Important/Minor；其等待的 focused 与完整 arm64 证据随后全部取得。
+- **独立评审**：只读评审确认旧集合逐项保留、两处命令一致、23 个 `RUN_TEST` 和无设备/UI/worker 依赖，无 Critical/Important/Minor；其等待的 focused 与完整 arm64 证据随后全部取得，复审为 Ready to merge: Yes。
+- **远端 arm64 验证**：[CI run 44856764765](https://github.com/konyka/break/actions/runs/44856764765) 的 [arm64 job 136700677779](https://github.com/konyka/break/actions/runs/44856764765/job/136700677779) 在提交 `783482de` 上成功。原始日志严格断言确认精确 190 项、音频 23/23、此前全部编辑器计数、旧契约/e2e 和唯一 ptrace 设置 skip；无 root 权限跳过、`CHILD TIMEOUT` 或 `PIPE TIMEOUT`，CTest 168.86 秒。
+- **整体远端结果**：上述主 CI run 最终为 `completed / success`，包括 Linux、Windows、macOS、arm64、sanitizer、fuzz、图形及契约 lane；既有条件跳过仍按各 job 原义保留。独立 [Windows D3D12 run 44856764749](https://github.com/konyka/break/actions/runs/44856764749) 也为 `completed / success`。
 - **覆盖缺口**：本切片只覆盖纯 CPU 文档音频与 DSP，不包含编辑器音频 shell/UI、真实音频设备、听感验证或跨架构逐位音频输出证明。
 
 ## arm64 编辑器核心与一百八十九项 CTest（2026-11-21）
