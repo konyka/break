@@ -1,3 +1,12 @@
+## 物理并行积分与积分后 BVH refit（2026-11-22）
+
+- **问题**：并行接触求解之后，刚体积分和积分后的 BVH 叶子 refit 仍是逐刚体的串行循环，占 32768 个刚体每步的约一半时间。
+- **实现**：`engine/src/physics/physics.c` 把 SSE2 与标量两份积分循环合成 `physics_integrate_body`，积分后 refit 抽成 `physics_refit_range`；`physics_integrate_parallel` 在设置了 `parallel_for`、刚体数达到 `parallel_min_bodies`（默认 `PHYSICS_PARALLEL_MIN_BODIES` = 8192，新接口 `physics_world_set_parallel_min_bodies`）且没有醒着的 CCD 刚体时，按连续刚体区间派发一次 job，每个 job 积分并写自己区间的叶子，内部节点仍由调用线程重算一次。设计见 `docs/design/physics_extended.md`「并行积分与积分后 BVH refit」。
+- **TDD**：`test_physics_parallel` 新增 5 例（共 17 例）：逆序 job 下 240 步与串行逐位一致且每步只派发一次；`TaskSystem` worker 上逐位一致；醒着的 CCD 刚体使积分保持串行；带 6 个高速 CCD 刚体时接触并行、积分串行仍逐位一致；默认阈值下测试场景不派发。世界比较新增所有 BVH 节点包围盒。
+- **变异检查**：去掉 CCD 守卫、job 中不写叶子、job 区间少一个刚体，均被检出。另尝试把积分前 refit 也并行化：使其 job 什么都不写的变异无法被任何测试检出（那次 refit 只被 CCD 扫掠读取，而有 CCD 刚体时积分本就串行），所以没有保留这部分。
+- **性能**（16 线程 x86-64，刚体全部醒着、无接触，每步，串行 → 并行）：2048 个 0.128 → 0.129 ms，8192 个 0.540 → 0.468 ms，32768 个 2.725 → 2.267 ms。
+- **验证**：`test_physics` 83/83、`test_physics_replay` 7/7（金标准哈希不变）；TSan 下 `test_physics_parallel` 3 次无报告。
+
 ## 工作窃取的优先级策略（2026-11-22）
 
 - **问题**：worker 按 worker 逐个扫描三个优先级队列来窃取，扫到的第一个 worker 上有低优先级任务时就先取走它，另一个 worker 上的高优先级任务继续等待；全局提交队列只在本地队列全空时才读取，外部线程提交的高优先级任务会排在本地低优先级任务之后。

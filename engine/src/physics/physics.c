@@ -320,6 +320,10 @@ void physics_world_set_parallel_min_pairs(PhysicsWorld *pw, u32 min_pairs) {
     if (pw) pw->parallel_min_pairs = min_pairs;
 }
 
+void physics_world_set_parallel_min_bodies(PhysicsWorld *pw, u32 min_bodies) {
+    if (pw) pw->parallel_min_bodies = min_bodies;
+}
+
 void physics_set_contact_callback(PhysicsWorld *pw, PhysicsContactFn fn, void *user) {
     if (!pw) return;
     pw->on_contact   = fn;
@@ -1937,6 +1941,110 @@ static void physics_ensure_bvh(const PhysicsWorld *pw) {
     m->bvh_dirty = false;
 }
 
+/* Velocity, damping, position and orientation for a body that is not CCD.
+ * Skips statics and sleeping bodies. */
+static void physics_integrate_body(RigidBody *b, f32 dt) {
+    if (b->is_static || b->sleeping) return;
+    b->step_start_position = b->position;
+#if SIMD_SSE2
+    const f32 damping = 0.98f;
+    /* Velocity integration: v += a * dt */
+    simd_vec3_add_scaled_sse2(b->velocity.e, b->velocity.e, b->acceleration.e, dt);
+    /* Damping: v *= 0.98 */
+    simd_vec3_scale_sse2(b->velocity.e, b->velocity.e, damping);
+    /* Position integration: p += v * dt */
+    simd_vec3_add_scaled_sse2(b->position.e, b->position.e, b->velocity.e, dt);
+#else
+    b->velocity.e[0] += b->acceleration.e[0] * dt;
+    b->velocity.e[1] += b->acceleration.e[1] * dt;
+    b->velocity.e[2] += b->acceleration.e[2] * dt;
+
+    f32 damping = 0.98f;
+    b->velocity.e[0] *= damping;
+    b->velocity.e[1] *= damping;
+    b->velocity.e[2] *= damping;
+
+    b->position.e[0] += b->velocity.e[0] * dt;
+    b->position.e[1] += b->velocity.e[1] * dt;
+    b->position.e[2] += b->velocity.e[2] * dt;
+#endif
+    integrate_orientation(b, dt);
+}
+
+/* R418: refit moved bodies again AFTER integration, before the pair query.
+ * The tree was built/refit pre-integration (kept above so integrate_body_ccd
+ * can sweep against it), so without this pass bvh_query_pairs tested pairs
+ * against last frame's AABBs: a contact that begins during this frame's
+ * motion was never pair-tested, letting fast non-CCD bodies tunnel and
+ * resolving ordinary contacts a frame late. Same skip policy as the
+ * pre-integration refit (statics never move; resting bodies' AABBs are
+ * unchanged). Only leaves are written here; the caller refits the internal
+ * nodes once, skipped when no leaf moved. Both are no-ops on an unbuilt
+ * tree. Returns the number of leaves written. */
+static u32 physics_refit_range(PhysicsWorld *pw, u32 begin, u32 end) {
+    u32 changed = 0u;
+    for (u32 i = begin; i < end; i++) {
+        if (pw->bodies[i].is_static) continue;
+        if (pw->bodies[i].rest_frames > 2) continue;
+        AABB box = aabb_from_body(&pw->bodies[i]);
+        BVHAABB bvh_box;
+        bvh_box.min = box.min;
+        bvh_box.max = box.max;
+        bvh_set_leaf_bounds(&pw->bvh, i, bvh_box);
+        changed++;
+    }
+    return changed;
+}
+
+typedef struct {
+    PhysicsWorld *pw;
+    f32 dt;
+    u32 jobs;
+    u32 changed[PHYSICS_MAX_PARALLEL_JOBS];
+} PhysicsIntegrateJobs;
+
+static void physics_integrate_job(void *raw, u32 job) {
+    PhysicsIntegrateJobs *j = (PhysicsIntegrateJobs *)raw;
+    u32 count = j->pw->count;
+    u32 begin = (u32)((u64)count * job / j->jobs);
+    u32 end = (u32)((u64)count * (job + 1u) / j->jobs);
+    for (u32 i = begin; i < end; i++) physics_integrate_body(&j->pw->bodies[i], j->dt);
+    j->changed[job] = physics_refit_range(j->pw, begin, end);
+}
+
+static u32 physics_parallel_jobs(const PhysicsWorld *pw) {
+    if (!pw->parallel_for || pw->parallel_max_jobs < 2u) return 0u;
+    u32 min_bodies = pw->parallel_min_bodies ? pw->parallel_min_bodies : PHYSICS_PARALLEL_MIN_BODIES;
+    if (pw->count < min_bodies || pw->count < 2u) return 0u;
+    u32 jobs = pw->parallel_max_jobs;
+    if (jobs > PHYSICS_MAX_PARALLEL_JOBS) jobs = PHYSICS_MAX_PARALLEL_JOBS;
+    if (jobs > pw->count) jobs = pw->count;
+    return jobs;
+}
+
+/* Integration and leaf refit on jobs over disjoint body ranges. Each body
+ * gets exactly the operations of the serial loop, so the result is
+ * bit-identical. Returns false, having done nothing, without a dispatcher,
+ * below the world's body minimum (default PHYSICS_PARALLEL_MIN_BODIES), or
+ * while an awake CCD body exists: its sweep reads bodies already integrated
+ * this step, so the serial order is part of the result. */
+static bool physics_integrate_parallel(PhysicsWorld *pw, f32 dt, u32 *out_changed) {
+    PhysicsIntegrateJobs j;
+    j.jobs = physics_parallel_jobs(pw);
+    if (j.jobs == 0u) return false;
+    for (u32 i = 0; i < pw->count; i++) {
+        const RigidBody *b = &pw->bodies[i];
+        if (b->ccd && !b->is_static && !b->sleeping) return false;
+    }
+    j.pw = pw;
+    j.dt = dt;
+    pw->parallel_for(pw->parallel_user, physics_integrate_job, &j, j.jobs);
+    u32 changed = 0u;
+    for (u32 k = 0; k < j.jobs; k++) changed += j.changed[k];
+    *out_changed = changed;
+    return true;
+}
+
 void physics_step(PhysicsWorld *pw, f32 dt) {
     if (!pw || !isfinite(dt)) return;
     for (u32 i = 0; i < pw->count; i++) pw->bodies[i].contact_active = false;
@@ -1978,90 +2086,26 @@ void physics_step(PhysicsWorld *pw, f32 dt) {
     u32 leaves_changed = 0u;
     physics_ensure_bvh(pw);
     if (!bvh_rebuilt) {
-        for (u32 i = 0; i < pw->count; i++) {
-            if (pw->bodies[i].is_static) continue; /* static AABB never changes */
-            /* Skip BVH refit for resting bodies: rest_frames > 2 now requires
-             * the position to have been bit-unchanged for 2+ frames (see the
-             * integration loops below), so the stored AABB is bit-identical
-             * and skipping the refit is exact. */
-            if (pw->bodies[i].rest_frames > 2) continue;
-            AABB box = aabb_from_body(&pw->bodies[i]);
-            BVHAABB bvh_box;
-            bvh_box.min = box.min;
-            bvh_box.max = box.max;
-            bvh_set_leaf_bounds(&pw->bvh, i, bvh_box);
-            leaves_changed++;
-        }
+        /* Statics never change their AABB. Resting bodies are skipped too:
+         * rest_frames > 2 requires the position to have been bit-unchanged
+         * for 2+ frames (see update_sleep_state), so the stored AABB is
+         * bit-identical and skipping the refit is exact. */
+        leaves_changed = physics_refit_range(pw, 0u, pw->count);
         if (leaves_changed > 0u) bvh_refit_internal(&pw->bvh);
     }
 
-#if SIMD_SSE2
-    /* SIMD-optimized integration loop */
-    const f32 damping = 0.98f;
-
-    for (u32 i = 0; i < pw->count; i++) {
-        RigidBody *b = &pw->bodies[i];
-        if (b->is_static || b->sleeping) continue;
-        if (b->ccd) { integrate_body_ccd(pw, i, dt); continue; }
-
-        b->step_start_position = b->position;
-
-        /* Velocity integration: v += a * dt */
-        simd_vec3_add_scaled_sse2(b->velocity.e, b->velocity.e, b->acceleration.e, dt);
-
-        /* Damping: v *= 0.98 */
-        simd_vec3_scale_sse2(b->velocity.e, b->velocity.e, damping);
-
-        /* Position integration: p += v * dt */
-        simd_vec3_add_scaled_sse2(b->position.e, b->position.e, b->velocity.e, dt);
-        integrate_orientation(b, dt);
-
-    }
-#else
-    for (u32 i = 0; i < pw->count; i++) {
-        RigidBody *b = &pw->bodies[i];
-        if (b->is_static || b->sleeping) continue;
-        if (b->ccd) { integrate_body_ccd(pw, i, dt); continue; }
-
-        b->step_start_position = b->position;
-
-        b->velocity.e[0] += b->acceleration.e[0] * dt;
-        b->velocity.e[1] += b->acceleration.e[1] * dt;
-        b->velocity.e[2] += b->acceleration.e[2] * dt;
-
-        f32 damping = 0.98f;
-        b->velocity.e[0] *= damping;
-        b->velocity.e[1] *= damping;
-        b->velocity.e[2] *= damping;
-
-        b->position.e[0] += b->velocity.e[0] * dt;
-        b->position.e[1] += b->velocity.e[1] * dt;
-        b->position.e[2] += b->velocity.e[2] * dt;
-        integrate_orientation(b, dt);
-
-    }
-#endif
-
-    /* R418: refit moved bodies again AFTER integration, before the pair query.
-     * The tree was built/refit pre-integration (kept above so integrate_body_ccd
-     * can sweep against it), so without this pass bvh_query_pairs tested pairs
-     * against last frame's AABBs: a contact that begins during this frame's
-     * motion was never pair-tested, letting fast non-CCD bodies tunnel and
-     * resolving ordinary contacts a frame late. Same skip policy as the
-     * pre-integration refit (statics never move; resting bodies' AABBs are
-     * unchanged). Leaves are written first and the internal nodes refit once
-     * afterwards, skipped when no leaf moved; both are no-ops on an unbuilt
-     * tree. */
-    leaves_changed = 0u;
-    for (u32 i = 0; i < pw->count; i++) {
-        if (pw->bodies[i].is_static) continue;
-        if (pw->bodies[i].rest_frames > 2) continue;
-        AABB box = aabb_from_body(&pw->bodies[i]);
-        BVHAABB bvh_box;
-        bvh_box.min = box.min;
-        bvh_box.max = box.max;
-        bvh_set_leaf_bounds(&pw->bvh, i, bvh_box);
-        leaves_changed++;
+    /* Integration, then (R418) the post-integration leaf refit. A body that
+     * is not CCD only reads and writes itself here, and its refit only reads
+     * itself and writes its own leaf, so both can run per body and in any
+     * order: physics_integrate_range does them together, serially or on
+     * jobs over disjoint body ranges (see physics_integrate_parallel). */
+    if (!physics_integrate_parallel(pw, dt, &leaves_changed)) {
+        for (u32 i = 0; i < pw->count; i++) {
+            RigidBody *b = &pw->bodies[i];
+            if (b->ccd && !b->is_static && !b->sleeping) integrate_body_ccd(pw, i, dt);
+            else physics_integrate_body(b, dt);
+        }
+        leaves_changed = physics_refit_range(pw, 0u, pw->count);
     }
     if (leaves_changed > 0u) bvh_refit_internal(&pw->bvh);
 

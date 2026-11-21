@@ -101,6 +101,7 @@ typedef void (*PhysicsJobFn)(void *job_ctx, u32 job_index);
 typedef void (*PhysicsParallelForFn)(void *user, PhysicsJobFn fn, void *job_ctx, u32 job_count);
 #define PHYSICS_MAX_PARALLEL_JOBS 32u
 #define PHYSICS_PARALLEL_MIN_PAIRS 4096u
+#define PHYSICS_PARALLEL_MIN_BODIES 8192u
 typedef struct PhysicsPairRecord PhysicsPairRecord;
 #define PHYSICS_MAX_POST_STEPS 16u
 #define PHYSICS_MAX_CONSTRAINTS 64
@@ -164,6 +165,7 @@ typedef struct PhysicsWorld {
     void                *parallel_user;
     u32                  parallel_max_jobs;
     u32                  parallel_min_pairs;
+    u32                  parallel_min_bodies;
     u32                  _last_pair_count;
     PhysicsPairRecord   *_pair_records;
     u32                  _pair_cap;
@@ -196,6 +198,11 @@ void          physics_world_set_parallel_for(PhysicsWorld *pw, PhysicsParallelFo
                                              u32 max_jobs);
 /* Smallest pair count solved in parallel; 0 restores PHYSICS_PARALLEL_MIN_PAIRS. */
 void          physics_world_set_parallel_min_pairs(PhysicsWorld *pw, u32 min_pairs);
+/* Integration and the post-integration BVH leaf refit also run on the
+ * dispatcher, as one call over disjoint body ranges, when the world holds at
+ * least this many bodies and no awake body uses CCD; the step stays
+ * bit-identical to the serial one. 0 restores PHYSICS_PARALLEL_MIN_BODIES. */
+void          physics_world_set_parallel_min_bodies(PhysicsWorld *pw, u32 min_bodies);
 bool          physics_add_post_step(PhysicsWorld *pw, PhysicsPostStepFn fn, void *user);
 PhysicsConstraintHandle physics_constraint_add_distance(PhysicsWorld *pw, PhysicsBodyHandle body_a, PhysicsBodyHandle body_b, f32 rest_length);
 PhysicsConstraintHandle physics_constraint_add_ball(PhysicsWorld *pw, PhysicsBodyHandle body_a, PhysicsBodyHandle body_b, Vec3 anchor_a, Vec3 anchor_b);

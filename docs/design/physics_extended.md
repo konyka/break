@@ -199,3 +199,13 @@ hinge、cone-twist、slider 约束的角度原先由平台 `atan2f` 计算，gli
 ### 追加：并行接触求解与批量 BVH refit
 
 `physics_world_set_parallel_for` 让接触阶段在多个 job 上运行（`physics_task_parallel_for` 基于引擎 `TaskSystem`）。宽相配对按 BVH 子树任务并行收集，并按遍历顺序拼接；有质量刚体按配对连成岛，岛内按原顺序求解；无质量刚体与世界统计由串行重放按配对顺序写入。因此结果与串行逐位相同，与 job 数和执行顺序无关。设置接触回调、配对数低于阈值（默认 4096，可按世界设置）或只有一个岛时保持串行。两轮 BVH refit 改为先写叶子、再按节点下标倒序一次性重算内部节点，32k 刚体串行步长由 10.5 ms 降到 3.6 ms，状态哈希不变。`test_physics_parallel` 在多种 job 数与执行顺序下逐步比较串行与并行世界。
+
+### 追加：并行积分与积分后 BVH refit（2026-11-22）
+
+`physics_step` 的积分和积分后叶子 refit 合并为每个刚体一次 `physics_integrate_body` 加 `physics_refit_range`。非 CCD 刚体在这两步中只读写自己和自己的叶子，所以设置了 `parallel_for` 时可以按连续刚体区间分给多个 job（`physics_integrate_parallel`），每个 job 积分并写自己区间的叶子，内部节点仍由调用线程一次性重算。每个刚体执行的运算与串行循环完全相同，结果逐位一致。以下情况保持串行：
+- 世界刚体数低于阈值。阈值默认 `PHYSICS_PARALLEL_MIN_BODIES`（8192），可用 `physics_world_set_parallel_min_bodies` 按世界设置；
+- 有醒着的 CCD 刚体：它的扫掠读取本步已积分的刚体，串行顺序本身就是结果的一部分。
+
+积分前的 refit 仍然串行。它只被 CCD 扫掠读取，而有 CCD 刚体时积分本就串行，拆到 job 上收益很小，也无法用测试区分对错。
+
+在 16 线程 x86-64 上，刚体全部醒着且无接触时，每步耗时如下（串行 → 并行）：2048 个刚体 0.128 → 0.129 ms，8192 个 0.540 → 0.468 ms，32768 个 2.725 → 2.267 ms。剩余时间主要是串行的积分前 refit、内部节点 refit、配对查询和步末的 kill-floor 与睡眠检查。`test_physics_parallel` 新增 5 例：逆序 job 下 240 步逐位一致且每步只派发一次；在 `TaskSystem` worker 上逐位一致；醒着的 CCD 刚体使积分保持串行；带 CCD 刚体时接触并行、积分串行，仍逐位一致；默认阈值使测试场景保持串行。世界比较另外包含所有 BVH 节点的包围盒。

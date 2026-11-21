@@ -88,6 +88,11 @@ static bool worlds_equal(const PhysicsWorld *a, const PhysicsWorld *b) {
     if (memcmp(&a->collision_center, &b->collision_center, sizeof(Vec3)) != 0) return false;
     if (a->collision_center_count != b->collision_center_count) return false;
     if (memcmp(&a->total_impulse_axis, &b->total_impulse_axis, sizeof(Vec3)) != 0) return false;
+    /* the broadphase tree, which the leaf refits write */
+    if (a->bvh.node_count != b->bvh.node_count || a->bvh.root != b->bvh.root) return false;
+    for (u32 n = 0; n < a->bvh.node_count; n++) {
+        if (memcmp(&a->bvh.nodes[n].bounds, &b->bvh.nodes[n].bounds, sizeof(BVHAABB)) != 0) return false;
+    }
     return physics_state_hash(a) == physics_state_hash(b);
 }
 
@@ -327,6 +332,127 @@ TEST(task_adapter_runs_inline_on_a_worker) {
     }
 }
 
+/* Integration together with the post-integration BVH leaf refit runs on
+ * jobs once the world has enough bodies; contacts stay serial here (huge
+ * pair minimum), so each step dispatches exactly once, and the world must
+ * stay bit-identical to the serial step. */
+TEST(parallel_integration_matches_the_serial_step) {
+    PhysicsWorld *serial = build_scene();
+    PhysicsWorld *parallel = build_scene();
+    ASSERT_NOT_NULL(serial);
+    ASSERT_NOT_NULL(parallel);
+    InlineDispatch d = {0u, 0u};
+    physics_world_set_parallel_for(parallel, dispatch_reverse, &d, 8u);
+    physics_world_set_parallel_min_pairs(parallel, UINT32_MAX);
+    physics_world_set_parallel_min_bodies(parallel, 16u);
+    u32 mismatch = UINT32_MAX;
+    for (u32 step = 0; step < 240u; step++) {
+        kick(serial, step);
+        kick(parallel, step);
+        physics_step(serial, 1.0f / 60.0f);
+        physics_step(parallel, 1.0f / 60.0f);
+        if (!worlds_equal(serial, parallel)) {
+            mismatch = step;
+            break;
+        }
+    }
+    physics_world_destroy(serial);
+    physics_world_destroy(parallel);
+    ASSERT_EQ(mismatch, UINT32_MAX);
+    ASSERT_EQ(d.calls, 240u);
+    ASSERT_TRUE(d.jobs > d.calls);
+}
+
+TEST(parallel_integration_on_task_workers_matches_the_serial_step) {
+    TaskSystem *ts = task_system_create(4);
+    ASSERT_NOT_NULL(ts);
+    PhysicsWorld *serial = build_scene();
+    PhysicsWorld *parallel = build_scene();
+    u32 mismatch = UINT32_MAX;
+    if (serial && parallel) {
+        physics_world_set_parallel_for(parallel, physics_task_parallel_for, ts, 8u);
+        physics_world_set_parallel_min_pairs(parallel, 32u);
+        physics_world_set_parallel_min_bodies(parallel, 16u);
+        for (u32 step = 0; step < 240u && mismatch == UINT32_MAX; step++) {
+            kick(serial, step);
+            kick(parallel, step);
+            physics_step(serial, 1.0f / 60.0f);
+            physics_step(parallel, 1.0f / 60.0f);
+            if (!worlds_equal(serial, parallel)) mismatch = step;
+        }
+    }
+    physics_world_destroy(serial);
+    physics_world_destroy(parallel);
+    task_system_destroy(ts);
+    ASSERT_EQ(mismatch, UINT32_MAX);
+}
+
+/* A CCD body sweeps against bodies already integrated this step, so the
+ * order matters and integration stays serial while one is awake. */
+TEST(awake_ccd_body_keeps_integration_serial) {
+    PhysicsWorld *pw = build_scene();
+    ASSERT_NOT_NULL(pw);
+    PhysicsBodyHandle fast = physics_body_create_sphere(pw, vec3(0, 6, -20), 0.2f, 1.0f, false, 0);
+    physics_body_set_ccd(pw, fast, true);
+    physics_body_apply_impulse(pw, fast, vec3(0, 0, 40));
+    InlineDispatch d = {0u, 0u};
+    physics_world_set_parallel_for(pw, dispatch_forward, &d, 8u);
+    physics_world_set_parallel_min_pairs(pw, UINT32_MAX);
+    physics_world_set_parallel_min_bodies(pw, 16u);
+    for (u32 step = 0; step < 10u; step++) physics_step(pw, 1.0f / 60.0f);
+    physics_world_destroy(pw);
+    ASSERT_EQ(d.calls, 0u);
+}
+
+/* Fast CCD bodies crossing the stacks keep integration serial while the
+ * contact solve stays parallel; the step must match the serial one. */
+static void add_ccd_bodies(PhysicsWorld *pw) {
+    for (u32 i = 0; i < 6u; i++) {
+        PhysicsBodyHandle h = physics_body_create_sphere(pw, vec3(-40.0f + (f32)i * 15.0f, 2.0f, -6), 0.15f,
+                                                         0.5f, false, 0);
+        physics_body_set_ccd(pw, h, true);
+        physics_body_apply_impulse(pw, h, vec3(0.0f, 0.0f, 30.0f + (f32)i));
+    }
+}
+
+TEST(parallel_refit_with_ccd_matches_the_serial_step) {
+    PhysicsWorld *serial = build_scene();
+    PhysicsWorld *parallel = build_scene();
+    ASSERT_NOT_NULL(serial);
+    ASSERT_NOT_NULL(parallel);
+    add_ccd_bodies(serial);
+    add_ccd_bodies(parallel);
+    InlineDispatch d = {0u, 0u};
+    physics_world_set_parallel_for(parallel, dispatch_reverse, &d, 8u);
+    physics_world_set_parallel_min_pairs(parallel, 32u);
+    physics_world_set_parallel_min_bodies(parallel, 16u);
+    u32 mismatch = UINT32_MAX;
+    for (u32 step = 0; step < 240u && mismatch == UINT32_MAX; step++) {
+        kick(serial, step);
+        kick(parallel, step);
+        physics_step(serial, 1.0f / 60.0f);
+        physics_step(parallel, 1.0f / 60.0f);
+        if (!worlds_equal(serial, parallel)) mismatch = step;
+    }
+    physics_world_destroy(serial);
+    physics_world_destroy(parallel);
+    ASSERT_EQ(mismatch, UINT32_MAX);
+    ASSERT_TRUE(d.calls > 0u);
+}
+
+/* The default minimum keeps a scene of a few hundred bodies serial. */
+TEST(default_body_minimum_keeps_this_scene_serial) {
+    PhysicsWorld *pw = build_scene();
+    ASSERT_NOT_NULL(pw);
+    InlineDispatch d = {0u, 0u};
+    physics_world_set_parallel_for(pw, dispatch_forward, &d, 8u);
+    physics_world_set_parallel_min_pairs(pw, UINT32_MAX);
+    ASSERT_TRUE(pw->count < PHYSICS_PARALLEL_MIN_BODIES);
+    for (u32 step = 0; step < 10u; step++) physics_step(pw, 1.0f / 60.0f);
+    physics_world_destroy(pw);
+    ASSERT_EQ(d.calls, 0u);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(inline_forward_jobs_match_the_serial_solve);
     RUN_TEST(reverse_job_order_matches_the_serial_solve);
@@ -340,4 +466,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(collection_and_solve_both_dispatch);
     RUN_TEST(task_adapter_runs_every_job_once);
     RUN_TEST(task_adapter_runs_inline_on_a_worker);
+    RUN_TEST(parallel_integration_matches_the_serial_step);
+    RUN_TEST(parallel_integration_on_task_workers_matches_the_serial_step);
+    RUN_TEST(awake_ccd_body_keeps_integration_serial);
+    RUN_TEST(parallel_refit_with_ccd_matches_the_serial_step);
+    RUN_TEST(default_body_minimum_keeps_this_scene_serial);
 TEST_MAIN_END()
