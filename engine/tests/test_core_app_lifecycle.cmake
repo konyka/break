@@ -51,7 +51,7 @@ function(run_app name assets scenario expected_rc)
         set(checkpoint_args --checkpoint "${CORE_APP_CHECKPOINT_DIR}")
     endif()
     execute_process(
-        COMMAND "${CORE_APP}" --render=record --audio=record
+        COMMAND ${CORE_APP_RUNNER} "${CORE_APP}" --render=record --audio=record
             --assets "${assets}" --fixed-step --scenario "${scenario}"
             --trace "${trace_path}" ${checkpoint_args}
         RESULT_VARIABLE rc
@@ -1441,7 +1441,7 @@ set(json_trace_path "${WORK}/load_unload_json.trace")
 set(json_path "${WORK}/load_unload.trace.json")
 file(REMOVE "${json_trace_path}" "${json_path}")
 execute_process(
-    COMMAND "${CORE_APP}" --render=record --audio=record
+    COMMAND ${CORE_APP_RUNNER} "${CORE_APP}" --render=record --audio=record
         --assets "${ASSET_ROOT}" --fixed-step --scenario "${SCENARIO}"
         --trace "${json_trace_path}" --trace-json "${json_path}"
     RESULT_VARIABLE json_rc
@@ -1473,7 +1473,7 @@ else()
 endif()
 
 execute_process(
-    COMMAND "${CORE_APP}" --render=record --audio=record
+    COMMAND ${CORE_APP_RUNNER} "${CORE_APP}" --render=record --audio=record
         --assets "${ASSET_ROOT}" --fixed-step --scenario "${SCENARIO}"
         --trace "${json_trace_path}" --trace-json "${WORK}/missing_dir/trace.json"
     RESULT_VARIABLE json_rc
@@ -1488,7 +1488,7 @@ set(ts_trace_path "${WORK}/load_unload_ts.trace")
 set(ts_json_path "${WORK}/load_unload_ts.trace.json")
 file(REMOVE "${ts_trace_path}" "${ts_json_path}")
 execute_process(
-    COMMAND "${CORE_APP}" --render=record --audio=record
+    COMMAND ${CORE_APP_RUNNER} "${CORE_APP}" --render=record --audio=record
         --assets "${ASSET_ROOT}" --fixed-step --scenario "${SCENARIO}"
         --trace "${ts_trace_path}" --trace-json "${ts_json_path}" --trace-timestamps
     RESULT_VARIABLE ts_rc
@@ -1665,7 +1665,7 @@ else()
     endif()
 endif()
 
-if(FAULT_SUPPORTED)
+if(FAULT_SUPPORTED AND NOT CORE_APP_RUNNER)
     set(commit_tail_scenario "${WORK}/commit_tail.scenario")
     file(WRITE "${commit_tail_scenario}"
         "core-app-scenario 1\nseed 12648430\nfixed-dt-ns 16666667\n"
@@ -1787,6 +1787,11 @@ if(FAULT_SUPPORTED)
     if(blocked_trace MATCHES "event=frame frame=2 ")
         record_error("io_second_wait_fail: frames continued after the fatal wait: ${blocked_trace}")
     endif()
+elseif(FAULT_SUPPORTED)
+    # qemu-user passes the environment through, so the host loader sees the
+    # arm64 preload (and warns) before the guest loader would apply it; the
+    # stderr checks and the fault hooks are unverified under emulation.
+    message(STATUS "UNVERIFIED: LD_PRELOAD lifecycle fault injection is skipped under CORE_APP_RUNNER")
 else()
     message(STATUS "UNVERIFIED: LD_PRELOAD lifecycle fault injection requires Linux")
 endif()

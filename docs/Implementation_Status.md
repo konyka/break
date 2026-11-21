@@ -1,3 +1,14 @@
+## core_app 生命周期驱动支持交叉模拟器与 arm64 二百五十八项 CTest（2026-11-21）
+
+- **问题**：十二个 `test_core_app_lifecycle_*` 由宿主 `cmake -P engine/tests/test_core_app_lifecycle.cmake` 驱动，驱动直接 `execute_process` 启动 `core_app`。交叉构建中 `core_app` 是 arm64 二进制，宿主无法直接执行，因此这些真实进程生命周期测试从未在 arm64 上运行。`test_core_app_network.cmake` 已有 `CORE_APP_RUNNER`，生命周期驱动缺少同样的接线。
+- **修复**：驱动中四处直接启动 `core_app` 的命令前加 `${CORE_APP_RUNNER}`；`engine/CMakeLists.txt` 中十个生命周期 `add_test` 块（输入模式 `foreach` 展开为三项，共十二项）传入 `-DCORE_APP_RUNNER=${CMAKE_CROSSCOMPILING_EMULATOR}`，原生构建中该值为空，行为不变。`LD_PRELOAD` 故障注入块改为 `if(FAULT_SUPPORTED AND NOT CORE_APP_RUNNER)`：qemu-user 默认把宿主环境传给被模拟程序，宿主加载器会先看到这个 arm64 预加载库并拒绝、在 stderr 打印警告，客体加载器可能仍会加载它，故障钩子与 stderr 断言在模拟下是否成立未经验证，因此模拟运行时打印 `UNVERIFIED: LD_PRELOAD lifecycle fault injection is skipped under CORE_APP_RUNNER`，不静默通过。
+- **RED/GREEN**：契约 `lifecycle_runner_contract.py` 要求四处启动均经 runner、`LD_PRELOAD` 启动保持原生、故障块按原生门控并有显式 UNVERIFIED 信息、十个 `add_test` 块均传入模拟器；旧驱动 RED（`core_app launch without CORE_APP_RUNNER: 4 of 4`），实现后 GREEN。原生十二项全部通过，load_unload 仍执行故障注入（无 UNVERIFIED）；干净 Ubuntu 24.04 容器中 arm64 十二项全部通过，合计 8.83 秒，load_unload 打印预期的 UNVERIFIED。
+- **lane 纳入**：选择契约要求构建列表追加 `core_app_lifecycle_preload`、十二个平铺精确 alternative 位于末尾、完整表达式仍为 31 个捕获组、原生集合 246→258 且差集恰为这十二项；旧 workflow RED（`missing lifecycle build targets`），实现后 GREEN。`test_core_app_voice`、`test_core_app_voice_lane`、`test_core_app_assets`、`test_core_app_lifecycle` 与前缀扩展被拒绝。原生全量 456 项零失败，4 个既有平台用例跳过，CTest 165.20 秒。
+- **完整干净容器验证**：以统一非 root 属主执行 workflow 原始构建和测试 step，258/258，CTest 180.68 秒，占外层 600 秒守护的 30%。严格日志断言确认 60 组分项计数、十二项生命周期测试全部在通过列表、UNVERIFIED 信息恰出现一次、全部旧契约/e2e、无失败分项、唯一的平台 setup skip，无 root 权限跳过或 `Too many parentheses`；超时标记恰为 `test_fork_deadline` 的三条预期标记。
+- **独立评审**：结论可合入，无 Critical。评审实测空的或未定义的 `CORE_APP_RUNNER` 不产生空 argv 元素、列表值按元素展开；四种输入组合下故障门控分支正确；驱动七处 `execute_process` 中四处 core_app 启动均已包装，其余为 `LD_PRELOAD` 启动与两处宿主 Python 夹具改写，不运行其他目标架构二进制；模拟下 load_unload 跳过五个故障场景，约占其 46 个断言点中的 17 个（37%），其余十一项无故障块；实测 246→258，差集恰为十二项，捕获组仍为 31。Important：原先“预加载库作用于模拟器而非被模拟程序”的理由只对了一半，qemu-user 默认透传环境，客体加载器可能仍会加载该库；已在驱动注释与文档中改为“未经验证”的准确描述。尝试在容器中实测时，Ubuntu 软件源不可达（`Connection failed`），未能完成；跳过本身是安全且可见的。
+- **后续项**：评审列出其他向驱动传入 `$<TARGET_FILE:core_app>` 但未传 runner 的测试（target_contract、gpu/audio/voice device 系列、voice_lane、voice_null、baker_diagnostics，及 Snowflake 专属的 core_app_network 系列），均不在 lane 内，后续逐项评估。
+- **覆盖缺口**：arm64 上不执行 `LD_PRELOAD` 故障注入（提交尾部失败、粘滞失败、I/O 超时与 EIO 等五个场景），这部分只在原生 Linux 覆盖；roundtrip 改写检查点依赖宿主 `python3`。
+
 ## arm64 跨平台可移植契约与二百四十六项 CTest（2026-11-21）
 
 - **最小场景**：新增六个既有可执行目标，均以模拟头文件或可移植后端编译其他平台代码：`test_glad_wgl_loader`（`TEST_WGL_LOADER_SIMULATED` 模拟 WGL 与 DLL 入口，打印 `PASS:`，失败返回 1）、`test_platform_wsi_lifecycle` 8 例（`SIMULATE_WAYLAND`）、`test_d3d12_lifetime_hresult_contract` 7 例（不调用 D3D12）、`test_net_loop_qnx` 17 例与 `test_qnx_perf_smoke` 3 例（以 poll 后端编译 QNX 网络循环，在 `127.0.0.1` 回环上收发）、`test_break_plugin_unsupported` 1 例（不支持动态加载的平台上插件加载器失败即关闭）。

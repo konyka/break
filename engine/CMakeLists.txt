@@ -5239,6 +5239,7 @@ endif()
     add_test(NAME test_core_app_lifecycle_load_unload
         COMMAND ${CMAKE_COMMAND}
             -DCORE_APP=$<TARGET_FILE:core_app>
+            "-DCORE_APP_RUNNER=${CMAKE_CROSSCOMPILING_EMULATOR}"
             -DASSET_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app
             -DSCENARIO=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app/load_unload.scenario
             -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_lifecycle
@@ -5254,6 +5255,7 @@ endif()
         add_test(NAME test_core_app_lifecycle_input_${_core_app_input_mode}
             COMMAND ${CMAKE_COMMAND}
                 -DCORE_APP=$<TARGET_FILE:core_app>
+                "-DCORE_APP_RUNNER=${CMAKE_CROSSCOMPILING_EMULATOR}"
                 -DASSET_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app
                 -DCOMPARE_SHOT=${_core_app_gpu_compare_shot}
                 -DSCENARIO=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app/deterministic.scenario
@@ -5267,6 +5269,7 @@ endif()
     add_test(NAME test_core_app_lifecycle_script_flow
         COMMAND ${CMAKE_COMMAND}
             -DCORE_APP=$<TARGET_FILE:core_app>
+            "-DCORE_APP_RUNNER=${CMAKE_CROSSCOMPILING_EMULATOR}"
             -DASSET_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app
             -DSCENARIO=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app/deterministic.scenario
             -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_lifecycle_script_flow
@@ -5278,6 +5281,7 @@ endif()
     add_test(NAME test_core_app_lifecycle_simulation
         COMMAND ${CMAKE_COMMAND}
             -DCORE_APP=$<TARGET_FILE:core_app>
+            "-DCORE_APP_RUNNER=${CMAKE_CROSSCOMPILING_EMULATOR}"
             -DASSET_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app
             -DSCENARIO=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app/deterministic.scenario
             -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_lifecycle_simulation
@@ -5289,6 +5293,7 @@ endif()
     add_test(NAME test_core_app_lifecycle_locomotion
         COMMAND ${CMAKE_COMMAND}
             -DCORE_APP=$<TARGET_FILE:core_app>
+            "-DCORE_APP_RUNNER=${CMAKE_CROSSCOMPILING_EMULATOR}"
             -DASSET_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app
             -DSCENARIO=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app/deterministic.scenario
             -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_lifecycle_locomotion
@@ -5300,6 +5305,7 @@ endif()
     add_test(NAME test_core_app_lifecycle_facial
         COMMAND ${CMAKE_COMMAND}
             -DCORE_APP=$<TARGET_FILE:core_app>
+            "-DCORE_APP_RUNNER=${CMAKE_CROSSCOMPILING_EMULATOR}"
             -DASSET_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app
             -DSCENARIO=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app/deterministic.scenario
             -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_lifecycle_facial
@@ -5311,6 +5317,7 @@ endif()
     add_test(NAME test_core_app_lifecycle_vehicle
         COMMAND ${CMAKE_COMMAND}
             -DCORE_APP=$<TARGET_FILE:core_app>
+            "-DCORE_APP_RUNNER=${CMAKE_CROSSCOMPILING_EMULATOR}"
             -DASSET_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app
             -DSCENARIO=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app/deterministic.scenario
             -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_lifecycle_vehicle
@@ -5322,6 +5329,7 @@ endif()
     add_test(NAME test_core_app_lifecycle_ragdoll
         COMMAND ${CMAKE_COMMAND}
             -DCORE_APP=$<TARGET_FILE:core_app>
+            "-DCORE_APP_RUNNER=${CMAKE_CROSSCOMPILING_EMULATOR}"
             -DASSET_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app
             -DSCENARIO=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app/deterministic.scenario
             -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_lifecycle_ragdoll
@@ -5333,6 +5341,7 @@ endif()
     add_test(NAME test_core_app_lifecycle_render_record
         COMMAND ${CMAKE_COMMAND}
             -DCORE_APP=$<TARGET_FILE:core_app>
+            "-DCORE_APP_RUNNER=${CMAKE_CROSSCOMPILING_EMULATOR}"
             -DASSET_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app
             -DSCENARIO=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app/deterministic.scenario
             -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_lifecycle_render_record
@@ -5344,6 +5353,7 @@ endif()
     add_test(NAME test_core_app_lifecycle_roundtrip
         COMMAND ${CMAKE_COMMAND}
             -DCORE_APP=$<TARGET_FILE:core_app>
+            "-DCORE_APP_RUNNER=${CMAKE_CROSSCOMPILING_EMULATOR}"
             -DASSET_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app
             -DSCENARIO=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app/deterministic.scenario
             -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_lifecycle_roundtrip
