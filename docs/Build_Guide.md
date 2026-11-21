@@ -936,6 +936,15 @@ Metal 与 MoltenVK 平均像素差 1.04；Metal 日志里的 `MegaBuffer: merged
 failed` 警告之前就有，不影响画面。编辑器实机脚本、iOS 模拟器、arm64 Linux 与 QUIC 弱网
 场景本轮未在本机验证。证据等级不变。
 
+2026-11-21 第二次复核：从 `@a531e22b` 快进到 `@f4c66dc5`（5 个远程提交：
+`audio_extended.c` 的 PCM 流 `reading`/`open`/`hrtf_set` 存后读握手补
+`atomic_thread_fence(memory_order_seq_cst)` 及对应源码契约，arm64 CI 加入平台输入与
+RHI CPU 测试，OpenSSL 3.5 弱网 CI 演练记录），无冲突、无本地改动。审查了屏障改动：只在
+store 与随后 load 之间加全屏障，`close` 在等待 `reading` 清零后才释放 ring，语义不变。
+Metal CTest **411/415**、graphics **6/6**，MoltenVK **414/418**，跳过项同上一条；全量构建
+无 error。`engine_demo` 文档机位两后端截图正常，平均像素差 1.56。本轮未发现需要修复的问题。
+证据等级不变。
+
 RHI 第一阶段还提供统一的设备健康状态查询 `rhi_device_get_status()`。`UNKNOWN` 表示
 没有有效设备，`READY` 表示设备可用，`LOST` 表示后端报告设备丢失；该接口是后续 Vulkan、
 Metal、D3D12 后端共用的生命周期合同。
