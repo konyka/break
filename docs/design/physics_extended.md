@@ -187,3 +187,7 @@ arm64 lane 新增 slider、cloth、rope、soft-body、destructible 五项和 cha
 ### 追加：确定性 `math_atan2f`
 
 hinge、cone-twist、slider 约束的角度原先由平台 `atan2f` 计算，glibc 2.39 与 2.44 之间有 1 ULP 差异，带限位铰链场景因此在两台 x86-64 机器上第 40 步分歧。物理现改用 `math.h` 中只由 IEEE 加减乘除与比较构成的 `math_atan2f`（最大误差约 3.2e-7 弧度，要求包含文件以 `-ffp-contract=off` 编译），`test_physics_replay` 新增铰链金标准，`test_math` 固定其位模式并能检出 FMA 收缩。物理中仍依赖平台 libm 的有 `quat_from_axis_angle` 的 `sinf`/`cosf`（已测环境与 CI 各平台一致）、软体创建时的 `sinf`/`cosf`，以及载具中常量参数的 `tanf`。铰链金标准只在 glibc 2.44 主机上能检出回退到平台 `atan2f`。
+
+### 追加：确定性源码契约
+
+金标准哈希只在平台确实不同时失败（例如只有 glibc 2.44 能检出改回平台 `atan2f`），因此另有宿主契约 `test_physics_determinism_contract` 在任何主机上检查三条源码规则：物理不调用平台 `atan2`/`atan2f`、`fast_rsqrt` 为正确舍入的 `1.0f / sqrtf`、physics/math/`test_math.c` 在 `-ffp-contract=off` 列表中。
