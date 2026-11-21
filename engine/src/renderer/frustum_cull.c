@@ -35,7 +35,7 @@ void frustum_extract(Frustum *f, const Mat4 *vp)
         f->planes[5].e[i] = vp->e[i][3] + vp->e[i][2]; /* Far:    row3 + row2 */
     }
 
-    /* Normalize each plane using fast_rsqrt (SSE rsqrt + Newton-Raphson) */
+    /* Normalize each plane with fast_rsqrt (correctly rounded 1/sqrtf) */
     for (int p = 0; p < 6; p++) {
         f32 len2 =
             f->planes[p].e[0] * f->planes[p].e[0] +

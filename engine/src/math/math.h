@@ -9,20 +9,13 @@
     #define MATH_SSE 0
 #endif
 
-/* Fast reciprocal square root: _mm_rsqrt_ss + one Newton-Raphson step (~22-bit accuracy).
- * Unified definition used by physics, terrain, animation, and camera subsystems. */
+/* Reciprocal square root shared by physics, terrain, animation and camera
+ * code. It is the correctly rounded 1/sqrtf on every architecture: the SSE
+ * rsqrtss estimate (even with a Newton step) differs from arm64 in the last
+ * bits, which made identical physics inputs diverge between x86-64 and arm64
+ * (test_physics_replay pins the cross-architecture hashes). */
 static inline f32 fast_rsqrt(f32 x) {
-#if MATH_SSE
-    __m128 v = _mm_set_ss(x);
-    __m128 e = _mm_rsqrt_ss(v);
-    e = _mm_mul_ss(e, _mm_sub_ss(_mm_set_ss(1.5f),
-            _mm_mul_ss(_mm_mul_ss(_mm_set_ss(0.5f), v), _mm_mul_ss(e, e))));
-    f32 r;
-    _mm_store_ss(&r, e);
-    return r;
-#else
     return 1.0f / sqrtf(x);
-#endif
 }
 
 /* Bilingual init/assert spellings come from core/types.h (BREAK_AGG,

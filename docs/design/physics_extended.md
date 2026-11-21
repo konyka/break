@@ -167,3 +167,15 @@ replay 与 sync 在单进程内比较两个世界或同一录制，因此 arm64 
 arm64 lane 新增 slider、cloth、rope、soft-body、destructible 五项和 character（30 例），统一选择达到八十六项，所有以物理模块为主体的已注册测试至此均在 arm64 运行。原生与交叉 focused 均为 6/6，无新增 skip。
 
 五个扩展模块各只有一个测试场景（静态断言点 12/24/10/15/30，含循环）。场景覆盖了主路径：绳索链接与满世界拒绝、布料钉住顶行后回拉、破坏仅在超过阈值后发生、滑块消除垂直偏移并遵守限位、软体在高刚度下恢复偏移。已知缺口：单场景内首个失败断言会提前返回并遮住后续检查，CTest 汇总只报 1 例。
+
+
+## 补充（2026-11-21）：x86-64 与 arm64 逐位一致
+
+此前的结论是物理哈希只在同一构建、同一平台内一致。本次实测找到了跨架构分歧的根因并修复。
+
+- **现象**：同一场景（静态地面、一个盒子、一个球，每 10 步对盒子施加冲量，步长 1/60 秒）在 x86-64 与 arm64 上第 35 步起状态哈希不同；第 35 步只有两个物体 y 方向速度的最后几位不同（`c02c4522` 与 `c02c4520` 互换）。在不支持 FMA 的 x86-64 基线目标上 `-O0`、`-O2`、`-O2 -ffp-contract=off` 三组哈希相同，那里没有可融合的乘加，因此这一处分歧不来自浮点收缩。
+- **根因**：`math.h` 的 `fast_rsqrt` 在有 SSE 时用 `rsqrtss` 估值加一次牛顿迭代（约 22 位精度），在 arm64 上回退为 `1.0f / sqrtf(x)`。两种结果最后几位不同，经 `vec3_len`、`vec3_normalize`、`quat_normalize` 与碰撞法线进入每一步。临时让 x86 也走 `1.0f / sqrtf` 后，x86 哈希与 arm64 完全一致。
+- **修复**：`fast_rsqrt` 在所有架构上都返回正确舍入的 `1.0f / sqrtf(x)`。在本机的 1 亿次调用基准中两者均约 2 纳秒/次，没有可测的性能差异。
+- **TDD**：`test_physics_replay` 新增 `replay_scene_matches_the_cross_architecture_golden_hashes`，在第 40、120、240 步断言固定哈希 `cf6e44ff4ac4618f`、`bf2164b335a6d86c`、`deda1a2df61f4dcd`。修复前 x86 在第 40 步失败，修复后 x86 与 arm64（QEMU）都通过；该测试已在 arm64 lane 内，因此 CI 的 x86 与 arm64 job 会同时守住这组值。
+- **浮点收缩（评审发现）**：逐位一致还依赖 `a*b+c` 不被融合成 FMA。Clang（含 AppleClang）默认 `-ffp-contract=on`，GCC 在 GNU 模式下默认 `fast`；在支持 FMA 的目标上（arm64、x86-64-v3），融合会改变最后几位，场景第 40 步哈希变为 `643a46aeea8c1b8d`。arm64 lane 只是因为 GCC 在 ISO C 模式（`CMAKE_C_EXTENSIONS OFF`）下关闭了收缩才碰巧一致，macOS 的 AppleClang（Apple Silicon）构建会失败。`engine/CMakeLists.txt` 现在对 `src/physics/*.c` 与 `src/math/*.c` 设置源文件属性 `-ffp-contract=off`（Clang/GNU），作用于引擎库与所有测试目标中的这些文件，与此前 meshopt 的处理一致。用 Clang Release `-march=x86-64-v3 -ffp-contract=fast` 复现：加该属性前金标准用例失败，加后通过；110 个物理与数学编译单元均带上该选项。
+- **仍未覆盖**：`sinf`、`cosf`、`tanf` 与 `atan2f` 由各平台 libm 提供，不同 glibc 版本之间 `atan2f` 实测有 1 ULP 差异（例如 glibc 2.39 与 2.44 在 `atan2f(0.1, 0.7)` 上不同）。本场景中所有物体角速度始终为 0，`integrate_orientation` 在调用 `quat_from_axis_angle` 之前返回，240 步内 `sinf`、`cosf`、`tanf`、`atan2f` 调用次数均为 0（评审以链接期包装函数计数），因此金标准不覆盖旋转，也不受各平台 libm 差异影响。带旋转或 hinge、cone-twist、slider 的场景需要先做跨平台核对，才能作为金标准；Windows、macOS 的 libm 未验证。

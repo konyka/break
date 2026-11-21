@@ -26,6 +26,25 @@ static void record_session(PhysicsReplay *log, PhysicsWorld *pw, PhysicsBodyHand
     }
 }
 
+/* Cross-architecture golden: the same scene and inputs must reach the same
+ * bit-exact state on every architecture (x86-64 and arm64 run this in CI).
+ * The hashes come from IEEE-exact square roots and divisions; an
+ * approximate reciprocal square root on one architecture changes them. */
+TEST(replay_scene_matches_the_cross_architecture_golden_hashes)
+{
+    PhysicsBodyHandle box;
+    PhysicsWorld *pw = replay_scene(&box);
+    ASSERT_NOT_NULL(pw);
+    for (u32 i = 0; i < 240u; i++) {
+        if (i % 10u == 0u) physics_body_apply_impulse(pw, box, vec3(0.5f, 1.0f, -0.25f));
+        physics_step(pw, 1.0f / 60.0f);
+        if (i == 39u) ASSERT_EQ(physics_state_hash(pw), UINT64_C(0xcf6e44ff4ac4618f));
+        if (i == 119u) ASSERT_EQ(physics_state_hash(pw), UINT64_C(0xbf2164b335a6d86c));
+        if (i == 239u) ASSERT_EQ(physics_state_hash(pw), UINT64_C(0xdeda1a2df61f4dcd));
+    }
+    physics_world_destroy(pw);
+}
+
 TEST(replay_round_trip_reproduces_the_recorded_run)
 {
     PhysicsReplayRecord storage[REPLAY_CAP];
@@ -195,4 +214,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(replay_reports_the_first_divergent_step);
     RUN_TEST(replay_recording_rejects_bad_inputs);
     RUN_TEST(replay_decode_rejects_malformed_data);
+    RUN_TEST(replay_scene_matches_the_cross_architecture_golden_hashes);
 TEST_MAIN_END()

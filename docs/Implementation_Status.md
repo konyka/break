@@ -1,3 +1,14 @@
+## 物理在 x86-64 与 arm64 上逐位一致：`fast_rsqrt` 改为正确舍入（2026-11-21）
+
+- **问题**：`missing_capabilities.md` 记录的缺口之一是跨架构物理确定性。实测同一物理场景在 x86-64 与 arm64 上第 35 步起状态哈希不同；在无 FMA 的 x86-64 基线上与 `-ffp-contract` 无关。
+- **根因**：`engine/src/math/math.h` 的 `fast_rsqrt` 在 SSE 平台用 `rsqrtss` 估值加一次牛顿迭代，在其他平台用 `1.0f / sqrtf(x)`，两者最后几位不同；该函数经 `vec3_len`、`vec3_normalize`、`quat_normalize` 进入物理每一步，也被地形、剔除、CSM、动画与角色控制器使用。
+- **修复**：`fast_rsqrt` 在所有架构上返回 `1.0f / sqrtf(x)`。1 亿次调用基准中两者均约 2 纳秒/次。
+- **浮点收缩**：评审指出 Clang（含 macOS 的 AppleClang）默认把 `a*b+c` 融合成 FMA，在 arm64 与 x86-64-v3 上会让该场景第 40 步哈希变为 `643a46aeea8c1b8d`，两个 macOS job 会失败。`engine/CMakeLists.txt` 对 `src/physics/*.c` 与 `src/math/*.c` 设置源文件属性 `-ffp-contract=off`（Clang/GNU），覆盖引擎库与全部测试目标中的这些文件（110 个编译单元）。以 Clang Release `-march=x86-64-v3 -ffp-contract=fast` 复现：加属性前金标准用例 RED，加后 GREEN。
+- **TDD**：`test_physics_replay` 新增跨架构金标准哈希用例（第 40/120/240 步），修复前 x86 RED（第 40 步哈希不符），修复后 x86 与 arm64 QEMU 均 GREEN。
+- **验证**：原生全量 456 项零失败，4 个既有平台用例跳过；graphics 标签 12 项与渲染、地形、剔除、动画、角色相关 18 项全部通过；TSan 构建下 physics、physics_replay、character 通过且无报告；干净 Ubuntu 24.04 容器中 arm64 的 physics、physics_replay、physics_sync 与 core_app 模拟/往返生命周期 5/5 通过。
+- **独立评审**：首轮结论为暂不可合入。评审复现了根因（旧 SSE 路径第 35 步分歧，新路径三个检查点均与金标准一致，x86-64 上 GCC/Clang、`-O0`/`-O2`/`-O3 -flto` 结果相同，aarch64 在关闭收缩时一致）；Critical 为 AppleClang 默认 FMA 收缩会使两个 macOS job 失败，已按上条修复。Important：文档中“与浮点收缩无关”只在无 FMA 的 x86 上成立，已改写；金标准场景角速度恒为 0、不调用任何三角函数，原文“只走 sinf/cosf”有误，已改正。Windows MSVC（`/fp:precise`、SSE2 无 FMA）、clang-cl、MinGW、Linux Clang Release+IPO 评估为低风险。Minor：`frustum_cull.c` 中过时的“SSE rsqrt + Newton-Raphson”注释已更新。
+- **仍未覆盖**：三角函数来自各平台 libm，不同 glibc 版本的 `atan2f` 实测有 1 ULP 差异；用到 hinge、cone-twist、slider 的场景仍可能跨平台分歧；Windows、macOS 未验证。详见 `docs/design/physics_extended.md` 2026-11-21 补充。
+
 ## qemu-user 下 fork 子进程建线程偶发挂起的复查（2026-11-21）
 
 - **背景**：2026-11-20 记录过两次挂起：`test_runtime_reload` 的 `reload_destroy_requires_shutdown_aborts` 与 `test_runtime_io` 的 `io_request_double_release_aborts`，都在 fork 子进程中起 worker 线程后期待 abort，挂起时子进程两个线程停在 futex、父进程停在 `waitpid`。当时的待办是给这两例加子进程级超时，再缩小触发条件。

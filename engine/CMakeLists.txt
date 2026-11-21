@@ -13,6 +13,19 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
+
+# Physics and its math must not fuse a*b+c into FMA: Clang (AppleClang
+# included) contracts by default and GCC does in GNU mode, which changes the
+# last bits on FMA-capable targets and broke the cross-architecture physics
+# hashes pinned by test_physics_replay. A source property applies to every
+# target that compiles these files (the engine library and each test).
+if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+    file(GLOB _break_fp_exact_sources CONFIGURE_DEPENDS
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/physics/*.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/math/*.c)
+    set_property(SOURCE ${_break_fp_exact_sources}
+        APPEND PROPERTY COMPILE_OPTIONS -ffp-contract=off)
+endif()
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 find_package(Threads REQUIRED)
