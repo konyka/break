@@ -1,3 +1,16 @@
+## kernel 移动、动作绑定与关卡测试补充（2026-11-22）
+
+- **问题**：`missing_capabilities.md` kernel/flow 验证条目记录 kernel actions、move、level 各只有一个用例。
+- **新增用例**：
+  - `test_break_kernel_move` 1→5 例：超出 [-1, 1] 的轴被夹取、对角输入归一化、单位圆内保持长度；strafe 指向相机右侧并随偏航旋转；jump 与 yaw 原样透传；每个非有限字段与 NULL 都被拒且不写输出。
+  - `test_break_kernel_actions` 1→4 例：鼠标三个轴（dx、dy、滚轮）与鼠标按键、未连接手柄不产生输入、松开状态的键不算按下；同一动作的多个绑定求和后夹到 [-1, 1]；越界键码、非零 pad、鼠标轴 3、越界手柄与按钮、NaN 缩放、未知来源、重名、缺少绑定数组、空名与 NULL 都被拒，原有绑定继续生效，绑定零个动作会清空。
+  - `test_break_kernel_level` 1→4 例：侧车文件接受空行、缩进、CRLF 与行尾空白；缺类名、失效实体、重复实体、含 NUL 字节与文件缺失各自返回对应错误，并卸载场景、不收养实体，失败后内核仍可用；重复关闭返回 CLOSED，参数错误在调用 load 钩子前被拒，空侧车路径等于没有侧车，缺少 unload 钩子也能关闭。
+- **验证**：十种变异均被检出：前进轴不夹取、总是归一化、strafe 方向反转、动作轴不夹取、滚轮读成 dy、忽略手柄连接状态、允许鼠标轴 3、不去掉 CR、允许重复实体、允许 NUL。原生 CTest 458/458；arm64 计数文件追加这三项分项数。
+
+## 扩展物理测试拆分的远端收据（2026-11-22）
+
+- 提交 `66bfb2e7` 的主 CI run 44923433332 全部成功（22 个成功，3 个按设计跳过）；windows-d3d12 run 44923433346 成功。arm64 job 136904198512 的原始日志经严格断言，确认恰好 263 项、66 组分项计数（cloth 5、rope 2、soft body 4、destructible 4、slider 2），没有失败用例。提交 `008f9aa5` 的 arm64 job 136906126051 也通过严格断言（69 组分项计数，含 locomotion 5、socket 4、aim 5）。
+
 ## AI 感知、避让、行为树与路径跟随测试补充（2026-11-22）
 
 - **问题**：`missing_capabilities.md` AI 验证条目记录 nav follow、perception、behavior、steer 各只有单个用例。
