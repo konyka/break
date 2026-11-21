@@ -442,3 +442,4 @@
 - **第 9 节（物理）追加**：2026-11-21 新增并行接触求解：按刚体岛分发到 job，世界统计按配对顺序重放，与串行逐位相同；BVH refit 改为批量，32k 刚体串行步长 10.5→3.6 ms。上文「并行 solver」中的接触部分由此交付。仍缺：距离/铰链等约束求解、积分与 refit 的并行；引擎主循环（`main.c`）尚未启用调度器；MSVC 若启用 `/arch:AVX2` 需补 `/fp:contract-`。
 - **第 4 节（任务）追加**：2026-11-22 任务系统新增协作式取消：调用方持有 `TaskCancelToken`，`task_submit_cancellable` 提交的任务在令牌置位后不再执行 `fn`，但仍完成并释放依赖它的任务；运行中的任务可轮询 `task_cancel_requested`。见 [`docs/design/runtime_thread_model.md`](../design/runtime_thread_model.md)「任务取消」。上文「取消」由此交付。仍缺：跨帧 continuation、任务图可视化、工作窃取调优。
 - **物理验证追加**：2026-11-22 cloth、rope、soft-body、destructible、slider 测试按场景拆为独立用例（共 17 例），单个场景失败不再遮住其余场景。上文「五个扩展模块各只有一个测试场景」由此关闭。
+- **动画验证追加**：2026-11-22 locomotion、socket、aim 测试分别补到 5、4、5 例，覆盖插值区间、旋转变换、名字与关节校验、权重夹取和链越界跳过。上文「locomotion、socket、aim 各只有单个用例」由此关闭。仍缺：GPU 蒙皮、跨架构逐位回放验证。
