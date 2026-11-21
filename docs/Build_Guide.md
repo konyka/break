@@ -945,6 +945,14 @@ Metal CTest **411/415**、graphics **6/6**，MoltenVK **414/418**，跳过项同
 无 error。`engine_demo` 文档机位两后端截图正常，平均像素差 1.56。本轮未发现需要修复的问题。
 证据等级不变。
 
+2026-11-21 第三次复核：从 `@8ca5c9a1` 快进到 `@e91bb19c`（2 个远程提交：
+`test_editor_shell.c` 把 `camera_pose_whose_eye_collapses_onto_the_target_is_rejected` 移出
+`BREAK_EDITOR_REMOTE_TESTS` 块，不带 snowflake 的构建也会运行它；arm64 CI 加入插件、编辑器
+Lua 与 shell 测试），无冲突、无本地改动。确认该用例只定义和注册一次，在 Metal 与 MoltenVK
+两套构建的 `test_editor_shell` 中都实际执行并通过（185/185）。Metal CTest **411/415**、
+graphics **6/6**，MoltenVK **414/418**，跳过项同前；全量构建无 error。只改了测试与 CI，
+渲染代码未变，本轮未重新截图。未发现需要修复的问题。证据等级不变。
+
 RHI 第一阶段还提供统一的设备健康状态查询 `rhi_device_get_status()`。`UNKNOWN` 表示
 没有有效设备，`READY` 表示设备可用，`LOST` 表示后端报告设备丢失；该接口是后续 Vulkan、
 Metal、D3D12 后端共用的生命周期合同。
