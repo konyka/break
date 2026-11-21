@@ -5,6 +5,7 @@
 - **契约**：`test_physics_determinism_contract` 扩展为禁止 `src/physics/` 调用 `sin`/`cos`/`tan`/`sincos`（含 `f`/`l` 后缀与 `__builtin_` 形式；`asinf`、`sinhf`、`math_sincosf` 不受影响），并要求 `quat_from_axis_angle` 使用 `math_sincosf`。检查是文本级的，写成调用形式的注释也会失败。
 - **TDD**：`test_math` 新增三例：精度（|x| ≤ 55 与至 2.7e8 的大输入，误差上限 6e-8，另含 ±0、次正规、NaN、±inf、`FLT_MAX`）、固定位（12 个输入，其中 27.105299 与 39.8550987 的 cos 与 glibc 相差 1 ULP，3e8、1e12、3.4e38 覆盖 2^28 阈值两侧）、`quat_from_axis_angle` 固定位（角度 54.210598，glibc 会给出 `0xbec8366a`）。三种回退分别失败（RED）：`quat_from_axis_angle` 改回平台函数、恢复首版的 `3.4e38f` 上限与 `1e9` 阈值、契约中软体改回 `sinf`/`cosf`；当前全部通过（GREEN）。三个物理金标准哈希不变。原生 CTest 457/457；arm64 QEMU 下数学、物理、ragdoll、vehicle、soft body 等 12 项全部通过。
 - **独立评审**：无 blocker。评审核实全部常量与 musl 十六进制值逐位相同、`k` 的舍入保持奇偶对称、象限表正确，并对约 43 亿个有限 float 全量扫描：|x| ≤ 4.2e8 时最大误差 2.99e-8；GCC/Clang `-march=haswell` 的 FMA 收缩在 4.42e8 以下不改变任何输出。已采纳：上限 `3.4e38f` 低于 `FLT_MAX`，会把 13,921 个有限值判为 NaN，改为 `isfinite`；`fmod` 阈值由 1e9 降到 2^28（4.2e8~1e9 间约减不精确且结果依赖 FMA）；固定位与 `quat` 用例原先选的输入与 glibc 相同，无法检出回退，已换成有差异的输入；契约补上 `sincosf`、`__builtin_` 与 `l` 后缀；`test_physics_replay.c` 注释更新。未采纳：32 位 x87（仓库无此目标）；MSVC 加 `/arch:AVX2` 时需要 `/fp:contract-`（既有问题，当前 x64 默认不生成 FMA）。性能：约 7.3 ns/次，glibc `sinf`+`cosf` 约 4.55 ns，调用频率下可忽略。
+- **远端收据**：提交 `9a5db829` 的主 CI run 44910099338 全部成功（含 Windows MSVC/Clang/MinGW、macOS Metal 与 MoltenVK、Linux arm64 QEMU、ASan/UBSan、TSan），固定位用例与三个物理金标准在这些平台上一致；windows-d3d12 run 44910099350 成功。
 
 ## 物理确定性源码契约（2026-11-21）
 
