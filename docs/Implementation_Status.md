@@ -1,3 +1,13 @@
+## Flow 侧车格式跨架构金标准（2026-11-22）
+
+- **问题**：`missing_capabilities.md` kernel/flow 验证条目记录 Flow 侧车格式的跨架构逐位一致性未验证。往返测试只比较重新加载后的字段，主机字节序写入、结构填充泄漏或未初始化字节在同一台机器上往返时都看不出来。
+- **变更**：`test_break_flow_serial` 新增 `serialized_bytes_match_the_cross_architecture_golden`：输出缓冲先填满 0xA5，序列化三节点两连线的固定图，断言长度恰为 336 字节、FNV-1a 64 位哈希为 `0x4424126ef826f964`；再加载并重新写出，结果必须逐字节相同。`test_break_flow_serial` 已在 x86-64 与 arm64 CI lane 中运行，所以两种架构都对同一个金标准断言。
+- **验证**：RED 时先打印实际值，再固定。本机 x86-64 通过；arm64 QEMU 容器中 `test_break_flow_serial` 7 例全部通过（同一哈希）。两种变异均被检出：浮点按非小端字节布局写出、记录区不清零（输出中留下 0xA5）。原生 CTest 458/458。
+
+## 动画测试补充的远端收据（2026-11-22）
+
+- 提交 `008f9aa5` 的主 CI run 44924049059 全部成功（22 个成功，3 个按设计跳过）；windows-d3d12 run 44924049069 成功；arm64 job 136906126051 原始日志严格断言为 263 项、69 组分项计数，没有失败用例。
+
 ## kernel 移动、动作绑定与关卡测试补充（2026-11-22）
 
 - **问题**：`missing_capabilities.md` kernel/flow 验证条目记录 kernel actions、move、level 各只有一个用例。

@@ -114,6 +114,41 @@ TEST(round_trip_preserves_ids_ports_properties_and_next_ids) {
     break_flow_graph_destroy(holes);
 }
 
+static u64 fnv1a(const u8 *p, usize n) {
+    u64 h = 0xcbf29ce484222325ull;
+    for (usize i = 0; i < n; i++) {
+        h ^= p[i];
+        h *= 0x100000001b3ull;
+    }
+    return h;
+}
+
+/* Cross-architecture golden: the fixture's bytes are fixed by the format
+ * (little-endian fields, IEEE floats, zero padding), so x86-64 and arm64,
+ * which both run this test in CI, must produce the same length and hash.
+ * A host-endian write, struct padding leaking into the stream or an
+ * uninitialized byte changes the hash. Reloading the bytes and writing them
+ * again must reproduce them exactly. */
+TEST(serialized_bytes_match_the_cross_architecture_golden) {
+    BreakFlowGraph *g = NULL;
+    u8 bytes[512];
+    /* a filled buffer makes any byte the writer leaves untouched visible */
+    memset(bytes, 0xA5, sizeof(bytes));
+    usize len = fixture(&g, bytes);
+    ASSERT_EQ(len, (usize)336u);
+    ASSERT_EQ(fnv1a(bytes, len), UINT64_C(0x4424126ef826f964));
+    BreakFlowGraph *loaded = NULL;
+    ASSERT_EQ(break_flow_deserialize(bytes, len, &loaded), BREAK_FLOW_OK);
+    u8 again[512];
+    memset(again, 0xA5, sizeof(again));
+    usize again_len = 0u;
+    ASSERT_EQ(break_flow_serialize(loaded, again, sizeof(again), &again_len), BREAK_FLOW_OK);
+    ASSERT_EQ(again_len, len);
+    ASSERT_EQ(memcmp(again, bytes, len), 0);
+    break_flow_graph_destroy(loaded);
+    break_flow_graph_destroy(g);
+}
+
 TEST(serialization_capacity_is_checked_without_success_length) {
     BreakFlowGraph *original = NULL;
     u8 bytes[512];
@@ -263,6 +298,7 @@ TEST(link_references_ports_and_cycles_are_rejected) {
 }
 
 TEST_MAIN_BEGIN()
+    RUN_TEST(serialized_bytes_match_the_cross_architecture_golden);
     RUN_TEST(round_trip_preserves_ids_ports_properties_and_next_ids);
     RUN_TEST(serialization_capacity_is_checked_without_success_length);
     RUN_TEST(header_length_version_count_and_truncation_are_rejected);

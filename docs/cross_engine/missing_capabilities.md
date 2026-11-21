@@ -445,3 +445,4 @@
 - **动画验证追加**：2026-11-22 locomotion、socket、aim 测试分别补到 5、4、5 例，覆盖插值区间、旋转变换、名字与关节校验、权重夹取和链越界跳过。上文「locomotion、socket、aim 各只有单个用例」由此关闭。仍缺：GPU 蒙皮、跨架构逐位回放验证。
 - **AI 验证追加**：2026-11-22 perception、steer、behavior、nav follow 测试分别补到 4、5、4、5 例，覆盖视锥边界与三维角度、侧移方向与邻居上限、行为树短路与畸形树、路径跳点与不越界步长。上文「nav follow、perception、behavior、steer 各只有单个用例」由此关闭。仍缺：真实关卡 navmesh、大规模群体性能、编辑器 AI 工具。
 - **kernel/flow 验证追加**：2026-11-22 kernel move、actions、level 测试分别补到 5、4、4 例，覆盖输入夹取与方向、多来源绑定与非法绑定、侧车格式与各类错误回滚。上文「kernel actions/move/level 各只有一个用例」由此关闭。仍缺：Flow 侧车格式的跨架构逐位一致性未验证。
+- **kernel/flow 验证追加**：2026-11-22 `test_break_flow_serial` 新增序列化字节金标准（336 字节，固定 FNV-1a 哈希，再加载写出逐字节相同），x86-64 与 arm64 CI 都对它断言。上文「Flow 侧车格式的跨架构逐位一致性未验证」由此关闭。
