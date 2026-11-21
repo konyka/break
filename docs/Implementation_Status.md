@@ -6,6 +6,8 @@
 - **原生与 focused 验证**：原生七项 7/7；干净 Ubuntu 24.04 容器 arm64 七项 7/7，计数 1/14/3/5，三项无 Results 行的测试退出码 0，QEMU 8.2.2；`test_fork_deadline` 的三条超时标记均为预期，测试 0.67 秒结束。原生全量 456 项零失败，4 个既有平台用例跳过，CTest 174.79 秒。未修改产品或测试源码。
 - **完整干净容器验证**：以统一非 root 属主执行 workflow 原始构建和测试 step，219/219，CTest 129.70 秒。严格日志断言确认 36 组分项计数、三项无 Results 行的测试均出现在通过列表、全部旧契约/e2e、无失败分项、唯一 ptrace 设置 skip，且无 root 权限跳过或 `Too many parentheses`；`assert_timeout_markers.py` 确认超时标记恰为 `test_fork_deadline` 的三条预期标记。
 - **独立评审**：结论可合入，无 Critical/Important。评审实测选择集合 212→219，差集恰为七项；核实了构建门控与交叉工具链，并确认 fork 子进程不建线程。已采纳的 Minor：本地取证脚本 `assert_timeout_markers.py` 改为显式失败退出（`python3 -O` 下仍有效），兼容 `gh run view --log` 的 job/step/时间戳前缀与 CRLF，并改写了导语措辞。脚本经六组正反例复测：原样、`-O`、带前缀、CRLF 均通过，注入额外超时标记与缺少 fork_deadline 的旧日志均失败。
+- **远端 arm64 验证**：[CI run 44870376931](https://github.com/konyka/break/actions/runs/44870376931) 的 [arm64 job 136743338509](https://github.com/konyka/break/actions/runs/44870376931/job/136743338509) 在提交 `2891bc9b` 上成功。原始日志严格断言确认精确 219 项、36 组分项计数、header/noexcept/public API 三项出现在通过列表、全部旧契约/e2e 和唯一 ptrace 设置 skip；无 root 权限跳过或 `Too many parentheses`，`assert_timeout_markers.py` 确认超时标记恰为 `test_fork_deadline`（#300）的三条预期标记，CTest 140.71 秒。
+- **整体远端结果**：上述主 CI run 最终为 `completed / success`，包括 Linux、Windows、macOS、arm64、sanitizer、fuzz、图形及契约 lane；既有条件跳过仍按各 job 原义保留。独立 [Windows D3D12 run 44870376932](https://github.com/konyka/break/actions/runs/44870376932) 也为 `completed / success`。
 - **覆盖缺口**：qemu-user 下 fork 后建线程偶发挂起的根因仍未定位，本切片只验证截止等待辅助函数本身；`test_fork_deadline` 的子进程只做 `_exit`、`pause()` 或管道写入，不在子进程中建线程，因此不触发该已知挂起条件。GPU Compose、Vulkan 设备探测、编辑器 shell/Lua 不在本切片内。
 
 ## arm64 Compose/myui 集成、渲染 CPU 路径与扩展输入和二百一十二项 CTest（2026-11-21）

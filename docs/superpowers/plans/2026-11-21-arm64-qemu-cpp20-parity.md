@@ -1,6 +1,6 @@
 # arm64 QEMU C++20 Parity and Misc Tests Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Add the C++20 Compose parity family, the public-API C++20 gate, the Cry-style prototype and the fork-deadline helper test to the arm64 lane for an exact 219-test selection.
 
@@ -41,5 +41,5 @@
 
 - [x] **Step 1:** Read-only independent review; reproduce and fix every Critical/Important finding.
 - [x] **Step 2:** Commit `ci: run arm64 cpp20 parity tests`, push, monitor the full CI and Windows D3D12 workflows.
-- [ ] **Step 3:** Download the raw arm64 log and assert 219 with all counted per-test numbers.
-- [ ] **Step 4:** Append local/remote receipts and remaining gaps to `docs/Implementation_Status.md` and `docs/cross_engine/missing_capabilities.md`; check off completed steps.
+- [x] **Step 3:** Download the raw arm64 log and assert 219 with all counted per-test numbers.
+- [x] **Step 4:** Append local/remote receipts and remaining gaps to `docs/Implementation_Status.md` and `docs/cross_engine/missing_capabilities.md`; check off completed steps.
