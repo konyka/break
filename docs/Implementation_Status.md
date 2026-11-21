@@ -1,3 +1,13 @@
+## arm64 编辑器插件核心与一百九十五项 CTest（2026-11-21）
+
+- **最小场景**：新增五个既有 `headless;editor` 可执行目标：plugin cmds 7、host 8、sections 5、panels 9、manifest 10 例，共 39 例。均复用 `break_editor_test` 和生成的 QEMU 命令，只覆盖命令注册、宿主桥、检查器区块、面板模型与 manifest 解析；不包含动态库加载、CLI、shell/UI 或 worker。
+- **RED 与精确选择**：旧 workflow 在 `missing editor plugin build targets` 处 RED。真实原生集合从 190 增至 195，差集恰为这五项；manifest_cli、plugin_load、flow、shell/UI 和同名前缀扩展均被拒绝。CI 与 Build_Guide 的构建和测试命令逐字一致，600 秒守护与 25 分钟 job 上限不变。
+- **CTest 捕获组边界**：初版聚合 alternative 使完整表达式从 31 个捕获组变成 32 个，真实 CTest 报 `RegularExpression::compile(): Too many parentheses` 并以退出码 0 返回零项。改为五个独立精确 alternative `test_editor_plugin_cmds$|test_editor_plugin_host$|test_editor_plugin_sections$|test_editor_plugin_panels$|test_editor_plugin_manifest$`，保持 31 组且选择集合不变；契约新增组数上限和严格集合差，防止把空选择误当通过。
+- **原生与 focused 验证**：原生五项 5/5，计数 7/8/5/9/10；干净 Ubuntu 24.04 容器 arm64 五项 5/5，计数一致，QEMU 8.2.2。原生全量 456 项零失败，4 个既有平台用例跳过，CTest 165.94 秒。未修改产品或测试源码。
+- **完整干净容器验证**：以统一非 root 属主执行 workflow 原始构建和测试 step，195/195，CTest 129.44 秒。严格日志断言确认 15 组编辑器分项计数、全部旧契约/e2e、无失败分项、唯一 ptrace 设置 skip，且无 root 权限跳过、`CHILD TIMEOUT`、`PIPE TIMEOUT` 或 `Too many parentheses`。
+- **独立评审**：只读评审确认扁平化不是放宽选择、旧 190 项严格保留、依赖边界和 39 合计，无 Critical/Important/Minor；其等待的 focused 与完整 arm64 证据随后全部取得。
+- **覆盖缺口**：动态库加载、manifest CLI、插件面板交互、编辑器 shell/UI、Lua 集成和物理设备行为不在本切片内。
+
 ## arm64 编辑器音频核心与一百九十项 CTest（2026-11-21）
 
 - **最小场景**：新增既有 `test_editor_audio`（23 例），覆盖 PCM 附件、撤销/重做、WAV 导入导出、波形、响度、真峰值与限幅。目标只链接既有 `break_editor_test` 和 `m`，由生成的 QEMU 命令直接启动；不打开音频设备、不创建 worker、不涉及编辑器 UI。
