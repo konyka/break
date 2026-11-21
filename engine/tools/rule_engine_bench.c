@@ -1,6 +1,7 @@
 #include <rule_engine/rule_engine.h>
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -135,6 +136,67 @@ static int run_warm_case(const bench_case_t *test_case) {
     return 1;
 }
 
+/* Large rule sets: n rules "Customer.Score > i" over one fact, so n/2 of
+ * them fire, each writing one of 50 flag facts. Every firing makes the
+ * recognize-act loop re-evaluate all rules seen so far, so a run costs
+ * about n * firings rule matches; this case reports that growth. n stays
+ * under the default max_rules (1024). */
+static int run_large_case(size_t rule_count, size_t runs) {
+    size_t capacity = rule_count * 96u + 64u;
+    char *source = (char *)malloc(capacity);
+    size_t used = 0u;
+    size_t index;
+    callback_state_t state = {0u};
+    re_callbacks_t callbacks = {count_action, &state};
+    re_program_t *program = NULL;
+    re_engine_t *engine = NULL;
+    re_facts_t *facts = NULL;
+    re_value_t score;
+    clock_t start;
+    int ok = 0;
+    if (source == NULL) return 0;
+    for (index = 0u; index < rule_count; ++index) {
+        int wrote = snprintf(source + used, capacity - used,
+                             "rule \"R%zu\" { when Customer.Score > %zu then Customer.F%zu = 1; }\n",
+                             index, index, index % 50u);
+        if (wrote < 0 || (size_t)wrote >= capacity - used) goto done;
+        used += (size_t)wrote;
+    }
+    start = clock();
+    if (re_program_load(NULL, (re_string_t){source, used}, NULL, &program) != RE_STATUS_OK ||
+        program == NULL) {
+        fprintf(stderr, "large_%zu load failed\n", rule_count);
+        goto done;
+    }
+    printf("large_%zu cold_load elapsed_seconds=%.9f run_count=1 source_bytes=%zu\n", rule_count,
+           elapsed_seconds(start, clock()), used);
+    engine = re_engine_create(NULL, NULL);
+    facts = re_facts_create(NULL, NULL);
+    if (engine == NULL || facts == NULL || re_engine_install(engine, program) != RE_STATUS_OK) {
+        fprintf(stderr, "large_%zu install failed\n", rule_count);
+        re_program_destroy(program);
+        goto done;
+    }
+    score.type = RE_VALUE_INT64;
+    score.as.int64_value = (int64_t)(rule_count / 2u);
+    if (re_facts_set(facts, (re_string_t){"Customer.Score", 14u}, &score) != RE_STATUS_OK) goto done;
+    start = clock();
+    for (index = 0u; index < runs; ++index) {
+        if (re_engine_run(engine, facts, NULL, &callbacks) != RE_STATUS_OK) {
+            fprintf(stderr, "large_%zu evaluation failed\n", rule_count);
+            goto done;
+        }
+    }
+    printf("large_%zu warm_eval elapsed_seconds=%.9f run_count=%zu fired_count=%zu fact_count=1\n",
+           rule_count, elapsed_seconds(start, clock()), runs, state.fired);
+    ok = 1;
+done:
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+    free(source);
+    return ok;
+}
+
 int main(void) {
     const bench_case_t cases[] = {
         {"sparse", SPARSE_SOURCE, SPARSE_FACTS, sizeof(SPARSE_FACTS) / sizeof(SPARSE_FACTS[0])},
@@ -148,5 +210,8 @@ int main(void) {
         success = run_cold_case(&cases[index]) && success;
         success = run_warm_case(&cases[index]) && success;
     }
+    success = run_large_case(100u, 100u) && success;
+    success = run_large_case(300u, 10u) && success;
+    success = run_large_case(1000u, 2u) && success;
     return success ? 0 : 1;
 }

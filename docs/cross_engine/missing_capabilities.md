@@ -448,3 +448,4 @@
 - **kernel/flow 验证追加**：2026-11-22 `test_break_flow_serial` 新增序列化字节金标准（336 字节，固定 FNV-1a 哈希，再加载写出逐字节相同），x86-64 与 arm64 CI 都对它断言。上文「Flow 侧车格式的跨架构逐位一致性未验证」由此关闭。
 - **无头 world 验证追加**：2026-11-22 time_of_day、decal、road、voxel、world_stream、vegetation、visarea、mesh_stage、world_stream_job 都补到 3~5 例，期间修复 `visarea_visible` 对 NULL 房间数组的读取崩溃。上文「十项只有单个用例」中九项由此关闭；`test_mesh_gpu` 的上传与绘制需要真实设备，保持单个无头用例。仍缺：GPU 呈现与真实设备渲染的 arm64 验证。
 - **规则引擎验证追加**：2026-11-22 arm64 lane 打开 `RULE_ENGINE_ENABLE_C11_PARALLEL`，C11 并行执行器压力测试与 `rule_engine_fuzz_smoke` 在 arm64 上运行。上文「C11 并行执行器压力测试与 fuzz 的 arm64 运行」由此关闭。仍缺：Redis 路径、大规则集性能。
+- **规则引擎验证追加**：2026-11-22 `rule_engine_bench` 新增 100/300/1000 条规则场景。冷加载与规则数成线性，热求值约为 n²（1000 条规则单次约 390 ms），原因是每次触发后重新求值全部已见规则。上文「大规则集性能」由此有了测量；仍缺：按读集增量重算以消除 n² 增长、Redis 路径。

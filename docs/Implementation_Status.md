@@ -1,3 +1,11 @@
+## 规则引擎大规则集基准与扩展性测量（2026-11-22）
+
+- **问题**：`missing_capabilities.md` 规则引擎验证条目记录“大规则集性能”未知。原 `rule_engine_bench` 只有 2 条和 5 条规则的场景。
+- **变更**：`engine/tools/rule_engine_bench.c` 新增大规则集场景 `large_100`、`large_300`、`large_1000`：n 条规则 `Customer.Score > i` 作用于同一个事实，其中 n/2 条触发，各写 50 个标志事实之一。输出格式与原有场景相同（冷加载耗时、热求值耗时、触发次数）。基准仍按原约定手动运行，不注册为 CTest。
+- **测量**（本机 x86-64，Debug 构建，`clock()` CPU 时间）：冷加载 100/300/1000 条规则分别为 0.28/0.83/2.4 ms，与源文本长度成线性。单次热求值分别约为 3.3/27/390 ms，大致按 n² 增长。另用 gprof 剖析 1000 条规则的运行：`re_agenda_push_full` 占 27%，`bound_fact_path` 占 16%，`retracted_root` 占 14%，`compute_rule_activations` 每次运行被调用约 50 万次。
+- **原因**：recognize-act 循环（`engine/src/rule_engine/engine.c` 的 `re_engine_run`）在每次触发后，都对已求值过的所有规则重新计算激活，依赖议程的去重防止重复触发。触发次数与规则数同阶时，总匹配次数约为 n × 触发次数。
+- **结论与缺口**：大规则集性能已可测量。默认 `max_rules` 为 1024，所以单次运行上限约 0.4 s。仍缺：按读集只重新求值受写入影响的规则（增量重算），需要保持现有触发顺序与去重语义，属于单独的设计工作；另外，Redis 路径仍未覆盖。
+
 ## arm64 lane 开启 C11 并行规则执行器（2026-11-22）
 
 - **问题**：`missing_capabilities.md` 规则引擎验证条目记录 C11 并行执行器压力测试与 fuzz 没有在 arm64 上运行。`RULE_ENGINE_ENABLE_C11_PARALLEL` 默认关闭，任何 CI lane 都没有打开它，所以 `test_rule_engine_executor_stress` 在哪里都没有构建；`rule_engine_fuzz_smoke` 虽然注册了，但不在 arm64 选择中。
