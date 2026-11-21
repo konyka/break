@@ -35,11 +35,14 @@ u32 visarea_visible(const VisQuery *query, u32 *out_ids, u32 cap, u32 *dropped) 
     if (dropped) *dropped = 0;
     if (!query || !dropped) return 0;
     u32 total = query->outdoor_count;
-    for (u32 i = 0; i < query->room_count; i++) total += query->rooms[i].object_count;
     if (!query->rooms || query->room_count > VISAREA_MAX_ROOMS) {
+        if (query->rooms) {
+            for (u32 i = 0; i < query->room_count; i++) total += query->rooms[i].object_count;
+        }
         *dropped = total;
         return 0;
     }
+    for (u32 i = 0; i < query->room_count; i++) total += query->rooms[i].object_count;
     for (u32 i = 0; i < query->room_count; i++) {
         if (query->rooms[i].object_count > VISAREA_MAX_OBJECTS) {
             *dropped = total;
