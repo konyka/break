@@ -1,3 +1,13 @@
+## arm64 C++20 对等层、fork 截止等待与二百一十九项 CTest（2026-11-21）
+
+- **最小场景**：新增七个既有可执行目标。C++20 对等层四项由工具链已有的 `aarch64-linux-gnu-g++`（GCC 13.3）编译：`test_mycompose_cpp20_c_fixture` 1 例、`test_mycompose_cpp20` 14 例（链接 C11 夹具目标文件，检查 arm64 上的真实 C/C++ ABI）、`test_mycompose_cpp20_header`、`test_mycompose_cpp20_noexcept`（`-fno-exceptions`）；`test_public_api_cpp20` 以 C++20 包含全部公共 C 头文件并链接 `engine` 做一次跨语言调用；另有 `test_core_style_prototype` 3 例与 `test_fork_deadline` 5 例。header、noexcept、public API 三项不打印 `=== Results` 行，以退出码 0 判定。
+- **RED 与精确选择**：旧 workflow 在 `missing cpp20 build targets` 处 RED。真实原生集合从 212 增至 219，差集恰为这七项；Vulkan 设备探测、`test_rhi_native`、单核输入变体、GPU Compose、`test_packer_roundtrip`、编辑器 shell/Lua 及同名前缀扩展均被拒绝。完整表达式维持 31 个捕获组。CI 与 Build_Guide 的构建和测试命令逐字一致。
+- **超时标记证据调整**：`test_fork_deadline` 是 `test_runtime_io`/`test_runtime_reload` 所用 fork 截止等待辅助函数本身的测试，按设计打印 `CHILD TIMEOUT after 200 ms (killed)`、`PIPE TIMEOUT after 200 ms`、`CHILD TIMEOUT after 0 ms (killed)`。此前各切片“日志中无 `CHILD TIMEOUT`/`PIPE TIMEOUT`”的证据因此改为由 `assert_timeout_markers.py` 检查：恰好这三条且全部来自 `test_fork_deadline`，任何其他超时标记仍判为失败；该脚本在缺少该测试的日志上按预期失败。
+- **原生与 focused 验证**：原生七项 7/7；干净 Ubuntu 24.04 容器 arm64 七项 7/7，计数 1/14/3/5，三项无 Results 行的测试退出码 0，QEMU 8.2.2；`test_fork_deadline` 的三条超时标记均为预期，测试 0.67 秒结束。原生全量 456 项零失败，4 个既有平台用例跳过，CTest 174.79 秒。未修改产品或测试源码。
+- **完整干净容器验证**：以统一非 root 属主执行 workflow 原始构建和测试 step，219/219，CTest 129.70 秒。严格日志断言确认 36 组分项计数、三项无 Results 行的测试均出现在通过列表、全部旧契约/e2e、无失败分项、唯一 ptrace 设置 skip，且无 root 权限跳过或 `Too many parentheses`；`assert_timeout_markers.py` 确认超时标记恰为 `test_fork_deadline` 的三条预期标记。
+- **独立评审**：结论可合入，无 Critical/Important。评审实测选择集合 212→219，差集恰为七项；核实了构建门控与交叉工具链，并确认 fork 子进程不建线程。已采纳的 Minor：本地取证脚本 `assert_timeout_markers.py` 改为显式失败退出（`python3 -O` 下仍有效），兼容 `gh run view --log` 的 job/step/时间戳前缀与 CRLF，并改写了导语措辞。脚本经六组正反例复测：原样、`-O`、带前缀、CRLF 均通过，注入额外超时标记与缺少 fork_deadline 的旧日志均失败。
+- **覆盖缺口**：qemu-user 下 fork 后建线程偶发挂起的根因仍未定位，本切片只验证截止等待辅助函数本身；`test_fork_deadline` 的子进程只做 `_exit`、`pause()` 或管道写入，不在子进程中建线程，因此不触发该已知挂起条件。GPU Compose、Vulkan 设备探测、编辑器 shell/Lua 不在本切片内。
+
 ## arm64 Compose/myui 集成、渲染 CPU 路径与扩展输入和二百一十二项 CTest（2026-11-21）
 
 - **最小场景**：新增七个既有纯 CPU 可执行目标：`test_mycompose_myui` 18、`test_mycompose_widget_primitives` 7、`test_render_features` 4、`test_rt_trace` 2、`test_rhi_tlas_instance_encode` 2、`test_rhi_metal_format_mapping` 5、`test_input_extended` 21 例，共 59 例。两个 Compose/myui 测试使用 dummy PAL 的无头窗口对象；rt_trace 链接 `engine_rhi_headless`；Metal 格式映射在非 Apple 构建中只编译五个平台无关用例；input_extended 使用线程但不设置 CPU 亲和性。均不 fork、不连接显示服务器、不用 GPU 或真实设备。
