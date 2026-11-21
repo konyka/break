@@ -1,9 +1,12 @@
-## core_app 语音通道驱动接入交叉模拟器（2026-11-21）
+## core_app 语音通道驱动接入交叉模拟器与 arm64 二百五十九项 CTest（2026-11-21）
 
 - **问题**：`test_core_app_voice_lane` 的宿主驱动 `engine/tests/test_core_app_voice_lane.cmake` 两处直接 `execute_process` 启动 `core_app`，交叉构建中无法在宿主上执行，与生命周期驱动修复前相同。
 - **修复**：两处启动前加 `${CORE_APP_RUNNER}`，`engine/CMakeLists.txt` 中该测试传入 `-DCORE_APP_RUNNER=${CMAKE_CROSSCOMPILING_EMULATOR}`（原生为空，行为不变）。该驱动不使用 `LD_PRELOAD`，无需额外门控。
 - **RED/GREEN**：契约 `voice_lane_runner_contract.py` 要求每处 core_app 启动均经 runner、`add_test` 传入模拟器；旧驱动 RED（`core_app launch without CORE_APP_RUNNER: 2 of 2`），实现后 GREEN。原生 `test_core_app_voice_lane` 与 `test_core_app_lifecycle_load_unload` 均通过。
-- **未验证**：arm64 QEMU 试跑与纳入 lane 尚未进行。本机此时到 GitHub 与 Ubuntu 软件源的网络均不可达（HTTPS 返回 000、SSH 连接被关闭），容器无法安装交叉工具链；网络恢复后先在 QEMU 下试跑，通过且在时间预算内再按既有流程纳入 lane。
+- **网络中断**：提交时本机到 GitHub 与 Ubuntu 软件源的网络曾中断（HTTPS 返回 000、SSH 连接被关闭），提交先留在本地，恢复后与生命周期提交一并推送。
+- **arm64 试跑与 lane 纳入（258→259）**：干净 Ubuntu 24.04 容器中 arm64 `test_core_app_voice_lane` 在 QEMU 下通过，4.38 秒。选择契约要求唯一新增的平铺精确 alternative 位于末尾、构建列表不变、完整表达式仍为 31 个捕获组、原生集合 258→259 且差集恰为该项；旧 workflow RED（`missing exact voice lane alternative`），实现后 GREEN，`test_core_app_voice`、`test_core_app_voice_null`、`test_core_app_voice_device` 与前缀扩展被拒绝。原生全量 456 项零失败，4 个既有平台用例跳过，CTest 161.60 秒。非 root 干净容器执行 workflow 原始 step，259/259，CTest 167.47 秒，voice lane 4.70 秒；严格日志断言确认 60 组分项计数、全部旧契约/e2e、唯一的平台 setup skip，超时标记恰为 `test_fork_deadline` 的三条预期标记。
+- **独立评审**：结论可合入，无 Critical/Important。评审核实驱动两处 `execute_process`（七次 `run_app` 与四次非法参数运行）均经 runner，无 Python、`LD_PRELOAD` 或其他目标二进制；`--audio=record` 不触及 miniaudio，`--voice=fake` 使用 `noDevice` 的 FAKE 播放与跳过设备初始化的 FAKE 采集，不打开真实设备；FAKE 模式无语音工作线程，帧在模拟 tick 中泵送与消费；采集设备切换在 FAKE 采集上是确定性的；断言的计数只依赖 tick 数而非挂钟，QEMU 下 4.4–4.7 秒，远低于 60 秒单次与 240 秒整体超时。实测 258→259，差集恰为该项，捕获组仍为 31。已采纳的 Minor：Build_Guide 补全驱动检查项（零采集/参考溢出、就绪与停止顺序、未开启语音时切换以 `reason=mode` 拒绝、退出 tick 上的请求恰得一条 `failed reason=stopped`），非法参数改称取值与组合；本条目标题写明 lane 计数。
+- **覆盖缺口**：真实音频与麦克风设备（`test_core_app_voice_device`、`test_core_app_voice_null`）不在 arm64 lane 内；fake 语音通道只验证接线与帧计数，不衡量回声消除质量。
 
 ## core_app 生命周期驱动支持交叉模拟器与 arm64 二百五十八项 CTest（2026-11-21）
 
@@ -14,6 +17,8 @@
 - **完整干净容器验证**：以统一非 root 属主执行 workflow 原始构建和测试 step，258/258，CTest 180.68 秒，占外层 600 秒守护的 30%。严格日志断言确认 60 组分项计数、十二项生命周期测试全部在通过列表、UNVERIFIED 信息恰出现一次、全部旧契约/e2e、无失败分项、唯一的平台 setup skip，无 root 权限跳过或 `Too many parentheses`；超时标记恰为 `test_fork_deadline` 的三条预期标记。
 - **独立评审**：结论可合入，无 Critical。评审实测空的或未定义的 `CORE_APP_RUNNER` 不产生空 argv 元素、列表值按元素展开；四种输入组合下故障门控分支正确；驱动七处 `execute_process` 中四处 core_app 启动均已包装，其余为 `LD_PRELOAD` 启动与两处宿主 Python 夹具改写，不运行其他目标架构二进制；模拟下 load_unload 跳过五个故障场景，约占其 46 个断言点中的 17 个（37%），其余十一项无故障块；实测 246→258，差集恰为十二项，捕获组仍为 31。Important：原先“预加载库作用于模拟器而非被模拟程序”的理由只对了一半，qemu-user 默认透传环境，客体加载器可能仍会加载该库；已在驱动注释与文档中改为“未经验证”的准确描述。尝试在容器中实测时，Ubuntu 软件源不可达（`Connection failed`），未能完成；跳过本身是安全且可见的。
 - **后续项**：评审列出其他向驱动传入 `$<TARGET_FILE:core_app>` 但未传 runner 的测试（target_contract、gpu/audio/voice device 系列、voice_lane、voice_null、baker_diagnostics，及 Snowflake 专属的 core_app_network 系列），均不在 lane 内，后续逐项评估。
+- **远端 arm64 验证**：[CI run 44889138925](https://github.com/konyka/break/actions/runs/44889138925) 的 [arm64 job 136800898270](https://github.com/konyka/break/actions/runs/44889138925/job/136800898270) 在提交 `3d83a1d3`（含 `baffbbab`）上成功。原始日志严格断言确认精确 258 项、60 组分项计数、十二项生命周期测试全部通过、UNVERIFIED 信息恰出现一次、全部旧契约/e2e 和唯一的平台 setup skip；超时标记恰为 `test_fork_deadline`（#300）的三条预期标记，CTest 162.91 秒。
+- **整体远端结果**：上述主 CI run 最终为 `completed / success`，包括 Linux、Windows、macOS、arm64、sanitizer、fuzz、图形及契约 lane；既有条件跳过仍按各 job 原义保留。独立 [Windows D3D12 run 44889138919](https://github.com/konyka/break/actions/runs/44889138919) 也为 `completed / success`。
 - **覆盖缺口**：arm64 上不执行 `LD_PRELOAD` 故障注入（提交尾部失败、粘滞失败、I/O 超时与 EIO 等五个场景），这部分只在原生 Linux 覆盖；roundtrip 改写检查点依赖宿主 `python3`。
 
 ## arm64 跨平台可移植契约与二百四十六项 CTest（2026-11-21）
