@@ -45,6 +45,28 @@ TEST(replay_scene_matches_the_cross_architecture_golden_hashes)
     physics_world_destroy(pw);
 }
 
+/* Second golden that exercises rotation: a box with a non-zero inertia and a
+ * constant angular velocity integrates its orientation every step through
+ * quat_from_axis_angle (240 sinf and 240 cosf calls over 240 steps).
+ * Measured equal on glibc 2.39 x86-64, glibc 2.44 x86-64 and glibc 2.39
+ * arm64; other libm implementations are checked by CI. */
+TEST(spinning_body_matches_the_cross_architecture_golden_hashes)
+{
+    PhysicsWorld *pw = physics_world_create(8);
+    ASSERT_NOT_NULL(pw);
+    (void)physics_body_create(pw, vec3(0, -1, 0), vec3(10, 1, 10), 0.0f, true, 0);
+    PhysicsBodyHandle box = physics_body_create(pw, vec3(0, 2, 0), vec3(0.5f, 0.25f, 0.75f), 1.0f, false, 0);
+    PhysicsPose pose = {{{0.0f, 0.0f, 0.0f, 1.0f}}, {{0.7f, 1.3f, -0.4f}}, {{0.25f, 0.4f, 0.15f}}};
+    physics_body_set_pose(pw, box, &pose);
+    for (u32 i = 0; i < 240u; i++) {
+        physics_step(pw, 1.0f / 60.0f);
+        if (i == 39u) ASSERT_EQ(physics_state_hash(pw), UINT64_C(0x861e49280274a41b));
+        if (i == 119u) ASSERT_EQ(physics_state_hash(pw), UINT64_C(0xedda241ce0d8ffa8));
+        if (i == 239u) ASSERT_EQ(physics_state_hash(pw), UINT64_C(0xac68585b95a1886d));
+    }
+    physics_world_destroy(pw);
+}
+
 TEST(replay_round_trip_reproduces_the_recorded_run)
 {
     PhysicsReplayRecord storage[REPLAY_CAP];
@@ -215,4 +237,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(replay_recording_rejects_bad_inputs);
     RUN_TEST(replay_decode_rejects_malformed_data);
     RUN_TEST(replay_scene_matches_the_cross_architecture_golden_hashes);
+    RUN_TEST(spinning_body_matches_the_cross_architecture_golden_hashes);
 TEST_MAIN_END()

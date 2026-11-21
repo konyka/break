@@ -7,7 +7,9 @@
 - **TDD**：`test_physics_replay` 新增跨架构金标准哈希用例（第 40/120/240 步），修复前 x86 RED（第 40 步哈希不符），修复后 x86 与 arm64 QEMU 均 GREEN。
 - **验证**：原生全量 456 项零失败，4 个既有平台用例跳过；graphics 标签 12 项与渲染、地形、剔除、动画、角色相关 18 项全部通过；TSan 构建下 physics、physics_replay、character 通过且无报告；干净 Ubuntu 24.04 容器中 arm64 的 physics、physics_replay、physics_sync 与 core_app 模拟/往返生命周期 5/5 通过。
 - **独立评审**：首轮结论为暂不可合入。评审复现了根因（旧 SSE 路径第 35 步分歧，新路径三个检查点均与金标准一致，x86-64 上 GCC/Clang、`-O0`/`-O2`/`-O3 -flto` 结果相同，aarch64 在关闭收缩时一致）；Critical 为 AppleClang 默认 FMA 收缩会使两个 macOS job 失败，已按上条修复。Important：文档中“与浮点收缩无关”只在无 FMA 的 x86 上成立，已改写；金标准场景角速度恒为 0、不调用任何三角函数，原文“只走 sinf/cosf”有误，已改正。Windows MSVC（`/fp:precise`、SSE2 无 FMA）、clang-cl、MinGW、Linux Clang Release+IPO 评估为低风险。Minor：`frustum_cull.c` 中过时的“SSE rsqrt + Newton-Raphson”注释已更新。
-- **仍未覆盖**：三角函数来自各平台 libm，不同 glibc 版本的 `atan2f` 实测有 1 ULP 差异；用到 hinge、cone-twist、slider 的场景仍可能跨平台分歧；Windows、macOS 未验证。详见 `docs/design/physics_extended.md` 2026-11-21 补充。
+- **远端验证**：[CI run 44900512486](https://github.com/konyka/break/actions/runs/44900512486) 在提交 `7e6fb69d` 上整体 `completed / success`。金标准用例在以下平台原生运行并通过：两个 macOS job（Apple Silicon、AppleClang，即评审预测会因 FMA 收缩失败的平台，[job 136835226031](https://github.com/konyka/break/actions/runs/44900512486/job/136835226031) 与 [job 136835226121](https://github.com/konyka/break/actions/runs/44900512486/job/136835226121) 日志均含 `test_physics_replay ... Passed`）、Windows MSVC/Clang/MinGW、Linux GCC/Clang 及 sanitizer lane，以及 arm64 QEMU lane；独立 [Windows D3D12 run 44900512541](https://github.com/konyka/break/actions/runs/44900512541) 也为 success。
+- **带旋转的金标准**：第一个金标准场景角速度恒为 0、不调用三角函数，因此另加 `spinning_body_matches_the_cross_architecture_golden_hashes`：经 `physics_body_set_pose` 设置非零惯量与恒定角速度，240 步内 `sinf`/`cosf` 各调用 240 次；三个检查点哈希在 glibc 2.39 x86-64、glibc 2.44 x86-64 与 glibc 2.39 arm64 上一致。
+- **仍未覆盖**：`atan2f` 在不同 glibc 版本间实测有 1 ULP 差异，只用于 hinge、cone-twist、slider 约束，这些路径尚无金标准；Windows、macOS 的 libm 由 CI 验证。详见 `docs/design/physics_extended.md` 2026-11-21 补充。
 
 ## qemu-user 下 fork 子进程建线程偶发挂起的复查（2026-11-21）
 
