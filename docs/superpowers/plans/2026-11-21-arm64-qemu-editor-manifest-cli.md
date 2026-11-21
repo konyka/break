@@ -11,4 +11,4 @@
 - [x] **Step 2:** Selection contract `manifest_cli_selection_contract.py`: build list gains `editor`, one flat exact alternative appended, 31 groups, native 260/261 with a one-element difference; RED then GREEN; Build_Guide 1.5 updated with the 260 paragraph kept as history.
 - [x] **Step 3:** Native full 456/456.
 - [x] **Step 4:** Clean non-root container 261/261; independent review; commit and push.
-- [ ] **Step 5:** Monitor CI; assert the remote log at 261; record receipts.
+- [x] **Step 5:** Monitor CI; assert the remote log at 261; record receipts.

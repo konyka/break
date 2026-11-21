@@ -6,6 +6,9 @@
 - **lane 纳入（260→261）**：选择契约要求构建列表追加 `editor`、唯一新增的平铺精确 alternative 位于末尾、完整表达式仍为 31 个捕获组、原生集合 260→261 且差集恰为该项；旧 workflow RED（`missing editor build target`），实现后 GREEN，前缀扩展与 `test_editor_plugin_load2`、`test_break_system_target_contract` 被拒绝。lane 以 `PLUGINS=OFF` 运行，插件按“未加载”报告。原生全量 456 项零失败，4 个既有平台用例跳过，CTest 159.33 秒。
 - **完整干净容器验证**：非 root 干净容器执行 workflow 原始 step，261/261，CTest 162.73 秒，manifest CLI 0.16 秒；严格日志断言确认 60 组分项计数、全部旧契约/e2e、唯一的平台 setup skip，超时标记恰为 `test_fork_deadline` 的三条预期标记。
 - **独立评审**：结论可合入，无 Critical/Important。评审核实 `cmake -E env` 以第一个既非 `NAME=VALUE` 也非 `--unset=` 的词为命令，空 runner 展开为零个词；`DISPLAY`/`WAYLAND_DISPLAY` 在启动 qemu 前清除并原样传给被模拟程序；`editor_main.c` 中清单解析与 `--remote` 拒绝都在 `platform_create` 之前，驱动的五种情况均在开窗前以 2 退出，编辑器不触及显示或 GPU；lane 构建 `editor` 只多 56 个 ninja 步骤，构建步骤约 44 秒、整个 job 约 4.5 分钟，远低于 25 分钟上限；实测 260→261，差集恰为该项，捕获组仍为 31。
+- **远端 arm64 验证**：[CI run 44893304171](https://github.com/konyka/break/actions/runs/44893304171) 的 [arm64 job 136813548754](https://github.com/konyka/break/actions/runs/44893304171/job/136813548754) 在提交 `db25a513` 上成功，原始日志严格断言确认精确 261 项、60 组分项计数、全部旧契约/e2e 与唯一的平台 setup skip，超时标记恰为 `test_fork_deadline`（#300）的三条预期标记，manifest CLI 0.15 秒，CTest 176.65 秒。
+- **整体远端结果**：上述主 CI run 最终为 `completed / success`，包括 Linux、Windows（含 MinGW）、macOS、arm64、sanitizer、fuzz、图形及契约 lane；独立 [Windows D3D12 run 44893304083](https://github.com/konyka/break/actions/runs/44893304083) 也为 `completed / success`。
+- **其余驱动的评估**：`test_core_app_baker_diagnostics` 的驱动运行 `test_core_app_assets` 与其启动诊断变体，二者经 `system()` 由宿主 shell 执行 arm64 烘焙器，与 `test_core_app_assets` 被排除的原因相同（未注册 aarch64 binfmt_misc），不加 runner；`test_core_app_target_contract` 构建嵌套 CMake 工程并做符号检查，主要是宿主侧工作，暂不纳入。
 - **覆盖缺口**：开启 `BREAK_EDITOR_PLUGINS` 时“开窗后加载”的路径与真实窗口不在 arm64 lane 内；插件动态加载本身由 lane 内的 `test_editor_plugin_load` 覆盖。
 
 ## 资源包打包往返驱动接入交叉模拟器与 arm64 二百六十项 CTest（2026-11-21）
