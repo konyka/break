@@ -19,6 +19,9 @@ typedef struct {
     u16 kind;
     u16 max_version;
     usize max_payload;
+    bool control;
+    u32 max_per_tick;
+    u32 tick_published;
     char name[BREAK_RUNTIME_BUS_MAX_NAME + 1u];
     BreakRuntimeBusKindStats stats;
 } RuntimeBusKindSlot;
@@ -147,6 +150,8 @@ BreakRuntimeError break_runtime_bus_register_kind(BreakRuntimeBus *bus,
             slot->kind = kind->kind;
             slot->max_version = kind->max_version;
             slot->max_payload = kind->max_payload;
+            slot->control = kind->control;
+            slot->max_per_tick = kind->max_per_tick;
             strcpy(slot->name, kind->name);
         }
     }
@@ -251,7 +256,17 @@ BreakRuntimeError break_runtime_bus_publish(BreakRuntimeBus *bus,
     } else if (view->size > kind->max_payload) {
         kind->stats.size_rejects++;
         result = BREAK_RUNTIME_OVERLOAD;
+    } else if (kind->max_per_tick != 0u && kind->tick_published >= kind->max_per_tick) {
+        kind->stats.quota_rejects++;
+        result = BREAK_RUNTIME_OVERLOAD;
     } else {
+        BreakRuntimeMessageView copy_view = *view;
+        if (kind->control) {
+            copy_view.flags |= BREAK_RUNTIME_MESSAGE_FLAG_CONTROL;
+        } else {
+            copy_view.flags &= ~(u32)BREAK_RUNTIME_MESSAGE_FLAG_CONTROL;
+        }
+        kind->tick_published++;
         kind->stats.published++;
         for (i = 0; i < BREAK_RUNTIME_BUS_MAX_SUBSCRIBERS; i++) {
             RuntimeBusSubscriber *s = &bus->subscribers[i];
@@ -260,7 +275,7 @@ BreakRuntimeError break_runtime_bus_publish(BreakRuntimeBus *bus,
             if (s->id == 0u || !runtime_bus_wants(s, view->kind)) {
                 continue;
             }
-            if (break_runtime_message_copy(view, &copy) == BREAK_RUNTIME_OK) {
+            if (break_runtime_message_copy(&copy_view, &copy) == BREAK_RUNTIME_OK) {
                 if (break_runtime_queue_enqueue(s->queue, copy,
                                                 break_runtime_queue_generation(s->queue)) ==
                     BREAK_RUNTIME_OK) {
@@ -285,6 +300,20 @@ BreakRuntimeError break_runtime_bus_publish(BreakRuntimeBus *bus,
         *out_delivered = delivered;
     }
     return result;
+}
+
+BreakRuntimeError break_runtime_bus_tick(BreakRuntimeBus *bus)
+{
+    u32 i;
+    if (!bus) {
+        return BREAK_RUNTIME_INVALID;
+    }
+    platform_mutex_lock(&bus->mutex);
+    for (i = 0; i < BREAK_RUNTIME_BUS_MAX_KINDS; i++) {
+        bus->kinds[i].tick_published = 0u;
+    }
+    platform_mutex_unlock(&bus->mutex);
+    return BREAK_RUNTIME_OK;
 }
 
 BreakRuntimeError break_runtime_bus_stats(BreakRuntimeBus *bus, BreakRuntimeBusStats *out_stats)
@@ -385,15 +414,18 @@ BreakRuntimeError break_runtime_bus_export_topology(BreakRuntimeBus *bus, char *
         }
         runtime_bus_printf(&w,
                            "%s{\"kind\":%u,\"name\":\"%s\",\"max_version\":%u,\"max_payload\":%llu,"
+                           "\"control\":%s,\"max_per_tick\":%u,"
                            "\"published\":%llu,\"delivered\":%llu,\"dropped\":%llu,"
-                           "\"version_rejects\":%llu,\"size_rejects\":%llu}",
+                           "\"version_rejects\":%llu,\"size_rejects\":%llu,\"quota_rejects\":%llu}",
                            first ? "" : ",", (unsigned)s->kind, s->name, (unsigned)s->max_version,
-                           (unsigned long long)s->max_payload,
+                           (unsigned long long)s->max_payload, s->control ? "true" : "false",
+                           (unsigned)s->max_per_tick,
                            (unsigned long long)s->stats.published,
                            (unsigned long long)s->stats.delivered,
                            (unsigned long long)s->stats.dropped,
                            (unsigned long long)s->stats.version_rejects,
-                           (unsigned long long)s->stats.size_rejects);
+                           (unsigned long long)s->stats.size_rejects,
+                           (unsigned long long)s->stats.quota_rejects);
         first = false;
     }
     runtime_bus_printf(&w, "],\"subscribers\":[");

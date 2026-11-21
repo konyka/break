@@ -1,3 +1,10 @@
+## 消息总线：按 kind 的优先级与配额（2026-11-22）
+
+- **实现**：`BreakRuntimeBusKind` 末尾新增 `control` 与 `max_per_tick`。控制 kind 的副本带 `BREAK_RUNTIME_MESSAGE_FLAG_CONTROL`，可以使用订阅者队列的预留控制槽位；普通 kind 的副本由总线清除该标志。`max_per_tick` 限制两次 `break_runtime_bus_tick` 之间接受的发布次数，超出时返回 OVERLOAD、不投递，并计入 `quota_rejects`。拓扑导出同步增加这三个字段。设计见 `docs/design/runtime_message_model.md`「按 kind 的优先级与配额」。
+- **TDD**：`test_runtime_bus` 新增 2 例（共 10 例），先因结构体缺少字段而编译失败，实现后通过。
+- **变异检查**：均被检出：控制 kind 不加标志、普通 kind 不清除标志、配额判断差一、tick 不重置、不累计 tick 内发布数。
+- **验证**：TSan、ASan+UBSan 无报告；原生全量 465/465 通过；arm64 计数 `test_runtime_bus=10`。
+
 ## Runtime Core 消息总线（2026-11-22）
 
 - **问题**：Runtime Core 有 owned message 和有界 MPSC 队列，但没有 kind 注册表、按 kind 的预算与版本策略、一对多的发布订阅，也看不到消息拓扑（`docs/design/runtime_message_model.md` §2.3 列为设计目标）。

@@ -350,3 +350,11 @@ C++11 framework 在 `Init/Tick/DeInit` 建立 runtime；每 tick 由 LogicThread
 测试 `test_runtime_bus`（8 例）：登记校验与上限；按 kind 扇出且每个订阅者得到独立副本；未知 kind、版本越界、超预算、空指针；慢订阅者队列满时发布不阻塞、快订阅者不受影响、计数准确，排空后恢复，关闭的队列计为丢弃；订阅校验、退订、id 不重用、订阅者上限；拓扑导出内容与缓冲区不足时的长度；复制分配失败被计为丢弃；3 个发布线程各 2000 条消息，同时反复订阅/退订，每份消息不是投递就是计为丢弃，退订后队列计数不再变化。
 
 仍未做：把 LogicThread、Task workers、Network/IO、PAL/MainLoop 和 Profiler 的现有队列实际接到总线上；按 kind 的优先级与配额（目前只有队列的 reserved control 容量）。
+
+### 补充（2026-11-22）：按 kind 的优先级与配额
+
+`BreakRuntimeBusKind` 新增两个字段（追加在末尾，已有的位置初始化方式不变）：
+- `control`：该 kind 的副本带上 `BREAK_RUNTIME_MESSAGE_FLAG_CONTROL`，可以使用订阅者队列的 reserved control 容量。所以关停、故障这类 kind 在数据已占满队列时仍能送达。其他 kind 的副本由总线清除该标志，发布者设置了也无效，数据消息不能占用预留槽位。
+- `max_per_tick`：两次 `break_runtime_bus_tick` 之间接受的发布次数，0 表示不限。超出配额的发布返回 OVERLOAD，不投递给任何订阅者，计入 `quota_rejects`，不影响其他 kind。`break_runtime_bus_tick` 通常每帧调用一次。
+
+拓扑导出的每个 kind 增加 `control`、`max_per_tick` 与 `quota_rejects`。`test_runtime_bus` 新增 2 例（共 10 例）：数据填满队列后控制 kind 仍送达，且普通 kind 即使发布者设置了控制标志也进不了预留槽位；配额在 tick 之间限制发布次数，tick 后恢复，不影响其他 kind，并出现在拓扑中。上文「仍未做」中的“按 kind 的优先级与配额”由此交付；仍未做的是把各线程域的现有队列接到总线上。

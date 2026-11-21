@@ -42,8 +42,8 @@ static u32 drain(BreakRuntimeQueue *q, u16 *kinds, u32 cap) {
 static BreakRuntimeBus *make_bus(void) {
     BreakRuntimeBus *bus = NULL;
     if (break_runtime_bus_create(&bus) != BREAK_RUNTIME_OK) return NULL;
-    BreakRuntimeBusKind input = {1u, 2u, 64u, "input.key"};
-    BreakRuntimeBusKind snapshot = {2u, 1u, 1024u, "world.snapshot"};
+    BreakRuntimeBusKind input = {1u, 2u, 64u, "input.key", false, 0u};
+    BreakRuntimeBusKind snapshot = {2u, 1u, 1024u, "world.snapshot", false, 0u};
     if (break_runtime_bus_register_kind(bus, &input) != BREAK_RUNTIME_OK ||
         break_runtime_bus_register_kind(bus, &snapshot) != BREAK_RUNTIME_OK) {
         break_runtime_bus_destroy(bus);
@@ -57,15 +57,15 @@ TEST(kind_registration_is_validated) {
     ASSERT_EQ(break_runtime_bus_create(NULL), BREAK_RUNTIME_INVALID);
     ASSERT_EQ(break_runtime_bus_create(&bus), BREAK_RUNTIME_OK);
     ASSERT_NOT_NULL(bus);
-    BreakRuntimeBusKind ok = {5u, 1u, 16u, "net.ping"};
+    BreakRuntimeBusKind ok = {5u, 1u, 16u, "net.ping", false, 0u};
     ASSERT_EQ(break_runtime_bus_register_kind(bus, &ok), BREAK_RUNTIME_OK);
     ASSERT_EQ(break_runtime_bus_register_kind(bus, &ok), BREAK_RUNTIME_INVALID); /* duplicate */
-    BreakRuntimeBusKind zero_version = {6u, 0u, 16u, "a"};
-    BreakRuntimeBusKind big_budget = {7u, 1u, BREAK_RUNTIME_MAX_MESSAGE_PAYLOAD + 1u, "b"};
-    BreakRuntimeBusKind no_name = {8u, 1u, 16u, NULL};
-    BreakRuntimeBusKind bad_name = {9u, 1u, 16u, "has space"};
-    BreakRuntimeBusKind quote_name = {10u, 1u, 16u, "q\"x"};
-    BreakRuntimeBusKind long_name = {11u, 1u, 16u, "abcdefghijklmnopqrstuvwxyz0123456789"};
+    BreakRuntimeBusKind zero_version = {6u, 0u, 16u, "a", false, 0u};
+    BreakRuntimeBusKind big_budget = {7u, 1u, BREAK_RUNTIME_MAX_MESSAGE_PAYLOAD + 1u, "b", false, 0u};
+    BreakRuntimeBusKind no_name = {8u, 1u, 16u, NULL, false, 0u};
+    BreakRuntimeBusKind bad_name = {9u, 1u, 16u, "has space", false, 0u};
+    BreakRuntimeBusKind quote_name = {10u, 1u, 16u, "q\"x", false, 0u};
+    BreakRuntimeBusKind long_name = {11u, 1u, 16u, "abcdefghijklmnopqrstuvwxyz0123456789", false, 0u};
     ASSERT_EQ(break_runtime_bus_register_kind(bus, &zero_version), BREAK_RUNTIME_INVALID);
     ASSERT_EQ(break_runtime_bus_register_kind(bus, &big_budget), BREAK_RUNTIME_INVALID);
     ASSERT_EQ(break_runtime_bus_register_kind(bus, &no_name), BREAK_RUNTIME_INVALID);
@@ -78,7 +78,7 @@ TEST(kind_registration_is_validated) {
     BreakRuntimeError last = BREAK_RUNTIME_OK;
     u32 added = 0u;
     for (u32 k = 100u; k < 100u + BREAK_RUNTIME_BUS_MAX_KINDS + 1u && last == BREAK_RUNTIME_OK; k++) {
-        BreakRuntimeBusKind more = {(u16)k, 1u, 8u, "more"};
+        BreakRuntimeBusKind more = {(u16)k, 1u, 8u, "more", false, 0u};
         last = break_runtime_bus_register_kind(bus, &more);
         if (last == BREAK_RUNTIME_OK) added++;
     }
@@ -313,6 +313,7 @@ TEST(topology_export_lists_kinds_subscribers_and_counters) {
     ASSERT_EQ(buf[len - 1u], '}');
     ASSERT_NOT_NULL(strstr(buf, "\"unknown_kind_rejects\":1"));
     ASSERT_NOT_NULL(strstr(buf, "{\"kind\":1,\"name\":\"input.key\",\"max_version\":2,\"max_payload\":64,"
+                                "\"control\":false,\"max_per_tick\":0,"
                                 "\"published\":2,\"delivered\":3,\"dropped\":1,"));
     ASSERT_NOT_NULL(strstr(buf, "{\"kind\":2,\"name\":\"world.snapshot\""));
     ASSERT_NOT_NULL(strstr(buf, "\"name\":\"logic\",\"kinds\":[1,2],\"delivered\":1,\"dropped\":1,"
@@ -444,6 +445,82 @@ TEST(concurrent_publishers_and_unsubscribe) {
     break_runtime_queue_destroy(churn);
 }
 
+/* A control kind's copies carry BREAK_RUNTIME_MESSAGE_FLAG_CONTROL, so they
+ * use the subscriber queue's reserved control slots and still arrive when
+ * ordinary data has filled the queue. */
+TEST(control_kinds_use_reserved_queue_capacity) {
+    BreakRuntimeBus *bus = make_bus();
+    ASSERT_NOT_NULL(bus);
+    BreakRuntimeBusKind shutdown = {3u, 1u, 8u, "core.shutdown", true, 0u};
+    ASSERT_EQ(break_runtime_bus_register_kind(bus, &shutdown), BREAK_RUNTIME_OK);
+    BreakRuntimeQueueConfig cfg = {4u, 1u};
+    BreakRuntimeQueue *q = NULL;
+    ASSERT_EQ(break_runtime_queue_create(&cfg, &q), BREAK_RUNTIME_OK);
+    const u16 kinds[2] = {1u, 3u};
+    ASSERT_EQ(break_runtime_bus_subscribe(bus, "logic", q, kinds, 2u, NULL), BREAK_RUNTIME_OK);
+    u32 key = 1u;
+    BreakRuntimeMessageView v = view_of(1u, 1u, &key, sizeof key);
+    for (u32 i = 0; i < 3u; i++) ASSERT_EQ(break_runtime_bus_publish(bus, &v, NULL), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_bus_publish(bus, &v, NULL), BREAK_RUNTIME_OVERLOAD); /* data region full */
+    v = view_of(3u, 1u, NULL, 0u);
+    u32 delivered = 0u;
+    ASSERT_EQ(break_runtime_bus_publish(bus, &v, &delivered), BREAK_RUNTIME_OK);
+    ASSERT_EQ(delivered, 1u);
+    u16 got[8];
+    ASSERT_EQ(drain(q, got, 8u), 4u);
+    ASSERT_EQ(got[3], 3u);
+    /* ordinary kinds never carry the flag, even if the publisher sets it */
+    v = view_of(1u, 1u, &key, sizeof key);
+    v.flags = BREAK_RUNTIME_MESSAGE_FLAG_CONTROL;
+    for (u32 i = 0; i < 3u; i++) ASSERT_EQ(break_runtime_bus_publish(bus, &v, NULL), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_bus_publish(bus, &v, NULL), BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(drain(q, got, 8u), 3u);
+    break_runtime_bus_destroy(bus);
+    break_runtime_queue_destroy(q);
+}
+
+/* A kind with max_per_tick accepts that many publishes between two
+ * break_runtime_bus_tick calls; the rest are OVERLOAD, delivered to nobody
+ * and counted, and other kinds are unaffected. */
+TEST(per_tick_quota_limits_a_kind) {
+    BreakRuntimeBus *bus = make_bus();
+    ASSERT_NOT_NULL(bus);
+    BreakRuntimeBusKind chatter = {4u, 1u, 8u, "debug.chatter", false, 3u};
+    ASSERT_EQ(break_runtime_bus_register_kind(bus, &chatter), BREAK_RUNTIME_OK);
+    BreakRuntimeQueue *q = make_queue(64u);
+    ASSERT_NOT_NULL(q);
+    const u16 kinds[2] = {1u, 4u};
+    ASSERT_EQ(break_runtime_bus_subscribe(bus, "logic", q, kinds, 2u, NULL), BREAK_RUNTIME_OK);
+    BreakRuntimeMessageView c = view_of(4u, 1u, NULL, 0u);
+    u32 key = 1u;
+    BreakRuntimeMessageView in = view_of(1u, 1u, &key, sizeof key);
+    u32 delivered = 9u;
+    for (u32 i = 0; i < 3u; i++) ASSERT_EQ(break_runtime_bus_publish(bus, &c, NULL), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_bus_publish(bus, &c, &delivered), BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(delivered, 0u);
+    ASSERT_EQ(break_runtime_bus_publish(bus, &c, NULL), BREAK_RUNTIME_OVERLOAD);
+    for (u32 i = 0; i < 10u; i++) ASSERT_EQ(break_runtime_bus_publish(bus, &in, NULL), BREAK_RUNTIME_OK);
+    BreakRuntimeBusKindStats ks;
+    ASSERT_EQ(break_runtime_bus_kind_stats(bus, 4u, &ks), BREAK_RUNTIME_OK);
+    ASSERT_EQ(ks.published, 3u);
+    ASSERT_EQ(ks.quota_rejects, 2u);
+    ASSERT_EQ(ks.dropped, 0u);
+    ASSERT_EQ(break_runtime_bus_tick(bus), BREAK_RUNTIME_OK);
+    for (u32 i = 0; i < 3u; i++) ASSERT_EQ(break_runtime_bus_publish(bus, &c, NULL), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_bus_publish(bus, &c, NULL), BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(break_runtime_bus_tick(NULL), BREAK_RUNTIME_INVALID);
+    u16 got[32];
+    ASSERT_EQ(drain(q, got, 32u), 16u);
+    char buf[4096];
+    usize len = 0u;
+    ASSERT_EQ(break_runtime_bus_export_topology(bus, buf, sizeof buf, &len), BREAK_RUNTIME_OK);
+    ASSERT_NOT_NULL(strstr(buf, "\"name\":\"debug.chatter\",\"max_version\":1,\"max_payload\":8,"
+                                "\"control\":false,\"max_per_tick\":3,\"published\":6,"));
+    ASSERT_NOT_NULL(strstr(buf, "\"quota_rejects\":3}"));
+    break_runtime_bus_destroy(bus);
+    break_runtime_queue_destroy(q);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(kind_registration_is_validated);
     RUN_TEST(publish_fans_out_to_subscribers_of_the_kind);
@@ -453,4 +530,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(topology_export_lists_kinds_subscribers_and_counters);
     RUN_TEST(allocation_failure_is_reported_and_counted);
     RUN_TEST(concurrent_publishers_and_unsubscribe);
+    RUN_TEST(control_kinds_use_reserved_queue_capacity);
+    RUN_TEST(per_tick_quota_limits_a_kind);
 TEST_MAIN_END()

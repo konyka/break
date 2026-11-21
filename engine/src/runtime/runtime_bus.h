@@ -18,6 +18,11 @@
  *    BREAK_RUNTIME_MAX_MESSAGE_PAYLOAD. Unknown kinds and versions are
  *    REJECTED, oversize payloads are OVERLOAD; nothing is delivered and the
  *    rejection is counted.
+ *  - Priority: a control kind's copies use the subscriber queues' reserved
+ *    control capacity, so shutdown/failure kinds still arrive when data has
+ *    filled a queue. Quota: a kind may cap its accepted publishes per tick
+ *    (break_runtime_bus_tick), so one chatty producer cannot fill every
+ *    subscriber queue.
  *  - Subscribers are named (diagnostics only) and own a bounded
  *    BreakRuntimeQueue that they drain; the bus borrows the queue. A
  *    subscriber lists the kinds it receives; each must be registered.
@@ -40,7 +45,8 @@
  *              duplicated kind list, payload pointer NULL with size > 0.
  *   REJECTED — unknown kind or version (publish, kind stats), subscription
  *              to an unregistered kind.
- *   OVERLOAD — payload over the kind's budget, a registry or subscriber
+ *   OVERLOAD — payload over the kind's budget, the kind's per-tick quota
+ *              used up, a registry or subscriber
  *              table that is full, a dropped subscriber copy, an export
  *              buffer that is too small (*out_len gives the needed length).
  *   STALE    — unknown or already removed subscriber id.
@@ -60,6 +66,14 @@ typedef struct BreakRuntimeBusKind {
     u16 max_version;
     usize max_payload;
     const char *name; /* copied */
+    /* Copies carry BREAK_RUNTIME_MESSAGE_FLAG_CONTROL and may use the
+     * subscriber queues' reserved control slots; for other kinds the bus
+     * clears that flag whatever the publisher set. */
+    bool control;
+    /* Accepted publishes between two break_runtime_bus_tick calls; 0 means
+     * unlimited. Publishes over the quota are OVERLOAD, reach nobody and
+     * count as quota_rejects. */
+    u32 max_per_tick;
 } BreakRuntimeBusKind;
 
 typedef struct BreakRuntimeBusStats {
@@ -72,6 +86,7 @@ typedef struct BreakRuntimeBusKindStats {
     u64 dropped;         /* copies dropped, all subscribers */
     u64 version_rejects;
     u64 size_rejects;
+    u64 quota_rejects;
 } BreakRuntimeBusKindStats;
 
 typedef struct BreakRuntimeBusSubscriberStats {
@@ -96,6 +111,9 @@ BreakRuntimeError break_runtime_bus_unsubscribe(BreakRuntimeBus *bus, u32 id);
 BreakRuntimeError break_runtime_bus_publish(BreakRuntimeBus *bus,
                                             const BreakRuntimeMessageView *view,
                                             u32 *out_delivered);
+
+/* Starts a new quota period for every kind (typically once per frame). */
+BreakRuntimeError break_runtime_bus_tick(BreakRuntimeBus *bus);
 
 BreakRuntimeError break_runtime_bus_stats(BreakRuntimeBus *bus, BreakRuntimeBusStats *out_stats);
 BreakRuntimeError break_runtime_bus_kind_stats(BreakRuntimeBus *bus, u16 kind,
