@@ -1,7 +1,8 @@
 ## arm64 lane 纳入并行物理与确定性契约（2026-11-21）
 
 - **变更**：`.github/workflows/ci.yml` 的 arm64 QEMU lane 构建并选择 `test_physics_parallel`（12 例，含 4 worker 的真实 `TaskSystem` 与在 worker 上内联执行），并把 `test_physics_determinism_contract`（宿主 `cmake -P`）纳入选择。正则在原有物理分组中追加 `_parallel|_determinism_contract`，捕获组仍为 31 个（CTest 上限）。统一选择由 261 项增至 263 项。
-- **验证**：本地以工作流正则对原生 CTest 注册表求值，恰好多出这两项；容器内 arm64 QEMU 已通过 `test_physics_parallel` 12 例。远端收据见下一次 CI。
+- **验证**：本地以工作流正则对原生 CTest 注册表求值，恰好多出这两项；容器内 arm64 QEMU 已通过 `test_physics_parallel` 12 例。
+- **远端收据**：提交 `60a0cd60` 的主 CI run 44920243880 全部成功（22 个成功，3 个按设计跳过）。arm64 job 136894486088 的原始日志经严格断言，确认恰好 263 项、61 组分项计数（含 `test_physics_parallel=12`），没有失败用例；`physics determinism contract passed` 在 arm64 lane 中出现。windows-d3d12 run 44920243868 也成功。
 
 ## 物理并行接触求解与批量 BVH refit（2026-11-21）
 
