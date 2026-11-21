@@ -1,5 +1,8 @@
 #include <task/task.h>
 #include <core/log.h>
+#include <core/trace_schema.h>
+#include <stdarg.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdatomic.h>
@@ -27,6 +30,13 @@ static inline u32 platform_cpu_count(void) {
     GetSystemInfo(&si);
     return (u32)si.dwNumberOfProcessors;
 }
+static u64 task_clock_ns(void) {
+    static LARGE_INTEGER freq;
+    LARGE_INTEGER now;
+    if (freq.QuadPart == 0) QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&now);
+    return (u64)((double)now.QuadPart * 1e9 / (double)freq.QuadPart);
+}
 
 #else /* POSIX */
 
@@ -37,6 +47,11 @@ static inline void platform_sleep_ns(u32 ns) {
 static inline u32 platform_cpu_count(void) {
     long n = sysconf(_SC_NPROCESSORS_ONLN);
     return n > 0 ? (u32)n : 1;
+}
+static u64 task_clock_ns(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (u64)now.tv_sec * 1000000000u + (u64)now.tv_nsec;
 }
 
 #endif
@@ -302,16 +317,80 @@ static bool drain_submitted_inline(TaskSystem *ts) {
  * Worker Thread Main Loop
  * ============================================================ */
 
+/* ============================================================
+ * Task graph trace
+ * ============================================================ */
+
+typedef struct {
+    TaskHandle from;
+    TaskHandle to;
+} TaskTraceEdge;
+
+struct TaskTraceLog {
+    _Atomic bool active;
+    u64 origin_ns;
+    u32 capacity;
+    _Atomic u64 next;
+    _Atomic u64 dropped;
+    TaskTraceRecord *records;
+    u32 edge_capacity;
+    _Atomic u64 edge_next;
+    TaskTraceEdge *edges;
+};
+
+static void task_trace_free(struct TaskTraceLog *log) {
+    if (!log) return;
+    free(log->records);
+    free(log->edges);
+    free(log);
+}
+
+static struct TaskTraceLog *trace_active(TaskSystem *ts) {
+    struct TaskTraceLog *log = atomic_load_explicit(&ts->trace, memory_order_acquire);
+    if (log && !atomic_load_explicit(&log->active, memory_order_relaxed)) return NULL;
+    return log;
+}
+
+static void trace_add_edge(struct TaskTraceLog *log, TaskHandle from, TaskHandle to) {
+    u64 i = atomic_fetch_add_explicit(&log->edge_next, 1u, memory_order_relaxed);
+    if (i < log->edge_capacity) {
+        log->edges[i].from = from;
+        log->edges[i].to = to;
+    }
+}
+
 static void execute_task(TaskSystem *ts, Worker *self, Task *task) {
     (void)self;
+    struct TaskTraceLog *trace = trace_active(ts);
+    u64 trace_start = trace ? task_clock_ns() : 0u;
+    bool skipped = false;
     if (tls_worker_id >= 0 && (u32)tls_worker_id < ts->worker_count)
         atomic_fetch_add_explicit(&ts->workers[tls_worker_id].executed, 1, memory_order_relaxed);
     else
         atomic_fetch_add_explicit(&ts->inline_executed, 1, memory_order_relaxed);
     if (task->cancel && atomic_load_explicit(&task->cancel->cancelled, memory_order_acquire)) {
         atomic_fetch_add_explicit(&ts->total_tasks_cancelled, 1, memory_order_relaxed);
+        skipped = true;
     } else {
         task->fn(task->ctx);
+    }
+    /* Recorded before the completion count below, so a task_wait that sees
+     * the task finished also sees its record. */
+    if (trace) {
+        u64 end = task_clock_ns();
+        u64 slot = atomic_fetch_add_explicit(&trace->next, 1u, memory_order_relaxed);
+        if (slot < trace->capacity) {
+            TaskTraceRecord *r = &trace->records[slot];
+            r->handle = task->handle;
+            r->start_ns = trace_start > trace->origin_ns ? trace_start - trace->origin_ns : 0u;
+            r->end_ns = end > trace->origin_ns ? end - trace->origin_ns : 0u;
+            if (r->end_ns < r->start_ns) r->end_ns = r->start_ns;
+            r->worker = (tls_worker_id >= 0 && (u32)tls_worker_id < ts->worker_count)
+                            ? tls_worker_id : -1;
+            r->cancelled = skipped;
+        } else {
+            atomic_fetch_add_explicit(&trace->dropped, 1u, memory_order_relaxed);
+        }
     }
 
     /* Mark completed BEFORE dependency resolution so wait_handle can see it. */
@@ -608,6 +687,7 @@ void task_system_destroy(TaskSystem *ts) {
 
     platform_mutex_destroy(&ts->submit_mutex);
     platform_mutex_destroy(&ts->pool_mutex);
+    task_trace_free(atomic_load_explicit(&ts->trace, memory_order_acquire));
 
     /* Single free: task_pool, _task_block, and workers are within the same block */
     free(ts);
@@ -755,6 +835,16 @@ static TaskHandle task_submit_with(TaskSystem *ts, TaskFn fn, void *ctx, TaskPri
         return TASK_HANDLE_INVALID;
     }
 
+    struct TaskTraceLog *trace = dep_count > 0u ? trace_active(ts) : NULL;
+    if (trace) {
+        for (u32 d = 0; d < dep_count; d++) {
+            u32 idx = (u32)(deps[d] & 0xFFFFFFFFu);
+            if (idx >= ts->task_pool_capacity) continue;
+            Task *dep = ts->task_pool[idx];
+            if (!dep || dep->handle != deps[d]) continue;
+            trace_add_edge(trace, deps[d], h);
+        }
+    }
     atomic_store_explicit(&t->dep_count, actual_deps, memory_order_release);
     platform_mutex_unlock(&ts->pool_mutex);
 
@@ -919,4 +1009,171 @@ u64 task_inline_executed(TaskSystem *ts) {
 
 u64 task_cancelled_count(TaskSystem *ts) {
     return ts ? atomic_load_explicit(&ts->total_tasks_cancelled, memory_order_relaxed) : 0u;
+}
+
+bool task_trace_enable(TaskSystem *ts, u32 capacity) {
+    if (!ts || capacity == 0u || capacity > 0x3FFFFFFFu) return false;
+    struct TaskTraceLog *log = (struct TaskTraceLog *)calloc(1, sizeof(*log));
+    if (!log) return false;
+    log->capacity = capacity;
+    log->edge_capacity = capacity * 4u;
+    log->records = (TaskTraceRecord *)calloc(capacity, sizeof(TaskTraceRecord));
+    log->edges = (TaskTraceEdge *)calloc(log->edge_capacity, sizeof(TaskTraceEdge));
+    if (!log->records || !log->edges) {
+        task_trace_free(log);
+        return false;
+    }
+    atomic_init(&log->next, 0u);
+    atomic_init(&log->dropped, 0u);
+    atomic_init(&log->edge_next, 0u);
+    log->origin_ns = task_clock_ns();
+    atomic_init(&log->active, true);
+    task_trace_free(atomic_exchange_explicit(&ts->trace, log, memory_order_acq_rel));
+    return true;
+}
+
+void task_trace_disable(TaskSystem *ts) {
+    struct TaskTraceLog *log = ts ? atomic_load_explicit(&ts->trace, memory_order_acquire) : NULL;
+    if (log) atomic_store_explicit(&log->active, false, memory_order_relaxed);
+}
+
+bool task_trace_enabled(TaskSystem *ts) {
+    return ts && trace_active(ts) != NULL;
+}
+
+static struct TaskTraceLog *trace_log(TaskSystem *ts) {
+    return ts ? atomic_load_explicit(&ts->trace, memory_order_acquire) : NULL;
+}
+
+u32 task_trace_record_count(TaskSystem *ts) {
+    struct TaskTraceLog *log = trace_log(ts);
+    if (!log) return 0u;
+    u64 n = atomic_load_explicit(&log->next, memory_order_relaxed);
+    return n < log->capacity ? (u32)n : log->capacity;
+}
+
+u64 task_trace_dropped(TaskSystem *ts) {
+    struct TaskTraceLog *log = trace_log(ts);
+    return log ? atomic_load_explicit(&log->dropped, memory_order_relaxed) : 0u;
+}
+
+u32 task_trace_edge_count(TaskSystem *ts) {
+    struct TaskTraceLog *log = trace_log(ts);
+    if (!log) return 0u;
+    u64 n = atomic_load_explicit(&log->edge_next, memory_order_relaxed);
+    return n < log->edge_capacity ? (u32)n : log->edge_capacity;
+}
+
+bool task_trace_get(TaskSystem *ts, u32 index, TaskTraceRecord *out) {
+    if (!out || index >= task_trace_record_count(ts)) return false;
+    *out = trace_log(ts)->records[index];
+    return true;
+}
+
+typedef struct {
+    char *buf;
+    usize capacity;
+    usize len;
+} TaskTraceWriter;
+
+static void trace_printf(TaskTraceWriter *w, const char *fmt, ...) {
+    char tmp[256];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(tmp, sizeof tmp, fmt, ap);
+    va_end(ap);
+    if (n <= 0) return;
+    usize len = (usize)n < sizeof tmp ? (usize)n : sizeof tmp - 1u;
+    if (w->len + len < w->capacity) memcpy(w->buf + w->len, tmp, len);
+    w->len += len;
+}
+
+typedef struct {
+    TaskHandle handle;
+    u32 index;
+} TaskTraceIndex;
+
+static int trace_index_cmp(const void *a, const void *b) {
+    TaskHandle ha = ((const TaskTraceIndex *)a)->handle;
+    TaskHandle hb = ((const TaskTraceIndex *)b)->handle;
+    return ha < hb ? -1 : (ha > hb ? 1 : 0);
+}
+
+static const TaskTraceRecord *trace_find(const struct TaskTraceLog *log,
+                                         const TaskTraceIndex *index, u32 count,
+                                         TaskHandle handle) {
+    TaskTraceIndex key = {handle, 0u};
+    const TaskTraceIndex *hit = (const TaskTraceIndex *)bsearch(
+        &key, index, count, sizeof(TaskTraceIndex), trace_index_cmp);
+    return hit ? &log->records[hit->index] : NULL;
+}
+
+/* Track 0 is the inline track; worker w is track w + 1. */
+static u32 trace_tid(i32 worker) {
+    return worker < 0 ? 0u : (u32)worker + 1u;
+}
+
+bool task_trace_export(TaskSystem *ts, char *buf, usize capacity, usize *out_len) {
+    if (out_len) *out_len = 0u;
+    struct TaskTraceLog *log = trace_log(ts);
+    if (!log) {
+        if (buf && capacity > 0u) buf[0] = '\0';
+        return false;
+    }
+    u32 count = task_trace_record_count(ts);
+    u32 edges = task_trace_edge_count(ts);
+    TaskTraceIndex *index = NULL;
+    if (count > 0u) {
+        index = (TaskTraceIndex *)malloc((usize)count * sizeof(TaskTraceIndex));
+        if (!index) {
+            if (buf && capacity > 0u) buf[0] = '\0';
+            return false;
+        }
+        for (u32 i = 0; i < count; i++) {
+            index[i].handle = log->records[i].handle;
+            index[i].index = i;
+        }
+        qsort(index, count, sizeof(TaskTraceIndex), trace_index_cmp);
+    }
+
+    TaskTraceWriter w = {buf, buf ? capacity : 0u, 0u};
+    trace_printf(&w, "{\"traceEvents\":[\n");
+    trace_printf(&w, "{\"name\":\"thread_name\",\"ph\":\"M\",\"pid\":1,\"tid\":0,"
+                     "\"args\":{\"name\":\"inline\"}}");
+    for (u32 i = 0; i < ts->worker_count; i++) {
+        trace_printf(&w, ",\n{\"name\":\"thread_name\",\"ph\":\"M\",\"pid\":1,\"tid\":%u,"
+                         "\"args\":{\"name\":\"worker %u\"}}", i + 1u, i);
+    }
+    for (u32 i = 0; i < count; i++) {
+        const TaskTraceRecord *r = &log->records[i];
+        trace_printf(&w, ",\n{\"name\":\"task\",\"cat\":\"" BREAK_TRACE_CAT_TASK "\",\"ph\":\"X\","
+                         "\"ts\":%.3f,\"dur\":%.3f,\"pid\":1,\"tid\":%u,"
+                         "\"args\":{\"handle\":%llu,\"cancelled\":%s}}",
+                     (double)r->start_ns / 1000.0, (double)(r->end_ns - r->start_ns) / 1000.0,
+                     trace_tid(r->worker), (unsigned long long)r->handle,
+                     r->cancelled ? "true" : "false");
+    }
+    u32 flow_id = 0u;
+    for (u32 e = 0; e < edges; e++) {
+        const TaskTraceRecord *from = trace_find(log, index, count, log->edges[e].from);
+        const TaskTraceRecord *to = trace_find(log, index, count, log->edges[e].to);
+        if (!from || !to) continue;
+        flow_id++;
+        trace_printf(&w, ",\n{\"name\":\"dependency\",\"cat\":\"" BREAK_TRACE_CAT_TASK_FLOW "\","
+                         "\"ph\":\"s\",\"id\":%u,\"ts\":%.3f,\"pid\":1,\"tid\":%u}",
+                     flow_id, (double)from->start_ns / 1000.0, trace_tid(from->worker));
+        trace_printf(&w, ",\n{\"name\":\"dependency\",\"cat\":\"" BREAK_TRACE_CAT_TASK_FLOW "\","
+                         "\"ph\":\"f\",\"bp\":\"e\",\"id\":%u,\"ts\":%.3f,\"pid\":1,\"tid\":%u}",
+                     flow_id, (double)to->start_ns / 1000.0, trace_tid(to->worker));
+    }
+    trace_printf(&w, "\n]," BREAK_TRACE_OTHER_DATA "}");
+    free(index);
+
+    if (out_len) *out_len = w.len;
+    if (w.len >= w.capacity) {
+        if (buf && capacity > 0u) buf[0] = '\0';
+        return false;
+    }
+    buf[w.len] = '\0';
+    return true;
 }

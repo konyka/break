@@ -19,3 +19,5 @@
 #define BREAK_TRACE_CAT_META "meta"
 #define BREAK_TRACE_CAT_RUNTIME "runtime"
 #define BREAK_TRACE_CAT_RUNTIME_FLOW "runtime.flow"
+#define BREAK_TRACE_CAT_TASK "task"
+#define BREAK_TRACE_CAT_TASK_FLOW "task.flow"

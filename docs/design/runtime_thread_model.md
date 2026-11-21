@@ -337,3 +337,15 @@ arm64 lane 新增 `test_task`（16 例）和 `test_task_singleton`（1 例），
 ### 追加：任务系统诊断计数（2026-11-22）
 
 `task_worker_stats(ts, id, &out)` 返回第 `id` 个 worker 的 `executed`（在该 worker 线程上执行的任务数，含被取消跳过的）、`stolen`（其中从其他 worker 队列窃取的）与 `idle_sleeps`（找不到任务而退避睡眠的次数）；`task_inline_executed(ts)` 返回在非 worker 线程上执行的任务数（例如 `task_wait` 帮忙执行）。计数单调递增、使用 relaxed 原子操作：任务运行中读取是近似值，`task_wait` 之后读取是精确值。这些计数为工作窃取调优提供测量：16 个父任务各派生 64 个子任务的探针在 15 个 worker 上分布均匀（每个 65~81 个），其中约 69% 由窃取得到。
+
+### 追加：任务图追踪与 Chrome trace 导出（2026-11-22）
+
+`task.h` 新增可选的任务图追踪，默认关闭。`task_trace_enable(ts, capacity)` 创建新的定长日志：最多记录 `capacity` 个任务和 `4 * capacity` 条依赖边。日志满后执行的任务只计入 `task_trace_dropped`，不再记录。追踪关闭时，每个任务和每次带依赖的提交只多一次原子读。每条记录包含任务句柄、开始与结束时间（自启用时刻起的纳秒）、执行线程（worker 编号，非 worker 线程内联执行时为 -1）以及是否因取消而跳过。记录在任务计入完成之前写入，所以 `task_wait` 返回后日志是完整的。依赖边在提交时记录，依赖的任务已经完成时也记录，因为它仍是图中的一条边。
+
+`task_trace_export(ts, buf, cap, &len)` 把日志写成完整的 Chrome trace 文档：
+- 每个 worker 一条轨道（`worker N`），另有一条 `inline` 轨道；
+- 每个任务一个 `ph:"X"` slice，类别为 `task`（`BREAK_TRACE_CAT_TASK`），`args` 带 `handle` 和 `cancelled`；
+- 每条两端都被记录的依赖边输出一对 `ph:"s"`/`ph:"f"` flow 事件，类别为 `task.flow`，起点落在父任务 slice 的开始处，终点（`bp:"e"`）落在子任务 slice 的开始处。一端因日志已满而缺失的边会被省略，避免出现悬空箭头；
+- 结尾是 `BREAK_TRACE_OTHER_DATA`。
+
+缓冲区不足时返回 false，`buf[0]` 置空，`*len` 给出所需长度。启用、关闭、读取和导出只能在系统静止时调用（自上次 `task_wait` 以来没有未完成的任务），因为日志不与并发记录同步，并且 `enable` 会释放旧日志。`task_trace_disable` 停止记录，日志保留到下一次 `enable` 或 `task_system_destroy`。`trace_schema.h` 的类别相应增加到 8 个（新增 `task`、`task.flow`）。

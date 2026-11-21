@@ -114,6 +114,8 @@ typedef struct {
     Task         *_task_block;
     /* R420: embedded platform mutex, shared by both Windows and POSIX paths. */
     PlatformMutex pool_mutex;
+    /* Optional task graph trace (NULL = never enabled); see task_trace_*. */
+    _Atomic(struct TaskTraceLog *) trace;
 } TaskSystem;
 
 /* ---- Legacy compatible type alias ---- */
@@ -205,3 +207,43 @@ typedef struct TaskWorkerStats {
 /** False for a NULL system or output, or worker_id >= task_worker_count. */
 bool task_worker_stats(TaskSystem *ts, u32 worker_id, TaskWorkerStats *out);
 u64 task_inline_executed(TaskSystem *ts);
+
+/* ---- Task graph trace ----
+ * An opt-in, bounded log of executed tasks and dependency edges for
+ * visualizing a task graph. task_trace_enable starts a fresh log holding up
+ * to `capacity` tasks (and 4 * capacity edges); tasks that run once it is
+ * full are counted by task_trace_dropped and not recorded. When tracing is
+ * off the only cost is one atomic load per task and per dependency.
+ * Enable, disable, read and export only while the system is quiescent (no
+ * task submitted since the last task_wait is still pending): the log is not
+ * synchronized against concurrent recording and enable frees the previous
+ * log. task_trace_disable stops recording and keeps the log readable until
+ * the next enable or task_system_destroy. Times are nanoseconds since the
+ * log was enabled. */
+typedef struct TaskTraceRecord {
+    TaskHandle handle;
+    u64 start_ns;
+    u64 end_ns;
+    i32 worker; /* -1 when a non-worker thread ran the task inline */
+    bool cancelled;
+} TaskTraceRecord;
+
+/** False for a NULL system, zero capacity, or allocation failure. */
+bool task_trace_enable(TaskSystem *ts, u32 capacity);
+void task_trace_disable(TaskSystem *ts);
+bool task_trace_enabled(TaskSystem *ts);
+/** Recorded tasks, in the order they finished. */
+u32 task_trace_record_count(TaskSystem *ts);
+u64 task_trace_dropped(TaskSystem *ts);
+/** Recorded dependency edges, including edges to an already finished task. */
+u32 task_trace_edge_count(TaskSystem *ts);
+/** False for a NULL output or index >= task_trace_record_count. */
+bool task_trace_get(TaskSystem *ts, u32 index, TaskTraceRecord *out);
+/** Writes the log as a NUL-terminated Chrome trace document: one "X" slice
+ * per task on a track per worker (plus an "inline" track), and an "s"/"f"
+ * flow pair per edge whose two tasks were both recorded. *out_len (if not
+ * NULL) receives the document length without the NUL. Returns false, with
+ * buf[0] = '\0' when capacity > 0 and *out_len set to the needed length,
+ * when the buffer is too small; returns false with *out_len = 0 when no log
+ * exists. */
+bool task_trace_export(TaskSystem *ts, char *buf, usize capacity, usize *out_len);

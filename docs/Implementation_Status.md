@@ -1,3 +1,18 @@
+## Redis lane 扩展到 macOS（2026-11-22）
+
+- `lane-rule-engine-redis` 改为 ubuntu-24.04 与 macos-15 的矩阵（提交 `30dad7dc`）。macOS 用 Homebrew 安装 ninja、hiredis、redis，configure 传入 `-DCMAKE_PREFIX_PATH=$(brew --prefix hiredis)`，并要求输出含 “native Redis state provider enabled”。
+- 第一次运行时 macOS 作业失败：Metal 后端在 configure 阶段要求 `glslc`（`engine/CMakeLists.txt` 中的 `find_program(ENGINE_METAL_GLSLC ... REQUIRED)`）。提交 `ab2ac3d0` 在该 lane 补装 `shaderc spirv-cross`。
+- 远端结果（run 44945366795）：Linux 作业成功；macOS 作业 136971379894 成功，日志显示 `Redis client detected at /opt/homebrew/opt/hiredis/include`，`[25] redis_roundtrip_when_service_available ... OK`，2 个测试全部通过，测试输出中没有 SKIP。
+- **仍缺**：Windows 上的 Redis 路径。
+
+## 任务图追踪与 Chrome trace 导出（2026-11-22）
+
+- **问题**：任务系统只有计数，看不到哪个任务在哪个 worker 上、何时运行、等待了谁，无法直观分析依赖链和负载分布。
+- **实现**：`engine/src/task/task.{h,c}` 新增可选的追踪日志（`task_trace_enable/disable/enabled/record_count/dropped/edge_count/get/export`），默认关闭。`execute_task` 记录开始/结束时间（POSIX 用 `CLOCK_MONOTONIC`，Windows 用 `QueryPerformanceCounter`）、执行线程和是否被取消跳过，写入位置用原子计数分配，日志满后只计数丢弃。`task_submit_with` 在持有 pool 锁时记录依赖边，依赖已完成时也记录。导出时按句柄排序建索引，输出 worker/inline 轨道名、每任务一个 `X` slice、每条两端都在日志中的边一对 `s`/`f` flow 事件，结尾为 `BREAK_TRACE_OTHER_DATA`。`trace_schema.h` 新增类别 `task` 与 `task.flow`。设计见 `docs/design/runtime_thread_model.md`「任务图追踪与 Chrome trace 导出」。
+- **TDD**：新增 `test_task_trace`（8 例）：默认关闭与参数校验、每个任务一个 slice 及轨道命名、三任务菱形依赖的 3 对箭头且 id 两两配对、依赖已完成任务仍画箭头、日志满时丢弃计数正确且不输出悬空箭头、取消标记、缓冲区不足时返回所需长度并与足长导出一致、316 个任务在 3 个 worker 上并发记录的一致性。另用一个 1 父 8 子 1 汇合的探针把导出交给 Python `json.load` 解析，16 对箭头的两端都落在对应 slice 的开始时间与轨道上。
+- **变异检查**：均被检出：保留只有一端在日志中的边（测试崩溃或计数不符）、取消标记恒为 false、不记录依赖边、日志满时不计丢弃。
+- **验证**：TSan 与 ASan+UBSan 各 3 次无报告；原生全量见提交收据。arm64 lane 加入 `test_task_trace`（选择数 268）。
+
 ## 任务系统与 Redis lane 等提交的远端收据（2026-11-22）
 
 | 提交 | 内容 | 主 CI | arm64 严格断言 |
