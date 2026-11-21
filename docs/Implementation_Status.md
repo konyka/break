@@ -1,3 +1,12 @@
+## arm64 lane 外剩余 headless 测试的逐项结论（2026-11-21）
+
+- **范围**：在二百六十一项 lane 之外，`ctest -L headless` 还有五十项。逐项检查测试命令与驱动后结论如下，均不再纳入 arm64 QEMU lane。
+- **宿主契约（约三十项）**：CMake/Python 脚本检查源码、workflow、发布与 CI 镜像配置（如 `test_ci_image_fix2*`、`test_rollback_input_contract`、`test_source_encoding`、`test_repo_naming_contract`），不涉及目标架构代码，在原生 lane 中已经运行，放进 QEMU 只会重复。
+- **嵌套构建与符号检查（约十项）**：`test_core_app_target_contract`、`test_core_app_nm_*`、`test_core_app_nested_contract`、`test_core_app_contract_compat`、`test_core_app_ctest_config_contract`、`test_rhi_multi_backend_symbols`、`test_release_config_contract` 构建嵌套工程或用 `nm` 检查链接结果，主要是宿主侧工作。
+- **需要真实设备或特定环境**：`test_rhi_vk_probe`、`test_rhi_native`、`test_rhi_device_type`、`test_platform_vk_surface_abi`（Vulkan 设备或开发包）、`test_input_extended_single_cpu`（CPU 亲和性）。
+- **qemu-user 限制**：`test_core_app_assets` 与 `test_core_app_baker_diagnostics` 经 `system()` 由宿主 shell 执行 arm64 烘焙器，未注册 aarch64 binfmt_misc 时失败。
+- **实测后不纳入**：`test_core_app_voice` 在干净 Ubuntu 24.04 容器的 arm64 QEMU 下 21 例全部通过，但耗时 104.26 秒（原生约 12 秒）。纳入会使 lane 的 CTest 时间从约 170 秒增至约 275 秒，且该测试以 `time_sleep_us` 轮询，对模拟器下的时序敏感；为保留 lane 的时间余量与稳定性，不纳入，其语音逻辑的 arm64 覆盖由 `test_core_app_voice_lane` 与 lane 内的音频 DSP 测试承担。
+
 ## 编辑器插件清单命令行驱动接入交叉模拟器与 arm64 二百六十一项 CTest（2026-11-21）
 
 - **问题**：`test_editor_plugin_manifest_cli` 的宿主驱动 `engine/tests/test_editor_plugin_manifest_cli.cmake` 经 `cmake -E env` 直接运行 `editor`，交叉构建中无法在宿主上执行；arm64 lane 的构建列表也未包含 `editor` 目标。
