@@ -1,3 +1,13 @@
+## arm64 插件动态加载、编辑器 Lua 与 shell 和二百四十项 CTest（2026-11-21）
+
+- **最小场景**：新增四个既有可执行目标：`test_break_plugin` 11 例（经系统插件加载器对已校验的 memfd 副本 `dlopen` 五个真实 arm64 共享库测试插件，含 ABI 不符、注册失败与缺少入口；越权夹具在校验后被替换到原路径，测试断言其构造函数从未执行）、`test_editor_plugin_load` 5 例（编辑器夹具插件）、`test_editor_lua` 37 例（编辑器 Lua 控制台核心）、`test_editor_shell` 185 例（无头编辑器 shell，含上一条目移出远程门控的相机姿态用例）。
+- **RED 与精确选择**：旧 workflow 在 `missing plugin/lua/shell build targets` 处 RED。真实原生集合从 236 增至 240，差集恰为这四项；`test_break_plugin_unsupported`、`test_break_system_target_contract`、`test_editor_plugin_manifest_cli`、`test_core_app_voice` 与同名前缀扩展均被拒绝。完整表达式维持 31 个捕获组。CI 与 Build_Guide 的构建和测试命令逐字一致。
+- **原生与 focused 验证**：原生四项 4/4，计数 11/5/37/233（原生构建启用 Snowflake）；干净 Ubuntu 24.04 容器 arm64 四项 4/4，计数 11/5/37/184（修复相机用例门控前），shell 在 QEMU 下 10.67 秒。原生全量 456 项零失败，4 个既有平台用例跳过，CTest 176.43 秒。
+- **完整干净容器验证**：以统一非 root 属主执行 workflow 原始构建和测试 step，240/240，CTest 144.26 秒，shell 10.93 秒，仍远低于外层 600 秒守护。严格日志断言确认 55 组分项计数（shell 185 例，含相机姿态用例）、全部旧契约/e2e、无失败分项、唯一的平台 setup skip（ptrace，#419；另有规则引擎既有的 10 个 Redis 子用例跳过，因未安装 hiredis），无 root 权限跳过或 `Too many parentheses`；超时标记恰为 `test_fork_deadline` 的三条预期标记。
+- **独立评审**：结论可合入，无 Critical/Important。评审核实相机姿态用例的移动逐字一致（67 行移入与移出完全相同），只依赖非门控的 shell 接口，两种构建都执行；门控块内 48 个用例与运行列表一一对应；八个共享库夹具随测试目标构建，在 qemu-aarch64 下经 memfd 副本 `dlopen` 成功；shell 与 Lua 不需要显示、GPU、网络或 fork，文件写入均经 `test_tmp()`，线程协调为显式 acquire/release 与有界轮询；实测 236→240，差集恰为四项，捕获组仍为 31。已采纳的 Minor：插件加载数量改为五个加一个被证明未加载的越权夹具；跳过描述写明 Redis 子用例。
+- **后续项**：门控块内 `remote_cli_default_off_and_fail_closed_flags` 只做参数解析、`remote_null_and_bounded_calls_are_safe` 只做空参数调用，可考虑移出门控，但前者在工作目录写 `.psk`/`.keyring`，移出前需改用 `test_tmp()`；另一个既有 shell 用例删除 `.bscn` 时遗留 `/tmp` 下的 `.editor.json` 旁路文件。
+- **覆盖缺口**：shell 的 48 个远程会话与网络面板用例需要 Snowflake，arm64 lane 不覆盖；插件 manifest CLI 与系统目标契约为宿主 CMake 驱动；编辑器 GPU/窗口呈现不在本切片内。
+
 ## 编辑器 shell 本地相机姿态用例误入远程门控块的修复（2026-11-21）
 
 - **现象**：为 arm64 lane 试跑 `test_editor_shell` 时，arm64（未启用 Snowflake）只跑 184 例，原生 Snowflake 构建跑 233 例。逐名比较差集：48 个 `remote_*`/`network_panel_*` 用例本应只在 `BREAK_ENABLE_SNOWFLAKE=ON` 时编译，另有一个纯本地用例 `camera_pose_whose_eye_collapses_onto_the_target_is_rejected` 也被排除。
