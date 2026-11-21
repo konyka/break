@@ -89,6 +89,8 @@ typedef struct {
 /* ---- Task System ---- */
 #define SUBMIT_QUEUE_CAPACITY 256
 
+typedef struct TaskTraceLog TaskTraceLog;
+
 typedef struct {
     Worker       *workers;
     u32           worker_count;
@@ -115,7 +117,7 @@ typedef struct {
     /* R420: embedded platform mutex, shared by both Windows and POSIX paths. */
     PlatformMutex pool_mutex;
     /* Optional task graph trace (NULL = never enabled); see task_trace_*. */
-    _Atomic(struct TaskTraceLog *) trace;
+    _Atomic(TaskTraceLog *) trace;
 } TaskSystem;
 
 /* ---- Legacy compatible type alias ---- */

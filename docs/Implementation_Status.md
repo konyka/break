@@ -1,3 +1,8 @@
+## MSVC 构建修复：任务追踪类型前置声明（2026-11-22）
+
+- `06431ad1` 在 `TaskSystem` 中声明 `_Atomic(struct TaskTraceLog *) trace`。MSVC `/W4 /WX` 把括号内首次出现的结构体名视为警告 C4115 并当作错误，Windows + MSVC (headless) 作业 136978477742 失败。`engine/src/task/task.h` 改为先 `typedef struct TaskTraceLog TaskTraceLog;`，字段写成 `_Atomic(TaskTraceLog *)`。gcc 与 clang 在 `-Wall -Wextra -Werror -pedantic` 下通过，原生全量 463/463 通过；本地没有 MSVC，以远端作业为准。
+- 同一轮远端结果：`df095c56` 的 windows-d3d12 run 44947678709 成功；arm64 job 136978477564 严格断言通过（269 项、91 组）。
+
 ## 物理并行积分与积分后 BVH refit（2026-11-22）
 
 - **问题**：并行接触求解之后，刚体积分和积分后的 BVH 叶子 refit 仍是逐刚体的串行循环，占 32768 个刚体每步的约一半时间。
