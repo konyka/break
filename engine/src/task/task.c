@@ -449,33 +449,32 @@ static PLATFORM_THREAD_RET worker_entry(PLATFORM_THREAD_ARG arg) {
     while (atomic_load_explicit(&ts->running, memory_order_acquire)) {
         Task *task = NULL;
 
-        /* 1. Pop from local queues (high prio first) */
+        /* 1. Pull global submissions into our own deque first (one atomic
+         * load when there are none), so external high-priority work is not
+         * stuck behind local lower-priority work; then pop local queues,
+         * high priority first. */
+        worker_pull_submitted(ts, self);
         for (int prio = 0; prio < TASK_PRIORITY_COUNT && !task; prio++) {
             task = deque_pop(&self->queues[prio]);
         }
 
-        /* 2. Pull global submissions into our own deque */
-        if (!task) {
-            worker_pull_submitted(ts, self);
-            for (int prio = 0; prio < TASK_PRIORITY_COUNT && !task; prio++) {
-                task = deque_pop(&self->queues[prio]);
-            }
-        }
-
-        /* 3. Steal from other workers */
+        /* 2. Steal from other workers, priority-major: every victim's
+         * high-priority deque is tried before any lower-priority one, so a
+         * thief never takes low-priority work while high-priority work waits
+         * on another worker. The starting victim rotates to spread thieves. */
         if (!task) {
             u32 start = (self->id + self->steal_attempts + 1) % ts->worker_count;
-            for (u32 i = 0; i < ts->worker_count - 1 && !task; i++) {
-                u32 victim = (start + i) % ts->worker_count;
-                if (victim == self->id) continue;
-                for (int prio = 0; prio < TASK_PRIORITY_COUNT && !task; prio++) {
+            for (int prio = 0; prio < TASK_PRIORITY_COUNT && !task; prio++) {
+                for (u32 i = 0; i < ts->worker_count && !task; i++) {
+                    u32 victim = (start + i) % ts->worker_count;
+                    if (victim == self->id) continue;
                     task = deque_steal(&ts->workers[victim].queues[prio]);
                 }
             }
             if (task) atomic_fetch_add_explicit(&self->stolen, 1, memory_order_relaxed);
         }
 
-        /* 4. Execute or backoff */
+        /* 3. Execute or backoff */
         if (task) {
             self->steal_attempts = 0;
             self->backoff_ns = 100;

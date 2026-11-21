@@ -458,3 +458,4 @@
 - **规则引擎验证追加**：2026-11-22 recognize-act 循环实现按读集增量重算（默认开启，以 400 个随机程序的开关差分测试和评审反例守护），1000 条规则单次求值降至约 37 ms（最初约 390 ms）。上文「按读集增量重算」由此交付。仍缺：Windows/macOS 上的 Redis 路径。
 - **第 4 节（任务）追加**：2026-11-22 任务系统新增可选的任务图追踪：定长日志记录每个任务的开始/结束时间、执行线程和依赖边，并导出为 Chrome trace 文档（每个 worker 一条轨道，依赖画成 flow 箭头）。见 [`docs/design/runtime_thread_model.md`](../design/runtime_thread_model.md)「任务图追踪与 Chrome trace 导出」。上文「任务图可视化」由此交付。仍缺：工作窃取策略调优。
 - **规则引擎验证追加**：2026-11-22 `lane-rule-engine-redis` 改为矩阵，新增 macOS 15（Homebrew hiredis 与 redis，Metal 后端需要的 shaderc/spirv-cross 一并安装）。macOS 作业 136971379894 成功，`redis_roundtrip_when_service_available` 通过，测试输出中没有 SKIP。上文「Windows/macOS 上的 Redis 路径」中的 macOS 部分由此关闭；仍缺：Windows 上的 Redis 路径（Windows runner 没有现成的 Redis 服务）。
+- **第 4 节（任务）追加**：2026-11-22 工作窃取改为按优先级窃取（先扫所有 worker 的高优先级队列），并且 worker 先取全局提交再弹本地队列，外部提交的高优先级任务不再被本地低优先级任务挡住。见 [`docs/design/runtime_thread_model.md`](../design/runtime_thread_model.md)「工作窃取的优先级策略」。上文「工作窃取调优」由此交付，第 4 节列出的任务缺口全部关闭。

@@ -1,3 +1,12 @@
+## 工作窃取的优先级策略（2026-11-22）
+
+- **问题**：worker 按 worker 逐个扫描三个优先级队列来窃取，扫到的第一个 worker 上有低优先级任务时就先取走它，另一个 worker 上的高优先级任务继续等待；全局提交队列只在本地队列全空时才读取，外部线程提交的高优先级任务会排在本地低优先级任务之后。
+- **实现**：`engine/src/task/task.c` 的 `worker_entry` 每轮先取全局提交（没有提交时只多一次原子读）再弹本地队列；窃取改为按优先级的外层循环，每个优先级都扫完所有其他 worker 再降级，起始 worker 仍轮转。设计见 `docs/design/runtime_thread_model.md`「工作窃取的优先级策略」。
+- **TDD**：新增 `test_task_steal`（2 例），用阻塞任务固定各 worker 队列的内容：窃取者在一个 worker 有 8 个低优先级任务、另一个 worker 有 1 个高优先级任务时先取高优先级任务；单 worker 有本地低优先级任务时，外部提交的高优先级任务先执行。旧策略下两例都失败，新策略下连续 20 次通过。
+- **变异检查**：恢复“本地队列优先于全局提交”和恢复“按 worker 逐个窃取”两个变异，各自 5 次全部被对应用例检出。
+- **验证**：吞吐测试（15 个 worker，208,000 个混合优先级任务）旧策略最好 112~121 ms，新策略 116~122 ms，在波动范围内。`test_task`、`test_task_trace`、`test_task_frame`、`test_task_singleton` 照常通过；TSan 下 `test_task_steal`、`test_task`、`test_task_trace` 各 3~5 次无报告（TSan 先发现的是测试自身记录数组的非原子读写，已改为原子）。arm64 lane 加入 `test_task_steal`（选择数 269）。
+- **附带修复**：`06431ad1` 的 `test_task_trace.c` 末尾缺少换行，Windows clang（`-Werror -Wnewline-eof`）编译失败（windows-d3d12 run 44947065455）。本提交补上换行，`test_task_steal.c` 同样处理。原生全量 463/463 通过。
+
 ## Redis lane 扩展到 macOS（2026-11-22）
 
 - `lane-rule-engine-redis` 改为 ubuntu-24.04 与 macos-15 的矩阵（提交 `30dad7dc`）。macOS 用 Homebrew 安装 ninja、hiredis、redis，configure 传入 `-DCMAKE_PREFIX_PATH=$(brew --prefix hiredis)`，并要求输出含 “native Redis state provider enabled”。
