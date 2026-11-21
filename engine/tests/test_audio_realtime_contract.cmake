@@ -69,3 +69,27 @@ if(NOT no_pitch EQUAL -1)
 endif()
 assert_callback_clean("${AUDIO_CAPTURE}" "static i16 capture_sample"
                       "AudioResult audio_capture_create")
+
+# Store-then-load handshakes between the mixer and close/set_hrtf need a
+# full fence on both sides: qemu-user on x86 hosts lets a seq_cst store
+# pass a later seq_cst load, and close then frees a ring still being read.
+file(READ "${AUDIO_EXTENDED}" extended_source)
+foreach(pair IN ITEMS
+        "atomic_store_explicit(&stream->reading, true, memory_order_seq_cst);|&stream->open"
+        "atomic_store_explicit(&stream->open, false, memory_order_seq_cst);|&stream->reading"
+        "atomic_store_explicit(&stream->hrtf_set, (uintptr_t)set, memory_order_seq_cst);|&stream->reading")
+    string(FIND "${pair}" "|" bar)
+    string(SUBSTRING "${pair}" 0 ${bar} handshake)
+    math(EXPR after_bar "${bar} + 1")
+    string(SUBSTRING "${pair}" ${after_bar} -1 loaded)
+    string(FIND "${extended_source}" "${handshake}" store_at)
+    if(store_at EQUAL -1)
+        message(FATAL_ERROR "handshake store not found: ${handshake}")
+    endif()
+    string(SUBSTRING "${extended_source}" ${store_at} 400 after_store)
+    string(FIND "${after_store}" "atomic_load_explicit(${loaded}," load_at)
+    string(FIND "${after_store}" "atomic_thread_fence(memory_order_seq_cst);" fence_at)
+    if(fence_at EQUAL -1 OR load_at EQUAL -1 OR NOT fence_at LESS load_at)
+        message(FATAL_ERROR "handshake store needs a seq_cst fence before its load: ${handshake}")
+    endif()
+endforeach()

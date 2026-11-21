@@ -748,6 +748,10 @@ static ma_result pcm_stream_read(ma_data_source *source, void *output,
     f32 *out = (f32 *)output;
     u64 missing = 0;
     atomic_store_explicit(&stream->reading, true, memory_order_seq_cst);
+    /* store-then-load handshake with close and set_hrtf: C11 already
+     * orders it, but qemu-user's aarch64 translation on x86 hosts does not
+     * keep stlr before a later ldar, so the fences make it explicit */
+    atomic_thread_fence(memory_order_seq_cst);
     bool open = atomic_load_explicit(&stream->open, memory_order_seq_cst);
     u32 tail = atomic_load_explicit(&stream->tail, memory_order_relaxed);
     u32 head = open ? atomic_load_explicit(&stream->head, memory_order_acquire) : tail;
@@ -1339,6 +1343,7 @@ AudioResult audio_pcm_stream_set_hrtf(AudioSystem *as, AudioPcmStreamHandle hand
      * them; a mixer that sees the set sees them too */
     atomic_fetch_add_explicit(&stream->hrtf_attach, 1u, memory_order_relaxed);
     atomic_store_explicit(&stream->hrtf_set, (uintptr_t)set, memory_order_seq_cst);
+    atomic_thread_fence(memory_order_seq_cst);
     /* a read that loaded the previous set may still be using it */
     while (atomic_load_explicit(&stream->reading, memory_order_seq_cst)) {
     }
@@ -1360,6 +1365,7 @@ AudioResult audio_pcm_stream_close(AudioSystem *as, AudioPcmStreamHandle handle)
     AudioResult result = pcm_stream_lookup(as, handle, &stream);
     if (result != AUDIO_OK) return result;
     atomic_store_explicit(&stream->open, false, memory_order_seq_cst);
+    atomic_thread_fence(memory_order_seq_cst);
     /* a read that saw `open` set may still be using the ring */
     while (atomic_load_explicit(&stream->reading, memory_order_seq_cst)) {
     }

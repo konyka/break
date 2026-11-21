@@ -1,3 +1,21 @@
+## 音频 PCM 流关闭握手在 qemu-user 下的释放后读取修复（2026-11-21）
+
+- **现象**：平台输入切片的非 root 干净容器全量运行中，既有 `test_voice_playback` 在 arm64 QEMU 下 SEGFAULT（225 项中 1 项失败）。单独循环 400 次复现 20 次，崩溃点为 `producer_and_close_race_with_a_mixer_thread` 与 96 kHz 变体；原生 x86 循环 300 次 0 失败。
+- **根因**：混音回调 `pcm_stream_read` 先以 seq_cst 存 `reading=true` 再以 seq_cst 读 `open`，`audio_pcm_stream_close` 先存 `open=false` 再读 `reading`（`set_hrtf` 同理）。这是存-读握手，要求两侧的存储都先于各自的读取。C11 语义保证这一点，arm64 真机的 `stlr`/`ldar` 也保证；但 x86 宿主上的 qemu-user（8.2.2）把 `stlr` 后接 `ldar` 翻译成可重排的序列。用独立 store-buffering 试金石程序实测：无栅栏时 200000 次中 45322 次两侧都读到旧值，加 `atomic_thread_fence(memory_order_seq_cst)`（`dmb ish`）后为 0。两侧同时读到旧值时，close 不等待即释放仍在被读取的环形缓冲。
+- **修复**：在 `audio_extended.c` 三处握手的存储与读取之间加入 seq_cst 栅栏（混音读取、close、set_hrtf）。实时回调中不分配内存、不加锁，只多一条栅栏指令。
+- **TDD**：`test_audio_realtime_contract` 新增检查：三处握手存储后、首个原子读取前必须有 seq_cst 栅栏；去掉修复后契约 RED（`handshake store needs a seq_cst fence before its load`），恢复后 GREEN。修复后 arm64 QEMU 循环 400 次 0 失败；原生音频标签 30 项与 voice 相关 14 项全部通过；TSan 构建下 `test_voice_playback` 五次运行与 `test_audio_extended` 129 例均无报告。
+- **独立评审**：结论可合入，无 Critical/Important。评审者在独立容器中复现：试金石无栅栏 141013/200000（静态链接 152318）、有栅栏 0；修复前 arm64 二进制 3/100 崩溃，修复后手工构建 300/300 通过；并按 C11 全序论证三条路径与 `open_rate` 复用槽位均无竞态，原代码在 C11 下本已正确，问题是 qemu-user 翻译缺陷。已采纳的 Minor：契约改为匹配每处握手对应的具体读取（`&stream->open`/`&stream->reading`），重新验证去掉栅栏 RED、恢复 GREEN；源码注释改为准确描述 qemu-user 行为；Build_Guide 的 219/225 段落恢复为历史在前、当前在后。
+- **后续项**：仓库中其他使用默认 seq_cst 的存-读握手（如 `renderer/cmd_buffer.c`、`rule_engine/executor.c`）在 qemu-user 下可能有同类问题，尚未审计；`task.c` 已使用栅栏。
+- **覆盖缺口**：契约是源码结构检查，行为证据来自 QEMU 循环与试金石程序；arm64 真机未测。qemu-user 下 fork 后建线程偶发挂起是另一个问题，与本修复无关，仍未定位。
+
+## arm64 平台输入/窗口与二百二十五项 CTest（2026-11-21）
+
+- **最小场景**：新增六个既有纯 CPU 可执行目标：`test_platform_screen_simulated` 3 例（以 `tests/fake_qnx_screen` 假 SDK 编译 QNX Screen 窗口层）、`test_platform_window_mode` 14 例（仅头文件的无边框全屏状态机）、`test_pad_linux_feedback` 3 例（evdev 震动，注入式 I/O）、`test_pad_win_feedback_portable` 4 例与 `test_win32_touch` 4 例（以 `tests/fake_windows` 假头文件编译 Windows 路径）、`test_wayland_touch` 4 例（链接 arm64 `wayland-client`，不连接合成器）。均不连接显示服务器、不访问真实输入设备。
+- **RED 与精确选择**：旧 workflow 在 `missing platform input build targets` 处 RED。真实原生集合从 219 增至 225，差集恰为这六项；单核输入变体、宿主 CMake 编译矩阵 `test_platform_wsi_lifecycle`/`test_platform_wsi_compile_matrix`/`test_platform_vk_surface_abi`、Vulkan 设备探测、`test_rhi_native` 与同名前缀扩展均被拒绝。完整表达式维持 31 个捕获组。CI 与 Build_Guide 的构建和测试命令逐字一致。
+- **原生与 focused 验证**：原生六项 6/6，计数 3/14/3/4/4/4；干净 Ubuntu 24.04 容器 arm64 六项 6/6，计数一致，QEMU 8.2.2。原生全量 456 项零失败，4 个既有平台用例跳过，CTest 170.13 秒。
+- **完整干净容器验证**：首次非 root 全量 224/225，既有 `test_voice_playback` SEGFAULT；定位与修复见上一条目。修复后以统一非 root 属主执行 workflow 原始构建和测试 step，225/225，CTest 130.25 秒。严格日志断言确认 43 组分项计数（含 `test_voice_playback` 4 例）、全部旧契约/e2e、无失败分项、唯一 ptrace 设置 skip，无 root 权限跳过或 `Too many parentheses`；超时标记恰为 `test_fork_deadline` 的三条预期标记。
+- **覆盖缺口**：真实输入设备、显示服务器与合成器交互、单核亲和性变体和宿主 CMake 编译矩阵不在本切片内。
+
 ## arm64 C++20 对等层、fork 截止等待与二百一十九项 CTest（2026-11-21）
 
 - **最小场景**：新增七个既有可执行目标。C++20 对等层四项由工具链已有的 `aarch64-linux-gnu-g++`（GCC 13.3）编译：`test_mycompose_cpp20_c_fixture` 1 例、`test_mycompose_cpp20` 14 例（链接 C11 夹具目标文件，检查 arm64 上的真实 C/C++ ABI）、`test_mycompose_cpp20_header`、`test_mycompose_cpp20_noexcept`（`-fno-exceptions`）；`test_public_api_cpp20` 以 C++20 包含全部公共 C 头文件并链接 `engine` 做一次跨语言调用；另有 `test_core_style_prototype` 3 例与 `test_fork_deadline` 5 例。header、noexcept、public API 三项不打印 `=== Results` 行，以退出码 0 判定。
