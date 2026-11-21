@@ -259,6 +259,10 @@ re_status_t re_facts_set_value(re_facts_t *facts, re_string_t name, const re_val
         if (facts->entries[index].name_size == name.size && memcmp(facts->entries[index].name, name.data, name.size) == 0) break;
     value_free(&facts->allocator, facts->entries[index].structured);
     facts->entries[index].structured = copy;
+    facts->entries[index].changed_serial = ++facts->mutation_serial;
+    /* A new structured value can add members or array items, which a failed
+     * dotted read of this root did not record. */
+    ++facts->structure_serial;
     return re_facts_notify(facts, was_existing ? RE_FACT_UPDATE : RE_FACT_INSERT, index);
 }
 
@@ -387,6 +391,7 @@ re_status_t re_facts_set_path(re_facts_t *facts, re_string_t path, const re_valu
             /* Member writes are mutations: bump the serial so generation-stamped
              * consumers (the shared proof graph) invalidate like any mutation. */
             ++facts->mutation_serial;
+            facts->entries[root_index].changed_serial = facts->mutation_serial;
             return RE_STATUS_OK;
         }
         current = member->child;
@@ -426,6 +431,9 @@ re_status_t re_facts_set_member(re_facts_t *facts, re_string_t name,
             re_status_t copy_status = re_copy_string(allocator, value->as.string, &payload);
             if (copy_status != RE_STATUS_OK) return copy_status;
         }
+        /* replacing an object or array member with a scalar makes a read of
+         * the member succeed where it failed before */
+        if (member->child != NULL) ++facts->structure_serial;
         value_free(allocator, member->child);
         member->child = NULL;
         if (member->scalar.type == RE_VALUE_STRING)
@@ -433,12 +441,16 @@ re_status_t re_facts_set_member(re_facts_t *facts, re_string_t name,
         member->scalar = *value;
         if (payload != NULL) member->scalar.as.string.data = payload;
         ++facts->mutation_serial;
+        facts->entries[index].changed_serial = facts->mutation_serial;
         return RE_STATUS_OK;
     }
     {
         re_status_t status = value_add(facts->entries[index].structured, key, value, NULL);
         /* Member creation is a mutation too: keep serial-based invalidation. */
-        if (status == RE_STATUS_OK) ++facts->mutation_serial;
+        if (status == RE_STATUS_OK) {
+            facts->entries[index].changed_serial = ++facts->mutation_serial;
+            ++facts->structure_serial; /* a new member */
+        }
         return status;
     }
 }

@@ -1210,3 +1210,40 @@ TMS, transaction and RETE-incremental tests) unchanged; a differential test
 that runs random programs with and without the skip and compares the callback
 trace, the final facts and the agenda history; `large_1000` warm evaluation
 proportional to rules plus firings rather than their product.
+
+## Incremental recompute (implemented, 2026-11-22)
+
+The design above is implemented in `engine/src/rule_engine/engine.c` and on by
+default. Differences from the design, found while implementing and in two
+review rounds:
+
+- **What is cached.** Per run, per rule, `re_rule_cache_t` holds the read-set
+  resolved to fact slots, `mutation_serial` at the match, `structure_serial`
+  and the fact count. On a later pass `compute_rule_activations` applies the
+  visibility gates first and then returns without matching when the cache is
+  valid, no transaction is open, the structure serial and fact count are
+  unchanged and no cached slot's `changed_serial` is newer than the match.
+- **Which rules qualify** (`ir_expr_cacheable`): only conditions built from
+  and/or/not, true/false and comparisons (not `in`) whose terms are literals,
+  fact reads and arithmetic over those, on rules without a RETE network and
+  outside the parallel executor. Quantifiers, the typed form, `in`, function
+  and method calls (also nested in arithmetic), `goal()`, multifield,
+  accumulate, `test()` and stream patterns always re-match. A read-set that
+  hits the 8-path cap, or a read that does not resolve to a slot, also
+  disables the cache for that match.
+- **Change tracking instead of a dirty bitmap.** Each fact entry carries
+  `changed_serial` (set on every value, member, insert and retract write);
+  `re_facts_t.structure_serial` is bumped whenever something a failed read
+  could now find may appear: entry creation, insert, retract, clear, a
+  `_retracted_` flag write, `re_facts_set_value`, member creation, and an
+  object/array member replaced by a scalar. Both are copied into the staged
+  transaction clone and carried back on commit.
+- **Pop-time drops.** Any entry popped from the agenda invalidates its rule's
+  cache, because the loop may drop it unfired (focus moved, a group closed,
+  the entry went stale) and the full re-match would then push it again.
+
+`test_rule_engine_incremental` runs 400 random programs with the skip off
+and on and compares callback traces, run status and final facts, plus
+targeted cases for each counterexample found in review. With the skip on,
+`large_1000` warm evaluation drops from about 152 ms to about 37 ms per run
+on the reference host.

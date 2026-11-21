@@ -39,8 +39,10 @@ static re_status_t clone_facts(const re_facts_t *source, re_facts_t **out) {
         copy->entries[index].generation = entry->generation;
         copy->entries[index].active = entry->active;
         copy->entries[index].logical = entry->logical;
+        copy->entries[index].changed_serial = entry->changed_serial;
     }
     copy->mutation_serial = source->mutation_serial;
+    copy->structure_serial = source->structure_serial;
     /* The clone is the same logical facts, so it keeps the identity nonce
      * rather than the fresh one re_facts_create assigned. */
     copy->nonce = source->nonce;
@@ -196,7 +198,10 @@ re_status_t re_facts_txn_set(re_fact_txn_t *txn, re_string_t name, const re_valu
     for (index = 0u; index < txn->staged->count; ++index)
         if (txn->staged->entries[index].name_size == name.size &&
             memcmp(txn->staged->entries[index].name, name.data, name.size) == 0) break;
-    if (index < txn->staged->count) txn->staged->entries[index].active = 1;
+    if (index < txn->staged->count && !txn->staged->entries[index].active) {
+        txn->staged->entries[index].active = 1;
+        ++txn->staged->structure_serial;
+    }
     return RE_STATUS_OK;
 }
 re_status_t re_facts_txn_insert(re_fact_txn_t *txn, re_string_t name,
@@ -234,6 +239,8 @@ re_status_t re_facts_commit(re_fact_txn_t *transaction) {
     facts->tms = transaction->staged->tms;
     if (transaction->staged->mutation_serial > facts->mutation_serial)
         facts->mutation_serial = transaction->staged->mutation_serial;
+    if (transaction->staged->structure_serial > facts->structure_serial)
+        facts->structure_serial = transaction->staged->structure_serial;
     transaction->staged->entries = entries;
     transaction->staged->count = count; transaction->staged->capacity = capacity;
     transaction->staged->retract_flag_entries = flags;

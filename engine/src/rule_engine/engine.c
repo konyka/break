@@ -75,6 +75,64 @@ int re_condition_is_pure(const re_expr_t *expr) {
     return re_condition_is_pure(expr->first) &&
            (expr->kind == RE_EXPR_NOT || re_condition_is_pure(expr->second));
 }
+/* Whether a cached match of this condition can be trusted. Only conditions
+ * built from and/or/not, true/false and comparisons whose terms are literals,
+ * fact reads and arithmetic over those qualify: every fact they read is
+ * recorded in the read-set. Everything else is refused: quantifiers and the
+ * typed form (candidates by prefix), `in` (its array operand is not
+ * recorded; array writes go through re_facts_set_value, which also bumps
+ * structure_serial, so this refusal is a second line of defence), function
+ * and method calls (their answers are not facts),
+ * goal() (another rule's condition), multifield, accumulate, test() and
+ * stream patterns. */
+static int ir_term_cacheable(const re_ir_program_t *ir, size_t index, unsigned depth) {
+    const re_ir_term_t *term;
+    size_t i;
+    if (index >= ir->term_count || depth > 64u) return 0;
+    term = &ir->terms[index];
+    switch (term->kind) {
+    case RE_IR_TERM_BOOL: case RE_IR_TERM_INT64: case RE_IR_TERM_DOUBLE:
+    case RE_IR_TERM_STRING: case RE_IR_TERM_NULL: case RE_IR_TERM_FACT:
+        return 1;
+    case RE_IR_TERM_ARITHMETIC:
+        if (term->argument_count != 2u || term->argument_indices == NULL) return 0;
+        for (i = 0u; i < term->argument_count; ++i)
+            if (!ir_term_cacheable(ir, term->argument_indices[i], depth + 1u)) return 0;
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+static int ir_expr_cacheable(const re_ir_program_t *ir, size_t index, unsigned depth) {
+    const re_ir_expr_t *expr;
+    if (index >= ir->expr_count || depth > 64u) return 0;
+    expr = &ir->exprs[index];
+    switch (expr->kind) {
+    case RE_EXPR_TRUE: case RE_EXPR_FALSE:
+        return 1;
+    case RE_EXPR_NOT:
+        return ir_expr_cacheable(ir, expr->first, depth + 1u);
+    case RE_EXPR_AND: case RE_EXPR_OR:
+        return ir_expr_cacheable(ir, expr->first, depth + 1u) &&
+               ir_expr_cacheable(ir, expr->second, depth + 1u);
+    case RE_EXPR_COMPARE:
+        if (expr->compare == RE_COMPARE_IN) return 0;
+        return ir_term_cacheable(ir, expr->left, depth + 1u) &&
+               ir_term_cacheable(ir, expr->right, depth + 1u);
+    default:
+        return 0;
+    }
+}
+
+void re_engine_set_skip_unchanged(re_engine_t *engine, int enabled) {
+    if (engine != NULL) engine->skip_unchanged = enabled != 0;
+}
+
+uint64_t re_engine_match_count(const re_engine_t *engine) {
+    return engine != NULL ? engine->match_count : 0u;
+}
+
 re_status_t re_engine_match_rule(const re_engine_t *engine, const re_facts_t *facts,
                                  const re_rule_t *rule, int *matched) {
     size_t index;
@@ -486,6 +544,22 @@ done:
     return status;
 }
 
+/* What a pure linear rule's last match depended on. The match is a function
+ * of the values of the facts it read (the read-set), of which facts exist
+ * (a failed read leaves no trace in the read-set, and quantifiers iterate
+ * candidates by prefix) and of the retract flags; structure_serial covers
+ * the last two. valid is cleared whenever the read-set may be incomplete,
+ * the condition is not cacheable (ir_expr_cacheable), or the rule's entry
+ * was popped from the agenda (it may have been dropped unfired). */
+typedef struct re_rule_cache_t {
+    int valid;
+    uint64_t matched_serial;
+    uint64_t structure_serial;
+    size_t fact_count;
+    size_t slot_count;
+    size_t slots[RE_IR_MAX_READ_PATHS];
+} re_rule_cache_t;
+
 /* Run-scoped state for the recognize-act loop in re_engine_run. The
  * no-loop / lock-on-active / activation-group bookkeeping lives here exactly
  * like it did in the single-pass loop; indices stay sorted by salience
@@ -499,6 +573,8 @@ typedef struct re_run_state_t {
     size_t locked_group_count;
     unsigned char *parallel_matches;
     unsigned char *pure_conditions;
+    /* Incremental recompute cache, one entry per rule (NULL when disabled). */
+    struct re_rule_cache_t *cache;
     size_t next_rule;          /* first-pass cursor into indices */
     size_t agenda_activations; /* new activations pushed this run */
     size_t firings;
@@ -702,7 +778,9 @@ static size_t resolve_true_premises(const re_engine_t *engine, size_t rule_index
  * (module focus, dates, agenda group, no-loop, lock-on-active,
  * activation-group), evaluates the match, and pushes every resulting
  * activation into the agenda. re_agenda_push dedups against pending and
- * fired entries, which is where refraction lives. */
+ * fired entries, which is where refraction lives. On a later pass, a rule
+ * whose cached match is still valid returns after the gates without
+ * matching: its push would be deduplicated. */
 static re_status_t compute_rule_activations(re_engine_t *engine, re_facts_t *facts,
                                             const re_limits_t *limits, size_t tracked_cap,
                                             re_run_state_t *state, size_t rule_index,
@@ -744,14 +822,49 @@ static re_status_t compute_rule_activations(re_engine_t *engine, re_facts_t *fac
             if (strcmp(state->activation_groups[group_index], rule->activation_group) == 0) break;
         if (group_index != state->activation_group_count) return RE_STATUS_OK;
     }
+    re_rule_cache_t *cache = state->cache != NULL && network == NULL && state->parallel_matches == NULL &&
+                             state->pure_conditions != NULL && state->pure_conditions[rule_index]
+                             ? &state->cache[rule_index] : NULL;
+    if (!first_pass && cache != NULL && cache->valid && facts->transaction == NULL &&
+        cache->structure_serial == facts->structure_serial && cache->fact_count == facts->count) {
+        size_t k;
+        for (k = 0u; k < cache->slot_count; ++k) {
+            size_t slot = cache->slots[k];
+            if (slot >= facts->count || facts->entries[slot].changed_serial > cache->matched_serial) break;
+        }
+        /* Nothing the last match read has changed, so this match would give
+         * the same answer and the same premise keys: the push it would make
+         * is already pending or fired and the agenda would drop it. */
+        if (k == cache->slot_count) return RE_STATUS_OK;
+    }
     {
         int matched = 0;
         /* The read-set is captured at match time and attached to every pushed
          * activation below. The executor's parallel-match path observes no
          * read-set, so linear rules stay premise-less (once per run) there. */
         reads.count = 0u;
+        if (cache != NULL) {
+            cache->valid = 0;
+            cache->matched_serial = facts->mutation_serial;
+            cache->structure_serial = facts->structure_serial;
+            cache->fact_count = facts->count;
+        }
+        if (state->parallel_matches == NULL) ++engine->match_count;
         status = state->parallel_matches != NULL ? RE_STATUS_OK
             : re_ir_match_rule_readset(engine, facts, engine->program->ir, rule_index, &matched, &reads);
+        if (cache != NULL && facts->transaction == NULL && reads.count < RE_IR_MAX_READ_PATHS &&
+            (status == RE_STATUS_OK || status == RE_STATUS_NOT_FOUND) &&
+            engine->program->ir->rules[rule_index].condition != SIZE_MAX &&
+            ir_expr_cacheable(engine->program->ir, engine->program->ir->rules[rule_index].condition, 0u)) {
+            size_t k;
+            cache->slot_count = 0u;
+            for (k = 0u; k < reads.count; ++k) {
+                re_fact_id_t id;
+                if (!resolve_read_premise(facts, reads.paths[k], &id)) break;
+                cache->slots[cache->slot_count++] = (size_t)id.slot;
+            }
+            cache->valid = k == reads.count;
+        }
         if (state->parallel_matches != NULL) matched = state->parallel_matches[rule_index] != 0u;
         if (status == RE_STATUS_NOT_FOUND) return RE_STATUS_OK;
         if (status != RE_STATUS_OK) return status;
@@ -857,7 +970,7 @@ re_engine_t *re_engine_create(const re_allocator_t *allocator, const re_limits_t
     re_allocator_impl_t a; re_engine_t *engine; re_allocator_init(&a, allocator);
     if (a.api.alloc == NULL || a.api.realloc == NULL || a.api.free == NULL) return NULL;
     engine = re_alloc(&a, sizeof(*engine)); if (engine == NULL) return NULL;
-    engine->allocator = a; engine->limits = limits != NULL ? *limits : re_default_limits(); engine->program = NULL; engine->running = 0; engine->destroy_requested = 0; engine->functions = NULL; engine->executor = NULL; engine->rete_network = NULL; engine->rete_networks = NULL; engine->rete_network_count = 0u; engine->agenda = NULL; engine->proof_graph = NULL; engine->config_serial = 0u; engine->random_state = RE_BUILTIN_RANDOM_SEED; engine->stream_registry_count = 0u; return engine;
+    engine->allocator = a; engine->limits = limits != NULL ? *limits : re_default_limits(); engine->program = NULL; engine->running = 0; engine->destroy_requested = 0; engine->functions = NULL; engine->executor = NULL; engine->rete_network = NULL; engine->rete_networks = NULL; engine->rete_network_count = 0u; engine->agenda = NULL; engine->proof_graph = NULL; engine->config_serial = 0u; engine->random_state = RE_BUILTIN_RANDOM_SEED; engine->stream_registry_count = 0u; engine->skip_unchanged = 1; engine->match_count = 0u; return engine;
 }
 
 /* rete_network mirrors the first attached per-rule network (lowest rule
@@ -1154,6 +1267,11 @@ re_status_t re_engine_run(re_engine_t *engine, re_facts_t *facts, const re_run_o
         }
         for (i = 0u; i < engine->program->rule_count; ++i) state.indices[i] = i;
         sort_activation_indices(engine->program, state.indices);
+        if (engine->skip_unchanged) {
+            /* allocation failure only disables the skip */
+            state.cache = re_alloc(&engine->allocator, engine->program->rule_count * sizeof(*state.cache));
+            if (state.cache != NULL) memset(state.cache, 0, engine->program->rule_count * sizeof(*state.cache));
+        }
     }
     if (engine->executor != NULL) {
         int pure = 1;
@@ -1161,15 +1279,17 @@ re_status_t re_engine_run(re_engine_t *engine, re_facts_t *facts, const re_run_o
             if (!re_condition_is_pure(engine->program->rules[i].condition)) pure = 0;
         if (pure) {
             state.parallel_matches = re_alloc(&engine->allocator, engine->program->rule_count);
-            if (state.parallel_matches == NULL) { free_agenda_state(&engine->allocator, state.indices, state.fired_no_loop, state.activation_groups, state.locked_groups, NULL, state.pure_conditions); return finish_run(engine, facts, RE_STATUS_OUT_OF_MEMORY); }
+            if (state.parallel_matches == NULL) { re_free(&engine->allocator, state.cache); free_agenda_state(&engine->allocator, state.indices, state.fired_no_loop, state.activation_groups, state.locked_groups, NULL, state.pure_conditions); return finish_run(engine, facts, RE_STATUS_OUT_OF_MEMORY); }
         }
     }
     /* Recognize-act cycle. The first pass evaluates one new rule per
      * iteration (sorted by salience, then source order) so firings
      * interleave with matching in the historical order; once every rule was
-     * evaluated, each iteration recomputes all visible rules and the agenda
-     * fires the highest-salience pending activation. Refraction (agenda
-     * dedup against fired keys) is what makes the loop terminate. */
+     * evaluated, each iteration recomputes all visible rules (skipping the
+     * re-match of a cacheable rule whose read facts are unchanged, see
+     * re_rule_cache_t) and the agenda fires the highest-salience pending
+     * activation. Refraction (agenda dedup against fired keys) is what
+     * makes the loop terminate. */
     for (;;) {
         re_agenda_entry_internal_t activation;
         re_rule_t *rule;
@@ -1200,6 +1320,11 @@ re_status_t re_engine_run(re_engine_t *engine, re_facts_t *facts, const re_run_o
             break;
         }
         rule = &engine->program->rules[activation.rule_index];
+        /* A popped entry may be dropped below without being marked fired
+         * (focus moved, a group closed, the entry went stale); the full
+         * re-match would then push it again, so the rule must be re-matched
+         * on the next pass rather than skipped. */
+        if (state.cache != NULL) state.cache[activation.rule_index].valid = 0;
         /* The agenda focus can have moved while the activation sat pending
          * (A8 ActivateAgendaGroup / B4 auto-focus); entries whose group no
          * longer matches the focus are dropped, exactly like the group-level
@@ -1327,6 +1452,7 @@ re_status_t re_engine_run(re_engine_t *engine, re_facts_t *facts, const re_run_o
         ++state.firings;
         if (limits.max_firings != 0u && state.firings >= limits.max_firings) { status = RE_STATUS_LIMIT; break; }
     }
+    re_free(&engine->allocator, state.cache);
     free_agenda_state(&engine->allocator, state.indices, state.fired_no_loop, state.activation_groups, state.locked_groups, state.parallel_matches, state.pure_conditions);
     return finish_run(engine, facts, status);
 }

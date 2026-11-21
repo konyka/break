@@ -85,8 +85,10 @@ run (the numbers locate costs; they are not committed performance claims):
 | fired-key hash index (`2b303baf`) | 22 ms | 225 ms |
 | retract gate fast path (`e7d0d9b3`) | 18 ms | 171 ms |
 | inline evaluation frames (`7260c7d9`) | 16 ms | 152 ms |
+| incremental recompute (on by default) | 6 ms | 37 ms |
 
-Cold load grows linearly with the source (0.28, 0.83 and 2.4 ms). Warm
-evaluation still grows with rules x firings, because each firing re-matches
-every rule seen so far; see "Incremental recompute (design)" in
-`Rule_Engine_Design.md`.
+Cold load grows linearly with the source (0.28, 0.83 and 2.4 ms). Before the
+incremental recompute, warm evaluation grew with rules x firings, because
+each firing re-matched every rule seen so far; the recompute skips rules whose
+read facts did not change (see "Incremental recompute (implemented)" in
+`Rule_Engine_Design.md`).

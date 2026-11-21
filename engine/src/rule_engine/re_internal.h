@@ -19,6 +19,10 @@ typedef struct re_fact_entry_t {
     uint64_t generation;
     int active;
     int logical;
+    /* mutation_serial of the last write to this entry (value, structured
+     * member, insert or retract); the incremental recompute compares it with
+     * the serial at which a rule was last matched. */
+    uint64_t changed_serial;
 } re_fact_entry_t;
 
 typedef struct re_tms_justification_t {
@@ -73,6 +77,14 @@ struct re_facts_t {
      * when it is zero. Swapped with entries on commit. */
     size_t retract_flag_entries;
     uint64_t mutation_serial;
+    /* Bumped whenever something a failed read could now find may have
+     * appeared: an entry is created, inserted, retracted or cleared, a
+     * "_retracted_" flag is written, a structured value is replaced
+     * (re_facts_set_value), a member is created, or an object/array member
+     * is replaced by a scalar. A failed read is not recorded in a rule's
+     * read-set, so the incremental recompute only trusts a cached match
+     * while this is unchanged. */
+    uint64_t structure_serial;
     /* Process-unique identity nonce, assigned in re_facts_create; the shared
      * proof graph keys entries on (pointer, nonce) so a new facts object
      * reusing a destroyed one's address cannot alias a stale entry (ABA).
@@ -605,7 +617,16 @@ struct re_engine_t {
      * (ir_eval.c) and re_engine_stream_register/unregister (stream_eval.c). */
     re_stream_registry_entry_t stream_registry[RE_STREAM_REGISTRY_CAP];
     size_t stream_registry_count;
+    /* Incremental recompute (engine.c), on by default: a later pass skips
+     * the re-match of a pure linear rule whose read facts did not change
+     * since its last match. Tests turn it off with
+     * re_engine_set_skip_unchanged to compare against the full re-match;
+     * match_count counts condition matches. */
+    int skip_unchanged;
+    uint64_t match_count;
 };
+void re_engine_set_skip_unchanged(re_engine_t *engine, int enabled);
+uint64_t re_engine_match_count(const re_engine_t *engine);
 
 typedef struct re_stream_event_impl_t {
     uint64_t timestamp;

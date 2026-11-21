@@ -3177,6 +3177,12 @@ if(ENGINE_BUILD_TESTS)
     target_link_libraries(test_rule_engine_rete_incremental PRIVATE rule_engine_core)
     add_test(NAME test_rule_engine_rete_incremental COMMAND test_rule_engine_rete_incremental)
 
+    add_executable(test_rule_engine_incremental tests/test_rule_engine_incremental.c)
+    set_property(TARGET test_rule_engine_incremental PROPERTY C_STANDARD 99)
+    target_include_directories(test_rule_engine_incremental PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_rule_engine_incremental PRIVATE rule_engine_core)
+    add_test(NAME test_rule_engine_incremental COMMAND test_rule_engine_incremental)
+
     add_executable(test_rule_engine_agenda tests/test_rule_engine_agenda.c)
     set_property(TARGET test_rule_engine_agenda PROPERTY C_STANDARD 99)
     target_include_directories(test_rule_engine_agenda PRIVATE ${TEST_INCLUDE_DIRS})

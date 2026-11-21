@@ -455,3 +455,4 @@
 - **规则引擎验证追加**：2026-11-22 新增 CI lane `lane-rule-engine-redis`，以 libhiredis 构建原生 Redis 提供者，并对临时 redis-server 运行规则引擎测试（不允许任何 SKIP）。上文「Redis 路径」在 Linux 上由此关闭；仍缺：Windows/macOS 上的 Redis 路径、按读集增量重算。
 - **第 4 节（任务）追加**：2026-11-22 新增跨帧 continuation 队列 `TaskFrameQueue`（到第 N 帧执行，可在 TaskSystem 上并行并支持取消）。上文「跨帧 continuation」由此交付。仍缺：任务图可视化、工作窃取调优。
 - **第 4 节（任务）追加**：2026-11-22 任务系统新增每 worker 的执行、窃取与空闲睡眠计数及 inline 执行计数，为工作窃取调优提供测量。仍缺：窃取策略调优本身、任务图可视化。
+- **规则引擎验证追加**：2026-11-22 recognize-act 循环实现按读集增量重算（默认开启，以 400 个随机程序的开关差分测试和评审反例守护），1000 条规则单次求值降至约 37 ms（最初约 390 ms）。上文「按读集增量重算」由此交付。仍缺：Windows/macOS 上的 Redis 路径。

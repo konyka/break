@@ -21,6 +21,7 @@ re_facts_t *re_facts_create(const re_allocator_t *allocator, const re_limits_t *
     if (facts == NULL) return NULL;
     facts->allocator = selected; facts->limits = limits != NULL ? *limits : re_default_limits();
     facts->entries = NULL; facts->count = 0u; facts->capacity = 0u; facts->retract_flag_entries = 0u;
+    facts->structure_serial = 0u;
     facts->mutation_serial = 0u;
     facts->nonce = ++next_facts_nonce;
     facts->running = 0; facts->destroy_requested = 0; facts->notifying = 0; facts->run_transaction_allowed = 0;
@@ -103,6 +104,7 @@ re_status_t re_facts_clear_all(re_facts_t *facts) {
     facts->count = 0u;
     facts->capacity = 0u;
     facts->retract_flag_entries = 0u;
+    ++facts->structure_serial;
     re_tms_destroy(facts->tms);
     facts->tms = NULL;
     ++facts->mutation_serial;
@@ -151,6 +153,7 @@ re_status_t re_facts_set_impl(re_facts_t *facts, re_string_t name,
         facts->entries[index].structured = NULL;
         facts->entries[index].string_data = NULL;
         facts->count++;
+        ++facts->structure_serial;
         if (name.size >= 11u && memcmp(name.data, "_retracted_", 11u) == 0) facts->retract_flag_entries++;
     } else {
         re_free(&facts->allocator, facts->entries[index].string_data);
@@ -171,6 +174,8 @@ re_status_t re_facts_set_impl(re_facts_t *facts, re_string_t name,
     replacement.logical = facts->entries[index].logical;
     facts->entries[index] = replacement;
     facts->mutation_serial++;
+    facts->entries[index].changed_serial = facts->mutation_serial;
+    if (name.size >= 11u && memcmp(name.data, "_retracted_", 11u) == 0) ++facts->structure_serial;
     if (emit_event && was_existing) return re_facts_notify(facts, RE_FACT_UPDATE, index);
     return RE_STATUS_OK;
 }
@@ -259,6 +264,8 @@ static re_status_t facts_insert_internal(re_facts_t *facts, re_string_t name,
         if (same_name(name, &facts->entries[index])) break;
     facts->entries[index].generation += 1u;
     facts->entries[index].active = 1;
+    facts->entries[index].changed_serial = ++facts->mutation_serial;
+    ++facts->structure_serial;
     out_id->slot = (uint64_t)index;
     out_id->generation = facts->entries[index].generation;
     return re_facts_notify(facts, RE_FACT_INSERT, index);
@@ -362,6 +369,8 @@ re_status_t re_facts_retract(re_facts_t *facts, re_fact_id_t id) {
      * re_facts_commit. TMS cascades route through this function and
      * bump once per retracted fact. */
     facts->mutation_serial++;
+    facts->entries[id.slot].changed_serial = facts->mutation_serial;
+    ++facts->structure_serial;
     re_tms_remove_derived(facts, id);
     re_tms_remove_premise(facts, id);
     return re_facts_notify(facts, RE_FACT_RETRACT, (size_t)id.slot);
