@@ -47,6 +47,17 @@ static u8 g_expected_bytes[IO_TEST_FILE_BYTES];
 
 static char g_io_dir[512];
 
+/* Removes the fixture dir a process with this pid created (test_tmp names it
+ * by pid, so the parent can also clear the dir of a child that aborted). */
+static void fixture_remove_for_pid(long pid)
+{
+    char dir[512], file_path[640];
+    snprintf(dir, sizeof(dir), "%s/break_rtio_%ld", test_tmp_root(), pid);
+    snprintf(file_path, sizeof(file_path), "%s/payload.bin", dir);
+    (void)remove(file_path);
+    (void)TEST_RMDIR(dir);
+}
+
 /* Creates a per-process temp dir with one known-content file and a VFS with
  * that dir mounted. The fixture is shared across IO tests (each test runs
  * its own init/shutdown lifecycle on the same borrowed VFS). */
@@ -1078,6 +1089,7 @@ TEST(io_request_double_release_aborts)
         ASSERT_EQ(close_write_result, 0);
         ASSERT_EQ(close_read_result, 0);
         ASSERT_EQ(wait_result, pid);
+        fixture_remove_for_pid((long)pid);
         printf("    CHILD stage_read=%zd stage=0x%02x (expected 1/0x52)\n",
                stage_read, (unsigned int)stage);
         if (WIFSIGNALED(status)) {
@@ -1163,4 +1175,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(io_completion_wait_deadline_and_shutdown_interruption);
     RUN_TEST(io_request_double_release_aborts);
     RUN_TEST(io_facade_alloc_failure_injection);
+    fixture_remove_for_pid((long)TEST_GETPID());
 TEST_MAIN_END()

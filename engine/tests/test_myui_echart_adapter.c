@@ -140,6 +140,7 @@ TEST(echart_adapter_destroy_keeps_caller_reference_and_renders) {
     fwrite(pixel + 1u, 1u, 3u, artifact);
   }
   fclose(artifact);
+  remove(artifact_path);
   my_echart_adapter_destroy(adapter);
   ASSERT_EQ(((my_chart_t*)chart)->series_count, 0u);
   my_widget_unref(chart);

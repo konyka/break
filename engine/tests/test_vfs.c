@@ -232,6 +232,7 @@ TEST(vfs_open_rejects_join_path_truncation)
     vfs_destroy(vfs);
 
     remove(prefix_file);
+    remove_deep_dir(prefix_file, root);
     remove_deep_dir(root, base);
 #endif
 }
@@ -347,6 +348,10 @@ TEST(vfs_mount_priority)
 
     vfs_close(f);
     vfs_destroy(vfs);
+    remove(file_a);
+    remove(file_b);
+    TEST_RMDIR(dir_a);
+    TEST_RMDIR(dir_b);
 }
 
 /* R397: DIR mount had no max file size — ftell → calloc entire file. */
@@ -926,4 +931,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(vfs_read_all_null_vfs);
     RUN_TEST(vfs_open_empty_path);
     RUN_TEST(vfs_rejects_path_traversal);
+
+    remove(TMP_FILE);
+    TEST_RMDIR(TMP_DIR);
+    remove(TMP_PAK);
 TEST_MAIN_END()

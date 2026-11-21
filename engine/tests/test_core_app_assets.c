@@ -1460,4 +1460,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(checkpoint_file_fsync_failure_is_not_committed_and_preserves_old_generation);
     RUN_TEST(checkpoint_rename_failure_is_not_committed_and_preserves_old_generation);
 #endif
+    if (g_assets_a[0] != '\0' && clear_directory(g_assets_a, NULL) == 0) TEST_RMDIR(g_assets_a);
+    if (g_assets_b[0] != '\0' && clear_directory(g_assets_b, NULL) == 0) TEST_RMDIR(g_assets_b);
 TEST_MAIN_END()

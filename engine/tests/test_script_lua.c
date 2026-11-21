@@ -304,6 +304,7 @@ TEST(hot_reload_runs_new_chunk)
     ASSERT_TRUE(fabs(lua_script_get_number(&ls, "result", -1) - 20.0) < 1e-9);
 
     lua_script_shutdown(&ls);
+    remove(path);
 }
 
 TEST(hot_reload_no_change_no_run)
@@ -324,6 +325,7 @@ TEST(hot_reload_no_change_no_run)
     ASSERT_TRUE(fabs(lua_script_get_number(&ls, "counter", -1) - 1.0) < 1e-9);
 
     lua_script_shutdown(&ls);
+    remove(path);
 }
 
 /* R486: a failed reload must not consume the new mtime; otherwise fixing the

@@ -879,6 +879,7 @@ TEST(no_tmp_residue) {
     ASSERT_NOT_NULL(c);
     ASSERT_FALSE(dir_has_tmp(root));
     break_update_client_destroy(c);
+    cleanup_root(root); /* root is reused for the second directory below */
 
     c = open_with_state(root, sizeof(root), "upc_notmp2", pending_state);
     ASSERT_NOT_NULL(c);

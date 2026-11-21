@@ -54,6 +54,27 @@ static u8 g_expected_hash;
 
 static char g_reload_dir[512];
 
+static const char *const k_fixture_files[7] = {
+    "good.bin", "good2.bin", "bad.bin", "ovl0.bin", "ovl1.bin", "ovl2.bin",
+    "ovl3.bin"};
+
+/* Removes the fixture dir; every test re-creates it, so this runs once at the
+ * end of main. */
+static void fixture_remove(void)
+{
+    char file_path[640];
+    usize i;
+    if (g_reload_dir[0] == '\0') {
+        return;
+    }
+    for (i = 0; i < 7u; i++) {
+        snprintf(file_path, sizeof(file_path), "%s/%s", g_reload_dir,
+                 k_fixture_files[i]);
+        (void)remove(file_path);
+    }
+    (void)TEST_RMDIR(g_reload_dir);
+}
+
 typedef struct ReloadProbe {
     _Atomic u32 validate_calls;
     _Atomic u32 commit_calls;
@@ -133,10 +154,8 @@ static VFS *fixture_setup(void)
     test_tmp(g_reload_dir, sizeof(g_reload_dir), "rtreload");
     TEST_MKDIR(g_reload_dir);
     for (i = 0; i < 7u; i++) {
-        static const char *names[7] = {"good.bin", "good2.bin", "bad.bin",
-                                       "ovl0.bin", "ovl1.bin", "ovl2.bin",
-                                       "ovl3.bin"};
-        snprintf(file_path, sizeof(file_path), "%s/%s", g_reload_dir, names[i]);
+        snprintf(file_path, sizeof(file_path), "%s/%s", g_reload_dir,
+                 k_fixture_files[i]);
         fp = fopen(file_path, "wb");
         if (!fp) {
             return NULL;
@@ -2321,4 +2340,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(profiler_window_bounded_drop);
     RUN_TEST(profiler_window_advance_keeps_continuous);
     RUN_TEST(profiler_collect_owner_enforced);
+    fixture_remove();
 TEST_MAIN_END()
