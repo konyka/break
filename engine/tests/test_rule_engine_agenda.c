@@ -1749,7 +1749,23 @@ TEST(agenda_refraction_holds_across_index_growth_and_reset) {
     re_agenda_destroy_internal(agenda);
 }
 
+/* clear_all drops every "_retracted_" entry, so the retract flag count the
+ * gate relies on must return to zero and an ungated rule fires again. */
+TEST(clear_all_forgets_retract_flags) {
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    ASSERT_NOT_NULL(facts);
+    re_value_t yes = {RE_VALUE_BOOL, {.boolean = 1}};
+    ASSERT_EQ(re_facts_set(facts, (re_string_t){"_retracted_Obj", 14u}, &yes), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_set(facts, (re_string_t){"_retracted_Other", 16u}, &yes), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_set(facts, (re_string_t){"_retracted_Obj", 14u}, &yes), RE_STATUS_OK);
+    ASSERT_EQ(facts->retract_flag_entries, (size_t)2u);
+    ASSERT_EQ(re_facts_clear_all(facts), RE_STATUS_OK);
+    ASSERT_EQ(facts->retract_flag_entries, (size_t)0u);
+    re_facts_destroy(facts);
+}
+
 TEST_MAIN_BEGIN()
+    RUN_TEST(clear_all_forgets_retract_flags);
     RUN_TEST(agenda_refraction_holds_across_index_growth_and_reset);
     RUN_TEST(agenda_create_destroy);
     RUN_TEST(agenda_push_dedups_pending_order_insensitive);

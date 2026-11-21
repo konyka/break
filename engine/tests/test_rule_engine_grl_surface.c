@@ -2211,6 +2211,22 @@ TEST(accumulate_recomputes_across_runs_without_drift) {
  * run; ScheduleRule/CompleteWorkflow/SetWorkflowData dispatch to a
  * registered function of the action name (D5). */
 
+/* The retract gate also honours a flag the host writes directly: the facts
+ * object counts "_retracted_" entries so the gate can skip its scan when
+ * there are none, and a host-created entry must be counted too. */
+TEST(retract_gate_follows_host_flags) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_value_t x = integer(1);
+    re_value_t yes = {RE_VALUE_BOOL, {.boolean = 1}};
+    ASSERT_EQ(re_facts_set(facts, text("Obj.x"), &x), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_set(facts, text("_retracted_Obj"), &yes), RE_STATUS_OK);
+    run_program(engine, facts, "rule \"B\" { when Obj.x == 1 then HitB = 1; }");
+    assert_no_fact(facts, "HitB");
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
 TEST(retract_gates_subsequent_rules_in_same_run) {
     re_engine_t *engine = re_engine_create(NULL, NULL);
     re_facts_t *facts = re_facts_create(NULL, NULL);
@@ -3038,6 +3054,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(accumulate_with_executor_attached_stays_correct);
     RUN_TEST(accumulate_recomputes_across_runs_without_drift);
     RUN_TEST(retract_gates_subsequent_rules_in_same_run);
+    RUN_TEST(retract_gate_follows_host_flags);
     RUN_TEST(retract_flag_persists_across_runs_and_reassert_does_not_clear);
     RUN_TEST(retract_gates_quantifier_candidate_reads);
     RUN_TEST(retract_rejects_non_fact_argument);

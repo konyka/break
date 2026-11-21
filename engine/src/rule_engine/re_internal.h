@@ -66,6 +66,12 @@ struct re_facts_t {
     re_fact_entry_t *entries;
     size_t count;
     size_t capacity;
+    /* Entries whose name starts with "_retracted_" (A8 retract flags). Names
+     * never change once an entry exists, entries are only added (retract
+     * deactivates, it does not remove) and clear_all drops them all, so the
+     * count only tracks creation and clearing; retracted_root skips its scan
+     * when it is zero. Swapped with entries on commit. */
+    size_t retract_flag_entries;
     uint64_t mutation_serial;
     /* Process-unique identity nonce, assigned in re_facts_create; the shared
      * proof graph keys entries on (pointer, nonce) so a new facts object

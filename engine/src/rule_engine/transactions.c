@@ -221,19 +221,22 @@ re_status_t re_facts_commit(re_fact_txn_t *transaction) {
     re_facts_t *facts;
     re_fact_entry_t *entries;
     re_tms_t *tms;
-    size_t count, capacity;
+    size_t count, capacity, flags;
     if (transaction == NULL || transaction->inactive || transaction->facts == NULL ||
         transaction->facts->transaction != transaction) return RE_STATUS_INVALID_ARGUMENT;
     facts = transaction->facts;
     entries = facts->entries; count = facts->count; capacity = facts->capacity;
+    flags = facts->retract_flag_entries;
     tms = facts->tms;
     facts->entries = transaction->staged->entries;
     facts->count = transaction->staged->count; facts->capacity = transaction->staged->capacity;
+    facts->retract_flag_entries = transaction->staged->retract_flag_entries;
     facts->tms = transaction->staged->tms;
     if (transaction->staged->mutation_serial > facts->mutation_serial)
         facts->mutation_serial = transaction->staged->mutation_serial;
     transaction->staged->entries = entries;
     transaction->staged->count = count; transaction->staged->capacity = capacity;
+    transaction->staged->retract_flag_entries = flags;
     transaction->staged->tms = tms;
     facts->transaction = NULL;
     facts->notifying = 1;

@@ -1,3 +1,11 @@
+## 规则引擎 retract 门控快速路径（2026-11-22）
+
+- **问题**：剖析显示 `retracted_root`（`engine/src/rule_engine/ir_eval.c`）占条件求值时间的 16%：每次读取事实都线性扫描全部事实，查找 `_retracted_<root>` 标志，即使从未执行过 retract。
+- **修复**：`re_facts_t` 新增 `retract_flag_entries`，统计名字以 `_retracted_` 开头的条目数。条目一经创建名字不变，retract 只是停用条目而不删除，只有 `clear_all` 会全部移除，所以计数只需在 `re_facts_set_impl` 创建条目时加一、在 `re_facts_clear_all` 时清零、在 `re_facts_create` 时初始化为零，事务提交时与条目数组一同交换。`retracted_root` 在计数为零时直接返回 0。查找语义不变：有标志时仍按原逻辑扫描。
+- **效果**：`rule_engine_bench` large_1000 单次热求值由约 225 ms 降至约 171 ms，large_300 由 22 ms 降至 18 ms（结合上一条，1000 条规则合计由约 390 ms 降至约 171 ms）。
+- **TDD**：`test_rule_engine_grl_surface` 新增 `retract_gate_follows_host_flags`（宿主直接写入的标志同样门控规则），`test_rule_engine_agenda` 新增 `clear_all_forgets_retract_flags`（重复设置不重复计数，clear_all 归零）。变异检查：创建条目时不计数导致 5 例失败（含 4 个已有 retract 用例）；clear_all 不归零导致新用例失败。ASan/UBSan 下 grl_surface 138 例、agenda 47 例、transactions 13 例通过；C11 并行执行器压力测试通过；原生 CTest 459/459。
+- **仍缺**：按读集增量重算；`bound_fact_path` 每次求值都为前缀重绑定分配字符串。
+
 ## 规则引擎已触发键哈希索引（2026-11-22）
 
 - **问题**：上一条测量显示，1000 条规则的单次求值约 390 ms，gprof 中 `re_agenda_push_full` 占 27%。每次推入激活都线性扫描全部已触发键，做去重（refraction）判断；一次运行有约 3.7 万次推入、500 个已触发键。

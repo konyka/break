@@ -255,6 +255,7 @@ static int retracted_root(const re_facts_t *facts, const char *path, size_t path
     const re_facts_t *view = facts->transaction != NULL ? facts->transaction->staged : facts;
     size_t root = 0u;
     size_t i;
+    if (view->retract_flag_entries == 0u) return 0;
     while (root < path_size && path[root] != '.') ++root;
     for (i = 0u; i < view->count; ++i) {
         const re_fact_entry_t *entry = &view->entries[i];

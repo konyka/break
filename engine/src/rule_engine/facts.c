@@ -20,7 +20,7 @@ re_facts_t *re_facts_create(const re_allocator_t *allocator, const re_limits_t *
     facts = re_alloc(&selected, sizeof(*facts));
     if (facts == NULL) return NULL;
     facts->allocator = selected; facts->limits = limits != NULL ? *limits : re_default_limits();
-    facts->entries = NULL; facts->count = 0u; facts->capacity = 0u;
+    facts->entries = NULL; facts->count = 0u; facts->capacity = 0u; facts->retract_flag_entries = 0u;
     facts->mutation_serial = 0u;
     facts->nonce = ++next_facts_nonce;
     facts->running = 0; facts->destroy_requested = 0; facts->notifying = 0; facts->run_transaction_allowed = 0;
@@ -102,6 +102,7 @@ re_status_t re_facts_clear_all(re_facts_t *facts) {
     facts->entries = NULL;
     facts->count = 0u;
     facts->capacity = 0u;
+    facts->retract_flag_entries = 0u;
     re_tms_destroy(facts->tms);
     facts->tms = NULL;
     ++facts->mutation_serial;
@@ -150,6 +151,7 @@ re_status_t re_facts_set_impl(re_facts_t *facts, re_string_t name,
         facts->entries[index].structured = NULL;
         facts->entries[index].string_data = NULL;
         facts->count++;
+        if (name.size >= 11u && memcmp(name.data, "_retracted_", 11u) == 0) facts->retract_flag_entries++;
     } else {
         re_free(&facts->allocator, facts->entries[index].string_data);
         re_value_destroy(facts->entries[index].structured);
