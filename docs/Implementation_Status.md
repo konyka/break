@@ -1,3 +1,12 @@
+## arm64 CVar/XML、着色器 I/O 与编辑器 flow/image 和二百零五项 CTest（2026-11-21）
+
+- **最小场景**：新增五个既有纯 CPU 可执行目标：`test_break_cvar` 12、`test_break_xml` 13、`test_editor_flow` 3、`test_editor_image` 7、`test_shader_io` 59 例，共 94 例。CVar 与 XML 链接可选库 `break_system`（lane 已构建 `break_integrity`，该库因此已配置）；flow 与 image 链接 `break_editor_test`；shader I/O 只编入 `shader_io.c` 与 `log.c`。均不 fork、不起线程、不加载插件、不读环境变量。
+- **RED 与精确选择**：旧 workflow 在 `missing system/misc build targets` 处 RED。真实原生集合从 200 增至 205，差集恰为这五项；插件动态加载、system 目标契约、编辑器字体/设置/输入脚本及同名前缀扩展均被拒绝。完整表达式维持 31 个捕获组，契约同时检查组数、`Too many parentheses` 输出和严格集合差。CI 与 Build_Guide 的构建和测试命令逐字一致。
+- **原生与 focused 验证**：原生五项 5/5，计数 12/13/3/7/59；干净 Ubuntu 24.04 容器 arm64 五项 5/5，计数一致，QEMU 8.2.2。原生全量 456 项零失败，4 个既有平台用例跳过，CTest 170.24 秒。未修改产品或测试源码。
+- **完整干净容器验证**：以统一非 root 属主执行 workflow 原始构建和测试 step，205/205，CTest 129.24 秒。严格日志断言确认 25 组分项计数、全部旧契约/e2e、无失败分项、唯一 ptrace 设置 skip，且无 root 权限跳过、`CHILD TIMEOUT`、`PIPE TIMEOUT` 或 `Too many parentheses`。
+- **证据边界**：`test_shader_io` 的大部分用例经相对路径读取着色器与引擎源码，检查源码结构和变体路径映射，arm64 通过不代表 GPU 运行或着色器编译器证据。
+- **覆盖缺口**：插件动态加载（`test_break_plugin*`、`test_editor_plugin_load`）、编辑器字体/设置/输入脚本和 shell/UI 不在本切片内。
+
 ## arm64 Compose 核心与二百项 CTest（2026-11-21）
 
 - **最小场景**：新增五个既有 `headless;compose` 可执行目标：mycompose tree 28、remember 8、store 27、runtime 8、async 17 例，共 88 例。前四项只链接 `mycompose`（它自带线程库）；async 链接 `mycompose_myui`、dummy PAL 与线程库，只创建 dummy PAL 的无头窗口对象，不连接显示服务器、不用 GPU、不 fork。均由生成的 QEMU 命令直接启动。
