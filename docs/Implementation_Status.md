@@ -11,6 +11,7 @@
 - **问题**：上一条记录了一个检测缺口：铰链金标准第 40 步与 glibc 2.39 上旧实现的结果相同，因此在 CI 的 Ubuntu 24.04 主机上把物理改回平台 `atan2f` 不会让任何测试失败，只有 glibc 2.44 主机能检出；`fast_rsqrt` 退回 SSE 近似或去掉 `-ffp-contract=off` 也只在特定架构或编译器上才表现出来。
 - **修复**：新增宿主 CMake 契约 `test_physics_determinism_contract`（`engine/tests/test_physics_determinism_contract.cmake`，标签 `headless;physics;platform_contract`），直接检查源码：`src/physics/` 下任何文件都不调用平台 `atan2`/`atan2f`，也不使用 `_mm_rsqrt`/`_mm_rcp`；`math.h` 的 `fast_rsqrt` 恰为 `return 1.0f / sqrtf(x);`；`engine/CMakeLists.txt` 的 `-ffp-contract=off` 源文件列表包含 physics、math 与 `tests/test_math.c`。
 - **TDD**：在临时源码副本中分别做三种回退：physics 中一处改回 `atan2f`、`math.h` 换成带 SSE `rsqrtss` 的旧版本、从列表中删去 `test_math.c`，契约分别以对应信息失败；当前源码通过。原生 CTest 总数由 456 增至 457。
+- **远端收据**：提交 `a9f40380` 的主 CI run 44905416429 全部 job 成功（含 Windows MSVC/Clang/MinGW、macOS Metal 与 MoltenVK、Linux arm64 QEMU、ASan/UBSan、TSan），宿主契约在 Windows 与 macOS 的 `cmake -P` 下同样通过；windows-d3d12 run 44905416441 与 QUIC Weak Network run 44905416402 成功。
 
 ## 物理角度函数改用确定性 `math_atan2f`，铰链在不同 glibc 间逐位一致（2026-11-21）
 
