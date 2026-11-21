@@ -1,8 +1,19 @@
+## arm64 跨平台可移植契约与二百四十六项 CTest（2026-11-21）
+
+- **最小场景**：新增六个既有可执行目标，均以模拟头文件或可移植后端编译其他平台代码：`test_glad_wgl_loader`（`TEST_WGL_LOADER_SIMULATED` 模拟 WGL 与 DLL 入口，打印 `PASS:`，失败返回 1）、`test_platform_wsi_lifecycle` 8 例（`SIMULATE_WAYLAND`）、`test_d3d12_lifetime_hresult_contract` 7 例（不调用 D3D12）、`test_net_loop_qnx` 17 例与 `test_qnx_perf_smoke` 3 例（以 poll 后端编译 QNX 网络循环，在 `127.0.0.1` 回环上收发）、`test_break_plugin_unsupported` 1 例（不支持动态加载的平台上插件加载器失败即关闭）。
+- **RED 与精确选择**：旧 workflow 在 `missing portable contract build targets` 处 RED。真实原生集合从 240 增至 246，差集恰为这六项；`test_core_app_assets`、`test_platform_vk_surface_abi`、`test_rhi_vk_probe`、`test_rhi_native`、`test_input_extended_single_cpu`、`test_d3d12_dependency_gate` 与同名前缀扩展均被拒绝。完整表达式维持 31 个捕获组。CI 与 Build_Guide 的构建和测试命令逐字一致。
+- **排除 `test_core_app_assets` 的依据**：与六项一起在 arm64 QEMU 下试跑，该用例经 `system()` 启动 arm64 资产烘焙器，qemu-user 未注册 binfmt 时把 `execve` 直接交给宿主内核，于是 `system()` 实际运行的是宿主 x86 `/bin/sh`，该 shell 再 `execve` arm64 烘焙器时，内核因未为 aarch64 注册 binfmt_misc 处理器而返回 ENOEXEC（`Exec format error`），24 例中 9 例失败，因此不纳入。托管 runner 若已注册 qemu-aarch64 binfmt，该用例可能通过，但 lane 不应依赖宿主 binfmt 状态。`test_platform_vk_surface_abi` 需要 Vulkan，lane 未安装 arm64 Vulkan 开发包。
+- **原生与 focused 验证**：原生六项全部通过；干净 Ubuntu 24.04 容器 arm64 六项 6/6，计数 8/7/17/3/1 与原生一致，glad 打印 `PASS:`。原生全量 456 项零失败，4 个既有平台用例跳过，CTest 177.10 秒。未修改产品或测试源码。
+- **完整干净容器验证**：以统一非 root 属主执行 workflow 原始构建和测试 step，246/246，CTest 147.76 秒。严格日志断言确认 60 组分项计数、glad 出现在通过列表且打印 `PASS:`、全部旧契约/e2e、无失败分项、唯一的平台 setup skip，无 root 权限跳过或 `Too many parentheses`；超时标记恰为 `test_fork_deadline` 的三条预期标记。
+- **独立评审**：结论可合入，无 Critical/Important。评审核实六项均只受 `ENGINE_BUILD_TESTS` 与各自平台条件门控且在 Linux arm64 下成立；net_loop_qnx/qnx_perf_smoke 以 `ENGINE_PLATFORM_QNX=1` 自编译源码、不链接 `engine`，17 例恰为通用、QNX poll 与非 Windows 用例之和；plugin_unsupported 以 `BREAK_SYSTEM_TEST_UNSUPPORTED=1` 关闭 `__linux__` 分支，从不 `dlopen`，并断言越权夹具构造函数未执行；glad 模拟路径任一检查失败即返回 1；QEMU 下吞吐下限余量约 210–680 倍，无 fork 或 seq_cst 存-读握手。实测 240→246，差集恰为六项，捕获组仍为 31。已采纳的 Minor：`test_core_app_assets` 排除原因改为宿主 shell 经未注册 binfmt 的内核执行 arm64 子进程失败的准确描述。
+- **覆盖缺口**：这六项只证明其他平台代码在 arm64 上以模拟头文件编译并自洽，不代表 Windows、QNX 或 D3D12 真机行为；core_app 资产烘焙子进程、Vulkan 表面 ABI 与设备探测仍不在 arm64 lane 内。
+
 ## 编辑器远程 CLI 解析用例移出 Snowflake 门控并改用临时目录（2026-11-21）
 
 - **问题**：插件/Lua/shell 切片的独立评审指出，`remote_cli_default_off_and_fail_closed_flags` 只调用 `break_editor_remote_cli_parse`、`_cli_to_config`、`_cli_wipe`。这三个函数在 `editor_remote.c` 的 Snowflake 门控之外，两种构建都编译，但用例本身仍在 `#ifdef BREAK_EDITOR_REMOTE_TESTS` 块内，未启用 Snowflake 的构建从不执行 `--remote` 参数的失败即关闭检查。另外该用例把 `editor_remote_cli_test.psk` 与 `.keyring` 写在当前工作目录。
 - **修复**：用例及其 `remote_cli` 辅助函数、所属小节注释原样移到远程门控块之前，并包含只依赖 `core/types.h` 与 `editor_panels.h` 的 `editor_remote.h`（`#pragma once`，门控块内的再次包含无副作用）；注册从 `RUN_REMOTE_TEST` 改为 `RUN_TEST`。两个夹具文件路径改由 `test_tmp()` 生成，argv 在运行时填入。用例断言内容不变。
 - **RED/GREEN**：修复前未启用 Snowflake 的构建为 185 例且不含该用例；修复后 186 例并通过，Snowflake 构建仍为 233 例全部通过。两种构建运行后工作目录与 `/tmp` 下均无残留夹具文件。原生全量 456 项零失败，4 个既有平台用例跳过。arm64 lane 中 shell 计数相应由 185 变为 186。
+- **远端验证**：[CI run 44882708992](https://github.com/konyka/break/actions/runs/44882708992) 的 [arm64 job 136781288524](https://github.com/konyka/break/actions/runs/44882708992/job/136781288524) 在提交 `6392fa34` 上成功，原始日志严格断言确认精确 240 项、55 组分项计数，shell 为 186 例且包含该用例；主 CI 与独立 [Windows D3D12 run 44882708927](https://github.com/konyka/break/actions/runs/44882708927) 均为 `completed / success`。
 - **范围**：`remote_null_and_bounded_calls_are_safe` 在非 Snowflake 构建下只会测试桩函数，仍留在门控内；`remote_tls_cli_keyring_file_installs_all_keys` 需要 TLS，同样不动。
 
 ## arm64 插件动态加载、编辑器 Lua 与 shell 和二百四十项 CTest（2026-11-21）
