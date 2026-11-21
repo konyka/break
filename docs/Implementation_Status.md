@@ -1,3 +1,12 @@
+## arm64 RHI CPU 路径与二百三十项 CTest（2026-11-21）
+
+- **最小场景**：新增五个既有纯 CPU RHI 可执行目标：`test_rhi_rollout_log`（rollout 结构化日志，只打印 `OK`）、`test_rhi_runtime_select`（49 项运行时后端选择检查，探测结果由 `BREAK_RHI_RUNTIME_TESTING` 注入，只打印 `OK: 49 ...`）、`test_rhi_fault_injection` 6 例与 `test_rhi_wsi_attach` 3 例（在 `ENGINE_RHI_TEST` 内存设备上注入失败、检查头文件内联的 WSI 附着状态机；`engine_rhi_headless` 只提供拒绝工作的后端桩）、`test_rhi_golden_parity`（比较仓库中已提交的 Vulkan 与 OpenGL 参考 PPM，只读文件、不渲染）。均不访问 GPU、窗口系统或真实设备。
+- **RED 与精确选择**：旧 workflow 在 `missing rhi cpu build targets` 处 RED。真实原生集合从 225 增至 230，差集恰为这五项；`test_rhi_vk_probe`、`test_rhi_device_type`、`test_rhi_native`、`test_rhi_multi_backend_symbols`、各 RHI 宿主 CMake 契约与同名前缀扩展均被拒绝。完整表达式维持 31 个捕获组。CI 与 Build_Guide 的构建和测试命令逐字一致。
+- **原生与 focused 验证**：原生五项 5/5；干净 Ubuntu 24.04 容器 arm64 五项 5/5，QEMU 8.2.2，输出逐行一致：49 项选择检查、6/3 例，golden 比较 MAE 0.33/0.64、最大误差 1，与原生完全相同。原生全量 456 项零失败，4 个既有平台用例跳过，CTest 211.36 秒。未修改产品或测试源码。
+- **完整干净容器验证**：以统一非 root 属主执行 workflow 原始构建和测试 step，230/230，CTest 151.42 秒。严格日志断言确认 45 组分项计数、`test_rhi_rollout_log`/`test_rhi_runtime_select`/`test_rhi_golden_parity` 均在通过列表中且分别打印 `OK`、`OK: 49 runtime selection checks`、`test_rhi_golden_parity: OK`、全部旧契约/e2e、无失败分项、唯一 ptrace 设置 skip，无 root 权限跳过或 `Too many parentheses`；超时标记恰为 `test_fork_deadline` 的三条预期标记。
+- **独立评审**：结论可合入，无 Critical/Important。评审核实五个目标只受 `ENGINE_BUILD_TESTS` 门控、不受 opengl 后端与交叉编译影响；fault_injection/wsi_attach 的设备来自 `ENGINE_RHI_TEST` 下的 `rhi_test_device_create()` 内存分配，`engine_rhi_headless` 只提供拒绝工作的后端桩，WSI 为头文件内联状态机且不链接 `wayland-client`；golden 参数为检出目录内的绝对路径，四个 PPM 均受版本控制；rollout_log 与 runtime_select 任一检查失败即返回 1；runtime_select 恰有 49 个非循环 `CHECK`。实测 225→230，差集恰为五项，捕获组仍为 31。已采纳的 Minor：计划中的设备描述改为准确说法，移除占位注释。
+- **覆盖缺口**：rollout_log 与 runtime_select 不打印分项计数，日志断言只核对它们出现在通过列表中；golden 比较只证明已提交图像在 arm64 上读取与计算一致，不代表 arm64 上的真实渲染结果；Vulkan 探测、GPU 设备和多后端符号形状不在本切片内。
+
 ## 音频 PCM 流关闭握手在 qemu-user 下的释放后读取修复（2026-11-21）
 
 - **现象**：平台输入切片的非 root 干净容器全量运行中，既有 `test_voice_playback` 在 arm64 QEMU 下 SEGFAULT（225 项中 1 项失败）。单独循环 400 次复现 20 次，崩溃点为 `producer_and_close_race_with_a_mixer_thread` 与 96 kHz 变体；原生 x86 循环 300 次 0 失败。
