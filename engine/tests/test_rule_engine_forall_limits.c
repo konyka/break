@@ -1,4 +1,5 @@
 #include "test_framework.h"
+#include <stdio.h>
 #include "../src/rule_engine/re_internal.h"
 #include <stdlib.h>
 
@@ -134,9 +135,17 @@ TEST(forall_evaluator_reports_allocator_failure) {
     ASSERT_EQ(re_program_load(NULL,
         text("rule \"All\" { when forall Values >= 3 then Result = 1; }"),
         NULL, &program), RE_STATUS_OK);
-    state.fail_at = state.calls + 1u;
-    ASSERT_EQ(re_ir_match_rule(engine, facts, program->ir, 0u, &matched),
-              RE_STATUS_OUT_OF_MEMORY);
+    /* Count the allocations one match makes (the evaluator keeps a shallow
+     * frame stack inline, so a simple forall needs few or none), then fail
+     * each of them in turn: every failure must surface as OUT_OF_MEMORY. */
+    size_t before = state.calls;
+    ASSERT_EQ(re_ir_match_rule(engine, facts, program->ir, 0u, &matched), RE_STATUS_OK);
+    size_t allocations = state.calls - before;
+    for (size_t k = 1u; k <= allocations; ++k) {
+        state.fail_at = state.calls + k;
+        ASSERT_EQ(re_ir_match_rule(engine, facts, program->ir, 0u, &matched),
+                  RE_STATUS_OUT_OF_MEMORY);
+    }
     state.fail_at = 0u;
     ASSERT_EQ(re_ir_match_rule(engine, facts, program->ir, 0u, &matched),
               RE_STATUS_OK);
@@ -147,10 +156,53 @@ TEST(forall_evaluator_reports_allocator_failure) {
     re_engine_destroy(engine);
 }
 
+/* A condition nested deeper than the evaluator's inline frame stack moves
+ * the stack to the heap mid-evaluation; the result must not change, and a
+ * failure of any of those allocations must surface as OUT_OF_MEMORY. */
+TEST(deep_condition_spills_the_frame_stack_to_the_heap) {
+    alloc_state_t state = {0u, 0u};
+    re_allocator_t allocator = {&state, test_alloc, test_realloc, test_free};
+    re_engine_t *engine = re_engine_create(&allocator, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_program_t *program = NULL;
+    re_value_t one = {RE_VALUE_INT64, {.int64_value = 1}};
+    char source[2048];
+    size_t used = 0u;
+    int matched = 0;
+    ASSERT_NOT_NULL(engine);
+    ASSERT_NOT_NULL(facts);
+    ASSERT_EQ(re_facts_set(facts, text("X"), &one), RE_STATUS_OK);
+    used += (size_t)snprintf(source + used, sizeof(source) - used, "rule \"Deep\" { when ");
+    for (int i = 0; i < 40; i++) used += (size_t)snprintf(source + used, sizeof(source) - used, "(X == 1 and ");
+    used += (size_t)snprintf(source + used, sizeof(source) - used, "X == 1");
+    for (int i = 0; i < 40; i++) used += (size_t)snprintf(source + used, sizeof(source) - used, ")");
+    used += (size_t)snprintf(source + used, sizeof(source) - used, " then Result = 1; }");
+    ASSERT_TRUE(used < sizeof(source));
+    ASSERT_EQ(re_program_load(NULL, (re_string_t){source, used}, NULL, &program), RE_STATUS_OK);
+    size_t before = state.calls;
+    ASSERT_EQ(re_ir_match_rule(engine, facts, program->ir, 0u, &matched), RE_STATUS_OK);
+    ASSERT_TRUE(matched);
+    size_t allocations = state.calls - before;
+    ASSERT_TRUE(allocations >= 1u);
+    for (size_t k = 1u; k <= allocations; ++k) {
+        state.fail_at = state.calls + k;
+        ASSERT_EQ(re_ir_match_rule(engine, facts, program->ir, 0u, &matched), RE_STATUS_OUT_OF_MEMORY);
+    }
+    state.fail_at = 0u;
+    one.as.int64_value = 2;
+    ASSERT_EQ(re_facts_set(facts, text("X"), &one), RE_STATUS_OK);
+    ASSERT_EQ(re_ir_match_rule(engine, facts, program->ir, 0u, &matched), RE_STATUS_OK);
+    ASSERT_FALSE(matched);
+    re_program_destroy(program);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(forall_mixed_array_does_not_match);
     RUN_TEST(forall_absent_path_does_not_match);
     RUN_TEST(forall_element_limit_is_enforced);
     RUN_TEST(forall_depth_limit_is_enforced_before_evaluation);
     RUN_TEST(forall_evaluator_reports_allocator_failure);
+    RUN_TEST(deep_condition_spills_the_frame_stack_to_the_heap);
 TEST_MAIN_END()

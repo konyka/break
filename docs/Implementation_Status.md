@@ -1,3 +1,11 @@
+## 规则引擎条件求值免堆分配（2026-11-22）
+
+- **问题**：每次匹配一条规则，`match_rule_impl` 都为求值帧栈和规则栈各分配一次堆内存，结束时再释放；1000 条规则的一次运行要做约 1 亿次分配与释放。
+- **修复**：`re_ir_eval_state_t` 内置 16 个求值帧与 8 个规则槽（`engine/src/rule_engine/ir_eval.c`），状态在栈上，首次 push 时指向内置数组；超过容量时复制到堆上并按原有的倍增策略增长，销毁时只释放堆上的数组。语义不变：嵌套超过 16 层的条件照常在堆上求值，分配失败照常返回 OUT_OF_MEMORY。每个线程的状态在各自栈上，C11 并行执行器不受影响。
+- **效果**：简单条件的一次匹配从 2 次分配降为 0 次。`rule_engine_bench` large_1000 单次热求值由约 171 ms 降至约 152 ms，sparse、dense 小规则集也略快。至此，1000 条规则合计由约 390 ms 降至约 152 ms。
+- **TDD**：原 `forall_evaluator_reports_allocator_failure` 假定一次匹配至少有一次分配，现改为先统计实际分配次数，再逐个注入失败。新增 `deep_condition_spills_the_frame_stack_to_the_heap`：40 层嵌套的条件使帧栈中途转移到堆上，结果正确，每次分配失败都返回 OUT_OF_MEMORY，改变事实后结果随之改变。变异检查：转移到堆时不复制已有帧会导致崩溃。ASan/UBSan 下 forall_limits 6 例、rule_engine 98 例、grl_surface 138 例、backward_bindings 21 例、agenda 47 例通过；C11 并行执行器压力测试通过；原生 CTest 459/459。
+- **仍缺**：按读集增量重算（剩余开销主要随“规则数 × 触发次数”增长）、Redis 路径。
+
 ## 2026-11-22 测试补充与 arm64 lane 扩选的远端收据
 
 以下提交的主 CI 均为 22 个 job 成功、3 个按设计跳过，独立 windows-d3d12 工作流均成功；arm64 job 原始日志均经严格断言（精确测试数、分项计数、无失败用例、全部契约与 e2e、唯一的 ptrace 设置跳过）：

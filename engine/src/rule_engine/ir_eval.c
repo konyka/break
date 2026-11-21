@@ -71,6 +71,11 @@ typedef struct re_ir_eval_state_t {
      * the list out to the caller's scratch so the resolved value stays valid
      * after the state is destroyed. */
     re_eval_scratch_t scratch;
+    /* Inline storage for the common shallow evaluation, so matching one rule
+     * does not allocate: frames and rules start here and move to the heap
+     * only when they outgrow it. */
+    re_eval_frame_t inline_frames[16];
+    size_t inline_rules[8];
 } re_ir_eval_state_t;
 
 static re_status_t eval_step(re_ir_eval_state_t *state) {
@@ -87,15 +92,17 @@ static re_status_t push_rule(const re_engine_t *engine, re_ir_eval_state_t *stat
     size_t capacity;
     size_t *rules;
     if (active_rule(state, index)) return RE_STATUS_LIMIT;
+    if (state->rule_capacity == 0u) {
+        state->rules = state->inline_rules;
+        state->rule_capacity = sizeof(state->inline_rules) / sizeof(state->inline_rules[0]);
+    }
     if (state->rule_count == state->rule_capacity) {
-        capacity = state->rule_capacity == 0u ? 8u : state->rule_capacity * 2u;
+        capacity = state->rule_capacity * 2u;
         if (capacity < state->rule_capacity || capacity > SIZE_MAX / sizeof(*rules)) return RE_STATUS_LIMIT;
         rules = re_alloc(&engine->allocator, capacity * sizeof(*rules));
         if (rules == NULL) return RE_STATUS_OUT_OF_MEMORY;
-        if (state->rules != NULL) {
-            memcpy(rules, state->rules, state->rule_count * sizeof(*rules));
-            re_free(&engine->allocator, state->rules);
-        }
+        memcpy(rules, state->rules, state->rule_count * sizeof(*rules));
+        if (state->rules != state->inline_rules) re_free(&engine->allocator, state->rules);
         state->rules = rules;
         state->rule_capacity = capacity;
     }
@@ -357,11 +364,21 @@ static re_status_t frame_push(const re_engine_t *engine, re_ir_eval_state_t *sta
                               unsigned slot) {
     size_t capacity;
     re_eval_frame_t *frames;
+    if (state->frame_capacity == 0u) {
+        state->frames = state->inline_frames;
+        state->frame_capacity = sizeof(state->inline_frames) / sizeof(state->inline_frames[0]);
+    }
     if (state->frame_count == state->frame_capacity) {
-        capacity = state->frame_capacity == 0u ? 16u : state->frame_capacity * 2u;
+        capacity = state->frame_capacity * 2u;
         if (capacity < state->frame_capacity || capacity > SIZE_MAX / sizeof(*frames)) return RE_STATUS_LIMIT;
-        frames = re_realloc(&engine->allocator, state->frames, capacity * sizeof(*frames));
-        if (frames == NULL) return RE_STATUS_OUT_OF_MEMORY;
+        if (state->frames == state->inline_frames) {
+            frames = re_alloc(&engine->allocator, capacity * sizeof(*frames));
+            if (frames == NULL) return RE_STATUS_OUT_OF_MEMORY;
+            memcpy(frames, state->frames, state->frame_count * sizeof(*frames));
+        } else {
+            frames = re_realloc(&engine->allocator, state->frames, capacity * sizeof(*frames));
+            if (frames == NULL) return RE_STATUS_OUT_OF_MEMORY;
+        }
         state->frames = frames;
         state->frame_capacity = capacity;
     }
@@ -1378,7 +1395,8 @@ static void state_destroy(const re_engine_t *engine, re_ir_eval_state_t *state) 
     re_free(&engine->allocator, state->scratch.items);
     while (state->binding_count != 0u) binding_pop(engine, state);
     re_free(&engine->allocator, state->bindings);
-    re_free(&engine->allocator, state->frames); re_free(&engine->allocator, state->rules);
+    if (state->frames != state->inline_frames) re_free(&engine->allocator, state->frames);
+    if (state->rules != state->inline_rules) re_free(&engine->allocator, state->rules);
 }
 static re_status_t match_rule_impl(const re_engine_t *engine, re_facts_t *facts, const re_ir_program_t *ir, size_t rule_index, int *matched, re_ir_read_set_t *reads) {
     re_ir_eval_state_t state; re_status_t status;
