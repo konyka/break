@@ -75,19 +75,27 @@ static void net_deliver(Net *n) {
     n->now++;
 }
 
+static bool g_hold_outbox;
+
+static BreakCellConfig cell_config(u32 id, u32 capacity) {
+    BreakCellConfig cfg;
+    memset(&cfg, 0, sizeof cfg);
+    cfg.cell_id = id;
+    cfg.capacity = capacity;
+    cfg.retransmit_ticks = 2u;
+    cfg.offer_timeout_ticks = 10u;
+    cfg.send = net_send;
+    cfg.user = &g_net;
+    cfg.hold_outbox = g_hold_outbox;
+    return cfg;
+}
+
 static void make_cells(u32 count, u32 capacity) {
     memset(&g_net, 0, sizeof g_net);
     g_net.rng = 12345u;
     for (u32 i = 0; i < MAX_CELLS; i++) g_cells[i] = NULL;
     for (u32 i = 0; i < count; i++) {
-        BreakCellConfig cfg;
-        memset(&cfg, 0, sizeof cfg);
-        cfg.cell_id = i;
-        cfg.capacity = capacity;
-        cfg.retransmit_ticks = 2u;
-        cfg.offer_timeout_ticks = 10u;
-        cfg.send = net_send;
-        cfg.user = &g_net;
+        BreakCellConfig cfg = cell_config(i, capacity);
         g_cells[i] = break_cell_create(&cfg);
     }
 }
@@ -451,6 +459,296 @@ TEST(a_stale_offer_after_moving_on_does_not_wedge_the_old_source) {
     free_cells();
 }
 
+/* ---- crash recovery ---- */
+
+#define SNAP_CAP 8192u
+
+static u32 take_snapshot(BreakCell *cell, u8 *buf) {
+    u32 size = 0u;
+    if (!break_cell_snapshot(cell, buf, SNAP_CAP, &size)) return 0u;
+    return size;
+}
+
+TEST(a_snapshot_restores_every_record_and_counter) {
+    static u8 a[SNAP_CAP], b[SNAP_CAP];
+    u64 v = 5u;
+    g_hold_outbox = false;
+    make_cells(3u, 8u);
+    /* cell 0: one owned, one offering, one committing; cell 1 receiving */
+    ASSERT_TRUE(break_cell_spawn(g_cells[0], 1u, &v, sizeof v));
+    ASSERT_TRUE(break_cell_spawn(g_cells[0], 2u, &v, sizeof v));
+    ASSERT_TRUE(break_cell_spawn(g_cells[0], 3u, &v, sizeof v));
+    ASSERT_TRUE(break_cell_begin_handoff(g_cells[0], 3u, 1u));
+    net_deliver(&g_net); /* OFFER -> 1 */
+    net_deliver(&g_net); /* ACCEPT -> 0: cell 0 commits entity 3 */
+    g_net.count = 0u;    /* the COMMIT is lost: 1 keeps a receiving record */
+    ASSERT_TRUE(break_cell_begin_handoff(g_cells[0], 2u, 2u));
+    g_net.count = 0u;
+    ASSERT_EQ(break_cell_entity_state(g_cells[0], 3u), BREAK_CELL_ENTITY_COMMITTING);
+    ASSERT_EQ(break_cell_entity_state(g_cells[0], 2u), BREAK_CELL_ENTITY_OFFERING);
+    ASSERT_EQ(break_cell_entity_state(g_cells[1], 3u), BREAK_CELL_ENTITY_RECEIVING);
+    v = 6u;
+    ASSERT_TRUE(break_cell_write(g_cells[0], 1u, &v, sizeof v));
+    /* one tick gives the in-flight records non-zero timing counters, which
+     * the round trip below must keep */
+    for (u32 c = 0; c < 2u; c++) break_cell_tick(g_cells[c]);
+    g_net.count = 0u;
+
+    for (u32 c = 0; c < 2u; c++) {
+        u32 n = take_snapshot(g_cells[c], a);
+        ASSERT_TRUE(n > 0u);
+        ASSERT_EQ(n, break_cell_snapshot_size(g_cells[c]));
+        BreakCellConfig cfg = cell_config(c, 8u);
+        BreakCell *r = break_cell_restore(&cfg, a, n);
+        ASSERT_NOT_NULL(r);
+        /* restoring is lossless: the restored cell snapshots to the same bytes */
+        ASSERT_EQ(take_snapshot(r, b), n);
+        ASSERT_TRUE(memcmp(a, b, n) == 0);
+        ASSERT_EQ(break_cell_entity_count(r), break_cell_entity_count(g_cells[c]));
+        for (u64 e = 1u; e <= 3u; e++)
+            ASSERT_EQ(break_cell_entity_state(r, e), break_cell_entity_state(g_cells[c], e));
+        break_cell_destroy(g_cells[c]);
+        g_cells[c] = r;
+    }
+    {
+        u64 epoch = 0u;
+        ASSERT_EQ(read_counter(g_cells[0], 1u, &epoch), 6u);
+        ASSERT_EQ(epoch, 1u);
+    }
+    /* the restored cells finish both handoffs, and new transactions do not
+     * reuse ids: the restored source's next offer is accepted normally */
+    for (u32 i = 0; i < 40u; i++) step();
+    ASSERT_EQ(break_cell_entity_state(g_cells[1], 3u), BREAK_CELL_ENTITY_OWNED);
+    ASSERT_EQ(break_cell_entity_state(g_cells[0], 3u), BREAK_CELL_ENTITY_NONE);
+    ASSERT_EQ(break_cell_entity_state(g_cells[2], 2u), BREAK_CELL_ENTITY_OWNED);
+    ASSERT_TRUE(break_cell_begin_handoff(g_cells[0], 1u, 2u));
+    for (u32 i = 0; i < 40u; i++) step();
+    ASSERT_EQ(break_cell_entity_state(g_cells[2], 1u), BREAK_CELL_ENTITY_OWNED);
+    ASSERT_EQ(read_counter(g_cells[2], 1u, NULL), 6u);
+    free_cells();
+}
+
+/* Appends the snapshot's trailing FNV-1a hash over the first n bytes. */
+static void reseal(u8 *buf, u32 n) {
+    u64 h = 0xcbf29ce484222325ull;
+    for (u32 i = 0; i < n; i++) {
+        h ^= buf[i];
+        h *= 0x100000001b3ull;
+    }
+    for (u32 i = 0; i < 8u; i++) buf[n + i] = (u8)(h >> (8u * i));
+}
+
+TEST(a_bad_snapshot_is_refused) {
+    static u8 a[SNAP_CAP];
+    u64 v = 1u;
+    u32 n;
+    BreakCellConfig cfg;
+    g_hold_outbox = false;
+    make_cells(2u, 4u);
+    ASSERT_TRUE(break_cell_spawn(g_cells[0], 1u, &v, sizeof v));
+    ASSERT_TRUE(break_cell_spawn(g_cells[0], 2u, &v, sizeof v));
+    n = take_snapshot(g_cells[0], a);
+    ASSERT_TRUE(n > 0u);
+    cfg = cell_config(0u, 4u);
+    for (u32 len = 0; len < n; len++) ASSERT_TRUE(break_cell_restore(&cfg, a, len) == NULL);
+    for (u32 byte = 0; byte < n; byte++) {
+        a[byte] ^= 0x10u;
+        ASSERT_TRUE(break_cell_restore(&cfg, a, n) == NULL);
+        a[byte] ^= 0x10u;
+    }
+    {
+        BreakCell *ok = break_cell_restore(&cfg, a, n);
+        ASSERT_NOT_NULL(ok);
+        break_cell_destroy(ok);
+    }
+    /* well-formed hash, bad content: a duplicated record, a trailing byte */
+    {
+        static u8 forged[SNAP_CAP];
+        const u32 header = 32u, record = 52u + (u32)sizeof v;
+        u32 fn = n - 8u;
+        memcpy(forged, a, fn);
+        memcpy(forged + fn, a + header, record); /* the first record again */
+        fn += record;
+        forged[12] = 3u;                         /* record count */
+        reseal(forged, fn);
+        ASSERT_TRUE(break_cell_restore(&cfg, forged, fn + 8u) == NULL);
+        memcpy(forged, a, n - 8u);
+        forged[n - 8u] = 0u;
+        reseal(forged, n - 7u);
+        ASSERT_TRUE(break_cell_restore(&cfg, forged, n + 1u) == NULL);
+        /* the helper itself reproduces a valid snapshot */
+        memcpy(forged, a, n - 8u);
+        reseal(forged, n - 8u);
+        {
+            BreakCell *ok = break_cell_restore(&cfg, forged, n);
+            ASSERT_NOT_NULL(ok);
+            break_cell_destroy(ok);
+        }
+    }
+    cfg = cell_config(1u, 4u); /* another cell's snapshot */
+    ASSERT_TRUE(break_cell_restore(&cfg, a, n) == NULL);
+    cfg = cell_config(0u, 1u); /* two records do not fit */
+    ASSERT_TRUE(break_cell_restore(&cfg, a, n) == NULL);
+    cfg = cell_config(0u, 4u);
+    cfg.send = NULL;
+    ASSERT_TRUE(break_cell_restore(&cfg, a, n) == NULL);
+    cfg = cell_config(0u, 4u);
+    ASSERT_TRUE(break_cell_restore(&cfg, NULL, n) == NULL);
+    ASSERT_TRUE(break_cell_restore(NULL, a, n) == NULL);
+    {
+        u32 size = 0u;
+        ASSERT_FALSE(break_cell_snapshot(g_cells[0], a, n - 1u, &size));
+        ASSERT_FALSE(break_cell_snapshot(g_cells[0], NULL, n, &size));
+        ASSERT_FALSE(break_cell_snapshot(g_cells[0], a, n, NULL));
+        ASSERT_FALSE(break_cell_snapshot(NULL, a, n, &size));
+        ASSERT_EQ(break_cell_snapshot_size(NULL), 0u);
+    }
+    free_cells();
+}
+
+TEST(a_held_outbox_sends_only_on_flush) {
+    u64 v = 1u;
+    g_hold_outbox = true;
+    make_cells(2u, 4u);
+    ASSERT_TRUE(break_cell_spawn(g_cells[0], 1u, &v, sizeof v));
+    ASSERT_TRUE(break_cell_begin_handoff(g_cells[0], 1u, 1u));
+    ASSERT_EQ(g_net.sent, 0u);
+    ASSERT_EQ(break_cell_outbox_count(g_cells[0]), 1u);
+    break_cell_tick(g_cells[0]);
+    break_cell_tick(g_cells[0]); /* a retransmit joins the queue */
+    ASSERT_EQ(break_cell_outbox_count(g_cells[0]), 2u);
+    ASSERT_EQ(g_net.sent, 0u);
+    ASSERT_EQ(break_cell_flush(g_cells[0]), 2u);
+    ASSERT_EQ(g_net.sent, 2u);
+    ASSERT_EQ(g_net.msgs[0].type, (u32)BREAK_CELL_MSG_OFFER);
+    ASSERT_EQ(break_cell_outbox_count(g_cells[0]), 0u);
+    ASSERT_EQ(break_cell_flush(g_cells[0]), 0u);
+    ASSERT_EQ(break_cell_flush(NULL), 0u);
+    ASSERT_EQ(break_cell_outbox_count(NULL), 0u);
+    /* without hold_outbox nothing is queued */
+    g_hold_outbox = false;
+    free_cells();
+    make_cells(2u, 4u);
+    ASSERT_TRUE(break_cell_spawn(g_cells[0], 1u, &v, sizeof v));
+    ASSERT_TRUE(break_cell_begin_handoff(g_cells[0], 1u, 1u));
+    ASSERT_EQ(g_net.sent, 1u);
+    ASSERT_EQ(break_cell_outbox_count(g_cells[0]), 0u);
+    free_cells();
+}
+
+/* Chaos with crashes. After every step each cell either snapshots and then
+ * flushes (snapshot_first, the documented order) or flushes and then
+ * snapshots. A crash right after the flush restores the cell from its
+ * latest snapshot. Writes made since that snapshot are lost, so the checks
+ * are single authority, epochs never going back, settling to one owner, and
+ * counters never exceeding the largest accepted write. */
+static u32 run_crash_chaos(u64 seed, bool snapshot_first, u64 *out_crashes) {
+    static u8 snaps[MAX_CELLS][SNAP_CAP];
+    u32 snap_size[MAX_CELLS];
+    enum { ENTITIES = 12 };
+    u64 accepted[ENTITIES], last_epoch[ENTITIES];
+    u32 violation = 0u;
+    g_hold_outbox = true;
+    make_cells(MAX_CELLS, 16u);
+    g_net.rng = seed;
+    g_net.drop_percent = 15u;
+    g_net.dup_percent = 20u;
+    g_net.max_delay = 8u;
+    g_net.reorder = true;
+    for (u32 e = 0; e < ENTITIES; e++) {
+        u64 zero = 0u;
+        accepted[e] = 0u;
+        last_epoch[e] = 1u;
+        (void)break_cell_spawn(g_cells[e % MAX_CELLS], 1000u + e, &zero, sizeof zero);
+    }
+    for (u32 c = 0; c < MAX_CELLS; c++) snap_size[c] = take_snapshot(g_cells[c], snaps[c]);
+    for (u32 t = 0; t < 3000u && violation == 0u; t++) {
+        if (t == 2400u) {
+            g_net.drop_percent = 0u;
+            g_net.dup_percent = 0u;
+            g_net.max_delay = 0u;
+        }
+        for (u32 e = 0; e < ENTITIES; e++) {
+            u64 id = 1000u + e;
+            i32 holder = -1;
+            u32 n = authority_count(id, &holder);
+            if (n > 1u) violation = 1u;
+            if (n == 1u && t < 2400u) {
+                u64 epoch = 0u;
+                u64 cur = read_counter(g_cells[holder], id, &epoch);
+                if (epoch < last_epoch[e]) violation = 2u;
+                if (cur > accepted[e]) violation = 7u;
+                last_epoch[e] = epoch;
+                if (net_rand(&g_net) % 3u == 0u) {
+                    u64 next = cur + 1u;
+                    if (break_cell_write(g_cells[holder], id, &next, sizeof next) && next > accepted[e])
+                        accepted[e] = next;
+                }
+                if (net_rand(&g_net) % 7u == 0u)
+                    (void)break_cell_begin_handoff(g_cells[holder], id, net_rand(&g_net) % MAX_CELLS);
+            }
+        }
+        step();
+        for (u32 c = 0; c < MAX_CELLS; c++) {
+            bool crash = t < 2400u && net_rand(&g_net) % 100u < 3u;
+            if (snapshot_first) snap_size[c] = take_snapshot(g_cells[c], snaps[c]);
+            (void)break_cell_flush(g_cells[c]);
+            if (crash) {
+                /* the cell dies after sending; it comes back from its
+                 * latest durable snapshot, which in the unsafe order
+                 * predates what it just sent */
+                BreakCellConfig cfg = cell_config(c, 16u);
+                break_cell_destroy(g_cells[c]);
+                g_cells[c] = break_cell_restore(&cfg, snaps[c], snap_size[c]);
+                if (g_cells[c] == NULL) {
+                    violation = 8u;
+                    break;
+                }
+                (*out_crashes)++;
+            }
+            if (!snapshot_first) snap_size[c] = take_snapshot(g_cells[c], snaps[c]);
+        }
+    }
+    for (u32 e = 0; e < ENTITIES && violation == 0u; e++) {
+        u64 id = 1000u + e;
+        i32 holder = -1;
+        if (authority_count(id, &holder) != 1u) {
+            violation = 3u;
+            break;
+        }
+        if (break_cell_entity_state(g_cells[holder], id) != BREAK_CELL_ENTITY_OWNED) violation = 4u;
+        for (u32 c = 0; c < MAX_CELLS; c++)
+            if ((i32)c != holder && break_cell_entity_state(g_cells[c], id) != BREAK_CELL_ENTITY_NONE)
+                violation = 5u;
+        if (read_counter(g_cells[holder], id, NULL) > accepted[e]) violation = 7u;
+    }
+    free_cells();
+    g_hold_outbox = false;
+    return violation;
+}
+
+TEST(crashes_restored_from_snapshots_keep_a_single_authority) {
+    u64 crashes = 0u;
+    for (u64 seed = 1u; seed <= 40u; seed++) {
+        u32 violation = run_crash_chaos(seed * 104729u, true, &crashes);
+        if (violation) printf("    seed %llu violation %u\n", (unsigned long long)seed, violation);
+        ASSERT_EQ(violation, 0u);
+    }
+    printf("    %llu crashes recovered\n", (unsigned long long)crashes);
+    ASSERT_TRUE(crashes > 1000u);
+}
+
+/* The same crashes with the order reversed must break the invariant, which
+ * shows the test can tell the two orders apart. */
+TEST(flushing_before_the_snapshot_is_unsafe) {
+    u64 crashes = 0u;
+    u32 broken = 0u;
+    for (u64 seed = 1u; seed <= 40u; seed++)
+        if (run_crash_chaos(seed * 104729u, false, &crashes) != 0u) broken++;
+    printf("    %u of 40 runs broke\n", broken);
+    ASSERT_TRUE(broken > 0u);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(spawn_write_and_read_on_the_owner);
     RUN_TEST(clean_handoff_moves_authority_and_the_latest_state);
@@ -460,4 +758,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(malformed_messages_are_ignored);
     RUN_TEST(a_stale_offer_after_moving_on_does_not_wedge_the_old_source);
     RUN_TEST(chaos_keeps_a_single_authority_and_loses_nothing);
+    RUN_TEST(a_snapshot_restores_every_record_and_counter);
+    RUN_TEST(a_bad_snapshot_is_refused);
+    RUN_TEST(a_held_outbox_sends_only_on_flush);
+    RUN_TEST(crashes_restored_from_snapshots_keep_a_single_authority);
+    RUN_TEST(flushing_before_the_snapshot_is_unsafe);
 TEST_MAIN_END()

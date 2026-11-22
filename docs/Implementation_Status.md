@@ -1,3 +1,9 @@
+## cell 崩溃恢复（2026-11-22）
+
+- **实现**：`BreakCell` 新增快照与恢复（`break_cell_snapshot_size`、`break_cell_snapshot`、`break_cell_restore`），以及配置项 `hold_outbox` 和 `break_cell_flush`、`break_cell_outbox_count`。安全顺序是先快照并持久化，再 flush。设计见 `docs/design/cell_handoff.md`「崩溃恢复」。
+- **TDD**：先写 5 个用例（编译失败），再实现。带崩溃的混沌测试在 40 个种子下恢复了 11,371 次崩溃，没有出现两个权威；反向顺序在 40 个种子下全部出错，说明测试能区分两种顺序。变异检查第一轮有 4 处未检出，补充断言后检出；剩下 1 处是等价变异，原因见设计文档。ASan/UBSan 下通过。
+- **远端收据**：`39f3a13c`（cell link）主 CI run 44970675827 成功，arm64 job 137049541279 通过 274 项。
+
 ## cell link 密钥轮换（2026-11-22）
 
 - **实现**：`break_cell_link` 线格式升到版本 2，头部增加 `key_id`（64 字节）。link 持有当前密钥和上一个密钥，新增 `break_cell_link_rotate_key` 与 `break_cell_link_retire_previous_key`，统计增加 `unknown_key`。设计见 `docs/design/cell_handoff.md`「跨进程传输」中的密钥轮换。

@@ -24,6 +24,9 @@ struct BreakCell {
     u64 next_txn;
     u64 next_nonce;
     BreakCellStats stats;
+    BreakCellMsg *outbox;
+    u32 outbox_count;
+    u32 outbox_capacity;
 };
 
 static CellRecord *cell_find(BreakCell *cell, u64 entity) {
@@ -65,7 +68,18 @@ static void cell_send(BreakCell *cell, u32 type, u32 to, const CellRecord *r, u6
         m.state_size = r->size;
         memcpy(m.state, r->data, r->size);
     }
-    cell->cfg.send(cell->cfg.user, &m);
+    if (!cell->cfg.hold_outbox) {
+        cell->cfg.send(cell->cfg.user, &m);
+        return;
+    }
+    if (cell->outbox_count == cell->outbox_capacity) {
+        u32 grown = cell->outbox_capacity ? cell->outbox_capacity * 2u : 16u;
+        BreakCellMsg *next = (BreakCellMsg *)realloc(cell->outbox, (usize)grown * sizeof(*next));
+        if (!next) return; /* the same as losing the message on the network */
+        cell->outbox = next;
+        cell->outbox_capacity = grown;
+    }
+    cell->outbox[cell->outbox_count++] = m;
 }
 
 /* What a record (re)sends; nothing for OWNED. */
@@ -106,6 +120,7 @@ BreakCell *break_cell_create(const BreakCellConfig *config) {
 
 void break_cell_destroy(BreakCell *cell) {
     if (!cell) return;
+    free(cell->outbox);
     free(cell->records);
     free(cell);
 }
@@ -347,4 +362,145 @@ bool break_cell_stats(BreakCell *cell, BreakCellStats *out_stats) {
     if (!cell || !out_stats) return false;
     *out_stats = cell->stats;
     return true;
+}
+
+u32 break_cell_flush(BreakCell *cell) {
+    u32 sent = 0u;
+    if (!cell) return 0u;
+    /* send may not call back into this cell, so the queue cannot grow here */
+    for (; sent < cell->outbox_count; sent++) cell->cfg.send(cell->cfg.user, &cell->outbox[sent]);
+    cell->outbox_count = 0u;
+    return sent;
+}
+
+u32 break_cell_outbox_count(BreakCell *cell) { return cell ? cell->outbox_count : 0u; }
+
+/* ---- snapshots ----
+ * Little-endian: u32 magic, u32 version, u32 cell_id, u32 record count,
+ * u64 next_txn, u64 next_nonce, then per record u32 state, peer, size,
+ * since_send, offer_age, u64 entity, epoch, txn, nonce, size bytes of state;
+ * finally a u64 FNV-1a hash of everything before it. Every step of FNV-1a
+ * is a bijection on the hash state, so any single changed byte changes the
+ * hash. */
+
+#define SNAP_MAGIC 0x53434b42u /* 'BKCS' */
+#define SNAP_VERSION 1u
+#define SNAP_HEADER 32u
+#define SNAP_RECORD 52u
+#define SNAP_HASH 8u
+
+static u64 snap_hash(const u8 *p, u32 n) {
+    u64 h = 0xcbf29ce484222325ull;
+    for (u32 i = 0; i < n; i++) {
+        h ^= p[i];
+        h *= 0x100000001b3ull;
+    }
+    return h;
+}
+
+static void snap_u32(u8 *p, u32 v) {
+    for (u32 i = 0; i < 4u; i++) p[i] = (u8)(v >> (8u * i));
+}
+
+static void snap_u64(u8 *p, u64 v) {
+    for (u32 i = 0; i < 8u; i++) p[i] = (u8)(v >> (8u * i));
+}
+
+static u32 snap_get_u32(const u8 *p) {
+    u32 v = 0u;
+    for (u32 i = 0; i < 4u; i++) v |= (u32)p[i] << (8u * i);
+    return v;
+}
+
+static u64 snap_get_u64(const u8 *p) {
+    u64 v = 0u;
+    for (u32 i = 0; i < 8u; i++) v |= (u64)p[i] << (8u * i);
+    return v;
+}
+
+u32 break_cell_snapshot_size(BreakCell *cell) {
+    u32 n = SNAP_HEADER + SNAP_HASH;
+    if (!cell) return 0u;
+    for (u32 i = 0; i < cell->cfg.capacity; i++)
+        if (cell->records[i].used) n += SNAP_RECORD + cell->records[i].size;
+    return n;
+}
+
+bool break_cell_snapshot(BreakCell *cell, void *out, u32 capacity, u32 *out_size) {
+    u8 *p = (u8 *)out;
+    u32 size, at = SNAP_HEADER, count = 0u;
+    if (!cell || !out || !out_size) return false;
+    size = break_cell_snapshot_size(cell);
+    if (capacity < size) return false;
+    for (u32 i = 0; i < cell->cfg.capacity; i++) {
+        const CellRecord *r = &cell->records[i];
+        if (!r->used) continue;
+        snap_u32(p + at, (u32)r->state);
+        snap_u32(p + at + 4u, r->peer);
+        snap_u32(p + at + 8u, r->size);
+        snap_u32(p + at + 12u, r->since_send);
+        snap_u32(p + at + 16u, r->offer_age);
+        snap_u64(p + at + 20u, r->entity);
+        snap_u64(p + at + 28u, r->epoch);
+        snap_u64(p + at + 36u, r->txn);
+        snap_u64(p + at + 44u, r->nonce);
+        memcpy(p + at + SNAP_RECORD, r->data, r->size);
+        at += SNAP_RECORD + r->size;
+        count++;
+    }
+    snap_u32(p, SNAP_MAGIC);
+    snap_u32(p + 4u, SNAP_VERSION);
+    snap_u32(p + 8u, cell->cfg.cell_id);
+    snap_u32(p + 12u, count);
+    snap_u64(p + 16u, cell->next_txn);
+    snap_u64(p + 24u, cell->next_nonce);
+    snap_u64(p + at, snap_hash(p, at));
+    *out_size = size;
+    return true;
+}
+
+BreakCell *break_cell_restore(const BreakCellConfig *config, const void *snapshot, u32 size) {
+    const u8 *p = (const u8 *)snapshot;
+    BreakCell *cell;
+    u32 count, at = SNAP_HEADER;
+    if (!config || !p || size < SNAP_HEADER + SNAP_HASH) return NULL;
+    if (snap_get_u64(p + size - SNAP_HASH) != snap_hash(p, size - SNAP_HASH)) return NULL;
+    count = snap_get_u32(p + 12u);
+    if (snap_get_u32(p) != SNAP_MAGIC || snap_get_u32(p + 4u) != SNAP_VERSION ||
+        snap_get_u32(p + 8u) != config->cell_id || count > config->capacity)
+        return NULL;
+    cell = break_cell_create(config);
+    if (!cell) return NULL;
+    cell->next_txn = snap_get_u64(p + 16u);
+    cell->next_nonce = snap_get_u64(p + 24u);
+    for (u32 i = 0; i < count; i++) {
+        CellRecord *r;
+        u32 state, rsize;
+        u64 entity;
+        if (size - SNAP_HASH - at < SNAP_RECORD) goto bad;
+        state = snap_get_u32(p + at);
+        rsize = snap_get_u32(p + at + 8u);
+        entity = snap_get_u64(p + at + 20u);
+        if (state < BREAK_CELL_ENTITY_OWNED || state > BREAK_CELL_ENTITY_RECEIVING ||
+            rsize > BREAK_CELL_STATE_MAX || size - SNAP_HASH - at - SNAP_RECORD < rsize ||
+            cell_find(cell, entity))
+            goto bad;
+        r = cell_alloc(cell, entity);
+        if (!r) goto bad;
+        r->state = (BreakCellEntityState)state;
+        r->peer = snap_get_u32(p + at + 4u);
+        r->size = rsize;
+        r->since_send = snap_get_u32(p + at + 12u);
+        r->offer_age = snap_get_u32(p + at + 16u);
+        r->epoch = snap_get_u64(p + at + 28u);
+        r->txn = snap_get_u64(p + at + 36u);
+        r->nonce = snap_get_u64(p + at + 44u);
+        memcpy(r->data, p + at + SNAP_RECORD, rsize);
+        at += SNAP_RECORD + rsize;
+    }
+    if (at != size - SNAP_HASH) goto bad;
+    return cell;
+bad:
+    break_cell_destroy(cell);
+    return NULL;
 }

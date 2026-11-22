@@ -75,6 +75,10 @@ typedef struct {
     u32 offer_timeout_ticks; /* 0 selects 8 * retransmit_ticks */
     BreakCellSendFn send;    /* required */
     void *user;
+    /* Queue outgoing messages until break_cell_flush instead of sending
+     * them at once. Required for crash recovery from snapshots: see
+     * break_cell_snapshot. */
+    bool hold_outbox;
 } BreakCellConfig;
 
 typedef enum {
@@ -121,6 +125,31 @@ void break_cell_receive(BreakCell *cell, const BreakCellMsg *msg);
 /* Advances retransmission and offer timeouts by one tick. */
 void break_cell_tick(BreakCell *cell);
 bool break_cell_stats(BreakCell *cell, BreakCellStats *out_stats);
+
+/* Sends every queued message (hold_outbox) in order. Returns the count. */
+u32 break_cell_flush(BreakCell *cell);
+u32 break_cell_outbox_count(BreakCell *cell);
+
+/* Crash recovery. A snapshot holds every record, in-flight ones included,
+ * and the transaction and nonce counters; queued messages and stats are not
+ * part of it. Safe recovery needs hold_outbox and this order after each
+ * batch of calls: snapshot, write it to durable storage, then flush. Then
+ * every message a peer has seen comes from a durable state, so a cell
+ * restored from its latest snapshot can never again own an entity it gave
+ * away, nor reuse a transaction id or nonce; losing the unflushed messages
+ * is the same as losing them on the network. Writes made after the latest
+ * snapshot are lost with the crash.
+ *
+ * break_cell_snapshot_size gives the bytes needed (0 for NULL).
+ * break_cell_snapshot writes the snapshot and its size; false for NULL
+ * arguments or a buffer that is too small. */
+u32 break_cell_snapshot_size(BreakCell *cell);
+bool break_cell_snapshot(BreakCell *cell, void *out, u32 capacity, u32 *out_size);
+/* Creates a cell from a snapshot. NULL for an invalid config (as
+ * break_cell_create), or a snapshot that is truncated, corrupt (checksum),
+ * from another cell id, or holds more records than config->capacity.
+ * In-flight records keep their retransmit and offer-timeout counters. */
+BreakCell *break_cell_restore(const BreakCellConfig *config, const void *snapshot, u32 size);
 
 #ifdef __cplusplus
 }
