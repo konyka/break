@@ -451,3 +451,19 @@ Network 是第四个接入总线的线程域，分两层：
 远端验收（`4ac72d59a763e3be9c2127f9a940e7c5728cf4c6`）：CI run 45001336313、windows-d3d12 run 45001336382、proton-d3d12 run 45002398409 均成功。CI 的 27 个矩阵作业中 23 个成功、4 个按条件跳过；Ubuntu 24.04 的 `Linux + GCC (TSan, headless)` 完成构建和非图形测试，未排除 `test_editor_shell`，但仍排除既有的 `test_async_loader`。本批未改动 `QUIC Weak Network` 的触发路径，没有对应的运行记录。
 
 仍未做：core_app 之外（C++ framework 的 `Init/Tick/DeInit`）的 LogicThread 尚未消费总线。
+
+
+### 补充（2026-11-22）：C++20 framework 消费 IO 通知
+
+语言版本先作追加澄清：本文较早段落中的 C++11 application/framework 是历史描述；当前根项目、`common_runtime` 和 `test_framework_runtime_bus` 均明确要求 **C++20**。引擎侧 Runtime Core 仍保持 C11，既有 C ABI 边界不变。
+
+`bk::RuntimeBusApplication`（`framework/common/runtime_bus_application.h`）是 `BaseApplication` 的可选派生类，由独立的 `common_runtime` 静态库提供。该库链接 `common`、`runtime_core`、`engine` 与 `Threads::Threads`；只有显式选择它的应用承担这些依赖。默认 `empty` 不链接 `common_runtime`、`runtime_core` 或 `engine`。
+
+- **所有权与订阅**：应用只借用调用方创建的 `BreakRuntimeBus`，自己创建并销毁一个 64 槽队列，其中 16 槽预留给 control 消息；订阅名为 `framework.application.io`，只订阅 `BREAK_RUNTIME_IO_NOTICE_KIND`。IO notice kind 的注册由调用方通过 `break_runtime_io_attach_bus` 完成，适配类不注册该 kind，也不拥有进程级 IO attach/shutdown。类显式禁止复制构造、复制赋值、移动构造和移动赋值；总线必须比所有挂接关系长寿。
+- **初始化与重试**：`AttachRuntimeBus` 只接受未初始化且当前未挂接的状态。`Init` 先执行基类初始化，再建队列和订阅；任一步失败都会清理本次订阅/队列并保留已 Attach 的借用总线，修正 kind 缺失或订阅容量等问题后可重试。已初始化时重复 `Init` 返回 `BREAK_RUNTIME_REJECTED`。
+- **Tick 与计数**：`Tick` 在调用它的所有者线程非阻塞排空队列，经 `break_runtime_io_notice_view` 解码后同步调用派生类的 `OnRuntimeIoNotice(const BreakRuntimeIoNotice&)`，不会在 IO worker 上回调。`RuntimeBusApplicationStats.io_notices` 累计合法通知，`malformed_notices` 累计版本、长度或 kind 等校验失败且未触发回调的消息；队列丢弃和高水位仍由总线/队列统计提供。
+- **解除与关停**：`DetachRuntimeBus` 严格先退订，再销毁队列，最后清除借用指针。`DeInit` 与析构中的解除路径均可重复执行。运行中 Detach 只停止当前消费，不允许直接再次 Init；如需恢复，必须先 DeInit，再在下一次 Init 前重新 Attach。调用方先停止 IO 生产者，完成应用 DeInit、IO shutdown 和 `break_runtime_io_attach_bus(nullptr)` 后，才能销毁总线。
+
+针对正式 `common_runtime` 的 `test_framework_runtime_bus` 当前有 9 个行为用例。实现者记录的 focused CTest 为 3/3（本测试、`test_runtime_bus`、`test_runtime_io`），根构建契约 `test_framework_runtime_build_contract` 为 1/1（default、enabled、engine-tests-default、engine-tests-enabled 四个子树），focused ASan/UBSan 与 TSan 运行也已通过。这些仅是当前 focused 证据；完整 Vulkan/OpenGL、ASan 非图形套件、fuzz、Windows/macOS/其他生成器以及远端 CI 尚待最终验收，不能提前记为全量通过。
+
+因此，上一节及更早记录中“core_app 之外（C++ framework 的 `Init/Tick/DeInit`）的 LogicThread 尚未消费总线”这一具体缺口由本批关闭。这里交付的是既有 framework 生命周期对 IO notice 的可选消费：适配类不创建线程，不改变既有 LogicThread 的归属，也不表示所有消息类型都已接入总线。

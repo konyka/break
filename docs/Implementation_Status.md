@@ -13233,3 +13233,14 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - `test_audio_edit` 6 项：内部跨度边界、参数/零长度、立体声范围、独立淡化端点、归一化峰值和混合前缀；覆盖失败时样本不变、负峰值占优、正负限幅、非整数舍入、NULL、极端范围及立体声归一化/混合。先 RED（5 个公开符号）后 GREEN；内部跨度接口另经 RED。
 - 30/32 定向变异被捕获。静音保护在普通与 ASan+UBSan 变异运行中均无输出差异，保留作非有限保护而非声称等价；归一化/淡化的下限限制是数值范围防御。ASan+UBSan、严格告警与命名检查通过。
 - 仍缺：编辑器 UI、时间线、撤销、媒体文件解析、效果自动化与真实听测。当前交付只是库级缓冲区工具。
+
+
+### 2026-11-22 framework：可选 RuntimeBusApplication 消费 IO 通知
+
+- **标准与目标**：新增 `bk::RuntimeBusApplication` 和独立静态库 `common_runtime`，均按 C++20 编译；本文件及其他旧文档中的 C++11 framework 描述以此追加澄清为准，历史段落不回改。`common_runtime` 链接 `common`、`runtime_core`、`engine` 和 `Threads::Threads`，只由显式选择的应用使用。
+- **借用与自有资源**：适配类借用调用方的 `BreakRuntimeBus`，自有 64 槽队列并预留 16 个 control 槽，以订阅名 `framework.application.io` 只消费 `BREAK_RUNTIME_IO_NOTICE_KIND`。调用方负责生产 `break_runtime_io_attach_bus`、IO notice kind 注册及全局 IO shutdown。类显式禁止复制和移动；总线必须比挂接关系长寿。
+- **生命周期**：Attach 只允许在初始化前且未挂接时进行。Init 失败会清理本次订阅/队列并保留 bus 供重试，重复 Init 被拒绝。Tick 在调用线程解析通知并执行类型化的 `OnRuntimeIoNotice` 回调；合法与畸形通知分别计入 `io_notices` 和 `malformed_notices`。Detach 先退订再销毁队列；DeInit 与析构的清理可重复执行。运行中 Detach 后如需恢复，必须先 DeInit，再于下一次 Init 前重新 Attach。
+- **默认构建边界**：根 `BREAK_FRAMEWORK_ENABLE_RUNTIME` 默认 OFF；默认根构建不配置 engine，`empty` 不链接 `common_runtime`、`runtime_core` 或 `engine`。根启用该选项时，只有调用方未定义 `ENGINE_BUILD_TESTS` 才把它默认设为 OFF；显式 ON 保留并生成测试目标，显式 OFF 也保持不生成。
+- **focused 证据**：针对正式 `common_runtime` 的 `test_framework_runtime_bus` 当前含 9 个行为用例。focused CTest 3/3 通过（`test_framework_runtime_bus`、`test_runtime_bus`、`test_runtime_io`）；根 `test_framework_runtime_build_contract` 1/1 通过，内部覆盖 default、显式引擎测试 OFF 的 enabled、未定义引擎测试开关的 engine-tests-default、显式 ON 的 engine-tests-enabled 四个子树。实现者另记录 focused ASan/UBSan 与 TSan 通过，新测试均为 9/9 且无 sanitizer 诊断。
+- **尚待最终验收**：以上不是最终全量测试或远端 CI 结果。完整 Vulkan/OpenGL、ASan 非图形套件、fuzz、Windows/macOS/其他生成器与远端 CI 尚未完成，本批不得提前写成全量或全平台通过。
+- **缺口解释**：旧记录中“C++ framework 的 `Init/Tick/DeInit` 尚未消费总线”的 IO notice 缺口由本批关闭。适配类不创建线程，不改变既有 LogicThread 的线程归属；本批也不声称所有消息类型均已接入总线。

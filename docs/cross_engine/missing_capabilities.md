@@ -483,3 +483,12 @@
 - **第 5 节（线程/消息）追加**：2026-11-22 LogicThread 接入消息总线：core_app 的 CoreAppThread 订阅 IO 完成通知，每个 tick 取空，并核对每条通知对应一次已完成的场景读取。见 [`docs/design/runtime_message_model.md`](../design/runtime_message_model.md)「LogicThread 订阅 IO 通知」。上文各条「仍缺：LogicThread …接入总线」由此对 core_app 交付。仍缺：C++ framework 的 LogicThread 消费总线；编辑器内的主循环通知订阅方。
 - **第 5 节（线程/消息）追加**：2026-11-22 编辑器 shell 订阅主循环通知，渲染调试面板显示窗口尺寸、缩放、WSI 状态与关闭请求次数。见 [`docs/design/runtime_message_model.md`](../design/runtime_message_model.md)「编辑器订阅主循环通知」。上一条中的「编辑器内的主循环通知订阅方」由此交付。仍缺：C++ framework 的 LogicThread 消费总线。
 - **资源/热加载验证追加**：2026-11-22 修复兼容 async loader 在完成发布后读取请求槽写日志的数据竞争，五类失败路径都先记录日志再发布完成。增强后的真实 burst 用例在修复前由 TSan 检出，修复后两个 CPU 上连续 100 次完整测试通过；TSan CI 不再排除 `test_async_loader`。详见 [`docs/design/runtime_asset_streaming.md`](../design/runtime_asset_streaming.md)「兼容 loader 的完成发布所有权」。
+
+
+## 补充（2026-11-22）：第 5 节的 C++ framework IO 通知消费
+
+`bk::RuntimeBusApplication` 与可选静态库 `common_runtime` 现已让 C++20 framework 的 `Init/Tick/DeInit` 生命周期消费 `BREAK_RUNTIME_IO_NOTICE_KIND`：应用借用总线，自有 64 槽（16 个 control 预留）队列，以 `framework.application.io` 订阅，并在 Tick 所有者线程回调 `OnRuntimeIoNotice`。调用方负责 IO attach/kind 注册、IO 生产者与全局 shutdown；总线必须比挂接关系长寿。Attach、失败重试、重复 Init 拒绝、畸形计数、先退订后销毁队列及幂等清理的完整契约见 [`docs/design/runtime_message_model.md`](../design/runtime_message_model.md)「C++20 framework 消费 IO 通知」，使用顺序见 [`docs/Build_Guide.md`](../Build_Guide.md)。
+
+上文“C++ framework 的 LogicThread 消费总线”这一后续追加缺口由此对 IO notice 关闭，但不表示创建了新的线程，也不表示所有消息类型已经接入。`common_runtime` 使用 C++20；本文历史段落中的 C++11 仅为旧记录。根 `BREAK_FRAMEWORK_ENABLE_RUNTIME` 默认 OFF，默认 `empty` 仍无 `common_runtime`、`runtime_core` 或 `engine` 依赖，因此本项是显式可选能力，不是默认应用行为。
+
+当前证据限于 `test_framework_runtime_bus` 的 9 个行为用例、focused CTest 3/3、根契约 1/1（四个子树）以及实现者记录的 focused ASan/UBSan/TSan 通过。完整 Vulkan/OpenGL、ASan 非图形套件、fuzz、Windows/macOS/其他生成器与远端 CI 尚待最终验收；不能据此把第 5 节全部线程/消息能力或全平台验收标记为完成。

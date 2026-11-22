@@ -1643,3 +1643,87 @@ editor-manifest-cli 切片前的选择为二百六十项：在上述二百五十
 e2e 的不可写统计文件场景保留权限语义：root 容器明确报告跳过；非 root runner 实际执行。integrity 的 ptrace 正例仅在 `BREAK_TEST_QEMU_USER=1` 且子进程因 `PTRACE_TRACEME` 失败 exit 90 时跳过设置步骤；原生和 exit 91 产品检测失败仍严格判红，不能把 QEMU 8/8 当作 ptrace 正向证据。两个真实 LLVM Mach-O 子检查也保留条件跳过语义。上述结果不能外推成全量 arm64 `ctest`、GPU 或物理设备证据。
 
 `--toolchain` 必须传绝对路径；相对路径不会按仓库根目录解析，会在读取工具链之前报 `Could not find toolchain file`。不要把 `/usr/aarch64-linux-gnu` 单独当编译器 sysroot，否则链接器会重复添加交叉 libc 链接脚本中的绝对路径前缀。没装交叉编译器时，configure 会在成功读取工具链后报告 `aarch64-linux-gnu-gcc` 不在 `PATH`，这是预期的失败形式。
+
+
+## 补充（2026-11-22）：可选 C++20 RuntimeBusApplication
+
+根项目的 `BREAK_FRAMEWORK_ENABLE_RUNTIME` 默认 OFF。默认构建只生成原有 framework 与 `empty`，`empty` 不依赖 `common_runtime`、`runtime_core` 或 `engine`。需要 `bk::RuntimeBusApplication` 时显式启用并链接 `common_runtime`：
+
+```bash
+cmake -S . -B build-framework-runtime \
+  -DBREAK_FRAMEWORK_ENABLE_RUNTIME=ON \
+  -DENGINE_BUILD_TESTS=OFF \
+  -DENGINE_RHI_BACKEND=vulkan -DMYUI_PAL=dummy
+cmake --build build-framework-runtime --target common_runtime empty --parallel 2
+```
+
+根启用 runtime 时，若调用方未定义 `ENGINE_BUILD_TESTS`，根项目只把它默认设为 OFF；显式 `-DENGINE_BUILD_TESTS=ON` 会保留并生成 `test_framework_runtime_bus` 等测试目标。`common_runtime`、其公开头文件的使用方及该测试均使用 C++20；旧文档中的 C++11 framework 描述仅作历史记录。
+
+下面的函数骨架展示 `ApplicationInterface` 生命周期与全局 IO 的组装顺序。它假定宿主已经初始化 VFS/IO，并已安排 IO 请求生产；应用自有初始化、请求提交和生产者停止代码不展开，因此它不是独立可执行程序。示例派生类在收到第一条合法 IO notice 后退出循环。
+
+```cpp
+#include <cstdint>
+
+#include "runtime_bus_application.h"
+
+extern "C" {
+#include <runtime/runtime_bus.h>
+#include <runtime/runtime_io.h>
+}
+
+class IoApplication final : public bk::RuntimeBusApplication {
+ protected:
+  void OnRuntimeIoNotice(const BreakRuntimeIoNotice& notice) override {
+    (void)notice;
+    is_quit_ = true;
+  }
+};
+
+int RunRuntimeBusApplication() {
+  BreakRuntimeBus* bus = nullptr;
+  if (break_runtime_bus_create(&bus) != BREAK_RUNTIME_OK) {
+    return 1;
+  }
+  if (break_runtime_io_attach_bus(bus) != BREAK_RUNTIME_OK) {
+    break_runtime_bus_destroy(bus);
+    return 1;
+  }
+
+  IoApplication application;
+  if (application.AttachRuntimeBus(bus) != BREAK_RUNTIME_OK) {
+    (void)break_runtime_io_shutdown(1000u);
+    (void)break_runtime_io_attach_bus(nullptr);
+    break_runtime_bus_destroy(bus);
+    return 1;
+  }
+
+  bk::ApplicationInterface* app = &application;
+  if (app->Init() != 0) {
+    app->DeInit();
+    (void)break_runtime_io_shutdown(1000u);
+    (void)break_runtime_io_attach_bus(nullptr);
+    break_runtime_bus_destroy(bus);
+    return 1;
+  }
+
+  while (!app->IsQuit()) {
+    app->Tick();
+  }
+  app->DeInit();
+
+  const BreakRuntimeError shutdown_result = break_runtime_io_shutdown(1000u);
+  const BreakRuntimeError detach_result = break_runtime_io_attach_bus(nullptr);
+  break_runtime_bus_destroy(bus);
+  if (shutdown_result != BREAK_RUNTIME_OK ||
+      detach_result != BREAK_RUNTIME_OK) {
+    return 1;
+  }
+  return 0;
+}
+```
+
+生命周期顺序是：创建 bus；由调用方执行 `break_runtime_io_attach_bus(bus)`，完成生产 IO attach 和 notice kind 注册；在应用 Init 前 `AttachRuntimeBus`；通过 `ApplicationInterface` 初始化并在所有者线程 Tick；应用 DeInit；IO shutdown；`break_runtime_io_attach_bus(nullptr)` 解除全局挂接；最后销毁 bus。应用 DeInit 已解除自身订阅并销毁自有队列，所以随后析构不会访问已销毁的 bus。
+
+完整应用在进入上述收尾路径前必须先停止 IO 生产者，再销毁 bus。`RuntimeBusApplication` 不拥有也不自动执行进程级 IO shutdown；全局 attach 返回后，调用方还必须保证 bus 比所有挂接关系长寿。若 IO shutdown 超时，应按 IO facade 契约继续完成关停，不能把超时写成成功。
+
+`test_framework_runtime_bus` 当前覆盖 9 个行为用例；现有证据是 focused CTest 3/3、根构建契约 1/1（四个子树）以及实现者记录的 focused ASan/UBSan/TSan 通过。完整 Vulkan/OpenGL、ASan 非图形套件、fuzz、Windows/macOS/其他生成器与远端 CI 尚待最终验收，上述构建与示例不代表这些矩阵已经通过。
