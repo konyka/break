@@ -3789,6 +3789,11 @@ endif()
     else()
         set(_rhi_multi_flag OFF)
     endif()
+    # Resolve nm before the first gated registration; a fresh MSVC configure
+    # otherwise omits contracts until a later configure reuses the cache.
+    if(NOT CMAKE_NM)
+        find_program(CMAKE_NM NAMES nm llvm-nm)
+    endif()
     # COFF executables linked by lld-link / link.exe carry no symbol table
     # (debug info is CodeView), so the nm gate only applies off Windows or to
     # GNU ld (MinGW) images.
@@ -5045,6 +5050,9 @@ endif()
         target_link_libraries(test_async_loader PRIVATE kernel32)
     endif()
     add_test(NAME test_async_loader COMMAND test_async_loader)
+    # The burst case owns eight IO workers and waits against a wall-clock budget.
+    # Other CTest jobs can starve those workers and cause a false timeout.
+    set_tests_properties(test_async_loader PROPERTIES RUN_SERIAL TRUE)
 
     # test_ecs: needs ecs.c + log.c
     add_executable(test_ecs tests/test_ecs.c src/ecs/ecs.c src/core/log.c)
@@ -5104,6 +5112,7 @@ endif()
     endif()
     set(_core_app_nested_toolchain_defs
         "-DNESTED_ENGINE_RHI_BACKEND=${_core_app_nested_rhi_backend}"
+        "-DNESTED_CMAKE_GENERATOR=${CMAKE_GENERATOR}"
         "-DNESTED_CMAKE_C_COMPILER=${CMAKE_C_COMPILER}")
     foreach(_core_app_def Vulkan_LIBRARY Vulkan_INCLUDE_DIR SHADERC_LIB SHADERC_INCLUDE_DIR)
         if(DEFINED ${_core_app_def} AND NOT "${${_core_app_def}}" STREQUAL "")
@@ -5302,7 +5311,6 @@ endif()
                 -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_contract_compat
                 -DNM=${CMAKE_NM}
                 -DNM_CAPABLE=${_core_app_nm_capable}
-                "-DNESTED_CMAKE_GENERATOR=${CMAKE_GENERATOR}"
                 "-DNESTED_CTEST_CONFIG=$<CONFIG>"
                 ${_core_app_nested_toolchain_defs}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_contract_compat.cmake)
@@ -5322,7 +5330,6 @@ endif()
                 -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_ctest_config_contract
                 -DNM=${CMAKE_NM}
                 -DNM_CAPABLE=${_core_app_nm_capable}
-                "-DNESTED_CMAKE_GENERATOR=${CMAKE_GENERATOR}"
                 "-DNESTED_CTEST_CONFIG=$<CONFIG>"
                 ${_core_app_nested_toolchain_defs}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_ctest_config_contract.cmake)
@@ -7303,9 +7310,6 @@ endif()
         set(BREAK_CONTRACT_LIBCRYPTO "${OPENSSL_CRYPTO_LIBRARY}")
     elseif(WIN32)
         set(BREAK_CONTRACT_LIBCRYPTO "$<TARGET_LINKER_FILE:OpenSSL::Crypto>")
-    endif()
-    if(NOT CMAKE_NM)
-        find_program(CMAKE_NM NAMES nm llvm-nm)
     endif()
     if(BREAK_ENABLE_CRYPTO)
         add_executable(test_break_crypto tests/test_break_crypto.c)

@@ -207,6 +207,10 @@ endif()
 if(APPLE)
     assert_configure_success("metal" "metal")
 else()
+    # A reused tree keeps a stale cache (an earlier interrupted run can die in
+    # compiler detection before the selector logic), masking the fail-closed
+    # message asserted below. Start fresh like assert_configure_success.
+    file(REMOVE_RECURSE "${TEST_BINARY_DIR}/metal")
     execute_process(
         COMMAND "${CMAKE_BIN}" -S "${ENGINE_SOURCE_DIR}" -B "${TEST_BINARY_DIR}/metal"
             ${configure_overrides}
@@ -228,6 +232,8 @@ endif()
 if(WIN32)
     assert_configure_success("d3d12" "d3d12")
 else()
+    # Same stale-cache hazard as the metal branch above.
+    file(REMOVE_RECURSE "${TEST_BINARY_DIR}/d3d12")
     execute_process(
         COMMAND "${CMAKE_BIN}" -S "${ENGINE_SOURCE_DIR}" -B "${TEST_BINARY_DIR}/d3d12"
             ${configure_overrides}

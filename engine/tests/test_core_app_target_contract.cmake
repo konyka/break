@@ -1,5 +1,5 @@
 foreach(var ENGINE_CMAKE CORE_APP NETWORK_ENABLED CONTRACT_BUILD_ROOT NESTED_ENGINE_RHI_BACKEND
-        NESTED_CMAKE_C_COMPILER)
+        NESTED_CMAKE_GENERATOR NESTED_CMAKE_C_COMPILER)
     if(NOT DEFINED ${var})
         message(FATAL_ERROR "${var} is required")
     endif()
@@ -67,8 +67,10 @@ file(READ "${ENGINE_CMAKE}" cmake_text)
 if(NOT cmake_text MATCHES "engine_link_rhi_backend\\(core_app\\)")
     record_error("core_app does not use engine_link_rhi_backend")
 endif()
+file(REMOVE_RECURSE "${CONTRACT_BUILD_ROOT}")
 execute_process(
-    COMMAND "${CMAKE_COMMAND}" -S "${engine_source_dir}" -B "${CONTRACT_BUILD_ROOT}"
+    COMMAND "${CMAKE_COMMAND}" -G "${NESTED_CMAKE_GENERATOR}"
+        -S "${engine_source_dir}" -B "${CONTRACT_BUILD_ROOT}"
         -DENGINE_BUILD_TESTS=OFF -DENGINE_ENABLE_IPO=OFF
         -DENGINE_RHI_BACKEND=${NESTED_ENGINE_RHI_BACKEND} -DBREAK_ENABLE_SNOWFLAKE=OFF
         -DCORE_APP_ENABLE_NETWORK=${NETWORK_ENABLED}
@@ -80,6 +82,11 @@ execute_process(
 if(NOT configure_rc EQUAL 0)
     record_error("no-tests target/scope configure failed: ${configure_out}${configure_err}")
 else()
+    file(STRINGS "${CONTRACT_BUILD_ROOT}/CMakeCache.txt" generator_line
+        REGEX "^CMAKE_GENERATOR:INTERNAL=")
+    if(NOT "${generator_line}" STREQUAL "CMAKE_GENERATOR:INTERNAL=${NESTED_CMAKE_GENERATOR}")
+        record_error("nested generator '${generator_line}' did not follow parent '${NESTED_CMAKE_GENERATOR}'")
+    endif()
     file(STRINGS "${CONTRACT_BUILD_ROOT}/CMakeCache.txt" c_compiler_line
         REGEX "^CMAKE_C_COMPILER:[^=]*=")
     list(LENGTH c_compiler_line c_compiler_count)

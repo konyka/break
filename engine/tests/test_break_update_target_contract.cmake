@@ -343,7 +343,9 @@ if(DEFINED UPDATE_CONTRACT_LIBCRYPTO AND NOT "${UPDATE_CONTRACT_LIBCRYPTO}" STRE
 else()
     set(update_contract_libcrypto -lcrypto)
 endif()
-set(link_exe "${UPDATE_CONTRACT_WORK}/update_link_check")
+# An unmanifested executable with "update" in its name triggers Windows
+# installer detection; CreateProcess then requires elevation.
+set(link_exe "${UPDATE_CONTRACT_WORK}/archive_link_check")
 get_filename_component(update_contract_cc_name "${UPDATE_CONTRACT_CC}" NAME)
 string(TOLOWER "${update_contract_cc_name}" update_contract_cc_name)
 if(update_contract_cc_name MATCHES "^(cl|clang-cl)(\\.exe)?$")
