@@ -1,6 +1,7 @@
 #include "test_framework.h"
 #include <runtime/runtime_message.h>
 #include <runtime/runtime_queue.h>
+#include <runtime/runtime_bus.h>
 #include <runtime/runtime_task.h>
 #include <runtime/runtime_test_hooks.h>
 #include <core/platform_thread.h>
@@ -1105,6 +1106,158 @@ TEST(correlation_next_is_unique_across_threads)
     }
 }
 
+/* Completions on the bus: a finished task publishes (kind, version 1,
+ * payload = its 8-byte sequence) with the payload's correlation id, so the
+ * owner learns of finished work from its own queue. */
+static BreakRuntimeOwnedMessage *make_correlated_msg(u64 sequence, u64 cid)
+{
+    BreakRuntimeMessageView view;
+    BreakRuntimeOwnedMessage *msg = NULL;
+    u32 value = (u32)sequence;
+    memset(&view, 0, sizeof(view));
+    view.kind = 7u;
+    view.version = 1u;
+    view.sequence = sequence;
+    view.correlation_id = cid;
+    view.data = &value;
+    view.size = sizeof(value);
+    if (break_runtime_message_copy(&view, &msg) != BREAK_RUNTIME_OK) return NULL;
+    return msg;
+}
+
+TEST(task_completions_are_published_on_the_bus)
+{
+    BreakRuntimeBus *bus = NULL;
+    BreakRuntimeQueue *done = NULL;
+    BreakRuntimeTaskQueue *q = NULL;
+    BreakRuntimeQueueConfig qc = {32u, 0u};
+    BreakRuntimeTaskStats stats;
+    const u16 kind = 0x0901u;
+    BreakRuntimeBusKind completion = {0x0901u, 1u, 8u, "task.done", false, 0u};
+    u32 forwarded = 0u, sub = 0u;
+    u64 seen_cid[8] = {0}, seen_seq[8] = {0};
+    u32 seen = 0u;
+    TaskSystem *ts;
+
+    atomic_store(&g_task_sum, 0u);
+    atomic_store(&g_task_ran, 0u);
+    ts = task_system_create(2);
+    ASSERT_NOT_NULL(ts);
+    ASSERT_EQ(break_runtime_bus_create(&bus), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_bus_register_kind(bus, &completion), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_queue_create(&qc, &done), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_bus_subscribe(bus, "owner", done, &kind, 1u, &sub), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_task_queue_create(NULL, &q), BREAK_RUNTIME_OK);
+
+    ASSERT_EQ(break_runtime_task_queue_publish_completions(NULL, bus, kind), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_task_queue_publish_completions(q, bus, 0x0999u), BREAK_RUNTIME_REJECTED);
+    ASSERT_EQ(break_runtime_task_queue_publish_completions(q, bus, kind), BREAK_RUNTIME_OK);
+
+    for (u32 i = 1; i <= 4; i++) {
+        BreakRuntimeOwnedMessage *payload = make_correlated_msg(i, 100u + i);
+        ASSERT_NOT_NULL(payload);
+        ASSERT_EQ(break_runtime_task_submit(q, accumulate_task, payload, TASK_PRIORITY_NORMAL),
+                  BREAK_RUNTIME_OK);
+    }
+    /* a task without a payload completes with correlation id 0, sequence 0 */
+    ASSERT_EQ(break_runtime_task_submit(q, accumulate_task, NULL, TASK_PRIORITY_LOW),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_task_queue_drain(q, ts, 16u, &forwarded), BREAK_RUNTIME_OK);
+    ASSERT_EQ(forwarded, 5u);
+    task_wait(ts);
+    ASSERT_EQ(atomic_load(&g_task_ran), 5u);
+
+    for (;;) {
+        BreakRuntimeOwnedMessage *m = NULL;
+        BreakRuntimeMessageView v;
+        ASSERT_EQ(break_runtime_queue_poll(done, &m), BREAK_RUNTIME_OK);
+        if (m == NULL) break;
+        ASSERT_EQ(break_runtime_message_view(m, &v), BREAK_RUNTIME_OK);
+        ASSERT_EQ(v.kind, kind);
+        ASSERT_EQ(v.size, 8u);
+        ASSERT_TRUE(seen < 8u);
+        seen_cid[seen] = v.correlation_id;
+        memcpy(&seen_seq[seen], v.data, 8u);
+        seen++;
+        break_runtime_message_release(m);
+    }
+    ASSERT_EQ(seen, 5u);
+    {
+        u64 cid_sum = 0u, seq_sum = 0u;
+        u32 zero = 0u;
+        for (u32 i = 0; i < seen; i++) {
+            cid_sum += seen_cid[i];
+            seq_sum += seen_seq[i];
+            if (seen_cid[i] == 0u) zero++;
+            if (seen_cid[i] != 0u) ASSERT_EQ(seen_cid[i], 100u + seen_seq[i]);
+        }
+        ASSERT_EQ(zero, 1u);
+        ASSERT_EQ(cid_sum, 101u + 102u + 103u + 104u);
+        ASSERT_EQ(seq_sum, 1u + 2u + 3u + 4u);
+    }
+    ASSERT_EQ(break_runtime_task_queue_stats(q, &stats), BREAK_RUNTIME_OK);
+    ASSERT_EQ(stats.completions_published, 5u);
+    ASSERT_EQ(stats.completions_dropped, 0u);
+
+    /* detached: tasks still run, nothing is published */
+    ASSERT_EQ(break_runtime_task_queue_publish_completions(q, NULL, kind), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_task_submit(q, accumulate_task, make_correlated_msg(9u, 9u),
+                                        TASK_PRIORITY_NORMAL), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_task_queue_drain(q, ts, 16u, &forwarded), BREAK_RUNTIME_OK);
+    task_wait(ts);
+    {
+        BreakRuntimeOwnedMessage *m = NULL;
+        ASSERT_EQ(break_runtime_queue_poll(done, &m), BREAK_RUNTIME_OK);
+        ASSERT_TRUE(m == NULL);
+    }
+    ASSERT_EQ(atomic_load(&g_task_ran), 6u);
+
+    break_runtime_task_queue_destroy(q);
+    task_system_destroy(ts);
+    ASSERT_EQ(break_runtime_bus_unsubscribe(bus, sub), BREAK_RUNTIME_OK);
+    break_runtime_queue_destroy(done);
+    break_runtime_bus_destroy(bus);
+}
+
+/* A full owner queue drops the completion; the task still ran and the
+ * worker never waited. */
+TEST(task_completions_never_block_a_worker)
+{
+    BreakRuntimeBus *bus = NULL;
+    BreakRuntimeQueue *done = NULL;
+    BreakRuntimeTaskQueue *q = NULL;
+    BreakRuntimeQueueConfig qc = {2u, 0u};
+    BreakRuntimeTaskStats stats;
+    const u16 kind = 0x0902u;
+    BreakRuntimeBusKind completion = {0x0902u, 1u, 8u, "task.done2", false, 0u};
+    u32 forwarded = 0u, sub = 0u;
+    TaskSystem *ts;
+
+    atomic_store(&g_task_ran, 0u);
+    ts = task_system_create(2);
+    ASSERT_NOT_NULL(ts);
+    ASSERT_EQ(break_runtime_bus_create(&bus), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_bus_register_kind(bus, &completion), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_queue_create(&qc, &done), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_bus_subscribe(bus, "owner", done, &kind, 1u, &sub), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_task_queue_create(NULL, &q), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_task_queue_publish_completions(q, bus, kind), BREAK_RUNTIME_OK);
+    for (u32 i = 1; i <= 10; i++)
+        ASSERT_EQ(break_runtime_task_submit(q, accumulate_task, make_correlated_msg(i, i),
+                                            TASK_PRIORITY_NORMAL), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_task_queue_drain(q, ts, 16u, &forwarded), BREAK_RUNTIME_OK);
+    task_wait(ts);
+    ASSERT_EQ(atomic_load(&g_task_ran), 10u);
+    ASSERT_EQ(break_runtime_task_queue_stats(q, &stats), BREAK_RUNTIME_OK);
+    ASSERT_EQ(stats.completions_published, 2u);
+    ASSERT_EQ(stats.completions_dropped, 8u);
+    break_runtime_task_queue_destroy(q);
+    task_system_destroy(ts);
+    ASSERT_EQ(break_runtime_bus_unsubscribe(bus, sub), BREAK_RUNTIME_OK);
+    break_runtime_queue_destroy(done);
+    break_runtime_bus_destroy(bus);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(message_copy_produces_independent_owned_bytes);
     RUN_TEST(message_copy_validates_null_and_size);
@@ -1122,6 +1275,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(task_drain_executes_on_legacy_system);
     RUN_TEST(task_drain_forward_failure_retains_queue);
     RUN_TEST(task_allocation_failure_injection);
+    RUN_TEST(task_completions_are_published_on_the_bus);
+    RUN_TEST(task_completions_never_block_a_worker);
     RUN_TEST(message_copy_keeps_correlation_id);
     RUN_TEST(correlation_next_is_unique_across_threads);
 TEST_MAIN_END()

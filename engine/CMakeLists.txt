@@ -6570,7 +6570,7 @@ endif()
     target_compile_definitions(runtime_core_test PRIVATE BREAK_RUNTIME_TESTING=1)
 
     add_executable(test_runtime_facade tests/test_runtime_facade.c
-        src/task/task.c src/core/log.c)
+        src/task/task.c src/core/log.c src/core/profiler.c src/platform/time.c)
     target_include_directories(test_runtime_facade PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
     target_compile_definitions(test_runtime_facade PRIVATE BREAK_RUNTIME_TESTING=1)

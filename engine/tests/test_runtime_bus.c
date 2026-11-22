@@ -523,6 +523,19 @@ TEST(per_tick_quota_limits_a_kind) {
     break_runtime_queue_destroy(q);
 }
 
+TEST(acceptance_of_a_kind_version_and_size_can_be_queried) {
+    BreakRuntimeBus *bus = make_bus(); /* kind 1: max_version 2, budget 64 */
+    ASSERT_NOT_NULL(bus);
+    ASSERT_TRUE(break_runtime_bus_kind_accepts(bus, 1u, 1u, 0u));
+    ASSERT_TRUE(break_runtime_bus_kind_accepts(bus, 1u, 2u, 64u));
+    ASSERT_FALSE(break_runtime_bus_kind_accepts(bus, 1u, 3u, 8u));
+    ASSERT_FALSE(break_runtime_bus_kind_accepts(bus, 1u, 0u, 8u));
+    ASSERT_FALSE(break_runtime_bus_kind_accepts(bus, 1u, 1u, 65u));
+    ASSERT_FALSE(break_runtime_bus_kind_accepts(bus, 99u, 1u, 0u));
+    ASSERT_FALSE(break_runtime_bus_kind_accepts(NULL, 1u, 1u, 0u));
+    break_runtime_bus_destroy(bus);
+}
+
 TEST(a_registration_can_be_compared) {
     BreakRuntimeBus *bus = make_bus();
     ASSERT_NOT_NULL(bus);
@@ -656,6 +669,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(control_kinds_use_reserved_queue_capacity);
     RUN_TEST(per_tick_quota_limits_a_kind);
     RUN_TEST(a_registration_can_be_compared);
+    RUN_TEST(acceptance_of_a_kind_version_and_size_can_be_queried);
     RUN_TEST(drops_and_rejections_are_recorded_on_the_profiler);
     RUN_TEST(quota_rejections_are_recorded_and_a_full_profiler_never_blocks);
 TEST_MAIN_END()

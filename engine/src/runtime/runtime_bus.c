@@ -380,6 +380,20 @@ BreakRuntimeError break_runtime_bus_kind_matches(BreakRuntimeBus *bus,
     return result;
 }
 
+bool break_runtime_bus_kind_accepts(BreakRuntimeBus *bus, u16 kind, u16 version, usize size)
+{
+    RuntimeBusKindSlot *slot;
+    bool ok;
+    if (!bus) {
+        return false;
+    }
+    platform_mutex_lock(&bus->mutex);
+    slot = runtime_bus_find_kind(bus, kind);
+    ok = slot && version != 0u && version <= slot->max_version && size <= slot->max_payload;
+    platform_mutex_unlock(&bus->mutex);
+    return ok;
+}
+
 BreakRuntimeError break_runtime_bus_kind_stats(BreakRuntimeBus *bus, u16 kind,
                                                BreakRuntimeBusKindStats *out_stats)
 {

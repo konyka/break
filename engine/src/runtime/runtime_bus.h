@@ -109,6 +109,12 @@ BreakRuntimeError break_runtime_bus_register_kind(BreakRuntimeBus *bus,
 BreakRuntimeError break_runtime_bus_kind_matches(BreakRuntimeBus *bus,
                                                  const BreakRuntimeBusKind *kind);
 
+/* Whether a publish of `kind` at `version` with a `size`-byte payload would
+ * pass the registry checks (registered, version within 1..max_version, size
+ * within the budget). Quota and subscriber queues are not considered. False
+ * for a NULL bus. */
+bool break_runtime_bus_kind_accepts(BreakRuntimeBus *bus, u16 kind, u16 version, usize size);
+
 /* *out_id (optional) receives a nonzero id that is never reused. */
 BreakRuntimeError break_runtime_bus_subscribe(BreakRuntimeBus *bus, const char *name,
                                               BreakRuntimeQueue *queue, const u16 *kinds,

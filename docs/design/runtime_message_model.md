@@ -382,3 +382,15 @@ core_app 主循环随后改为订阅这些事件（2026-11-22）：语音通道�
 `runtime_core` 中的总线因此引用 `profiler_*`（来自 `engine`）。`core_app_runtime` 把 `runtime_core` 列在 `engine` 之后，单遍归档链接器（GNU ld）需要在使用者的链接行中再列一次 `runtime_core engine`（`test_core_app_voice`）。
 
 测试：`test_runtime_bus` 新增 2 例（共 13 例）：投递成功不记录；队列满、未知 kind、版本越界、超预算分别以正确的名字和 cid 记录；未关联的丢弃不带 cid；解除后不再记录；超配额 10 次而 profiler 环只有 4 槽时，发布照常返回 OVERLOAD，profiler 记录 4 次、自身溢出 6 次。变异检查：去掉任一类记录、cid 丢失、解除不生效、事件名写错，均被检出。ThreadSanitizer 下无告警。
+
+### 补充（2026-11-22）：任务完成接入总线
+
+Task workers 是第二个接入总线的线程域。`break_runtime_task_queue_publish_completions(queue, bus, kind)`（`engine/src/runtime/runtime_task.h`）让每个经该队列转发的任务在 worker 上执行完回调后，发布一条 `kind`（版本 1）消息：payload 为 8 字节的任务 payload 序号（本机字节序），`correlation_id` 取自任务 payload（payload 为 NULL 时两者都为 0）。回调拥有并释放 payload，所以 trampoline 在调用回调之前读取这两个值。拥有者线程从自己的队列得知哪些工作已经完成，并能按 correlation_id 把完成通知与发起请求对应起来，不再需要轮询共享计数器。
+
+- kind 必须已在总线上登记，且接受版本 1、预算至少 8 字节，否则返回 REJECTED。为此总线新增 `break_runtime_bus_kind_accepts(bus, kind, version, size)`：按登记表判断一次发布能否通过版本与大小检查（不考虑配额和订阅者队列）。
+- worker 从不等待：订阅者队列满时通知被丢弃，计入 `BreakRuntimeTaskStats.completions_dropped`；送达至少一个订阅者的计入 `completions_published`。这两个计数由 worker 原子递增，不经队列互斥锁。
+- 设置只对之后 drain 转发的任务生效（转发时把总线与 kind 记入任务节点）；传 NULL 解除。总线必须比所有已转发的任务更长寿。
+
+测试：`test_runtime_facade` 新增 2 例（共 20 例）：4 个带 correlation_id 的任务和 1 个无 payload 的任务在 2 个 worker 上执行，拥有者收到 5 条通知，correlation_id 与序号一一对应，无 payload 的任务通知为 0；未登记的 kind 被拒绝；解除后任务照常执行但不再发布；拥有者队列只有 2 槽时 10 个任务全部执行，2 条送达、8 条计为丢弃。`test_runtime_bus` 新增 1 例（共 14 例）覆盖 `kind_accepts` 的版本与大小边界。变异检查：correlation_id 或序号丢失、丢弃计为送达、从不发布、接受未登记的 kind、解除不生效、接受版本 0、大小边界差一，均被检出（“解除不生效”第一轮未检出，因为测试用 kind 0 解除，而发布到未登记的 kind 0 本来就没有订阅者；改为用真实 kind 解除后检出）。`test_runtime_facade` 在 ThreadSanitizer 下无告警。
+
+仍未做：LogicThread、Network/IO 与 PAL/MainLoop 的现有队列接入总线。

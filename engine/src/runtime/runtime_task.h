@@ -3,6 +3,7 @@
 #include <core/types.h>
 #include <runtime/runtime_types.h>
 #include <runtime/runtime_message.h>
+#include <runtime/runtime_bus.h>
 #include <task/task.h>
 
 /* Runtime Core formal task facade (design:
@@ -70,6 +71,8 @@ typedef struct BreakRuntimeTaskStats {
     u64 forward_rejects;  /* drain forwards rejected by the legacy system
                            * (TASK_HANDLE_INVALID); the task stays queued */
     u64 high_water;       /* maximum queued tasks observed */
+    u64 completions_published; /* completion messages delivered */
+    u64 completions_dropped;   /* completion messages the bus dropped */
 } BreakRuntimeTaskStats;
 
 /* `config` may be NULL (defaults). On success *out_queue is newly owned; on
@@ -112,6 +115,22 @@ BreakRuntimeError break_runtime_task_queue_drain(
     TaskSystem *ts,
     u32 max_tasks,
     u32 *out_forwarded);
+
+/* Completion notices on the runtime bus (design:
+ * docs/design/runtime_message_model.md "任务完成接入总线"). After a task's
+ * callback returns on a worker, the trampoline publishes one message of
+ * `kind` (version 1) whose 8-byte payload is the task payload's sequence in
+ * host byte order and whose correlation_id is the payload's (both 0 for a
+ * NULL payload; read before the callback, which owns and releases the
+ * payload). The kind must be registered on the bus with max_version >= 1
+ * and max_payload >= 8, else REJECTED. Publishing never waits: a full
+ * subscriber queue drops the notice and counts it in completions_dropped.
+ * The setting applies to tasks forwarded by later drains; NULL bus
+ * detaches. The bus must outlive every forwarded task. */
+BreakRuntimeError break_runtime_task_queue_publish_completions(
+    BreakRuntimeTaskQueue *queue,
+    BreakRuntimeBus *bus,
+    u16 kind);
 
 /* Snapshot of the observability counters. INVALID on NULL arguments. */
 BreakRuntimeError break_runtime_task_queue_stats(

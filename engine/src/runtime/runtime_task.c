@@ -5,6 +5,7 @@
 
 #include <stdatomic.h>
 #include <stdlib.h>
+#include <string.h>
 
 #if defined(BREAK_RUNTIME_TESTING)
 _Atomic u64 g_break_runtime_test_forward_fail_budget = 0u;
@@ -22,10 +23,16 @@ _Atomic u64 g_break_runtime_test_forward_fail_budget = 0u;
  * trampoline after the callback returns; the payload ownership moves to the
  * callback, which must release it. */
 
+typedef struct BreakRuntimeTaskQueue BreakRuntimeTaskQueue;
+
 typedef struct BreakRuntimeTaskCall {
     BreakRuntimeTaskFn fn;
     BreakRuntimeOwnedMessage *payload;
     u32 priority;
+    /* Set at drain: where the completion notice goes (bus NULL = none). */
+    BreakRuntimeBus *bus;
+    u16 kind;
+    BreakRuntimeTaskQueue *queue;
 } BreakRuntimeTaskCall;
 
 struct BreakRuntimeTaskQueue {
@@ -41,6 +48,11 @@ struct BreakRuntimeTaskQueue {
     u64 closed_rejects;
     u64 forward_rejects;
     u64 high_water;
+    BreakRuntimeBus *completion_bus;
+    u16 completion_kind;
+    /* bumped by workers: atomic, outside the mutex */
+    _Atomic u64 completions_published;
+    _Atomic u64 completions_dropped;
 };
 
 static usize runtime_task_align_up(usize value, usize alignment)
@@ -52,7 +64,32 @@ static usize runtime_task_align_up(usize value, usize alignment)
 static void break_runtime_task_trampoline(void *ctx)
 {
     BreakRuntimeTaskCall *call = (BreakRuntimeTaskCall *)ctx;
-    call->fn(call->payload);
+    BreakRuntimeMessageView payload_view;
+    u64 sequence = 0u;
+    u64 correlation_id = 0u;
+    if (call->bus && call->payload &&
+        break_runtime_message_view(call->payload, &payload_view) == BREAK_RUNTIME_OK) {
+        sequence = payload_view.sequence;
+        correlation_id = payload_view.correlation_id;
+    }
+    call->fn(call->payload); /* releases the payload */
+    if (call->bus) {
+        BreakRuntimeMessageView notice;
+        u32 delivered = 0u;
+        memset(&notice, 0, sizeof(notice));
+        notice.kind = call->kind;
+        notice.version = 1u;
+        notice.sequence = sequence;
+        notice.correlation_id = correlation_id;
+        notice.data = &sequence;
+        notice.size = sizeof(sequence);
+        (void)break_runtime_bus_publish(call->bus, &notice, &delivered);
+        if (delivered > 0u) {
+            atomic_fetch_add(&call->queue->completions_published, 1u);
+        } else {
+            atomic_fetch_add(&call->queue->completions_dropped, 1u);
+        }
+    }
     free(call);
 }
 
@@ -210,6 +247,9 @@ BreakRuntimeError break_runtime_task_queue_drain(
          * accepted it. drain() is owner-thread-only, so the head cannot move
          * while the lock is dropped; concurrent submits only append. */
         call = queue->ring[queue->head];
+        call->bus = queue->completion_bus;
+        call->kind = queue->completion_kind;
+        call->queue = queue;
         platform_mutex_unlock(&queue->mutex);
 
         /* Outside the queue mutex: on acceptance the legacy system takes over
@@ -266,6 +306,26 @@ BreakRuntimeError break_runtime_task_queue_stats(
     out_stats->closed_rejects = queue->closed_rejects;
     out_stats->forward_rejects = queue->forward_rejects;
     out_stats->high_water = queue->high_water;
+    platform_mutex_unlock(&queue->mutex);
+    out_stats->completions_published = atomic_load(&queue->completions_published);
+    out_stats->completions_dropped = atomic_load(&queue->completions_dropped);
+    return BREAK_RUNTIME_OK;
+}
+
+BreakRuntimeError break_runtime_task_queue_publish_completions(
+    BreakRuntimeTaskQueue *queue,
+    BreakRuntimeBus *bus,
+    u16 kind)
+{
+    if (!queue) {
+        return BREAK_RUNTIME_INVALID;
+    }
+    if (bus && !break_runtime_bus_kind_accepts(bus, kind, 1u, sizeof(u64))) {
+        return BREAK_RUNTIME_REJECTED;
+    }
+    platform_mutex_lock(&queue->mutex);
+    queue->completion_bus = bus;
+    queue->completion_kind = kind;
     platform_mutex_unlock(&queue->mutex);
     return BREAK_RUNTIME_OK;
 }
