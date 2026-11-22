@@ -446,4 +446,6 @@ Network 是第四个接入总线的线程域，分两层：
 
 合并前复核（rebase 到远端 `e2f8136c`）：默认配置 Vulkan 444/444、OpenGL 442/442；ASan+UBSan 的 shell 188/188 与 fuzz 14/14；TSan 的总线、主循环和平台适配 3/3。Wayland/Vulkan 实机最新输出 `observed=31 published=4 dropped=0 shell_received=4`。本机 Fedora GCC 16.2.1/glibc 2.44 的完整 TSan shell 在 Lua console 受保护加载路径发生 `can't find longjmp buf` 工具运行时中止，不作为完整 TSan 通过收据，完整 TSan 由 Ubuntu 24.04 CI lane 复验。实机输入回放结束后恢复 `BREAK_EDITOR_INPUT_SCRIPT=OFF` 并验证发行配置契约。
 
+远端验收（`4ac72d59a763e3be9c2127f9a940e7c5728cf4c6`）：CI run 45001336313、windows-d3d12 run 45001336382、proton-d3d12 run 45002398409 均成功。CI 的 27 个矩阵作业中 23 个成功、4 个按条件跳过；Ubuntu 24.04 的 `Linux + GCC (TSan, headless)` 完成构建和非图形测试，未排除 `test_editor_shell`，但仍排除既有的 `test_async_loader`。本批未改动 `QUIC Weak Network` 的触发路径，没有对应的运行记录。
+
 仍未做：core_app 之外（C++ framework 的 `Init/Tick/DeInit`）的 LogicThread 尚未消费总线。
