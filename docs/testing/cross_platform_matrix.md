@@ -28,11 +28,11 @@
 | M1 | macOS arm64 | Apple Clang | Debug | Metal | crypto | lane-gpu-runtime-macos-metal | macOS 主机（§4.1） |
 | M2 | macOS arm64 | Apple Clang | Debug | Cocoa + MoltenVK | — | lane-native-surface-cocoa | macOS 主机（§4.2，需 Vulkan SDK） |
 | M3 | macOS arm64 | Apple Clang | Debug | — | Redis 原生提供者 | lane-rule-engine-redis（macOS） | — |
-| M4 | iOS 模拟器 | Xcode | — | Metal | 仅构建 | ios-metal-build | macOS 主机需要完整 Xcode，命令行工具不够，见 §5 |
+| M4 | iOS 模拟器 | Xcode | — | Metal | 仅构建 | ios-metal-build | macOS 主机（完整 Xcode，iOS Simulator 27.1 SDK） |
 | W1 | Windows x86-64 | MSVC（cl） | Debug | headless（无 Vulkan） | `/W4 /WX`，fuzz smoke | lane-headless-windows-msvc | Windows 主机（§4.4） |
 | W2 | Windows x86-64 | Clang | Debug | Vulkan，headless | — | lane-headless-windows-clang | Windows 主机（§4.5） |
 | W3 | Windows x86-64 | Clang | Debug | headless | ASan | lane-headless-windows-asan | Windows 主机（§4.5） |
-| W4 | Windows x86-64 | MinGW GCC | Debug | headless | — | lane-headless-windows-mingw | 主机未安装 MinGW-w64，仅 CI（§5） |
+| W4 | Windows x86-64 | MinGW GCC | Debug | headless | fuzz smoke | lane-headless-windows-mingw | Windows 主机，便携 WinLibs GCC（§4.5） |
 | W5 | Windows x86-64 | Clang | Debug | Win32 原生窗口 + Vulkan | — | lane-native-surface-win32 | Windows 主机（§4.6） |
 | W6 | Windows x86-64 | Clang | Release | D3D12（WARP 软件实现） | Debug layer | windows-d3d12.yml | Windows 主机（§4.6） |
 | W7 | Windows x86-64 | Clang | Release | D3D12 真实 GPU | — | lane-gpu-runtime-windows-d3d12（需 `ENABLE_GPU_LANES`，默认不运行） | Windows 主机真实 GPU（§4.6），CI 不覆盖，只能实机 |
@@ -84,9 +84,13 @@ CI 的 arm64 是 QEMU 用户态模拟。macOS 主机是真实的 arm64 CPU，§4
 
 - W2：`cmake -S engine -B build-clang -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_BUILD_TYPE=Debug -DENGINE_VULKAN=ON`（需要 Vulkan SDK，按 `engine/tools/fetch_vulkan_sdk_windows.cmake`）。
 - W3：同 W2，加 `-DCMAKE_C_FLAGS="-fsanitize=address -fno-omit-frame-pointer"`（C++ 同），测试前把 ASan 运行库 DLL 复制到测试目录（同 CI 步骤）。
-- W4：需要 MinGW-w64 GCC；主机当前未安装，记录为“未执行”，并在 §5 列出。
+- W4：主机没有安装 MinGW-w64，也无法访问 GitHub。在开发机下载 WinLibs 发布的 `winlibs-x86_64-posix-seh-gcc-16.2.0-mingw-w64ucrt-14.0.0-r3.zip`，核对其 SHA-256 与同一发布附带的 `.sha256` 文件一致后，复制到 Windows 主机解压（`F:\winlibs\mingw64`），只在构建脚本的 `PATH` 中加入，不修改系统环境。配置命令与 CI 相同：`-DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE=Debug -DENGINE_VULKAN=OFF -DENGINE_ENABLE_IPO=OFF -DENGINE_BUILD_FUZZ_SMOKE=ON`，并构建同样的 11 个 fuzz 目标。
 - 经 SSH 启动的进程在 session 0，且随 SSH 连接结束而终止。实机上用计划任务运行：`New-ScheduledTaskPrincipal -LogonType Interactive` 使任务进入已登录的桌面会话（session 1），构建脚本 `win-build.cmd <name>` 从 `E:\break-args\<name>.txt` 读取配置参数（cmd 会在 `=` 处拆分命令行参数，所以参数放在文件中）。
 - 每个组合都运行 headless ctest 选择，核对失败数为 0。
+
+### 4.5.1 iOS 模拟器（M4）
+
+macOS 主机：`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`，`cmake -S engine -B build-m4-ios -G Xcode -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphonesimulator -DENGINE_RHI_BACKEND=metal -DENGINE_BUILD_TESTS=OFF -DBREAK_ENABLE_CRYPTO=OFF`，然后 `xcodebuild -project build-m4-ios/PureCEngine.xcodeproj -scheme engine_demo -destination 'generic/platform=iOS Simulator' build`。只验证构建，与 CI 一致。
 
 ### 4.6 Windows：Win32 窗口、D3D12 WARP 与真实 GPU（W5–W7）
 
@@ -100,10 +104,8 @@ CI 的 arm64 是 QEMU 用户态模拟。macOS 主机是真实的 arm64 CPU，§4
 | 组合 | 原因 | 现有证据 |
 |---|---|---|
 | L10 Steam Deck | 没有设备 | 无；CI 作业需要自托管 runner |
-| M4 iOS 模拟器 | macOS 主机只有命令行工具，没有完整 Xcode | CI 的 ios-metal-build |
 | W8 Proton | 需要 Linux + Steam Proton 环境 | CI 的 lane-proton |
 | L4、L5、M3 | 与实机无关的工具链特性 | CI |
-| W4 MinGW | Windows 主机未安装 MinGW-w64 | CI 的 lane-headless-windows-mingw |
 | W1/W2/W6 的剪贴板用例 | 主机上的 ToDesk 占用剪贴板 | CI；需在主机上退出 ToDesk 后手动执行（执行记录问题 1） |
 
 ## 6. 执行记录
@@ -120,7 +122,8 @@ CI 的 arm64 是 QEMU 用户态模拟。macOS 主机是真实的 arm64 CPU，§4
 | W2/W5 Clang + Vulkan | 同上，LLVM 22.1.6 | headless 411/412；graphics/gpu 7/7（`test_vulkan`、`test_core_app_gpu_vulkan`、`rhi_swapchain_bench` 等，真实 GPU） | 唯一失败见问题 1 |
 | W6/W7 D3D12 | 同上，Agility SDK 1.619.6（nupkg 与 DLL 的 SHA-512 与 `agility_sdk_lock.txt` 一致） | headless 415/416；graphics/gpu 10/10（设备、交换链、管线、着色器、DXR、UI canvas、WARP 运行时，真实 GPU） | CI 的真实 GPU 作业默认不运行，这是 W7 的首份实机证据；唯一失败见问题 1 |
 | W3 Clang ASan | 同上，OpenGL，`ASAN_OPTIONS=detect_leaks=0` | headless 409/410，无 AddressSanitizer 报告 | 唯一失败见问题 1 |
-| W4 MinGW | — | 未执行 | 主机未安装 MinGW-w64，CI 的 lane-headless-windows-mingw 覆盖 |
+| W4 MinGW | Windows 主机，WinLibs GCC 16.2.0（UCRT，posix-seh） | 构建与 11 个 fuzz 目标 0 警告；headless 427/428（含 fuzz smoke） | 源码 `4d849f88`；唯一失败见问题 1 |
+| M4 iOS 模拟器 | macOS 主机，Xcode，iOS Simulator 27.1 SDK | `engine_demo` 构建成功（`** BUILD SUCCEEDED **`） | 源码 `4d849f88`；命令与 CI 的 ios-metal-build 相同 |
 
 问题与处理：
 

@@ -2,6 +2,7 @@
 
 - **计划与记录**：新增 `docs/testing/cross_platform_matrix.md`，列出 24 个构建组合（OS × 架构 × 编译器 × 构建类型 × RHI × 平台层 × sanitizer × 可选特性）、8 类场景、每个组合的验证位置与实机步骤，以及执行记录。连接信息只来自环境变量，文档与日志不含账号。
 - **实机结果**（源码 `093d0336`）：macOS Apple M2 上 Metal 418/418 + GPU 6/6、Cocoa + MoltenVK 421/421 + GPU 6/6，物理与动画金标准哈希在 arm64 原生与 macOS libm 上一致；Windows 11 上 MSVC 423/424、Clang + Vulkan 411/412 + GPU 7/7、D3D12 415/416 + 真实 GPU 10/10、Clang ASan 409/410。Windows 上唯一的失败都是剪贴板用例，原因是主机上的 ToDesk 占用剪贴板（独立脚本 100 次 `OpenClipboard` 全部失败），需在主机上退出 ToDesk 后手动复测。
+- **补充**（源码 `4d849f88`）：iOS 模拟器 `engine_demo` 在 macOS 主机上构建成功；Windows MinGW-w64（WinLibs GCC 16.2.0，压缩包 SHA-256 与发布附带校验值一致）构建与 fuzz 目标 0 警告，headless 427/428，唯一失败同为剪贴板用例。至此矩阵中除 Steam Deck 与 Proton 外的组合都有实机结果。
 - **缺陷修复**：直接链接 MoltenVK 时 `vk_init` 要求 loader 才有的 `VK_KHR_portability_enumeration`，Vulkan 初始化失败。现在该扩展缺失时连同其创建标志一起去掉。`test_platform_vk_instance_extensions`（5 例）先失败后通过；实机上修复前 `test_vulkan` 失败、修复后通过。
 
 ## MSVC C4701 修复（2026-11-22）
