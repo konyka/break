@@ -150,6 +150,25 @@ BreakRuntimeError core_app_input_frame(const CoreAppInput *input,
     return BREAK_RUNTIME_OK;
 }
 
+void core_app_input_diagnostics(const CoreAppInputFrame *frame,
+                                CoreAppInputDiagnostics *out) {
+    u32 i;
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    if (!frame) return;
+    out->tick = frame->tick;
+    out->touch_status = (u32)frame->touch_status;
+    out->haptic_status = (u32)frame->haptic_status;
+    out->touch_count = frame->touch_count;
+    out->gesture_count = frame->gesture_count;
+    for (i = 0u; i < INPUT_MAX_KEYS; ++i) {
+        if (input_key_down(&frame->state, i)) out->key_down_count++;
+    }
+    for (i = 0u; i < INPUT_MAX_PADS; ++i) {
+        if (frame->state.pads[i].connected) out->pad_connected_count++;
+    }
+}
+
 BreakRuntimeError core_app_input_request_area_haptic(CoreAppInput *input,
                                                      u32 pad, f32 low, f32 high,
                                                      u32 duration_ms) {

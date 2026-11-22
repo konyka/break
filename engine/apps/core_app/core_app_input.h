@@ -23,6 +23,16 @@ typedef struct CoreAppInputFrame {
     u64 time_ms;
 } CoreAppInputFrame;
 
+typedef struct CoreAppInputDiagnostics {
+    u32 tick;
+    u32 key_down_count;
+    u32 pad_connected_count;
+    u32 touch_count;
+    u32 gesture_count;
+    u32 touch_status;
+    u32 haptic_status;
+} CoreAppInputDiagnostics;
+
 typedef struct CoreAppInput CoreAppInput;
 
 CoreAppInput *core_app_input_create(void);
@@ -33,6 +43,8 @@ BreakRuntimeError core_app_input_apply(CoreAppInput *input,
                                        const CoreAppScenarioEvent *event);
 BreakRuntimeError core_app_input_frame(const CoreAppInput *input,
                                        CoreAppInputFrame *out);
+void core_app_input_diagnostics(const CoreAppInputFrame *frame,
+                                CoreAppInputDiagnostics *out);
 BreakRuntimeError core_app_input_request_area_haptic(CoreAppInput *input,
                                                      u32 pad, f32 low, f32 high,
                                                      u32 duration_ms);

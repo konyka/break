@@ -5484,9 +5484,13 @@ endif()
     set_tests_properties(test_core_app_lifecycle_roundtrip PROPERTIES
         LABELS "headless;core_app;lifecycle" TIMEOUT 120)
 
-    add_executable(test_core_app_runtime tests/test_core_app_runtime.c)
+    add_executable(test_core_app_runtime tests/test_core_app_runtime.c
+        apps/core_app/core_app_gpu.c
+        apps/core_app/core_app_mesh.c)
     target_include_directories(test_core_app_runtime PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_core_app_runtime PRIVATE core_app_runtime m)
+    target_link_libraries(test_core_app_runtime PRIVATE engine)
+    engine_link_rhi_backend(test_core_app_runtime)
     target_compile_definitions(test_core_app_runtime PRIVATE
         CORE_APP_SOURCE_ASSET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app")
     add_test(NAME test_core_app_runtime COMMAND test_core_app_runtime)

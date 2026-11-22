@@ -286,6 +286,30 @@ struct CoreApp {
     u64 net_events_reactor_dropped;
 };
 
+static void app_diagnostics_publish(CoreApp *app) {
+    const CoreAppDiagnosticsHooks *hooks = app->config.diagnostics;
+    CoreAppInputFrame frame;
+    CoreAppInputDiagnostics input;
+    CoreAppDiagnosticsSnapshot snapshot;
+    if (!hooks) return;
+    memset(&snapshot, 0, sizeof(snapshot));
+    if (core_app_input_frame(app->input, &frame) != BREAK_RUNTIME_OK) return;
+    core_app_input_diagnostics(&frame, &input);
+    snapshot.tick = input.tick;
+    snapshot.rhi_backend = app->gpu.live ? app->gpu.backend_name : "record";
+    snapshot.gpu_name = app->gpu.live ? app->gpu.device_name : "none";
+    snapshot.network_live = app->network_live;
+    snapshot.network_events_seen = app->net_events_seen;
+    snapshot.network_events_dropped = app->net_events_reactor_dropped;
+    snapshot.key_down_count = input.key_down_count;
+    snapshot.pad_connected_count = input.pad_connected_count;
+    snapshot.touch_count = input.touch_count;
+    snapshot.gesture_count = input.gesture_count;
+    snapshot.touch_status = input.touch_status;
+    snapshot.haptic_status = input.haptic_status;
+    hooks->publish(hooks->user, &snapshot);
+}
+
 static BreakRuntimeError app_request_skins(CoreApp *app, CoreLevel *level);
 
 static const u8 k_runtime_magic[8] = {'C', 'O', 'R', 'E', 'R', 'U', 'N', '1'};
@@ -3009,6 +3033,7 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
         (config->audio_mode != CORE_APP_AUDIO_RECORD &&
          config->audio_mode != CORE_APP_AUDIO_NULL &&
          config->audio_mode != CORE_APP_AUDIO_DEVICE) ||
+        (config->diagnostics && !config->diagnostics->publish) ||
         (config->network &&
          (!config->network_hooks || !config->network_hooks->start ||
           !config->network_hooks->tick || !config->network_hooks->stop_admission ||
@@ -3120,6 +3145,7 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
     if (result != BREAK_RUNTIME_OK) goto finished;
     result = app_trace(app, "COREAPPTRACE version=1 event=runtime_running\n");
     if (result != BREAK_RUNTIME_OK) goto finished;
+    app_diagnostics_publish(app);
 
     bool ended = false;
     u32 event_index = 0u;
@@ -3291,6 +3317,7 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
             stage = "voice";
             goto finished;
         }
+        app_diagnostics_publish(app);
     }
     if (!ended) {
         stage = "scenario";

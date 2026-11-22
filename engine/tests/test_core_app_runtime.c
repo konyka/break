@@ -1,6 +1,7 @@
 #include "test_framework.h"
 
 #include "../apps/core_app/scenario.h"
+#include "../apps/core_app/core_app.h"
 #include "../apps/core_app/core_app_audio.h"
 #include "../apps/core_app/core_app_input.h"
 #include "../apps/core_app/core_app_render.h"
@@ -388,6 +389,44 @@ static CoreAppScenarioEvent event_touch(u32 tick, i64 source,
     event.x = x;
     event.y = y;
     return event;
+}
+
+TEST(input_diagnostics_reduces_real_frame_to_counts_and_status) {
+    CoreAppInput *input = core_app_input_create();
+    CoreAppInputFrame frame;
+    CoreAppInputDiagnostics diagnostics;
+    CoreAppScenarioEvent key = event_key(7u, (i32)'w', 1);
+    CoreAppScenarioEvent pad;
+    memset(&pad, 0, sizeof(pad));
+    pad.tick = 7u;
+    pad.kind = CORE_APP_SCENARIO_PAD;
+    pad.pad = 0u;
+    pad.axis = 0u;
+    pad.value = 0.5f;
+    ASSERT_NOT_NULL(input);
+    ASSERT_EQ(core_app_input_begin_tick(input, 7u, 7000u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_input_apply(input, &key), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_input_apply(input, &pad), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_input_frame(input, &frame), BREAK_RUNTIME_OK);
+    core_app_input_diagnostics(&frame, &diagnostics);
+    ASSERT_EQ(diagnostics.tick, 7u);
+    ASSERT_EQ(diagnostics.key_down_count, 1u);
+    ASSERT_EQ(diagnostics.pad_connected_count, 1u);
+    ASSERT_EQ(diagnostics.touch_count, 0u);
+    ASSERT_EQ(diagnostics.gesture_count, 0u);
+    ASSERT_EQ(diagnostics.touch_status, (u32)frame.touch_status);
+    ASSERT_EQ(diagnostics.haptic_status, (u32)frame.haptic_status);
+    core_app_input_diagnostics(&frame, NULL);
+    core_app_input_destroy(input);
+}
+
+TEST(invalid_diagnostics_hooks_fail_before_io) {
+    CoreAppDiagnosticsHooks hooks = {0};
+    CoreAppConfig config = {0};
+    config.diagnostics = &hooks;
+    int exit_code = 0;
+    ASSERT_EQ(core_app_run(&config, &exit_code), BREAK_RUNTIME_FAILED);
+    ASSERT_EQ(exit_code, 2);
 }
 
 TEST(input_reuses_touch_id_with_new_generation) {
@@ -1778,6 +1817,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(scenario_rejects_tick_beyond_limit_without_partial_events);
     RUN_TEST(scenario_parses_level_with_and_without_asset_root);
     RUN_TEST(formal_scenarios_parse);
+    RUN_TEST(input_diagnostics_reduces_real_frame_to_counts_and_status);
+    RUN_TEST(invalid_diagnostics_hooks_fail_before_io);
     RUN_TEST(input_reuses_touch_id_with_new_generation);
     RUN_TEST(input_cancel_emits_no_gesture_and_next_tick_is_idle);
     RUN_TEST(input_key_hold_survives_tick_and_release_clears_it);

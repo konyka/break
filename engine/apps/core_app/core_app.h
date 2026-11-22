@@ -76,6 +76,28 @@ typedef struct CoreAppNetworkHooks {
 /* Corrections above the net payload cap are never encoded. */
 #define CORE_APP_PHYSICS_CORRECTION_MAX_BYTES (64u * 1024u)
 
+typedef struct CoreAppDiagnosticsSnapshot {
+    u32 tick;
+    const char *rhi_backend;
+    const char *gpu_name;
+    bool network_live;
+    u64 network_events_seen;
+    u64 network_events_dropped;
+    u32 key_down_count;
+    u32 pad_connected_count;
+    u32 touch_count;
+    u32 gesture_count;
+    u32 touch_status;
+    u32 haptic_status;
+} CoreAppDiagnosticsSnapshot;
+
+typedef void (*CoreAppDiagnosticsPublishFn)(
+    void *user, const CoreAppDiagnosticsSnapshot *snapshot);
+typedef struct CoreAppDiagnosticsHooks {
+    void *user;
+    CoreAppDiagnosticsPublishFn publish;
+} CoreAppDiagnosticsHooks;
+
 struct CoreAppConfig {
     const char *asset_root;
     const char *scenario_path;
@@ -98,6 +120,7 @@ struct CoreAppConfig {
     bool network;
     const CoreAppNetworkHooks *network_hooks;
     u32 max_frames;
+    const CoreAppDiagnosticsHooks *diagnostics;
 };
 
 BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code);
