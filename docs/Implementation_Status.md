@@ -1,3 +1,8 @@
+## cell link 拒绝事件（2026-11-22）
+
+- **实现**：`break_cell_link_set_reject_hook` 在每个被拒绝的数据报（格式错误、未知密钥、HMAC 错误、未知对端、重放）处理后同步上报原因和声称的发送方，便于把安全事件送往总线或日志。设计见 `docs/design/cell_handoff.md`「拒绝事件」。
+- **TDD**：新增 1 例（先链接失败后实现），7 个变异全部被检出，ASan/UBSan 下通过。
+
 ## IO 完成通知接入消息总线（2026-11-22）
 
 - **实现**：`break_runtime_io_attach_bus` 让每个 IO 完成（读完、失败、超时、取消、shutdown 清空）再发一条不含文件内容的通知到总线，从不阻塞，送达与丢弃分别计数；新增 `break_runtime_io_notice_view`。设计见 `docs/design/runtime_message_model.md`「IO 完成通知接入总线」。

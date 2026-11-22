@@ -33,6 +33,8 @@ struct BreakCellLink {
     LinkPeer peers[BREAK_CELL_LINK_MAX_PEERS];
     u32 peer_count;
     BreakCellLinkStats stats;
+    BreakCellLinkRejectFn reject_hook;
+    void *reject_user;
 };
 
 static void put_u16(u8 *p, u16 v) {
@@ -232,6 +234,10 @@ void break_cell_link_send(void *user, const BreakCellMsg *msg) {
 
 /* The replay window is marked only after the tag verifies, so a forged
  * datagram cannot use up a sequence number. */
+static void report(BreakCellLink *link, BreakCellLinkReject reason, u32 from_cell) {
+    if (link->reject_hook) link->reject_hook(link->reject_user, reason, from_cell);
+}
+
 static void handle(BreakCellLink *link, BreakCell *cell, const u8 *data, u32 size, u32 *delivered) {
     BreakCellMsg msg;
     u64 sequence;
@@ -239,33 +245,42 @@ static void handle(BreakCellLink *link, BreakCell *cell, const u8 *data, u32 siz
     BreakCellWireResult r;
     const LinkKey *key = NULL;
     u32 key_id = 0;
+    u32 claimed = size >= 12u ? (u32)data[8] | (u32)data[9] << 8 | (u32)data[10] << 16 |
+                                    (u32)data[11] << 24
+                              : 0u;
     if (size < BREAK_CELL_WIRE_HEADER_SIZE + BREAK_CELL_WIRE_TAG_SIZE ||
         !break_cell_wire_key_id(data, size, &key_id)) {
         link->stats.bad_format++;
+        report(link, BREAK_CELL_LINK_REJECT_BAD_FORMAT, claimed);
         return;
     }
     if (key_id != 0u && key_id == link->current.id) key = &link->current;
     else if (key_id != 0u && key_id == link->previous.id) key = &link->previous;
     if (key == NULL) {
         link->stats.unknown_key++;
+        report(link, BREAK_CELL_LINK_REJECT_UNKNOWN_KEY, claimed);
         return;
     }
     r = break_cell_wire_decode(key->bytes, key->size, data, size, &msg, &sequence, NULL);
     if (r == BREAK_CELL_WIRE_BAD_TAG) {
         link->stats.bad_tag++;
+        report(link, BREAK_CELL_LINK_REJECT_BAD_TAG, claimed);
         return;
     }
     if (r != BREAK_CELL_WIRE_OK) {
         link->stats.bad_format++;
+        report(link, BREAK_CELL_LINK_REJECT_BAD_FORMAT, claimed);
         return;
     }
     from = find_peer(link, msg.from_cell);
     if (from == NULL || msg.to_cell != link->cell_id) {
         link->stats.unknown_peer++;
+        report(link, BREAK_CELL_LINK_REJECT_UNKNOWN_PEER, msg.from_cell);
         return;
     }
     if (break_replay_window_check_and_mark(&from->window, sequence) != BREAK_REPLAY_OK) {
         link->stats.replayed++;
+        report(link, BREAK_CELL_LINK_REJECT_REPLAYED, msg.from_cell);
         return;
     }
     link->stats.received++;
@@ -298,6 +313,13 @@ bool break_cell_link_rotate_key(BreakCellLink *link, u32 key_id, const u8 *key, 
 bool break_cell_link_retire_previous_key(BreakCellLink *link) {
     if (link == NULL || link->previous.id == 0u) return false;
     set_key(&link->previous, 0u, NULL, 0u);
+    return true;
+}
+
+bool break_cell_link_set_reject_hook(BreakCellLink *link, BreakCellLinkRejectFn hook, void *user) {
+    if (link == NULL) return false;
+    link->reject_hook = hook;
+    link->reject_user = hook != NULL ? user : NULL;
     return true;
 }
 

@@ -119,6 +119,26 @@ bool break_cell_link_retire_previous_key(BreakCellLink *link);
 
 bool break_cell_link_stats(const BreakCellLink *link, BreakCellLinkStats *out_stats);
 
+/* Rejection events (design: docs/design/cell_handoff.md "拒绝事件"). The
+ * hook runs on the polling thread, once per rejected datagram, after the
+ * matching counter moved; it must not call back into the link. `from_cell`
+ * is the claimed sender (0 when the datagram was too short to name one) and
+ * is unauthenticated except for BREAK_CELL_LINK_REJECT_REPLAYED and
+ * _UNKNOWN_PEER, which are only reported after the tag verified. Typical
+ * use: forward security events to the runtime message bus or a log. */
+typedef enum {
+    BREAK_CELL_LINK_REJECT_BAD_FORMAT = 1,
+    BREAK_CELL_LINK_REJECT_UNKNOWN_KEY = 2,
+    BREAK_CELL_LINK_REJECT_BAD_TAG = 3,
+    BREAK_CELL_LINK_REJECT_UNKNOWN_PEER = 4,
+    BREAK_CELL_LINK_REJECT_REPLAYED = 5
+} BreakCellLinkReject;
+
+typedef void (*BreakCellLinkRejectFn)(void *user, BreakCellLinkReject reason, u32 from_cell);
+
+/* NULL hook removes it. False for a NULL link. */
+bool break_cell_link_set_reject_hook(BreakCellLink *link, BreakCellLinkRejectFn hook, void *user);
+
 #ifdef __cplusplus
 }
 #endif

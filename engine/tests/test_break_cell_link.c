@@ -554,6 +554,88 @@ TEST(keys_rotate_without_interrupting_a_handoff) {
     pair_close(&p);
 }
 
+typedef struct {
+    u32 count[6];
+    u32 last_from;
+} RejectLog;
+
+static void on_reject(void *user, BreakCellLinkReject reason, u32 from_cell) {
+    RejectLog *log = (RejectLog *)user;
+    if ((u32)reason < 6u) log->count[reason]++;
+    log->last_from = from_cell;
+}
+
+TEST(rejections_are_reported_through_the_hook) {
+    Pair p;
+    NetSocket *s = net_udp_create(0u);
+    BreakCellMsg offer;
+    BreakCellLinkStats st;
+    RejectLog log;
+    u8 buf[BREAK_CELL_WIRE_MAX_SIZE], wrong_key[32];
+    u32 n = 0;
+    memset(&log, 0, sizeof log);
+    ASSERT_NOT_NULL(s);
+    ASSERT_TRUE(pair_open(&p, 1000u));
+    ASSERT_FALSE(break_cell_link_set_reject_hook(NULL, on_reject, &log));
+    ASSERT_TRUE(break_cell_link_set_reject_hook(p.link[1], on_reject, &log));
+    memset(&offer, 0, sizeof offer);
+    offer.type = BREAK_CELL_MSG_OFFER;
+    offer.from_cell = 1u;
+    offer.to_cell = 2u;
+    offer.entity = 1u;
+    offer.epoch = 1u;
+    offer.txn = 1u;
+
+    /* accepted, then replayed */
+    ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 1u, 10u, &offer, buf, sizeof buf, &n), BREAK_CELL_WIRE_OK);
+    inject(s, p.link[1], buf, n);
+    inject(s, p.link[1], buf, n);
+    /* forged */
+    memcpy(wrong_key, kKey, 32u);
+    wrong_key[3] ^= 1u;
+    ASSERT_EQ(break_cell_wire_encode(wrong_key, 32u, 1u, 11u, &offer, buf, sizeof buf, &n), BREAK_CELL_WIRE_OK);
+    inject(s, p.link[1], buf, n);
+    /* unknown key id */
+    ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 9u, 12u, &offer, buf, sizeof buf, &n), BREAK_CELL_WIRE_OK);
+    inject(s, p.link[1], buf, n);
+    /* unknown sender */
+    offer.from_cell = 3u;
+    ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 1u, 13u, &offer, buf, sizeof buf, &n), BREAK_CELL_WIRE_OK);
+    inject(s, p.link[1], buf, n);
+    drain(&p, 1u);
+    ASSERT_EQ(log.last_from, 3u);
+    /* too short to carry anything: 10 bytes whose sender field would read
+     * as cell 0x0505 if the length were not checked first */
+    memset(buf, 5, sizeof buf);
+    inject(s, p.link[1], buf, 10u);
+    drain(&p, 1u);
+    ASSERT_EQ(log.last_from, 0u);
+
+    ASSERT_EQ(log.count[BREAK_CELL_LINK_REJECT_REPLAYED], 1u);
+    ASSERT_EQ(log.count[BREAK_CELL_LINK_REJECT_BAD_TAG], 1u);
+    ASSERT_EQ(log.count[BREAK_CELL_LINK_REJECT_UNKNOWN_KEY], 1u);
+    ASSERT_EQ(log.count[BREAK_CELL_LINK_REJECT_UNKNOWN_PEER], 1u);
+    ASSERT_EQ(log.count[BREAK_CELL_LINK_REJECT_BAD_FORMAT], 1u);
+    /* the hook agrees with the counters */
+    ASSERT_TRUE(break_cell_link_stats(p.link[1], &st));
+    ASSERT_EQ(st.replayed, 1u);
+    ASSERT_EQ(st.bad_tag, 1u);
+    ASSERT_EQ(st.unknown_key, 1u);
+    ASSERT_EQ(st.unknown_peer, 1u);
+    ASSERT_EQ(st.bad_format, 1u);
+    ASSERT_EQ(st.received, 1u);
+
+    /* removing the hook stops the reports, the counters still move */
+    ASSERT_TRUE(break_cell_link_set_reject_hook(p.link[1], NULL, NULL));
+    inject(s, p.link[1], buf, 10u);
+    drain(&p, 1u);
+    ASSERT_EQ(log.count[BREAK_CELL_LINK_REJECT_BAD_FORMAT], 1u);
+    ASSERT_TRUE(break_cell_link_stats(p.link[1], &st));
+    ASSERT_EQ(st.bad_format, 2u);
+    net_close(s);
+    pair_close(&p);
+}
+
 TEST_MAIN_BEGIN()
     if (!net_init()) return 1;
     time_init();
@@ -565,5 +647,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(forged_replayed_misaddressed_and_malformed_datagrams_are_dropped);
     RUN_TEST(a_restarted_sender_is_not_mistaken_for_a_replay);
     RUN_TEST(keys_rotate_without_interrupting_a_handoff);
+    RUN_TEST(rejections_are_reported_through_the_hook);
     net_shutdown();
 TEST_MAIN_END()
