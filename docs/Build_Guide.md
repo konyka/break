@@ -1038,9 +1038,9 @@ TSan 下报告数据竞争。当前修复的 ASan facade 21/21、TSan task_frame
 rebase 后两套全量构建无 error，Metal CTest **431/431**、MoltenVK **434/434**、graphics **6/6**；
 仅原有的 D3D12 依赖闸门和 3 个 `core_app_nm_*` 共 4 项按平台条件跳过。`/private/tmp` 非
 `kc_*` 条目在测试前后完全相同。外部进程创建的 `/tmp/emfile*` 不属于本仓库，未删除。
-仍未处理：cell_link 测试释放端口后重绑的偶发风险（需要新 API）、Windows `WSAEMSGSIZE`
-处理、`timespec_get` 失败时 sequence 回落、物理示例主程序未进入并行路径；这些不改变本次
-macOS 回归结论。
+当时未处理：cell_link 测试释放端口后重绑的偶发风险、Windows `WSAEMSGSIZE` 处理、
+`timespec_get` 失败时 sequence 回落（均在第九次复核处理）；物理主示例容量固定为 256，
+低于默认并行积分阈值 8192，只有通用 API 的并行路径有专项测试，文档已据此收窄。
 
 2026-11-22 第八次复核：快进同步 `728f700f..461200d5`（7 个远程提交），随后 rebase 到纯文档
 提交 `35cbc5f7`，无冲突。编辑器窗口通知审查发现两处问题：重挂后只有部分字段变化时会混入
@@ -1052,6 +1052,17 @@ macOS 回归结论。
 两套全量构建无 error，Metal CTest **431/431**、MoltenVK **434/434**、graphics **6/6**，
 跳过项同前；rebase 后又完成两套构建与源码/文档契约检查。测试期间出现 root:wheel 所有的
 `/private/tmp/powerlog` 目录，仓库无此路径引用，判断为系统条目，未删除；没有新增本仓库测试残留。
+
+2026-11-22 第九次复核：远程无新提交，本地保持 `bdb9aaa4`；继续审查此前遗留边界。`break_cell_link`
+在墙钟不可用时原来从序号 1 开始，接收方会把重启发送方判为重放；现在创建直接失败，并明确
+墙钟倒拨不属于持久化序号保证。测试专用故障注入先使旧实现 RED（创建意外成功），修复后
+`test_break_cell_link` 9/9。测试改为双方各绑定独立临时端口，再以仅测试编译的 setter 更新对端
+地址，去掉释放后立即重绑的竞争；连续 50 次通过。`net_recvfrom` 在 Winsock `WSAEMSGSIZE` 时
+现与 POSIX 一样返回截断长度并消费数据报，`test_network` 19/19 覆盖超包后继续收包；本机只验证
+POSIX 对照，Windows 分支仍需 Windows 环境复验。物理主示例固定 256 容量，不可能达到默认
+8192 并行积分阈值，文档已移除“场景变大就自动并行”的误导；并行算法专项测试不变，未新增
+压力模式。修复后两套全量构建无 error，Metal CTest **431/431**、MoltenVK **434/434**、
+graphics **6/6**，跳过项同前；`/private/tmp` 非 `kc_*` 条目前后相同。
 
 RHI 第一阶段还提供统一的设备健康状态查询 `rhi_device_get_status()`。`UNKNOWN` 表示
 没有有效设备，`READY` 表示设备可用，`LOST` 表示后端报告设备丢失；该接口是后续 Vulkan、

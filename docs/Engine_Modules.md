@@ -1885,7 +1885,7 @@ TaskSystem 提供 Chase-Lev work-stealing 线程池，支持任务依赖和优�
 - `net_tcp_connect(host, port)` / `net_tcp_listen(port, backlog)` — TCP 连接/监听
 - `net_tcp_accept(listener, out_addr)` — TCP 接受连接
 - `net_send()` / `net_recv()` — TCP 收发
-- `net_sendto()` / `net_recvfrom()` — UDP 收发（带地址）
+- `net_sendto()` / `net_recvfrom()` — UDP 收发（带地址）；超长数据报在 POSIX/Winsock 均截断并消费，返回接收缓冲长度，调用方可用最大长度 +1 的缓冲识别超包
 - `net_set_nonblocking(s, nonblock)` — 非阻塞模式
 - `net_poll(fds, count, timeout_ms)` — I/O 多路复用
 - `net_address_resolve(hostname, port, out)` — DNS 解析

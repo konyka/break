@@ -76,6 +76,7 @@
 - **实现**：新增 `engine/src/network/break_cell_link.{h,c}` 与静态库 `break_cell_link`（依赖 `break_replication_core`、`break_crypto`，只在 `BREAK_ENABLE_CRYPTO` 下构建）。`BreakCellMsg` 编码为带 HMAC-SHA256 的 UDP 数据报，接收方校验长度、头部、HMAC、对端和每个对端的重放窗口后再交给 `break_cell_receive`。设计见 `docs/design/cell_handoff.md`「跨进程传输」。
 - **TDD**：新增 `test_break_cell_link`（7 例），包括经回环 UDP 的真实交接、逐比特篡改、重放、伪造、错发和发送方重启。13 个变异全部被检出；第一轮检出遗漏的“冒充其他 cell 发送”后补充了断言，并删除了一段无效的前置重放检查。ASan/UBSan 下通过，连续 20 次运行无偶发失败。
 - **验证**：arm64 lane 加入 `test_break_cell_link`。
+- **2026-11-22 macOS 复核**：墙钟不可用时拒绝创建 link，不再回落到序号 1；Winsock `WSAEMSGSIZE` 与 POSIX 统一为截断并消费数据报；测试改用两个独立临时端口和测试专用对端地址更新，不再释放后立即重绑。时钟失败用例先 RED 后 GREEN，`test_break_cell_link` 9/9、连续 50 次通过，`test_network` 19/19；Windows 专属分支待 Windows 环境复验，未记为本机已通过。
 - **远端收据**：`0fb6ea39`（cell 分区）主 CI run 44953964472 成功，arm64 job 136997846762 通过 272 项。`83a63d01`（按负载分配）主 CI run 44969221023 成功，arm64 job 137045087949 通过 273 项。
 
 ## 按负载把 cell 分配给服务器（2026-11-22）
