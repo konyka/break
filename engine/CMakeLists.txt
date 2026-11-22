@@ -6630,17 +6630,20 @@ endif()
     # The platform adapter against the display-free mobile platform layer.
     add_executable(test_runtime_mainloop_platform tests/test_runtime_mainloop_platform.c
         src/runtime/runtime_mainloop_platform.c
-        src/platform/window_mobile.c src/platform/input.c
+        tests/runtime_mainloop_mobile_layer.c src/platform/input.c
         src/platform/input_extended.c src/platform/platform_config.c
         src/core/log.c src/core/profiler.c src/platform/time.c)
     target_include_directories(test_runtime_mainloop_platform PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
-    target_compile_definitions(test_runtime_mainloop_platform PRIVATE ENGINE_PLATFORM_IOS=1)
     if(ENGINE_PLATFORM STREQUAL "linux")
-        target_compile_definitions(test_runtime_mainloop_platform PRIVATE _POSIX_C_SOURCE=199309L)
+        target_compile_definitions(test_runtime_mainloop_platform PRIVATE
+            ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
         target_link_libraries(test_runtime_mainloop_platform PRIVATE pthread m)
     elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_runtime_mainloop_platform PRIVATE ENGINE_PLATFORM_WINDOWS=1)
         target_link_libraries(test_runtime_mainloop_platform PRIVATE kernel32)
+    elseif(ENGINE_PLATFORM STREQUAL "macos")
+        target_compile_definitions(test_runtime_mainloop_platform PRIVATE ENGINE_PLATFORM_MACOS=1)
     endif()
     target_link_libraries(test_runtime_mainloop_platform PRIVATE runtime_core_test)
     add_test(NAME test_runtime_mainloop_platform COMMAND test_runtime_mainloop_platform)
