@@ -111,8 +111,13 @@ endfunction()
 
 set(default_tree "${WORK_DIR}/default")
 configure_tree("${default_tree}"
-    -DBREAK_FRAMEWORK_ENABLE_RUNTIME=OFF
     -DBUILD_TESTING=OFF)
+file(STRINGS "${default_tree}/CMakeCache.txt" default_runtime_cache_entry
+    REGEX "^BREAK_FRAMEWORK_ENABLE_RUNTIME:BOOL=")
+if(NOT default_runtime_cache_entry STREQUAL "BREAK_FRAMEWORK_ENABLE_RUNTIME:BOOL=OFF")
+    message(FATAL_ERROR
+        "Runtime bridge must default to OFF; cache entry: ${default_runtime_cache_entry}")
+endif()
 build_target("${default_tree}" empty default_empty_result default_empty_output --parallel 2)
 if(NOT default_empty_result EQUAL 0)
     message(FATAL_ERROR "Default empty build failed:\n${default_empty_output}")
