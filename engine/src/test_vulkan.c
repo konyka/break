@@ -15,6 +15,7 @@
 #include <renderer/deferred.h> /* R582: TEST 12c deferred emissive end-to-end */
 #include <renderer/indirect_draw.h> /* R437: TEST 10 grouped compact gate */
 #include <renderer/occlusion_cull.h> /* R436: TEST 9 Hi-Z occlusion assertions */
+#include <renderer/lod_skin.h> /* GPU skinning vs CPU reference */
 #include <asset/asset.h>
 #include <scene/scene_serial.h> /* R607: rebuild + BSCN_RES_* for the rebind gate */
 #include <ecs/ecs.h>
@@ -2948,6 +2949,238 @@ static bool tv_test_scene_restore(RHIDevice *dev) {
 /* Plan E C-BUF-1/2/4: cross-backend buffer staging/readback behavior contract.
  * The STORAGE+initial_data buffer is DEVICE_LOCAL+staging on VK and a plain GL
  * buffer — the same test body covers both memory classes. */
+/* GPU skinning against the CPU reference. A strip of 16 quads spans
+ * x in [-0.9, 0.9]; every vertex is weighted between joint 0 (identity) and
+ * joint 1 (translated by +0.4 in y) with a weight that grows with x, so the
+ * skinned strip is a slanted band whose height at each column depends on the
+ * blend. The GPU draws it through the production skinned sidecar (joint
+ * matrices in a texel buffer, four columns per joint) into an offscreen
+ * target; lod_skin_positions computes where the same vertices land on the
+ * CPU, and every column's covered rows must agree within one pixel. A
+ * second draw with the weights swapped (joint 1 only on the left) must
+ * slant the other way, so a shader that ignored the weights or the joint
+ * buffer cannot pass. */
+#define TV_SKIN_W 64u
+#define TV_SKIN_H 64u
+#define TV_SKIN_QUADS 16u
+
+typedef struct { f32 pos[3]; f32 nrm[3]; f32 uv[2]; u32 joints[4]; f32 weights[4]; } TvSkinVert;
+
+static void tv_skin_strip(TvSkinVert *v, bool rising) {
+    u32 n = 0;
+    for (u32 q = 0; q < TV_SKIN_QUADS; q++) {
+        f32 x0 = -0.9f + 1.8f * (f32)q / (f32)TV_SKIN_QUADS;
+        f32 x1 = -0.9f + 1.8f * (f32)(q + 1u) / (f32)TV_SKIN_QUADS;
+        f32 xs[6] = {x0, x1, x1, x0, x1, x0};
+        f32 ys[6] = {-0.3f, -0.3f, 0.0f, -0.3f, 0.0f, 0.0f};
+        for (u32 k = 0; k < 6u; k++) {
+            f32 t = (xs[k] + 0.9f) / 1.8f; /* 0 .. 1 left to right */
+            f32 w1 = rising ? t : 1.0f - t;
+            memset(&v[n], 0, sizeof(v[n]));
+            v[n].pos[0] = xs[k];
+            v[n].pos[1] = ys[k];
+            v[n].nrm[2] = 1.0f;
+            v[n].joints[0] = 0u;
+            v[n].joints[1] = 1u;
+            v[n].weights[0] = 1.0f - w1;
+            v[n].weights[1] = w1;
+            n++;
+        }
+    }
+}
+
+/* Covered rows [lo, hi] of column `col` in an RGBA8 image (row 0 = bottom
+ * after the readback flip below); false when the column is empty. */
+static bool tv_skin_column(const u8 *px, u32 col, i32 *lo, i32 *hi) {
+    *lo = -1;
+    *hi = -1;
+    for (u32 row = 0; row < TV_SKIN_H; row++) {
+        const u8 *p = px + ((usize)row * TV_SKIN_W + col) * 4u;
+        if (p[0] > 128u) {
+            if (*lo < 0) *lo = (i32)row;
+            *hi = (i32)row;
+        }
+    }
+    return *lo >= 0;
+}
+
+static bool tv_test_gpu_skinning_matches_cpu(const TestRenderState *rs, u32 screen_w, u32 screen_h) {
+    RHIDevice *dev = rs->device;
+    RHICapabilities caps = {0};
+    RHIShader vs = RHI_HANDLE_NULL, fs = RHI_HANDLE_NULL;
+    RHIPipeline pipe = RHI_HANDLE_NULL;
+    RHIPipelineBindings *bind = NULL;
+    RHIBuffer vbo = RHI_HANDLE_NULL, jbo = RHI_HANDLE_NULL;
+    RHITexture white = RHI_HANDLE_NULL;
+    RHIOffscreenFBO fbo;
+    static TvSkinVert verts[TV_SKIN_QUADS * 6u];
+    static f32 joints[(512u + 8u) * 4u];
+    static u8 px[TV_SKIN_W * TV_SKIN_H * 4u];
+    static const u8 white_px[4] = {255, 255, 255, 255};
+    char vp[128] = {0}, fp[128] = {0};
+    bool pass = false;
+    u32 checked = 0u;
+    i32 slope[2] = {0, 0};
+    memset(&fbo, 0, sizeof(fbo));
+    if (!rhi_device_get_capabilities(dev, &caps)) return false;
+
+    /* joint 0 identity, joint 1 = translate(0, 0.4, 0); previous poses equal */
+    memset(joints, 0, sizeof(joints));
+    for (u32 j = 0; j < 2u; j++)
+        for (u32 c = 0; c < 4u; c++) joints[(j * 4u + c) * 4u + c] = 1.0f;
+    joints[(1u * 4u + 3u) * 4u + 1u] = 0.4f;
+    memcpy(joints + 512u * 4u, joints, 8u * 4u * sizeof(f32));
+
+    if (shader_variant_path("shaders/skinned.vert", (RHIShaderVariant)caps.shader_variant, vp, sizeof(vp)) &&
+        shader_variant_path("shaders/skinned.frag", (RHIShaderVariant)caps.shader_variant, fp, sizeof(fp))) {
+        usize vl = 0, fl = 0;
+        char *vsrc = shader_read_file(vp, &vl), *fsrc = shader_read_file(fp, &fl);
+        if (vsrc && fsrc) {
+            vs = rhi_shader_create(dev, vsrc, vl, false);
+            fs = rhi_shader_create(dev, fsrc, fl, true);
+        }
+        free(vsrc);
+        free(fsrc);
+    }
+    if (!rhi_handle_valid(vs) || !rhi_handle_valid(fs)) {
+        LOG_ERROR("FAIL: GPU skinning shader load (%s, %s)", vp, fp);
+        goto done;
+    }
+    {
+        RHIPipelineDesc d;
+        memset(&d, 0, sizeof(d));
+        d.vert = vs; d.frag = fs;
+        d.uses_textures = true;
+        d.uses_texel_buffer = true;
+        d.skinned_vertex = true;
+        d.disable_culling = true;
+        d.depth_write_disable = true;
+        d.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+        pipe = rhi_pipeline_create(dev, &d);
+        bind = rhi_handle_valid(pipe) ? rhi_pipeline_bindings_create(dev, pipe) : NULL;
+    }
+    {
+        RHIBufferDesc b;
+        RHITextureDesc t;
+        RHIOffscreenFBODesc f;
+        memset(&b, 0, sizeof(b));
+        b.usage = RHI_BUFFER_USAGE_TEXEL | RHI_BUFFER_USAGE_STORAGE;
+        b.size = sizeof(joints);
+        b.initial_data = joints;
+        jbo = rhi_buffer_create(dev, &b);
+        memset(&b, 0, sizeof(b));
+        b.usage = RHI_BUFFER_USAGE_VERTEX;
+        b.size = sizeof(verts);
+        vbo = rhi_buffer_create(dev, &b);
+        memset(&t, 0, sizeof(t));
+        t.width = 1u; t.height = 1u; t.mip_levels = 1u;
+        t.format = RHI_FORMAT_R8G8B8A8_UNORM;
+        t.data = white_px;
+        white = rhi_texture_create(dev, &t);
+        memset(&f, 0, sizeof(f));
+        f.width = TV_SKIN_W; f.height = TV_SKIN_H;
+        f.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+        f.sample_count = 1u;
+        fbo = rhi_offscreen_fbo_create_desc(dev, &f);
+    }
+    if (!rhi_handle_valid(pipe) || !bind || !rhi_handle_valid(jbo) || !rhi_handle_valid(vbo) ||
+        !rhi_handle_valid(white) || !rhi_handle_valid(fbo.fb)) {
+        LOG_ERROR("FAIL: GPU skinning resource setup");
+        goto done;
+    }
+
+    for (u32 pass_i = 0; pass_i < 2u; pass_i++) {
+        const bool rising = pass_i == 0u;
+        Mat4 id = mat4_identity();
+        Mat4 skin_mats[2];
+        static f32 cpu_xyz[TV_SKIN_QUADS * 6u * 3u];
+        tv_skin_strip(verts, rising);
+        rhi_buffer_update(dev, vbo, verts, sizeof(verts));
+        skin_mats[0] = mat4_identity();
+        skin_mats[1] = mat4_identity();
+        skin_mats[1].e[3][1] = 0.4f;
+        if (!lod_skin_positions((const f32 *)verts, TV_SKIN_QUADS * 6u, skin_mats, 2u, cpu_xyz)) {
+            LOG_ERROR("FAIL: CPU skinning reference");
+            goto done;
+        }
+        RHICmdBuffer *cmd = rhi_frame_begin(dev);
+        if (!cmd) { LOG_ERROR("FAIL: GPU skinning frame begin"); goto done; }
+        rhi_offscreen_fbo_bind(cmd, &fbo);
+        rhi_cmd_clear_color(cmd, 0.0f, 0.0f, 0.0f, 1.0f);
+        rhi_cmd_bind_pipeline(cmd, pipe);
+        rhi_cmd_set_uniform_mat4(cmd, rhi_pipeline_bindings_resolve(bind, "u_view"), &id.e[0][0]);
+        rhi_cmd_set_uniform_mat4(cmd, rhi_pipeline_bindings_resolve(bind, "u_proj"), &id.e[0][0]);
+        /* full ambient, no directional light: the band is flat white */
+        rhi_cmd_set_uniform_vec3(cmd, rhi_pipeline_bindings_resolve(bind, "u_light_dir"), 0.0f, 0.0f, -1.0f);
+        rhi_cmd_set_uniform_vec3(cmd, rhi_pipeline_bindings_resolve(bind, "u_light_color"), 0.0f, 0.0f, 0.0f);
+        rhi_cmd_set_uniform_vec3(cmd, rhi_pipeline_bindings_resolve(bind, "u_ambient"), 1.0f, 1.0f, 1.0f);
+        rhi_cmd_set_uniform_vec3(cmd, rhi_pipeline_bindings_resolve(bind, "u_camera_pos"), 0.0f, 0.0f, 5.0f);
+        rhi_cmd_bind_texture(cmd, white, rs->sampler, 0);
+        rhi_cmd_bind_texel_buffers(cmd, jbo, RHI_HANDLE_NULL);
+        rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
+        rhi_cmd_draw(cmd, TV_SKIN_QUADS * 6u, 1u);
+        rhi_offscreen_fbo_unbind(cmd, screen_w, screen_h);
+        rhi_frame_end(dev);
+        rhi_present(dev);
+        if (!rhi_texture_read_pixels(dev, fbo.color_tex, px, sizeof(px))) {
+            LOG_ERROR("FAIL: GPU skinning readback");
+            goto done;
+        }
+        /* For each column inside the strip, the CPU band at that x is
+         * [y_bottom, y_top] interpolated from the skinned quad corners. */
+        for (u32 c = 2u; c + 2u < TV_SKIN_W; c++) {
+            f32 x = -1.0f + 2.0f * ((f32)c + 0.5f) / (f32)TV_SKIN_W;
+            if (x <= -0.88f || x >= 0.88f) continue;
+            u32 q = (u32)((x + 0.9f) / 1.8f * (f32)TV_SKIN_QUADS);
+            if (q >= TV_SKIN_QUADS) q = TV_SKIN_QUADS - 1u;
+            const f32 *v0 = cpu_xyz + (q * 6u + 0u) * 3u; /* bottom left  */
+            const f32 *v1 = cpu_xyz + (q * 6u + 1u) * 3u; /* bottom right */
+            const f32 *v2 = cpu_xyz + (q * 6u + 2u) * 3u; /* top right    */
+            const f32 *v5 = cpu_xyz + (q * 6u + 5u) * 3u; /* top left     */
+            f32 a = (x - v0[0]) / (v1[0] - v0[0]);
+            f32 yb = v0[1] + (v1[1] - v0[1]) * a;
+            f32 yt = v5[1] + (v2[1] - v5[1]) * a;
+            i32 want_lo = (i32)floorf((yb + 1.0f) * 0.5f * (f32)TV_SKIN_H + 0.5f);
+            i32 want_hi = (i32)floorf((yt + 1.0f) * 0.5f * (f32)TV_SKIN_H - 0.5f);
+            i32 lo, hi, flo, fhi;
+            if (!tv_skin_column(px, c, &lo, &hi)) {
+                LOG_ERROR("FAIL: GPU skinning column %u empty (pass %u)", c, pass_i);
+                goto done;
+            }
+            flo = (i32)TV_SKIN_H - 1 - hi; /* the same span read top-down */
+            fhi = (i32)TV_SKIN_H - 1 - lo;
+            bool direct = abs(lo - want_lo) <= 1 && abs(hi - want_hi) <= 1;
+            bool flipped = abs(flo - want_lo) <= 1 && abs(fhi - want_hi) <= 1;
+            if (!direct && !flipped) {
+                LOG_ERROR("FAIL: GPU skinning column %u rows [%d,%d], CPU [%d,%d] (pass %u)",
+                          c, lo, hi, want_lo, want_hi, pass_i);
+                goto done;
+            }
+            if (c == 8u) slope[pass_i] -= direct ? lo : flo;
+            if (c == TV_SKIN_W - 9u) slope[pass_i] += direct ? lo : flo;
+            checked++;
+        }
+    }
+    /* rising weights lift the right end, swapped weights the left end */
+    if (!(slope[0] > 4 && slope[1] < -4)) {
+        LOG_ERROR("FAIL: GPU skinning slant %d / %d", slope[0], slope[1]);
+        goto done;
+    }
+    LOG_INFO("GPU skinning: %u columns match the CPU reference, slant %d / %d",
+             checked, slope[0], slope[1]);
+    pass = true;
+done:
+    if (rhi_handle_valid(fbo.fb)) rhi_offscreen_fbo_destroy(dev, &fbo);
+    if (rhi_handle_valid(white)) rhi_texture_destroy(dev, white);
+    if (rhi_handle_valid(vbo)) rhi_buffer_destroy(dev, vbo);
+    if (rhi_handle_valid(jbo)) rhi_buffer_destroy(dev, jbo);
+    if (bind) rhi_pipeline_bindings_destroy(dev, bind);
+    if (rhi_handle_valid(pipe)) rhi_pipeline_destroy(dev, pipe);
+    if (rhi_handle_valid(vs)) rhi_shader_destroy(dev, vs);
+    if (rhi_handle_valid(fs)) rhi_shader_destroy(dev, fs);
+    return pass;
+}
+
 static bool tv_test_buffer_staging_contract(const TestRenderState *rs) {
     RHIDevice *dev = rs->device;
     bool pass = true;
@@ -6728,6 +6961,14 @@ int main(int argc, char **argv) {
              bufstaging_pass ? "PASSED ✓" : "FAILED");
 
     LOG_INFO("============================================");
+    LOG_INFO("TEST: GPU SKINNING MATCHES THE CPU REFERENCE");
+    LOG_INFO("============================================");
+    u32 skin_sw = 0u, skin_sh = 0u;
+    platform_get_drawable_size(engine.platform, &skin_sw, &skin_sh);
+    bool gpuskin_pass = tv_test_gpu_skinning_matches_cpu(&render, skin_sw, skin_sh);
+    LOG_INFO("RESULT: GPU SKINNING TEST %s", gpuskin_pass ? "PASSED ✓" : "FAILED");
+
+    LOG_INFO("============================================");
     LOG_INFO("TEST: CMD UPDATE BUFFER ORDERING (C-BUF-3)");
     LOG_INFO("============================================");
     bool buforder_pass = tv_test_cmd_update_buffer_ordering(&render);
@@ -6848,7 +7089,7 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
 
         /* R442: GL has no validation-layers concept — the VK VALIDATION GATE
          * is intentionally absent here; the pixel gates above are the check. */
-        bool all_pass = capability_pass && motion_rt1_pass && f16rt_pass && mipup_pass && sampc_pass && rebind_pass && geom_pass && sgeom_pass && restore_pass && bufstaging_pass && buforder_pass && golden_pass && ibl_pass && idraw_pass && matarr_pass && dfi_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrf_pass && pbrc_pass && psh_pass && bindings_parity_pass && ui_orient_pass;
+        bool all_pass = capability_pass && motion_rt1_pass && f16rt_pass && mipup_pass && sampc_pass && rebind_pass && geom_pass && sgeom_pass && restore_pass && bufstaging_pass && gpuskin_pass && buforder_pass && golden_pass && ibl_pass && idraw_pass && matarr_pass && dfi_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrf_pass && pbrc_pass && psh_pass && bindings_parity_pass && ui_orient_pass;
         if (rhi_handle_valid(ibo)) rhi_buffer_destroy(render.device, ibo);
         if (rhi_handle_valid(vbo)) rhi_buffer_destroy(render.device, vbo);
         test_render_shutdown(&render);
@@ -7959,7 +8200,7 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
     }
 #endif
 
-    bool all_pass = capability_pass && acceleration_structure_pass && blas_size_query_pass && motion_rt1_pass && f16rt_pass && mipup_pass && sampc_pass && rebind_pass && geom_pass && sgeom_pass && restore_pass && bufstaging_pass && buforder_pass && stress_pass && draw_pass && inst_pass && fbo_pass &&
+    bool all_pass = capability_pass && acceleration_structure_pass && blas_size_query_pass && motion_rt1_pass && f16rt_pass && mipup_pass && sampc_pass && rebind_pass && geom_pass && sgeom_pass && restore_pass && bufstaging_pass && gpuskin_pass && buforder_pass && stress_pass && draw_pass && inst_pass && fbo_pass &&
 msaa_pass && ui_orient_pass && fs6_pass &&
 compute_pass && combined_pass && ibl_pass && pbrf_pass && unified_pass &&
 idraw_pass && matarr_pass && dfi_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrc_pass && psh_pass && golden_pass && bindings_parity_pass &&

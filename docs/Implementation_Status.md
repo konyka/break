@@ -376,6 +376,12 @@
   - `test_anim_aim` 1→5 例：可达目标使根、中关节旋转而末端不变，结果为单位四元数；半权重的修正小于全权重；权重夹到 [0, 1]，aim 与 look 两槽互不影响，非法槽与 NULL 不改状态；链关节超出调用方骨骼数时跳过。
 - **验证**：五种变异均被检出：去掉包围对查找、socket 只用平移、名字长度上限放宽、IK 忽略权重、权重不设上限。原生 CTest 458/458；arm64 计数文件追加这三项分项数。
 
+## GPU 蒙皮与 CPU 参考像素对照（2026-11-22）
+
+- **问题**：`missing_capabilities.md` 与 `animation_extended.md` 记录「GPU 蒙皮仍未实现」。核查发现蒙皮着色器、`skinned_pipeline` 和关节 texel buffer 早已存在，缺的是 GPU 与 CPU 一致性的证明。
+- **新增测试**：`test_vulkan` 中的 `tv_test_gpu_skinning_matches_cpu`。两关节条带渲染到 64×64 离屏目标，逐列比较覆盖行与 `lod_skin_positions` 的参考结果（±1 像素），再用反向权重检查斜率方向相反。
+- **验证**：本地 Vulkan 与 OpenGL 各 112 列吻合，GL golden 仍为 MAE 0；只把 GPU 侧关节平移置零后测试失败。
+
 ## 扩展物理测试拆分为独立用例（2026-11-22）
 
 - **问题**：`missing_capabilities.md` 物理验证条目记录：cloth、rope、soft-body、destructible、slider 五个测试各只有一个 `TEST`，首个失败断言会提前返回，遮住后续场景，汇总也只报 1 例。

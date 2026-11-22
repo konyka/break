@@ -477,3 +477,4 @@
 - **第 5 节（线程/消息）追加**：2026-11-22 Profiler 与消息总线接通：总线的丢弃与拒绝以带 correlation_id 的 profiler 事件记录，Chrome trace 中可见背压发生在因果链的哪一步。仍缺：LogicThread、Task、Network/IO、PAL/MainLoop 队列接入总线。
 - **第 5 节（线程/消息）追加**：2026-11-22 Task workers 接入消息总线：任务完成后由 worker 发布带 correlation_id 的完成通知，拥有者从自己的队列得知完成情况。见 [`docs/design/runtime_message_model.md`](../design/runtime_message_model.md)「任务完成接入总线」。仍缺：LogicThread、Network/IO、PAL/MainLoop 队列接入总线。
 - **第 5 节（线程/消息）追加**：2026-11-22 IO workers 接入消息总线：每个 IO 完成都会在总线上发一条不含文件内容的通知。仍缺：LogicThread、Network、PAL/MainLoop 队列接入总线。
+- **动画验证追加**：2026-11-22 GPU 蒙皮实际已实现（GL/Vulkan/D3D12 蒙皮顶点着色器、`skinned_pipeline`、关节矩阵 texel buffer），此前「仍缺：GPU 蒙皮」的记录有误。`test_vulkan` 新增 GPU 与 CPU（`lod_skin_positions`）的逐列像素对照，误差 1 像素以内，并用反向权重检查斜率方向。见 [`docs/design/animation_extended.md`](../design/animation_extended.md)「GPU 蒙皮与 CPU 参考对照」。动画验证的缺口由此关闭。
