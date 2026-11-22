@@ -429,6 +429,38 @@ TEST(invalid_diagnostics_hooks_fail_before_io) {
     ASSERT_EQ(exit_code, 2);
 }
 
+TEST(invalid_diagnostics_hooks_rejected_before_trace_creation) {
+    CoreAppDiagnosticsHooks hooks = {0};
+    CoreAppConfig config = {0};
+    char scenario_path[512];
+    char trace_path[512];
+    FILE *trace;
+    BreakRuntimeError result;
+    int exit_code = 0;
+    int remove_result = 0;
+    test_tmp(scenario_path, sizeof(scenario_path), "core_app_missing_scenario");
+    test_tmp(trace_path, sizeof(trace_path), "core_app_invalid_diagnostics_trace");
+    (void)remove(scenario_path);
+    (void)remove(trace_path);
+    config.render_mode = CORE_APP_RENDER_RECORD;
+    config.audio_mode = CORE_APP_AUDIO_RECORD;
+    config.fixed_step = true;
+    config.asset_root = ".";
+    config.scenario_path = scenario_path;
+    config.trace_path = trace_path;
+    config.diagnostics = &hooks;
+    result = core_app_run(&config, &exit_code);
+    trace = fopen(trace_path, "rb");
+    if (trace) {
+        fclose(trace);
+        remove_result = remove(trace_path);
+    }
+    ASSERT_EQ(result, BREAK_RUNTIME_FAILED);
+    ASSERT_EQ(exit_code, 2);
+    ASSERT_TRUE(trace == NULL);
+    ASSERT_EQ(remove_result, 0);
+}
+
 TEST(input_reuses_touch_id_with_new_generation) {
     CoreAppInput *input = core_app_input_create();
     CoreAppInputFrame frame;
@@ -1819,6 +1851,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(formal_scenarios_parse);
     RUN_TEST(input_diagnostics_reduces_real_frame_to_counts_and_status);
     RUN_TEST(invalid_diagnostics_hooks_fail_before_io);
+    RUN_TEST(invalid_diagnostics_hooks_rejected_before_trace_creation);
     RUN_TEST(input_reuses_touch_id_with_new_generation);
     RUN_TEST(input_cancel_emits_no_gesture_and_next_tick_is_idle);
     RUN_TEST(input_key_hold_survives_tick_and_release_clears_it);
