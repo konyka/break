@@ -198,6 +198,7 @@ struct BreakEditorShell {
     BreakRuntimeQueue *mainloop_queue;
     u32 mainloop_subscriber;
     bool mainloop_seen;
+    u32 mainloop_fields;
     u32 mainloop_width, mainloop_height, mainloop_scale_milli, mainloop_wsi;
     u64 mainloop_closes;
     BreakEditorMainLoopStats mainloop_stats;
@@ -3297,6 +3298,7 @@ bool break_editor_shell_attach_mainloop_bus(BreakEditorShell *shell, BreakRuntim
     }
     shell->mainloop_bus = bus;
     shell->mainloop_seen = false;
+    shell->mainloop_fields = 0u;
     shell->mainloop_closes = 0u;
     memset(&shell->mainloop_stats, 0, sizeof(shell->mainloop_stats));
     editor_panel_render_set_window_row(shell->render_panel, "window: no notices");
@@ -3311,6 +3313,12 @@ bool break_editor_shell_mainloop_stats(const BreakEditorShell *shell,
     *out = shell->mainloop_stats;
     return true;
 }
+
+enum {
+    SHELL_MAINLOOP_SIZE_SEEN = 1u,
+    SHELL_MAINLOOP_WSI_SEEN = 2u,
+    SHELL_MAINLOOP_SCALE_SEEN = 4u
+};
 
 static void shell_mainloop_drain(BreakEditorShell *shell) {
     bool changed = false;
@@ -3334,20 +3342,37 @@ static void shell_mainloop_drain(BreakEditorShell *shell) {
             case BREAK_RUNTIME_MAINLOOP_RESIZED:
                 shell->mainloop_width = n.a;
                 shell->mainloop_height = n.b;
+                shell->mainloop_fields |= SHELL_MAINLOOP_SIZE_SEEN;
                 break;
-            case BREAK_RUNTIME_MAINLOOP_WSI_CHANGED: shell->mainloop_wsi = n.a; break;
-            default: shell->mainloop_scale_milli = n.a; break;
+            case BREAK_RUNTIME_MAINLOOP_WSI_CHANGED:
+                shell->mainloop_wsi = n.a;
+                shell->mainloop_fields |= SHELL_MAINLOOP_WSI_SEEN;
+                break;
+            default:
+                shell->mainloop_scale_milli = n.a;
+                shell->mainloop_fields |= SHELL_MAINLOOP_SCALE_SEEN;
+                break;
             }
         }
         break_runtime_message_release(m);
     }
     if (changed && shell->mainloop_seen) {
-        (void)snprintf(row, sizeof(row), "window: %ux%u scale=%u.%03u wsi=%s closes=%llu",
-                       (unsigned)shell->mainloop_width, (unsigned)shell->mainloop_height,
-                       (unsigned)(shell->mainloop_scale_milli / 1000u),
-                       (unsigned)(shell->mainloop_scale_milli % 1000u),
-                       shell_wsi_name(shell->mainloop_wsi),
-                       (unsigned long long)shell->mainloop_closes);
+        char size[32] = "?";
+        char scale[24] = "?";
+        const char *wsi = (shell->mainloop_fields & SHELL_MAINLOOP_WSI_SEEN) != 0u
+                              ? shell_wsi_name(shell->mainloop_wsi)
+                              : "?";
+        if ((shell->mainloop_fields & SHELL_MAINLOOP_SIZE_SEEN) != 0u) {
+            (void)snprintf(size, sizeof(size), "%ux%u", (unsigned)shell->mainloop_width,
+                           (unsigned)shell->mainloop_height);
+        }
+        if ((shell->mainloop_fields & SHELL_MAINLOOP_SCALE_SEEN) != 0u) {
+            (void)snprintf(scale, sizeof(scale), "%u.%03u",
+                           (unsigned)(shell->mainloop_scale_milli / 1000u),
+                           (unsigned)(shell->mainloop_scale_milli % 1000u));
+        }
+        (void)snprintf(row, sizeof(row), "window: %s scale=%s wsi=%s closes=%llu", size,
+                       scale, wsi, (unsigned long long)shell->mainloop_closes);
         editor_panel_render_set_window_row(shell->render_panel, row);
     }
 }

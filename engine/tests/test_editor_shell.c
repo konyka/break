@@ -8546,6 +8546,22 @@ TEST(render_panel_shows_main_loop_window_notices)
     ASSERT_EQ(st.received, 6u);
     ASSERT_EQ(st.last_frame, 2u);
 
+    /* Notice text changes obey the panel's 250 ms throttle; only adding or
+     * removing the row forces an immediate refresh. */
+    f.frame = 3u;
+    f.drawable_width = 600u;
+    f.drawable_height = 750u;
+    f.content_scale = 1.5f;
+    f.wsi_state = 3u;
+    f.close_requested = false;
+    ASSERT_EQ(break_runtime_mainloop_observe(ml, &f), BREAK_RUNTIME_OK);
+    g_render_clock_us += UINT64_C(1000);
+    break_editor_shell_tick(shell);
+    ASSERT_TRUE(render_row_has(shell, "window: 640x800 scale=1.250 wsi=suspended closes=1"));
+    g_render_clock_us += UINT64_C(299000);
+    break_editor_shell_tick(shell);
+    ASSERT_TRUE(render_row_has(shell, "window: 600x750 scale=1.500 wsi=lost closes=1"));
+
     /* NULL unsubscribes, removes the row and is safe to repeat. */
     ASSERT_TRUE(break_editor_shell_attach_mainloop_bus(shell, NULL));
     ASSERT_TRUE(break_editor_shell_attach_mainloop_bus(shell, NULL));
@@ -8561,35 +8577,39 @@ TEST(render_panel_shows_main_loop_window_notices)
     }
 
     /* A real fact change after detach must not reach the old shell queue. */
-    f.frame = 3u;
+    f.frame = 4u;
     f.drawable_width = 320u;
-    f.close_requested = false;
+    f.drawable_height = 640u;
+    f.content_scale = 2.0f;
+    f.wsi_state = 0u;
     ASSERT_EQ(break_runtime_mainloop_observe(ml, &f), BREAK_RUNTIME_OK);
     g_render_clock_us += UINT64_C(300000);
     break_editor_shell_tick(shell);
     ASSERT_TRUE(break_editor_shell_mainloop_stats(shell, &st));
-    ASSERT_EQ(st.received, 6u);
-    ASSERT_EQ(st.last_frame, 2u);
+    ASSERT_EQ(st.received, 9u);
+    ASSERT_EQ(st.last_frame, 3u);
     ASSERT_EQ(break_editor_shell_render_row_count(shell), detached_count);
     for (i = 0u; i < detached_count; i++) {
         ASSERT_STR_EQ(break_editor_shell_render_row_text(shell, i), detached_rows[i]);
     }
 
-    /* The same bus can be attached again and delivers subsequent changes. */
+    /* Reattachment starts with no cached window state. If the only later
+     * change is a close request, fields missed while detached are unknown,
+     * never values carried over from the previous subscription. */
     ASSERT_TRUE(break_editor_shell_attach_mainloop_bus(shell, bus));
     ASSERT_FALSE(break_editor_shell_attach_mainloop_bus(shell, bus));
     g_render_clock_us += UINT64_C(300000);
     break_editor_shell_tick(shell);
     ASSERT_TRUE(render_row_has(shell, "window: no notices"));
-    f.frame = 4u;
-    f.drawable_width = 160u;
+    f.frame = 5u;
+    f.close_requested = true;
     ASSERT_EQ(break_runtime_mainloop_observe(ml, &f), BREAK_RUNTIME_OK);
     g_render_clock_us += UINT64_C(300000);
     break_editor_shell_tick(shell);
-    ASSERT_TRUE(render_row_has(shell, "window: 160x800 scale=1.250 wsi=suspended closes=0"));
+    ASSERT_TRUE(render_row_has(shell, "window: ? scale=? wsi=? closes=1"));
     ASSERT_TRUE(break_editor_shell_mainloop_stats(shell, &st));
     ASSERT_EQ(st.received, 1u);
-    ASSERT_EQ(st.last_frame, 4u);
+    ASSERT_EQ(st.last_frame, 5u);
 
     /* Detach before destroying the bus; shell destruction then has no stale
      * subscription or queue to touch. */

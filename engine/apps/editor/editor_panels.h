@@ -643,8 +643,10 @@ void break_editor_shell_fail_diag_attach_for_test(void);
  * (runtime/runtime_mainloop.h). attach subscribes the shell once (false
  * when one is attached already, or for a NULL shell/bus registration
  * failure); break_editor_shell_tick drains the queue and the render
- * debugger shows the latest state as a "window:" row. NULL detaches; detach
- * before the bus is destroyed (break_editor_shell_destroy detaches too). */
+ * debugger shows the latest state as a "window:" row. Each attachment has
+ * its own state: fields not received since that attachment display as "?".
+ * NULL detaches; detach before the bus is destroyed
+ * (break_editor_shell_destroy detaches too). */
 struct BreakRuntimeBus;
 bool break_editor_shell_attach_mainloop_bus(BreakEditorShell *shell,
                                             struct BreakRuntimeBus *bus);

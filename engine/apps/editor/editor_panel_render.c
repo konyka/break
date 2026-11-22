@@ -27,11 +27,11 @@
  *         busy=<0|1> applied=<n> failed=<n>, or "shader reload: unavailable"
  *     [9] window: <w>x<h> scale=<s> wsi=<state> closes=<n> (only while the
  *         shell has a main loop bus attached; "window: no notices" until the
- *         first notice)
+ *         first notice, and "?" for a field not received since attachment)
  *
  * THROTTLE: at most 4 refreshes per second (250,000 us) from
- * break_editor_shell_tick; the first tick after create and after any device
- * attach/detach always refreshes. Shell thread only. */
+ * break_editor_shell_tick; the first tick after create and after device or
+ * window-row attach/detach always refreshes. Shell thread only. */
 
 #include "editor_shell_internal.h"
 
@@ -292,8 +292,8 @@ void editor_panel_render_set_window_row(BreakEditorPanelRender *p, const char *t
     }
     if (!p->has_window_row || strncmp(p->window_row, text, EDITOR_RENDER_ROW_BYTES) != 0) {
         (void)snprintf(p->window_row, EDITOR_RENDER_ROW_BYTES, "%s", text);
+        if (!p->has_window_row) p->force_refresh = true;
         p->has_window_row = true;
-        p->force_refresh = true;
     }
 }
 
