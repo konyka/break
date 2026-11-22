@@ -17,7 +17,8 @@ set(CMAKE_C_EXTENSIONS OFF)
 # Physics and its math must not fuse a*b+c into FMA: Clang (AppleClang
 # included) contracts by default and GCC does in GNU mode, which changes the
 # last bits on FMA-capable targets and broke the cross-architecture physics
-# hashes pinned by test_physics_replay. A source property applies to every
+# hashes pinned by test_physics_replay (and the animation blending hashes
+# pinned by test_animation). A source property applies to every
 # target that compiles these files (the engine library and each test).
 # test_math.c pins math_atan2f bits, and the inline function takes the
 # flags of the file that includes it, so it is listed too.
@@ -25,7 +26,10 @@ if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
     file(GLOB _break_fp_exact_sources CONFIGURE_DEPENDS
         ${CMAKE_CURRENT_SOURCE_DIR}/src/physics/*.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/math/*.c
-        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_math.c)
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/animation/animation.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/animation/skeleton.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_math.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_animation.c)
     set_property(SOURCE ${_break_fp_exact_sources}
         APPEND PROPERTY COMPILE_OPTIONS -ffp-contract=off)
 endif()

@@ -102,3 +102,11 @@ flags 仅定义 loop 与 playing 位，其余位必须为零。CRC32 依次覆�
 ## 补充（2026-11-20）：arm64 动画验证
 
 arm64 lane 新增八项动画测试（37/2/10/8/13/1/1/1 例），统一选择达到九十四项，所有以动画模块为主体的已注册测试均在 arm64 QEMU 下运行（仅链接动画源码的 `test_asset_gltf`、`test_core_style_prototype` 与 core_app lifecycle locomotion/facial 测试除外）。原生与交叉 focused 均为 8/8，无新增 skip。arm64 通过只证明 CPU 路径在 arm64 构建内自洽，不证明跨架构逐位一致的动画回放，也不覆盖 GPU 蒙皮。locomotion、socket、aim 各只有单个用例。
+
+## 跨架构逐位一致的混合（2026-11-22）
+
+`test_animation` 新增 `blending_matches_the_cross_architecture_golden_hashes`：两个循环片段（四根骨骼带位移、旋转、缩放关键帧的 walk，和旋转两根骨骼的 lean）在两层上播放：底层满权重，加法层权重 0.35 并带骨骼掩码，第 100 帧从 walk 交叉淡入到 lean，帧时间在 0.0171 与 0.0163 秒之间交替。第 40、120、240 帧对所有骨骼的局部 TRS 位模式计算 FNV-1a 哈希，并与固定值比较。
+
+采样与混合只用加减乘除、`sqrtf` 和 `fmodf`，IEEE 754 对它们的结果有精确规定，所以只要编译器不把乘加融合成 FMA，每个架构都应得到相同的位。因此 `animation.c`、`skeleton.c` 和 `test_animation.c` 加入了 `-ffp-contract=off` 源文件列表（与物理和数学源相同），`test_physics_determinism_contract` 也检查这三项。实测：GCC -O0/-O2/-O3 -march=native、Clang -O2/-O3 -march=native 在关闭收缩时哈希相同；Clang 打开 `-ffp-contract=fast` 后，前两个哈希改变。哈希值在 x86-64 上测得，arm64（QEMU）、macOS 和 Windows 由 CI 验证。
+
+IK 不在这个测试中：两骨骼 IK 调用平台的 `atan2f`，不同 libm 之间可能相差 1 ULP（物理用 `math_atan2f` 解决了同样的问题）。GPU 蒙皮仍未实现。

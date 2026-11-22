@@ -3,6 +3,7 @@
  * ========================================================================== */
 
 #include "test_framework.h"
+#include <stdint.h>
 #include <animation/animation.h>
 #include <animation/skeleton.h>
 #include <math.h>
@@ -833,6 +834,84 @@ TEST(event_add_max_clamped)
     anim_blend_state_destroy(&st);
 }
 
+/* ----------------------------------------------------------------------- */
+/*  Cross-architecture golden                                               */
+/* ----------------------------------------------------------------------- */
+
+static u64 pose_hash(const AnimBlendState *st)
+{
+    u64 h = 0xcbf29ce484222325ull;
+    for (u32 b = 0; b < st->bone_count; b++) {
+        const f32 *parts[3] = {st->local_positions[b].e, st->local_rotations[b].e,
+                               st->local_scales[b].e};
+        const u32 counts[3] = {3u, 4u, 3u};
+        for (u32 p = 0; p < 3u; p++) {
+            for (u32 i = 0; i < counts[p]; i++) {
+                u32 bits;
+                memcpy(&bits, &parts[p][i], sizeof bits);
+                for (u32 k = 0; k < 4u; k++) {
+                    h ^= (bits >> (8u * k)) & 0xffu;
+                    h *= 0x100000001b3ull;
+                }
+            }
+        }
+    }
+    return h;
+}
+
+/* Two looping clips (a walk with translation, rotation and scale keys on
+ * four bones, and a lean that rotates two of them), played on two layers:
+ * a full-weight base, an additive masked lean at 0.35, a crossfade from
+ * walk to lean midway, and odd frame times. Sampling and blending use only
+ * +, *, / and sqrt, which IEEE 754 rounds exactly, and math sources build
+ * without FMA contraction, so every architecture must reach the same bits.
+ * IK is left out: it calls the platform atan2f. */
+TEST(blending_matches_the_cross_architecture_golden_hashes)
+{
+    static AnimClip clips[2];
+    const f32 t4[4] = {0.0f, 0.3f, 0.7f, 1.1f};
+    const f32 walk_pos[4][4] = {{0, 0, 0, 0}, {0.1f, 0.02f, 0, 0}, {0.2f, 0, 0.05f, 0}, {0, 0, 0, 0}};
+    const f32 walk_rot[4][4] = {{0, 0, 0, 1}, {0.0998f, 0, 0, 0.995f},
+                                {0, 0.1987f, 0, 0.9801f}, {0, 0, 0, 1}};
+    const f32 walk_scale[4][4] = {{1, 1, 1, 0}, {1.05f, 1, 1, 0}, {1, 0.97f, 1, 0}, {1, 1, 1, 0}};
+    const f32 t3[3] = {0.0f, 0.45f, 0.9f};
+    const f32 lean_rot[3][4] = {{0, 0, 0, 1}, {0, 0, 0.2588f, 0.9659f}, {0, 0, 0, 1}};
+    anim_clip_init(&clips[0], 1.1f, true);
+    anim_clip_init(&clips[1], 0.9f, true);
+    for (u32 j = 0; j < 4u; j++) {
+        anim_clip_add_channel(&clips[0], j, ANIM_PATH_TRANSLATION, 4u, t4, &walk_pos[0][0]);
+        anim_clip_add_channel(&clips[0], j, ANIM_PATH_ROTATION, 4u, t4, &walk_rot[0][0]);
+        anim_clip_add_channel(&clips[0], j, ANIM_PATH_SCALE, 4u, t4, &walk_scale[0][0]);
+    }
+    anim_clip_add_channel(&clips[1], 1u, ANIM_PATH_ROTATION, 3u, t3, &lean_rot[0][0]);
+    anim_clip_add_channel(&clips[1], 2u, ANIM_PATH_ROTATION, 3u, t3, &lean_rot[0][0]);
+
+    AnimBlendState st;
+    anim_blend_state_init(&st, 4u);
+    anim_layer_play(&st, 0u, 0u, 1.0f, true);
+    anim_layer_play(&st, 1u, 1u, 1.3f, true);
+    anim_layer_set_mode(&st, 1u, ANIM_BLEND_ADDITIVE);
+    anim_layer_set_weight(&st, 1u, 0.35f);
+    anim_layer_set_bone_mask(&st, 1u, 0x6u);
+    u64 hashes[3] = {0, 0, 0};
+    for (u32 frame = 0; frame < 240u; frame++) {
+        if (frame == 100u) anim_crossfade(&st, 0u, 1u, 0.4f);
+        anim_blend_evaluate(&st, frame % 3u == 0u ? 0.0171f : 0.0163f, clips, 2u);
+        if (frame == 39u) hashes[0] = pose_hash(&st);
+        if (frame == 119u) hashes[1] = pose_hash(&st);
+        if (frame == 239u) hashes[2] = pose_hash(&st);
+    }
+    if (hashes[0] != UINT64_C(0xfa2bd7f029209261) || hashes[1] != UINT64_C(0x92c812b961e0c01d) ||
+        hashes[2] != UINT64_C(0xbb97a8ecf93f0a69)) {
+        printf("    hashes %016llx %016llx %016llx\n", (unsigned long long)hashes[0],
+               (unsigned long long)hashes[1], (unsigned long long)hashes[2]);
+    }
+    ASSERT_EQ(hashes[0], UINT64_C(0xfa2bd7f029209261));
+    ASSERT_EQ(hashes[1], UINT64_C(0x92c812b961e0c01d));
+    ASSERT_EQ(hashes[2], UINT64_C(0xbb97a8ecf93f0a69));
+    anim_blend_state_destroy(&st);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(blend_state_init);
     RUN_TEST(layer_play_sets_active);
@@ -873,4 +952,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(event_looping_at_duration_fires);
     RUN_TEST(event_no_callback_safe);
     RUN_TEST(event_add_max_clamped);
+    RUN_TEST(blending_matches_the_cross_architecture_golden_hashes);
 TEST_MAIN_END()

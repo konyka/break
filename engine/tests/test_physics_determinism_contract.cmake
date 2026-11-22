@@ -8,7 +8,9 @@
 #      math_sincosf only), and quat_from_axis_angle uses math_sincosf. The
 #      check is textual, so a comment written like a call also fails it,
 #   2. fast_rsqrt stays the correctly rounded 1/sqrtf, with no SSE estimate,
-#   3. the physics and math sources are compiled with -ffp-contract=off.
+#   3. the physics and math sources, and the animation sampling/blending
+#      sources whose hashes test_animation pins, are compiled with
+#      -ffp-contract=off.
 if(NOT DEFINED ENGINE_SOURCE_DIR)
     message(FATAL_ERROR "ENGINE_SOURCE_DIR is required")
 endif()
@@ -46,6 +48,9 @@ foreach(needle IN ITEMS
         "\${CMAKE_CURRENT_SOURCE_DIR}/src/physics/*.c"
         "\${CMAKE_CURRENT_SOURCE_DIR}/src/math/*.c"
         "\${CMAKE_CURRENT_SOURCE_DIR}/tests/test_math.c"
+        "\${CMAKE_CURRENT_SOURCE_DIR}/src/animation/animation.c"
+        "\${CMAKE_CURRENT_SOURCE_DIR}/src/animation/skeleton.c"
+        "\${CMAKE_CURRENT_SOURCE_DIR}/tests/test_animation.c"
         "APPEND PROPERTY COMPILE_OPTIONS -ffp-contract=off")
     string(FIND "${cmake_text}" "${needle}" at)
     if(at EQUAL -1)

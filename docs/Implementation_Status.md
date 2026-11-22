@@ -1,3 +1,8 @@
+## 动画混合的跨架构金标准（2026-11-22）
+
+- **实现**：`test_animation` 新增分层混合的金标准哈希（第 40/120/240 帧）；`animation.c`、`skeleton.c`、`test_animation.c` 加入 `-ffp-contract=off` 源列表，`test_physics_determinism_contract` 同步检查（去掉其中一项时契约失败）。设计见 `docs/design/animation_extended.md`「跨架构逐位一致的混合」。
+- **验证**：本机 GCC/Clang 多种优化级别哈希一致，打开 FMA 收缩后哈希改变；arm64 由 CI 的 QEMU lane 验证（`test_animation` 已在选择中）。
+
 ## 语音设备事件接入消息总线（2026-11-22）
 
 - **主循环订阅**：core_app 语音通道创建自己的总线和队列，切换结果追踪改由事件驱动；`test_core_app_voice_lane`/`_device` 守护，相关变异被检出。
