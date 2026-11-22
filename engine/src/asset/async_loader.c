@@ -275,8 +275,8 @@ static void io_worker_run(void) {
                     vfs_close(f);
                     req->data = NULL;
                     req->size = 0;
-                    async_finalize(slot_idx, ASSET_FAILED);
                     LOG_WARN("Async range load: range too large (>%u bytes): %s", UINT32_MAX, req->path);
+                    async_finalize(slot_idx, ASSET_FAILED);
                     continue;
                 }
                 u8 *data = malloc(to_read);
@@ -292,9 +292,9 @@ static void io_worker_run(void) {
                         req->data = NULL;
                         req->size = 0;
                         vfs_close(f);
-                        async_finalize(slot_idx, ASSET_FAILED);
                         LOG_WARN("Async range load: truncated (%zu < %zu): %s",
                                  to_read, req->range_length, req->path);
+                        async_finalize(slot_idx, ASSET_FAILED);
                         continue;
                     }
                     req->data = data;
@@ -311,8 +311,8 @@ static void io_worker_run(void) {
                 req->data = NULL;
                 req->size = 0;
                 if (f) vfs_close(f);
-                async_finalize(slot_idx, ASSET_FAILED);
                 LOG_WARN("Async range load failed: %s (offset=%zu)", req->path, req->range_offset);
+                async_finalize(slot_idx, ASSET_FAILED);
             }
         } else {
             /* Full file read
@@ -327,8 +327,8 @@ static void io_worker_run(void) {
                     free(data);
                     req->data = NULL;
                     req->size = 0;
-                    async_finalize(slot_idx, ASSET_FAILED);
                     LOG_WARN("Async load: file too large (>%u bytes): %s", UINT32_MAX, req->path);
+                    async_finalize(slot_idx, ASSET_FAILED);
                 } else if (req->decode_texture) {
                     /* Offload decode + mip-chain generation to the decode pipeline. */
                     if (decode_pipeline_submit(data, (u32)file_size, slot_idx,
@@ -363,8 +363,8 @@ static void io_worker_run(void) {
             } else {
                 req->data = NULL;
                 req->size = 0;
-                async_finalize(slot_idx, ASSET_FAILED);
                 LOG_WARN("Async load failed: %s", req->path);
+                async_finalize(slot_idx, ASSET_FAILED);
             }
         }
     }

@@ -385,3 +385,11 @@ Asset/HotReload formal facade 统一映射到 `BreakRuntimeError`：`OK`、`INVA
 arm64 lane 新增 `test_vfs`（36 例）、`test_async_loader`（17 例）和 `test_filewatch_backend`（26 例），与 hotreload 七例共同使统一选择达到五十六项。原生与交叉 focused 均为 4/4，直接经 QEMU 执行，无新增 skip 或路径适配。
 
 覆盖挂载/路径规范化/遍历拒绝、异步请求生命周期/取消/失败/关闭和文件事件路径安全。本项证据不包含 glTF、材质/场景纹理集成或完整 world streaming。
+
+## 补充（2026-11-22）：兼容 loader 的完成发布所有权
+
+兼容 `async_loader` 的 worker 必须在调用 `async_finalize` 前完成所有请求槽读取，包括失败日志中的路径、偏移与范围长度。`async_finalize` 一旦返回，主线程就可能已消费完成并把这个槽位分配给新请求；即使原子状态操作本身安全，也不能继续读取槽内的非原子字段。范围过大、范围截断、范围打开/偏移失败、完整文件过大和完整文件读取失败的五处日志均在完成发布前执行。完成回调仍只由主线程派发，队列背压与取消语义未改。
+
+回归测试把真实 `async_loader_completion_burst` 扩为 8 轮。未修代码在两个 CPU 上第一轮就报告主线程 `async_submit_request` 写路径与 worker 日志读路径的数据竞争；修复后连续 100 次完整 `test_async_loader` 通过，即 800 轮、960000 个请求。TSan CI 非图形套件和证据收据均恢复 `test_async_loader`，不再以旧告警为由排除。
+
+回归结果：Vulkan 452 项、OpenGL 450 项均零失败（各有 4 项平台条件跳过）；ASan+UBSan 非图形 437 项零失败，fuzz 14/14；资产相关 TSan 集成测试 4/4。独立静态审查覆盖全部 9 个 `async_finalize` 调用点，无剩余 Critical、Important 或 Minor 问题。

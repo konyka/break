@@ -527,39 +527,41 @@ static void burst_cb(void *user, void *data, u32 size) {
 
 TEST(async_loader_completion_burst)
 {
-    VFS *vfs = vfs_create();
-    ASSERT_NOT_NULL(vfs);
-    vfs_mount_dir(vfs, test_tmp_root());
-
-    async_loader_init(8, vfs);
-    atomic_store(&g_burst_cb_count, 0);
-
     const int N = 1200;
-    char path[64];
-    for (int i = 0; i < N; i++) {
-        snprintf(path, sizeof(path), "async_burst_%d.bin", i);
-        while (async_loader_request(path, burst_cb, NULL) == 0) {
-            async_loader_tick();
-            for (volatile int j = 0; j < 1000; j++) { (void)j; }
+    for (int round = 0; round < 8; ++round) {
+        VFS *vfs = vfs_create();
+        ASSERT_NOT_NULL(vfs);
+        vfs_mount_dir(vfs, test_tmp_root());
+
+        async_loader_init(8, vfs);
+        atomic_store(&g_burst_cb_count, 0);
+
+        char path[64];
+        for (int i = 0; i < N; i++) {
+            snprintf(path, sizeof(path), "async_burst_%d.bin", i);
+            while (async_loader_request(path, burst_cb, NULL) == 0) {
+                async_loader_tick();
+                for (volatile int j = 0; j < 1000; j++) { (void)j; }
+            }
+            if ((i & 31) == 0) async_loader_tick();
         }
-        if ((i & 31) == 0) async_loader_tick();
+
+        /* Wait for the burst to drain - poll until done or the deadline expires */
+        u64 deadline = test_wait_deadline();
+        for (;;) {
+            async_loader_tick();
+            if (atomic_load(&g_burst_cb_count) >= N &&
+                async_loader_pending_count() == 0)
+                break;
+            if (test_now_us() >= deadline) break;
+            for (volatile int j = 0; j < 5000; j++) { (void)j; }
+        }
+
+        ASSERT_EQ(atomic_load(&g_burst_cb_count), N);
+
+        async_loader_shutdown();
+        vfs_destroy(vfs);
     }
-
-    /* Wait for the burst to drain - poll until done or the deadline expires */
-    u64 deadline = test_wait_deadline();
-    for (;;) {
-        async_loader_tick();
-        if (atomic_load(&g_burst_cb_count) >= N &&
-            async_loader_pending_count() == 0)
-            break;
-        if (test_now_us() >= deadline) break;
-        for (volatile int j = 0; j < 5000; j++) { (void)j; }
-    }
-
-    ASSERT_EQ(atomic_load(&g_burst_cb_count), N);
-
-    async_loader_shutdown();
-    vfs_destroy(vfs);
 }
 
 /* R431: shutdown used to drop requests still sitting in the request heap

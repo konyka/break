@@ -383,6 +383,13 @@
   - `test_anim_aim` 1→5 例：可达目标使根、中关节旋转而末端不变，结果为单位四元数；半权重的修正小于全权重；权重夹到 [0, 1]，aim 与 look 两槽互不影响，非法槽与 NULL 不改状态；链关节超出调用方骨骼数时跳过。
 - **验证**：五种变异均被检出：去掉包围对查找、socket 只用平移、名字长度上限放宽、IK 忽略权重、权重不设上限。原生 CTest 458/458；arm64 计数文件追加这三项分项数。
 
+## 异步加载完成发布后的槽位竞争修复（2026-11-22）
+
+- **根因**：I/O worker 在 `async_finalize` 把请求发布为 `READY/FAILED` 后仍读取 `req->path` 等字段写失败日志；主线程可取走完成、回收槽位并为新请求覆写路径。两个 CPU 下，原 burst 用例第三次运行出现 TSan：`async_submit_request:554` 写路径与 `io_worker_run:367` 读路径竞争。
+- **修复**：五处失败日志全部移到 `async_finalize` 之前；worker 不再于请求交出后访问槽位。公开 API、完成队列、回调线程和内存所有权不变。
+- **TDD**：`async_loader_completion_burst` 先扩为 8 轮回收压力测试，增强后未修代码第一轮即 RED（同一 TSan 栈）。修复后同一测试先在两个 CPU 上连续 10 次通过，再连续 100 次通过；最后一轮覆盖 800 个 burst、960000 个请求，`test_async_loader` 保持 17 例。CI 的 TSan 非图形套件与证据收据已恢复此测试，不再使用排除过滤器。
+- **全量验证**：Vulkan 全量 452 项零失败、OpenGL 全量 450 项零失败（各有 4 项平台条件跳过）；ASan+UBSan 非图形 437 项零失败（同样 4 项跳过），fuzz 14/14；资产相关 TSan 的 async loader、mipmap stream、runtime IO、hotreload 共 4/4。独立静态代码审查检查全部 9 个 `async_finalize` 调用点，确认无发布后槽位读取，未留下 Critical、Important 或 Minor 问题。
+
 ## 编辑器订阅主循环通知（2026-11-22）
 
 - **变更**：`break_editor_shell_attach_mainloop_bus` 让 shell 以自有队列订阅主循环通知，每帧取空；渲染调试面板增加 `window:` 行；`editor_main.c` 挂接与解除。修复 NULL 挂接未实际解除的问题：现在会同步退订、销毁队列并移除 `window:` 行，之后可用同一总线重新挂接。
