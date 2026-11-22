@@ -1,6 +1,7 @@
 #include "core_app_voice.h"
 
 #include <core/platform_thread.h>
+#include <runtime/runtime_bus.h>
 #include <platform/time.h>
 
 #include <math.h>
@@ -55,6 +56,12 @@ struct CoreAppVoice {
     PlatformThread worker;
     PlatformThreadId worker_id;
     atomic_int worker_error;
+    /* Device events (core_app_voice_attach_bus): set while stopped, read by
+     * the pumping thread while started. */
+    BreakRuntimeBus *bus;
+    bool unavailable_reported;
+    atomic_uint_least64_t events_published;
+    atomic_uint_least64_t events_undelivered;
     bool worker_started;
     bool started;
     atomic_bool stop_requested;
@@ -153,6 +160,7 @@ BreakRuntimeError core_app_voice_start(CoreAppVoice *voice) {
         return result;
     }
     atomic_store_explicit(&voice->worker_error, (int)BREAK_RUNTIME_OK, memory_order_relaxed);
+    voice->unavailable_reported = false;
     voice->started = true;
     return BREAK_RUNTIME_OK;
 }
@@ -311,6 +319,77 @@ static void voice_discard_stale(CoreAppVoice *voice) {
     }
 }
 
+
+static const BreakRuntimeBusKind k_voice_event_kind = {
+    CORE_APP_VOICE_EVENT_KIND, CORE_APP_VOICE_EVENT_VERSION, CORE_APP_VOICE_EVENT_SIZE,
+    "core_app.voice.event", true, 0u};
+
+/* Pumping thread. Never waits: a dropped copy is only counted. */
+static void voice_publish_event(CoreAppVoice *voice, CoreAppVoiceEventType type, u64 count) {
+    if (!voice->bus) return;
+    u8 payload[CORE_APP_VOICE_EVENT_SIZE] = {0};
+    for (u32 i = 0u; i < 4u; ++i) payload[i] = (u8)((u32)type >> (8u * i));
+    for (u32 i = 0u; i < 8u; ++i) payload[8u + i] = (u8)(count >> (8u * i));
+    BreakRuntimeMessageView view;
+    memset(&view, 0, sizeof(view));
+    view.kind = CORE_APP_VOICE_EVENT_KIND;
+    view.version = CORE_APP_VOICE_EVENT_VERSION;
+    view.data = payload;
+    view.size = sizeof(payload);
+    u32 delivered = 0u;
+    const BreakRuntimeError result = break_runtime_bus_publish(voice->bus, &view, &delivered);
+    if (delivered > 0u) {
+        atomic_fetch_add_explicit(&voice->events_published, 1u, memory_order_relaxed);
+    }
+    if (result != BREAK_RUNTIME_OK) {
+        atomic_fetch_add_explicit(&voice->events_undelivered, 1u, memory_order_relaxed);
+    }
+}
+
+bool core_app_voice_event_decode(const void *data, usize size, CoreAppVoiceEvent *out) {
+    if (!data || !out || size != CORE_APP_VOICE_EVENT_SIZE) return false;
+    const u8 *p = (const u8 *)data;
+    u32 type = 0u, reserved = 0u;
+    u64 count = 0u;
+    for (u32 i = 0u; i < 4u; ++i) {
+        type |= (u32)p[i] << (8u * i);
+        reserved |= (u32)p[4u + i] << (8u * i);
+    }
+    for (u32 i = 0u; i < 8u; ++i) count |= (u64)p[8u + i] << (8u * i);
+    if (reserved != 0u || type < CORE_APP_VOICE_EVENT_CAPTURE_RECOVERED ||
+        type > CORE_APP_VOICE_EVENT_CAPTURE_SWITCH_FAILED) {
+        return false;
+    }
+    out->type = type;
+    out->reserved = 0u;
+    out->count = count;
+    return true;
+}
+
+BreakRuntimeError core_app_voice_attach_bus(CoreAppVoice *voice, struct BreakRuntimeBus *bus) {
+    if (!voice) return BREAK_RUNTIME_INVALID;
+    if (voice->started) return BREAK_RUNTIME_REJECTED;
+    if (bus) {
+        const BreakRuntimeError registered = break_runtime_bus_register_kind(bus, &k_voice_event_kind);
+        if (registered == BREAK_RUNTIME_INVALID &&
+            break_runtime_bus_kind_matches(bus, &k_voice_event_kind) != BREAK_RUNTIME_OK) {
+            return BREAK_RUNTIME_REJECTED; /* the kind is taken with other parameters */
+        }
+        if (registered != BREAK_RUNTIME_OK && registered != BREAK_RUNTIME_INVALID) {
+            return registered;
+        }
+    }
+    voice->bus = bus;
+    return BREAK_RUNTIME_OK;
+}
+
+BreakRuntimeError core_app_voice_event_stats(CoreAppVoice *voice, CoreAppVoiceEventStats *out) {
+    if (!voice || !out) return BREAK_RUNTIME_INVALID;
+    out->published = atomic_load_explicit(&voice->events_published, memory_order_relaxed);
+    out->undelivered = atomic_load_explicit(&voice->events_undelivered, memory_order_relaxed);
+    return BREAK_RUNTIME_OK;
+}
+
 /* Pumping thread only. OK when the capture runs again; UNAVAILABLE when
  * recovery is off or the consecutive refusals reached the limit; REJECTED
  * while the interval since the last attempt runs, or when an attempt was
@@ -334,7 +413,9 @@ static BreakRuntimeError voice_recover_capture(CoreAppVoice *voice) {
     }
     if (reopened != AUDIO_OK) {
         voice->consecutive_reopen_failures++;
-        atomic_fetch_add_explicit(&voice->capture_reopen_failures, 1u, memory_order_relaxed);
+        voice_publish_event(voice, CORE_APP_VOICE_EVENT_CAPTURE_REOPEN_FAILED,
+                            atomic_fetch_add_explicit(&voice->capture_reopen_failures, 1u,
+                                                      memory_order_relaxed) + 1u);
         return voice->consecutive_reopen_failures >= voice->max_reopen_failures
                    ? BREAK_RUNTIME_UNAVAILABLE
                    : BREAK_RUNTIME_REJECTED;
@@ -343,7 +424,9 @@ static BreakRuntimeError voice_recover_capture(CoreAppVoice *voice) {
     voice_discard_stale(voice);
     voice_drift_reset(voice);
     audio_voice_processor_reset(voice->processor);
-    atomic_fetch_add_explicit(&voice->capture_recoveries, 1u, memory_order_relaxed);
+    voice_publish_event(voice, CORE_APP_VOICE_EVENT_CAPTURE_RECOVERED,
+                        atomic_fetch_add_explicit(&voice->capture_recoveries, 1u,
+                                                  memory_order_relaxed) + 1u);
     return BREAK_RUNTIME_OK;
 }
 
@@ -371,7 +454,9 @@ static void voice_follow_playback_reopen(CoreAppVoice *voice) {
         }
     }
     audio_voice_processor_reset(voice->processor);
-    atomic_fetch_add_explicit(&voice->playback_recoveries, 1u, memory_order_relaxed);
+    voice_publish_event(voice, CORE_APP_VOICE_EVENT_PLAYBACK_RECOVERED,
+                        atomic_fetch_add_explicit(&voice->playback_recoveries, 1u,
+                                                  memory_order_relaxed) + 1u);
 }
 
 BreakRuntimeError core_app_voice_request_capture_device(CoreAppVoice *voice, const char *name) {
@@ -401,11 +486,17 @@ static void voice_switch_capture(CoreAppVoice *voice) {
         voice_discard_stale(voice);
         voice_drift_reset(voice);
         audio_voice_processor_reset(voice->processor);
-        atomic_fetch_add_explicit(&voice->capture_switches, 1u, memory_order_relaxed);
+        voice_publish_event(voice, CORE_APP_VOICE_EVENT_CAPTURE_SWITCHED,
+                            atomic_fetch_add_explicit(&voice->capture_switches, 1u,
+                                                      memory_order_relaxed) + 1u);
     } else if (result == AUDIO_REJECTED) {
-        atomic_fetch_add_explicit(&voice->capture_switch_rejected, 1u, memory_order_relaxed);
+        voice_publish_event(voice, CORE_APP_VOICE_EVENT_CAPTURE_SWITCH_REJECTED,
+                            atomic_fetch_add_explicit(&voice->capture_switch_rejected, 1u,
+                                                      memory_order_relaxed) + 1u);
     } else {
-        atomic_fetch_add_explicit(&voice->capture_switch_failures, 1u, memory_order_relaxed);
+        voice_publish_event(voice, CORE_APP_VOICE_EVENT_CAPTURE_SWITCH_FAILED,
+                            atomic_fetch_add_explicit(&voice->capture_switch_failures, 1u,
+                                                      memory_order_relaxed) + 1u);
     }
     atomic_store_explicit(&voice->switch_pending, false, memory_order_release);
 }
@@ -422,6 +513,10 @@ BreakRuntimeError core_app_voice_pump(CoreAppVoice *voice, u32 max_packets) {
     if (audio_capture_lost(voice->capture)) {
         const BreakRuntimeError recovered = voice_recover_capture(voice);
         if (recovered == BREAK_RUNTIME_REJECTED) return BREAK_RUNTIME_OK;
+        if (recovered == BREAK_RUNTIME_UNAVAILABLE && !voice->unavailable_reported) {
+            voice->unavailable_reported = true;
+            voice_publish_event(voice, CORE_APP_VOICE_EVENT_CAPTURE_UNAVAILABLE, 0u);
+        }
         if (recovered != BREAK_RUNTIME_OK) return recovered;
     }
     voice_follow_playback_reopen(voice);

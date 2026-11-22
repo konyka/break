@@ -521,6 +521,31 @@ TEST(per_tick_quota_limits_a_kind) {
     break_runtime_queue_destroy(q);
 }
 
+TEST(a_registration_can_be_compared) {
+    BreakRuntimeBus *bus = make_bus();
+    ASSERT_NOT_NULL(bus);
+    BreakRuntimeBusKind same = {1u, 2u, 64u, "input.key", false, 0u};
+    ASSERT_EQ(break_runtime_bus_kind_matches(bus, &same), BREAK_RUNTIME_OK);
+    BreakRuntimeBusKind v = same, p = same, n = same, c = same, q = same, unknown = same;
+    v.max_version = 3u;
+    p.max_payload = 65u;
+    n.name = "input.keys";
+    c.control = true;
+    q.max_per_tick = 1u;
+    unknown.kind = 99u;
+    ASSERT_EQ(break_runtime_bus_kind_matches(bus, &v), BREAK_RUNTIME_REJECTED);
+    ASSERT_EQ(break_runtime_bus_kind_matches(bus, &p), BREAK_RUNTIME_REJECTED);
+    ASSERT_EQ(break_runtime_bus_kind_matches(bus, &n), BREAK_RUNTIME_REJECTED);
+    ASSERT_EQ(break_runtime_bus_kind_matches(bus, &c), BREAK_RUNTIME_REJECTED);
+    ASSERT_EQ(break_runtime_bus_kind_matches(bus, &q), BREAK_RUNTIME_REJECTED);
+    ASSERT_EQ(break_runtime_bus_kind_matches(bus, &unknown), BREAK_RUNTIME_STALE);
+    n.name = NULL;
+    ASSERT_EQ(break_runtime_bus_kind_matches(bus, &n), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_bus_kind_matches(bus, NULL), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_bus_kind_matches(NULL, &same), BREAK_RUNTIME_INVALID);
+    break_runtime_bus_destroy(bus);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(kind_registration_is_validated);
     RUN_TEST(publish_fans_out_to_subscribers_of_the_kind);
@@ -532,4 +557,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(concurrent_publishers_and_unsubscribe);
     RUN_TEST(control_kinds_use_reserved_queue_capacity);
     RUN_TEST(per_tick_quota_limits_a_kind);
+    RUN_TEST(a_registration_can_be_compared);
 TEST_MAIN_END()

@@ -49,7 +49,8 @@
  *              used up, a registry or subscriber
  *              table that is full, a dropped subscriber copy, an export
  *              buffer that is too small (*out_len gives the needed length).
- *   STALE    — unknown or already removed subscriber id.
+ *   STALE    — unknown or already removed subscriber id; unregistered kind
+ *              (kind_matches).
  *   OOM      — allocation failure at create.
  */
 
@@ -99,6 +100,13 @@ void break_runtime_bus_destroy(BreakRuntimeBus *bus);
 
 BreakRuntimeError break_runtime_bus_register_kind(BreakRuntimeBus *bus,
                                                   const BreakRuntimeBusKind *kind);
+
+/* Whether `kind` is registered with exactly these parameters (version,
+ * budget, name, control, quota): OK when it is, REJECTED when it is
+ * registered differently, STALE when it is not registered, INVALID for
+ * NULL arguments. Lets several components share one kind safely. */
+BreakRuntimeError break_runtime_bus_kind_matches(BreakRuntimeBus *bus,
+                                                 const BreakRuntimeBusKind *kind);
 
 /* *out_id (optional) receives a nonzero id that is never reused. */
 BreakRuntimeError break_runtime_bus_subscribe(BreakRuntimeBus *bus, const char *name,

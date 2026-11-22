@@ -327,6 +327,30 @@ BreakRuntimeError break_runtime_bus_stats(BreakRuntimeBus *bus, BreakRuntimeBusS
     return BREAK_RUNTIME_OK;
 }
 
+BreakRuntimeError break_runtime_bus_kind_matches(BreakRuntimeBus *bus,
+                                                 const BreakRuntimeBusKind *kind)
+{
+    RuntimeBusKindSlot *slot;
+    BreakRuntimeError result;
+    if (!bus || !kind || !kind->name) {
+        return BREAK_RUNTIME_INVALID;
+    }
+    platform_mutex_lock(&bus->mutex);
+    slot = runtime_bus_find_kind(bus, kind->kind);
+    if (!slot) {
+        result = BREAK_RUNTIME_STALE;
+    } else if (slot->max_version == kind->max_version && slot->max_payload == kind->max_payload &&
+               slot->control == kind->control && slot->max_per_tick == kind->max_per_tick &&
+               strncmp(slot->name, kind->name, sizeof(slot->name)) == 0 &&
+               strlen(kind->name) < sizeof(slot->name)) {
+        result = BREAK_RUNTIME_OK;
+    } else {
+        result = BREAK_RUNTIME_REJECTED;
+    }
+    platform_mutex_unlock(&bus->mutex);
+    return result;
+}
+
 BreakRuntimeError break_runtime_bus_kind_stats(BreakRuntimeBus *bus, u16 kind,
                                                BreakRuntimeBusKindStats *out_stats)
 {

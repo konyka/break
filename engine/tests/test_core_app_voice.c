@@ -5,6 +5,7 @@
 #include <audio/audio_extended.h>
 #include <core/platform_thread.h>
 #include <platform/time.h>
+#include <runtime/runtime_bus.h>
 
 #include <math.h>
 #include <stdio.h>
@@ -1069,6 +1070,221 @@ TEST(a_capture_switch_and_a_playback_reopen_reset_the_drift_ratio)
     audio_system_destroy(playback);
 }
 
+/* ---- device events on the runtime bus ---- */
+
+typedef struct {
+    BreakRuntimeBus *bus;
+    BreakRuntimeQueue *queue;
+    u32 subscriber;
+} EventFixture;
+
+static bool events_open(EventFixture *f, u32 queue_capacity)
+{
+    BreakRuntimeQueueConfig qc = {queue_capacity, 0u};
+    memset(f, 0, sizeof(*f));
+    if (break_runtime_bus_create(&f->bus) != BREAK_RUNTIME_OK) return false;
+    if (break_runtime_queue_create(&qc, &f->queue) != BREAK_RUNTIME_OK) return false;
+    return true;
+}
+
+static bool events_subscribe(EventFixture *f)
+{
+    const u16 kind = CORE_APP_VOICE_EVENT_KIND;
+    return break_runtime_bus_subscribe(f->bus, "owner", f->queue, &kind, 1u, &f->subscriber) ==
+           BREAK_RUNTIME_OK;
+}
+
+static void events_close(EventFixture *f)
+{
+    if (f->bus && f->subscriber) (void)break_runtime_bus_unsubscribe(f->bus, f->subscriber);
+    break_runtime_queue_destroy(f->queue);
+    break_runtime_bus_destroy(f->bus);
+}
+
+/* Pops one event; false when the queue is empty. */
+static bool next_event(EventFixture *f, CoreAppVoiceEvent *out)
+{
+    BreakRuntimeOwnedMessage *message = NULL;
+    BreakRuntimeMessageView view;
+    if (break_runtime_queue_poll(f->queue, &message) != BREAK_RUNTIME_OK || message == NULL) {
+        return false;
+    }
+    bool ok = break_runtime_message_view(message, &view) == BREAK_RUNTIME_OK &&
+              view.kind == CORE_APP_VOICE_EVENT_KIND &&
+              view.version == CORE_APP_VOICE_EVENT_VERSION &&
+              (view.flags & BREAK_RUNTIME_MESSAGE_FLAG_CONTROL) != 0u &&
+              core_app_voice_event_decode(view.data, view.size, out);
+    break_runtime_message_release(message);
+    return ok;
+}
+
+TEST(device_events_are_published_on_the_bus)
+{
+    AudioSystem *playback = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(playback);
+    CoreAppVoiceConfig config = recovery_config(playback, 0u, 3u);
+    config.capture_backend = AUDIO_BACKEND_NULL;
+    CoreAppVoice *voice = create_voice(&config);
+    ASSERT_NOT_NULL(voice);
+    EventFixture f;
+    ASSERT_TRUE(events_open(&f, 16u));
+    ASSERT_EQ(core_app_voice_attach_bus(NULL, f.bus), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(core_app_voice_attach_bus(voice, f.bus), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_voice_attach_bus(voice, f.bus), BREAK_RUNTIME_OK); /* idempotent */
+    ASSERT_TRUE(events_subscribe(&f));
+    ASSERT_EQ(core_app_voice_start(voice), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_voice_attach_bus(voice, NULL), BREAK_RUNTIME_REJECTED);
+
+    CoreAppVoiceEvent event;
+    ASSERT_FALSE(next_event(&f, &event)); /* nothing happened yet */
+    /* a refused reopen, then a recovery */
+    ASSERT_EQ(core_app_voice_simulate_capture_event(voice, AUDIO_CAPTURE_EVENT_DEVICE_LOST),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_voice_simulate_capture_event(voice, AUDIO_CAPTURE_EVENT_REOPEN_REFUSED),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_voice_pump(voice, 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_voice_pump(voice, 1u), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(next_event(&f, &event));
+    ASSERT_EQ(event.type, (u32)CORE_APP_VOICE_EVENT_CAPTURE_REOPEN_FAILED);
+    ASSERT_EQ(event.count, 1u);
+    ASSERT_TRUE(next_event(&f, &event));
+    ASSERT_EQ(event.type, (u32)CORE_APP_VOICE_EVENT_CAPTURE_RECOVERED);
+    ASSERT_EQ(event.count, 1u);
+    /* switches: accepted, refused */
+    ASSERT_EQ(core_app_voice_request_capture_device(voice, "NULL Capture Device"),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_voice_pump(voice, 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_voice_request_capture_device(voice, "no such microphone"),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_voice_pump(voice, 1u), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(next_event(&f, &event));
+    ASSERT_EQ(event.type, (u32)CORE_APP_VOICE_EVENT_CAPTURE_SWITCHED);
+    ASSERT_EQ(event.count, 1u);
+    ASSERT_TRUE(next_event(&f, &event));
+    ASSERT_EQ(event.type, (u32)CORE_APP_VOICE_EVENT_CAPTURE_SWITCH_REJECTED);
+    ASSERT_EQ(event.count, 1u);
+    /* a playback reopen */
+    ASSERT_EQ(audio_system_simulate_event(playback, AUDIO_SYSTEM_EVENT_DEVICE_LOST), AUDIO_OK);
+    ASSERT_EQ(audio_system_reopen(playback), AUDIO_OK);
+    ASSERT_EQ(core_app_voice_pump(voice, 1u), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(next_event(&f, &event));
+    ASSERT_EQ(event.type, (u32)CORE_APP_VOICE_EVENT_PLAYBACK_RECOVERED);
+    ASSERT_EQ(event.count, 1u);
+    /* giving up: three refusals in a row */
+    ASSERT_EQ(core_app_voice_simulate_capture_event(voice, AUDIO_CAPTURE_EVENT_DEVICE_LOST),
+              BREAK_RUNTIME_OK);
+    for (u32 i = 0u; i < 3u; ++i) {
+        ASSERT_EQ(core_app_voice_simulate_capture_event(voice,
+                                                        AUDIO_CAPTURE_EVENT_REOPEN_REFUSED),
+                  BREAK_RUNTIME_OK);
+    }
+    ASSERT_EQ(core_app_voice_pump(voice, 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_voice_pump(voice, 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_voice_pump(voice, 1u), BREAK_RUNTIME_UNAVAILABLE);
+    for (u64 n = 2u; n <= 4u; ++n) {
+        ASSERT_TRUE(next_event(&f, &event));
+        ASSERT_EQ(event.type, (u32)CORE_APP_VOICE_EVENT_CAPTURE_REOPEN_FAILED);
+        ASSERT_EQ(event.count, n);
+    }
+    ASSERT_TRUE(next_event(&f, &event));
+    ASSERT_EQ(event.type, (u32)CORE_APP_VOICE_EVENT_CAPTURE_UNAVAILABLE);
+    ASSERT_EQ(event.count, 0u);
+    /* the repeated UNAVAILABLE pump does not repeat the event */
+    ASSERT_EQ(core_app_voice_pump(voice, 1u), BREAK_RUNTIME_UNAVAILABLE);
+    ASSERT_FALSE(next_event(&f, &event));
+    CoreAppVoiceEventStats es;
+    ASSERT_EQ(core_app_voice_event_stats(voice, &es), BREAK_RUNTIME_OK);
+    ASSERT_EQ(es.published, 9u);
+    ASSERT_EQ(es.undelivered, 0u);
+    ASSERT_EQ(core_app_voice_event_stats(NULL, &es), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(core_app_voice_stop(voice), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_voice_attach_bus(voice, NULL), BREAK_RUNTIME_OK);
+    core_app_voice_destroy(voice);
+    events_close(&f);
+    audio_system_destroy(playback);
+}
+
+TEST(device_events_never_block_the_pumping_thread)
+{
+    AudioSystem *playback = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(playback);
+    const CoreAppVoiceConfig config = recovery_config(playback, 0u, 1000u);
+    CoreAppVoice *voice = create_voice(&config);
+    ASSERT_NOT_NULL(voice);
+    EventFixture f;
+    ASSERT_TRUE(events_open(&f, 2u));
+    ASSERT_EQ(core_app_voice_attach_bus(voice, f.bus), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(events_subscribe(&f));
+    /* a subscriber that never drains: the worker keeps running */
+    ASSERT_EQ(core_app_voice_start_threaded(voice), BREAK_RUNTIME_OK);
+    CoreAppVoiceStats stats;
+    memset(&stats, 0, sizeof(stats));
+    for (u32 round = 0u; round < 5u; ++round) {
+        const u64 before = stats.capture_recoveries;
+        ASSERT_EQ(core_app_voice_simulate_capture_event(voice, AUDIO_CAPTURE_EVENT_DEVICE_LOST),
+                  BREAK_RUNTIME_OK);
+        for (u32 attempt = 0u; attempt < 2000u && stats.capture_recoveries == before; ++attempt) {
+            ASSERT_EQ(core_app_voice_stats(voice, &stats), BREAK_RUNTIME_OK);
+            if (stats.capture_recoveries == before) time_sleep_us(1000u);
+        }
+        ASSERT_EQ(stats.capture_recoveries, before + 1u);
+    }
+    ASSERT_EQ(core_app_voice_worker_error(voice), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_voice_stop(voice), BREAK_RUNTIME_OK);
+    CoreAppVoiceEventStats es;
+    ASSERT_EQ(core_app_voice_event_stats(voice, &es), BREAK_RUNTIME_OK);
+    ASSERT_EQ(es.published, 2u);
+    ASSERT_EQ(es.undelivered, 3u);
+    CoreAppVoiceEvent event;
+    ASSERT_TRUE(next_event(&f, &event));
+    ASSERT_EQ(event.count, 1u);
+    ASSERT_TRUE(next_event(&f, &event));
+    ASSERT_EQ(event.count, 2u);
+    ASSERT_FALSE(next_event(&f, &event));
+    core_app_voice_destroy(voice);
+    events_close(&f);
+    audio_system_destroy(playback);
+}
+
+TEST(event_payloads_decode_strictly_and_kinds_must_match)
+{
+    u8 bytes[CORE_APP_VOICE_EVENT_SIZE] = {5, 0, 0, 0, 0, 0, 0, 0, 0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01};
+    CoreAppVoiceEvent event;
+    ASSERT_TRUE(core_app_voice_event_decode(bytes, sizeof(bytes), &event));
+    ASSERT_EQ(event.type, 5u);
+    ASSERT_EQ(event.count, 0x0102030405060708ull);
+    ASSERT_FALSE(core_app_voice_event_decode(bytes, sizeof(bytes) - 1u, &event));
+    ASSERT_FALSE(core_app_voice_event_decode(NULL, sizeof(bytes), &event));
+    ASSERT_FALSE(core_app_voice_event_decode(bytes, sizeof(bytes), NULL));
+    bytes[0] = 0u;
+    ASSERT_FALSE(core_app_voice_event_decode(bytes, sizeof(bytes), &event));
+    bytes[0] = 8u;
+    ASSERT_FALSE(core_app_voice_event_decode(bytes, sizeof(bytes), &event));
+    bytes[0] = 1u;
+    bytes[4] = 1u; /* reserved must be zero */
+    ASSERT_FALSE(core_app_voice_event_decode(bytes, sizeof(bytes), &event));
+
+    /* a bus that already has the kind with other parameters is refused */
+    AudioSystem *playback = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(playback);
+    const CoreAppVoiceConfig config = test_config(playback);
+    CoreAppVoice *voice = create_voice(&config);
+    ASSERT_NOT_NULL(voice);
+    BreakRuntimeBus *bus = NULL;
+    ASSERT_EQ(break_runtime_bus_create(&bus), BREAK_RUNTIME_OK);
+    BreakRuntimeBusKind other;
+    memset(&other, 0, sizeof(other));
+    other.kind = CORE_APP_VOICE_EVENT_KIND;
+    other.max_version = 1u;
+    other.max_payload = 8u;
+    other.name = "something.else";
+    ASSERT_EQ(break_runtime_bus_register_kind(bus, &other), BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_voice_attach_bus(voice, bus), BREAK_RUNTIME_REJECTED);
+    core_app_voice_destroy(voice);
+    break_runtime_bus_destroy(bus);
+    audio_system_destroy(playback);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(create_validates_config_and_lifecycle);
     RUN_TEST(manual_packet_matches_independent_pipeline);
@@ -1091,4 +1307,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(a_slower_playback_clock_is_compensated_without_failing);
     RUN_TEST(a_capture_switch_and_a_playback_reopen_reset_the_drift_ratio);
     RUN_TEST(drift_compensation_produces_each_packet_without_waiting);
+    RUN_TEST(device_events_are_published_on_the_bus);
+    RUN_TEST(device_events_never_block_the_pumping_thread);
+    RUN_TEST(event_payloads_decode_strictly_and_kinds_must_match);
 TEST_MAIN_END()

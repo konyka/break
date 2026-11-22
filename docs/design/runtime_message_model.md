@@ -358,3 +358,17 @@ C++11 framework 在 `Init/Tick/DeInit` 建立 runtime；每 tick 由 LogicThread
 - `max_per_tick`：两次 `break_runtime_bus_tick` 之间接受的发布次数，0 表示不限。超出配额的发布返回 OVERLOAD，不投递给任何订阅者，计入 `quota_rejects`，不影响其他 kind。`break_runtime_bus_tick` 通常每帧调用一次。
 
 拓扑导出的每个 kind 增加 `control`、`max_per_tick` 与 `quota_rejects`。`test_runtime_bus` 新增 2 例（共 10 例）：数据填满队列后控制 kind 仍送达，且普通 kind 即使发布者设置了控制标志也进不了预留槽位；配额在 tick 之间限制发布次数，tick 后恢复，不影响其他 kind，并出现在拓扑中。上文「仍未做」中的“按 kind 的优先级与配额”由此交付；仍未做的是把各线程域的现有队列接到总线上。
+
+### 补充（2026-11-22）：语音设备事件接入总线
+
+这是第一个接到总线上的现有线程域。core_app 的语音 worker 线程原来只更新原子计数器（`capture_recoveries`、`playback_recoveries`、`capture_switch_*`、`capture_reopen_failures`），拥有者线程要靠每帧比较计数器才能知道发生了什么。现在 `core_app_voice_attach_bus(voice, bus)`（`engine/apps/core_app/core_app_voice.h`）让泵线程在每次设备事件时发布一条 kind `CORE_APP_VOICE_EVENT_KIND`（0x0701，版本 1，名字 `core_app.voice.event`）消息：
+
+- payload 为 16 字节小端：`u32 type`、`u32 reserved`（必须为 0）、`u64 count`（事件发生后对应的统计计数器值；`CAPTURE_UNAVAILABLE` 为 0）。`core_app_voice_event_decode` 严格解码，长度不对、类型未知或保留字段非 0 时返回 false。
+- 事件类型：采集恢复、采集重开失败、采集放弃（连续失败达到上限，worker 随后停止；每次 start 只发一次）、播放设备重开、采集切换成功、切换被拒绝、切换失败。
+- 该 kind 登记为 control kind，所以订阅者队列被数据占满时，设备事件仍能使用预留的控制容量送达。
+- 泵线程从不等待：订阅者队列满时，该份副本被总线丢弃，语音一侧计入 `CoreAppVoiceEventStats.undelivered`；`published` 计至少送达一个订阅者的事件数。
+- `attach` 只能在语音停止时调用（运行中返回 REJECTED），传 NULL 解除。kind 尚未登记时由 attach 登记；已登记时，只有参数完全一致才接受，否则返回 REJECTED，避免两个组件对同一 kind 的理解不同。为此总线新增 `break_runtime_bus_kind_matches(bus, kind)`：参数完全一致返回 OK，不一致返回 REJECTED，未登记返回 STALE。
+
+测试：`test_runtime_bus` 新增 `a_registration_can_be_compared`（共 11 例，逐项改变版本、预算、名字、control、配额）；`test_core_app_voice` 新增 3 例（共 24 例）：手动泵模式下各类事件按发生顺序送达且计数正确、放弃事件不重复；worker 线程模式下订阅者从不排空时 worker 照常恢复 5 次采集，前 2 次送达、后 3 次计为未送达；payload 严格解码与已登记 kind 参数不一致时拒绝 attach。变异检查：非 control、重复放弃事件、计数错误、保留字段与类型范围不检查、运行中允许 attach、接受参数不同的 kind、count 不编码、事件类型错误，以及 `kind_matches` 逐项比较，均被检出。`test_runtime_bus` 在 ThreadSanitizer 下无告警。
+
+仍未做：把 LogicThread、Task workers、Network/IO、PAL/MainLoop 与 Profiler 的现有队列接到总线上（这些队列各有自己的所有权与生命周期约束，需要逐个迁移）；core_app 主循环订阅语音事件，替代现在的计数器比较。

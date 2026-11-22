@@ -1,3 +1,9 @@
+## 语音设备事件接入消息总线（2026-11-22）
+
+- **实现**：`core_app_voice_attach_bus` 让语音泵线程把设备事件（采集恢复/重开失败/放弃、播放重开、切换成功/拒绝/失败）作为 control kind 消息发布到 `BreakRuntimeBus`，从不阻塞；新增 `core_app_voice_event_decode`、`core_app_voice_event_stats`，以及总线的 `break_runtime_bus_kind_matches`。设计见 `docs/design/runtime_message_model.md`「语音设备事件接入总线」。
+- **TDD**：先写测试（链接失败）再实现；`test_core_app_voice` 新增 3 例，`test_runtime_bus` 新增 1 例。15 个变异全部被检出。`test_runtime_bus` 在 TSan 下无告警。
+- **远端收据**：`e4fb2fc3`（密钥轮换）主 CI run 44971267546 成功；`228a3010`（崩溃恢复）主 CI run 44972252884 成功。
+
 ## 可见性与输入路由随 cell 交接迁移（2026-11-22）
 
 - **实现**：新增 `engine/src/network/break_cell_view.{h,c}`，加入 `break_replication_core`。`BreakCellView` 合并各 cell 的 AoI 报告并加宽限期，实体交接时客户端不会收到 leave/enter；`BreakCellRoute` 按最高 epoch 决定输入发往哪个 cell。设计见 `docs/design/cell_handoff.md`「可见性与连接随交接迁移」。

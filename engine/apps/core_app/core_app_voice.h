@@ -95,5 +95,50 @@ BreakRuntimeError core_app_voice_request_capture_device(CoreAppVoice *voice, con
 BreakRuntimeError core_app_voice_simulate_capture_event(CoreAppVoice *voice,
                                                         AudioCaptureEvent event);
 /* Stop joins the worker before stopping devices; queued frames stay readable. */
+/* Device events on the runtime message bus (design:
+ * docs/design/runtime_message_model.md "语音设备事件接入总线"). After
+ * core_app_voice_attach_bus the pumping thread publishes one message of
+ * kind CORE_APP_VOICE_EVENT_KIND per device event, so the owner learns of
+ * them from its own queue instead of polling counters. The payload is a
+ * CoreAppVoiceEvent in little-endian order (CORE_APP_VOICE_EVENT_SIZE
+ * bytes). attach registers the kind as a control kind (it still arrives
+ * when data has filled a subscriber queue) unless it is registered
+ * already, with the same parameters; subscribers subscribe to it on the
+ * bus. A full subscriber queue drops that subscriber's copy and the voice
+ * counts it in CoreAppVoiceEventStats; the pumping thread never waits. The
+ * bus must outlive the voice or be detached (NULL) while the voice is
+ * stopped. attach is REJECTED while started. */
+#define CORE_APP_VOICE_EVENT_KIND 0x0701u
+#define CORE_APP_VOICE_EVENT_VERSION 1u
+#define CORE_APP_VOICE_EVENT_SIZE 16u
+
+typedef enum {
+    CORE_APP_VOICE_EVENT_CAPTURE_RECOVERED = 1,
+    CORE_APP_VOICE_EVENT_CAPTURE_REOPEN_FAILED = 2,
+    CORE_APP_VOICE_EVENT_CAPTURE_UNAVAILABLE = 3, /* gave up: the worker stops */
+    CORE_APP_VOICE_EVENT_PLAYBACK_RECOVERED = 4,
+    CORE_APP_VOICE_EVENT_CAPTURE_SWITCHED = 5,
+    CORE_APP_VOICE_EVENT_CAPTURE_SWITCH_REJECTED = 6,
+    CORE_APP_VOICE_EVENT_CAPTURE_SWITCH_FAILED = 7
+} CoreAppVoiceEventType;
+
+typedef struct {
+    u32 type;  /* CoreAppVoiceEventType */
+    u32 reserved;
+    u64 count; /* the matching CoreAppVoiceStats counter after the event; 0
+                * for CAPTURE_UNAVAILABLE */
+} CoreAppVoiceEvent;
+
+typedef struct {
+    u64 published;    /* copies delivered to at least one subscriber */
+    u64 undelivered;  /* events at least one subscriber missed */
+} CoreAppVoiceEventStats;
+
+struct BreakRuntimeBus;
+BreakRuntimeError core_app_voice_attach_bus(CoreAppVoice *voice, struct BreakRuntimeBus *bus);
+BreakRuntimeError core_app_voice_event_stats(CoreAppVoice *voice, CoreAppVoiceEventStats *out);
+/* Decodes a payload; false for a wrong size or an unknown type. */
+bool core_app_voice_event_decode(const void *data, usize size, CoreAppVoiceEvent *out);
+
 BreakRuntimeError core_app_voice_stop(CoreAppVoice *voice);
 void core_app_voice_destroy(CoreAppVoice *voice);
