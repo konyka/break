@@ -735,6 +735,15 @@ if(BREAK_ENABLE_CRASH)
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
 endif()
 
+if(TARGET break_crash)
+    add_library(core_app_diagnostics STATIC apps/core_app/core_app_diagnostics.c)
+    set_property(TARGET core_app_diagnostics PROPERTY C_STANDARD 11)
+    target_include_directories(core_app_diagnostics PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/apps/core_app)
+    target_link_libraries(core_app_diagnostics PUBLIC break_crash)
+endif()
+
 # Stage 5 subproject 5 — break_authority: the server-side reference engine for
 # server authority (intents in, server ledgers decide, fixed verdicts out;
 # docs/design/server_authority.md). Formal optional static library with no
@@ -1776,6 +1785,12 @@ target_link_libraries(core_app_runtime PUBLIC
 add_executable(core_app apps/core_app/main.c apps/core_app/core_app_gpu.c
     apps/core_app/core_app_mesh.c)
 target_link_libraries(core_app PRIVATE core_app_runtime core_app_network m)
+if(TARGET break_crash)
+    target_link_libraries(core_app PRIVATE core_app_diagnostics)
+    target_compile_definitions(core_app PRIVATE CORE_APP_CRASH_CONTEXT=1)
+else()
+    target_compile_definitions(core_app PRIVATE CORE_APP_CRASH_CONTEXT=0)
+endif()
 # The ragdoll pulls skeleton.o, which calls the rhi_* buffer API; list engine
 # ahead of the backend archives (engine_demo order) so those resolve.
 target_link_libraries(core_app PRIVATE engine)
@@ -7481,6 +7496,26 @@ endif()
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_crash_target_contract.cmake)
         set_tests_properties(test_break_crash_target_contract PROPERTIES
             LABELS "headless;crash;platform_contract")
+    endif()
+
+    if(TARGET core_app_diagnostics)
+        add_executable(test_core_app_diagnostics tests/test_core_app_diagnostics.c
+            src/platform/platform_fs.c src/core/break_version.c)
+        target_include_directories(test_core_app_diagnostics PRIVATE ${TEST_INCLUDE_DIRS})
+        target_compile_definitions(test_core_app_diagnostics PRIVATE
+            BREAK_BUILD_ID="${BREAK_BUILD_ID}"
+            CORE_APP_CRASH_RECORD_PATH="$<TARGET_FILE:core_app_crash_record>")
+        target_link_libraries(test_core_app_diagnostics PRIVATE core_app_diagnostics m)
+        add_test(NAME test_core_app_diagnostics COMMAND test_core_app_diagnostics)
+        set_tests_properties(test_core_app_diagnostics PROPERTIES
+            LABELS "headless;core_app;crash" TIMEOUT 180)
+
+        add_executable(core_app_crash_record tests/core_app_crash_record.c
+            src/platform/platform_fs.c src/core/break_version.c)
+        target_include_directories(core_app_crash_record PRIVATE ${TEST_INCLUDE_DIRS})
+        target_compile_definitions(core_app_crash_record PRIVATE BREAK_BUILD_ID="${BREAK_BUILD_ID}")
+        target_link_libraries(core_app_crash_record PRIVATE break_crash m)
+        add_dependencies(test_core_app_diagnostics core_app_crash_record)
     endif()
 
     # test_pbr_math: CPU reference Cook-Torrance PBR (header-only, R579)
