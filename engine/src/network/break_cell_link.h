@@ -28,9 +28,12 @@ extern "C" {
  * valid, key_id names a key it holds, the tag matches, from_cell is a configured peer, to_cell is the local cell, and the
  * sequence passes that peer's replay window. The window is marked only after
  * the tag verifies, so a forged datagram cannot use up a sequence number.
- * Sequences start at the wall clock in microseconds, so a restarted sender
- * still lands above everything it sent before; a receiver whose own restart
- * reset its windows relies on BreakCell itself tolerating duplicates.
+ * Sequences start at the wall clock in microseconds, keeping a restarted
+ * sender above its earlier packets while that clock advances normally.
+ * Creation fails if the clock is unavailable instead of restarting at 1;
+ * this is not a durable high-water mark if the clock can move backwards.
+ * A receiver whose own restart reset its windows relies on BreakCell itself
+ * tolerating duplicates.
  *
  * Threading: one owner thread per link, the same thread as its BreakCell. */
 
@@ -93,8 +96,8 @@ typedef struct {
 
 typedef struct BreakCellLink BreakCellLink;
 
-/* NULL for invalid configuration or when the socket cannot be bound. The
- * caller has called net_init. */
+/* NULL for invalid configuration, an unavailable wall clock, or when the
+ * socket cannot be bound. The caller has called net_init. */
 BreakCellLink *break_cell_link_create(const BreakCellLinkConfig *config);
 void break_cell_link_destroy(BreakCellLink *link);
 u16 break_cell_link_port(const BreakCellLink *link);
@@ -138,6 +141,13 @@ typedef void (*BreakCellLinkRejectFn)(void *user, BreakCellLinkReject reason, u3
 
 /* NULL hook removes it. False for a NULL link. */
 bool break_cell_link_set_reject_hook(BreakCellLink *link, BreakCellLinkRejectFn hook, void *user);
+
+#ifdef BREAK_CELL_LINK_TESTING
+/* Compiled directly into test_break_cell_link, never into break_cell_link. */
+void break_cell_link_set_clock_failure_for_test(bool fail);
+bool break_cell_link_set_peer_address_for_test(BreakCellLink *link, u32 cell_id,
+                                               const NetAddress *address);
+#endif
 
 #ifdef __cplusplus
 }

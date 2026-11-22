@@ -431,7 +431,12 @@ i32 net_recvfrom(NetSocket *s, void *buf, u32 buf_size, NetAddress *out_addr)
     if (n < 0) {
         int err = NET_LAST_ERROR();
         if (net__is_would_block(err)) return NET_WOULD_BLOCK;
-        return NET_ERROR;
+#if defined(ENGINE_PLATFORM_WINDOWS)
+        /* Winsock reports an oversized UDP datagram as WSAEMSGSIZE after
+         * filling the buffer. Match POSIX: return the truncated datagram. */
+        if (err == WSAEMSGSIZE) n = (int)buf_size;
+#endif
+        if (n < 0) return NET_ERROR;
     }
     if (out_addr) {
         net__fill_address_from_sockaddr(&src, out_addr);

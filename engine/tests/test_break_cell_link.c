@@ -226,6 +226,18 @@ TEST(link_create_validates_configuration) {
         memset(key, 0, sizeof key);
         break_cell_link_destroy(ok);
     }
+    /* A sequence that restarts at 1 would be rejected by peers that saw the
+     * old wall-clock sequences. Clock failure must not create such a link. */
+    {
+        bool created;
+        break_cell_link_set_clock_failure_for_test(true);
+        c = link_config(1u, peers, 2u);
+        ok = break_cell_link_create(&c);
+        created = ok != NULL;
+        break_cell_link_destroy(ok);
+        break_cell_link_set_clock_failure_for_test(false);
+        ASSERT_FALSE(created);
+    }
     break_cell_link_destroy(NULL);
     ASSERT_EQ(break_cell_link_port(NULL), 0u);
     ASSERT_EQ(break_cell_link_poll(NULL, NULL, 4u), 0u);
@@ -252,12 +264,8 @@ static bool pair_open(Pair *p, u32 retransmit_ticks) {
     pa = peer(2u, break_cell_link_port(p->link[1]));
     p->link[0] = break_cell_link_create(&ca);
     if (p->link[0] == NULL) return false;
-    break_cell_link_destroy(p->link[1]);
     pb = peer(1u, break_cell_link_port(p->link[0]));
-    cb = link_config(2u, &pb, 1u);
-    cb.bind_port = pa.address.port;
-    p->link[1] = break_cell_link_create(&cb);
-    if (p->link[1] == NULL) return false;
+    if (!break_cell_link_set_peer_address_for_test(p->link[1], 1u, &pb.address)) return false;
     for (u32 i = 0; i < 2u; i++) {
         memset(&cfg, 0, sizeof cfg);
         cfg.cell_id = i + 1u;
@@ -442,16 +450,18 @@ TEST(a_restarted_sender_is_not_mistaken_for_a_replay) {
     ASSERT_TRUE(break_cell_is_authoritative(p.cell[1], 1u));
     for (u32 i = 0; i < 50u; i++) pair_step(&p);
 
-    /* restart cell 1's link on the same port: its sequence starts over */
+    /* Restart cell 1's link on a new ephemeral port. Source ports are not
+     * authenticated; keeping the old one only races other UDP users. */
     {
         BreakCellPeer pb = peer(2u, break_cell_link_port(p.link[1]));
         BreakCellLinkConfig ca = link_config(1u, &pb, 1u);
         BreakCellConfig cfg;
-        ca.bind_port = break_cell_link_port(p.link[0]);
         break_cell_destroy(p.cell[0]);
         break_cell_link_destroy(p.link[0]);
         p.link[0] = break_cell_link_create(&ca);
         ASSERT_NOT_NULL(p.link[0]);
+        pb = peer(1u, break_cell_link_port(p.link[0]));
+        ASSERT_TRUE(break_cell_link_set_peer_address_for_test(p.link[1], 1u, &pb.address));
         memset(&cfg, 0, sizeof cfg);
         cfg.cell_id = 1u;
         cfg.capacity = 16u;

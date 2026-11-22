@@ -154,10 +154,19 @@ static void set_key(LinkKey *slot, u32 key_id, const u8 *key, u32 key_size) {
     if (key != NULL) memcpy(slot->bytes, key, key_size);
 }
 
-static u64 wall_clock_microseconds(void) {
+#ifdef BREAK_CELL_LINK_TESTING
+static bool g_fail_wall_clock;
+void break_cell_link_set_clock_failure_for_test(bool fail) { g_fail_wall_clock = fail; }
+#endif
+
+static bool wall_clock_microseconds(u64 *out) {
     struct timespec ts;
-    if (timespec_get(&ts, TIME_UTC) != TIME_UTC || ts.tv_sec < 0) return 1u;
-    return (u64)ts.tv_sec * 1000000u + (u64)ts.tv_nsec / 1000u;
+#ifdef BREAK_CELL_LINK_TESTING
+    if (g_fail_wall_clock) return false;
+#endif
+    if (timespec_get(&ts, TIME_UTC) != TIME_UTC || ts.tv_sec < 0) return false;
+    *out = (u64)ts.tv_sec * 1000000u + (u64)ts.tv_nsec / 1000u;
+    return true;
 }
 
 static LinkPeer *find_peer(BreakCellLink *link, u32 cell_id) {
@@ -166,9 +175,22 @@ static LinkPeer *find_peer(BreakCellLink *link, u32 cell_id) {
     return NULL;
 }
 
+#ifdef BREAK_CELL_LINK_TESTING
+bool break_cell_link_set_peer_address_for_test(BreakCellLink *link, u32 cell_id,
+                                               const NetAddress *address) {
+    LinkPeer *peer;
+    if (link == NULL || address == NULL) return false;
+    peer = find_peer(link, cell_id);
+    if (peer == NULL) return false;
+    peer->address = *address;
+    return true;
+}
+#endif
+
 BreakCellLink *break_cell_link_create(const BreakCellLinkConfig *config) {
     BreakCellLink *link;
     NetAddress local;
+    u64 sequence;
     if (config == NULL || !valid_key(config->key_id, config->key, config->key_size) ||
         config->peers == NULL ||
         config->peer_count == 0u || config->peer_count > BREAK_CELL_LINK_MAX_PEERS)
@@ -178,6 +200,7 @@ BreakCellLink *break_cell_link_create(const BreakCellLinkConfig *config) {
         for (u32 j = 0; j < i; j++)
             if (config->peers[j].cell_id == config->peers[i].cell_id) return NULL;
     }
+    if (!wall_clock_microseconds(&sequence)) return NULL;
     link = (BreakCellLink *)calloc(1u, sizeof *link);
     if (link == NULL) return NULL;
     link->socket = net_udp_create(config->bind_port);
@@ -190,8 +213,7 @@ BreakCellLink *break_cell_link_create(const BreakCellLinkConfig *config) {
     link->cell_id = config->cell_id;
     link->port = local.port;
     set_key(&link->current, config->key_id, config->key, config->key_size);
-    link->next_sequence = wall_clock_microseconds();
-    if (link->next_sequence == 0u) link->next_sequence = 1u;
+    link->next_sequence = sequence != 0u ? sequence : 1u;
     link->peer_count = config->peer_count;
     for (u32 i = 0; i < config->peer_count; i++) {
         link->peers[i].cell_id = config->peers[i].cell_id;

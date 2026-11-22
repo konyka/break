@@ -41,7 +41,9 @@ NetSocket *net_tcp_accept(NetSocket *listener, NetAddress *out_addr);
 i32 net_send(NetSocket *s, const void *data, u32 size);
 i32 net_recv(NetSocket *s, void *buf, u32 buf_size);
 
-/* UDP-specific (datagram with address) */
+/* UDP-specific (datagram with address). An incoming datagram larger than
+ * buf_size is truncated and consumed; the return value is buf_size on both
+ * POSIX and Winsock, so callers can detect truncation with a max+1 buffer. */
 i32 net_sendto(NetSocket *s, const void *data, u32 size, const NetAddress *addr);
 i32 net_recvfrom(NetSocket *s, void *buf, u32 buf_size, NetAddress *out_addr);
 

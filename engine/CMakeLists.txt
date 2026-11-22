@@ -6956,12 +6956,16 @@ endif()
         TIMEOUT 60 LABELS "network;replication;world")
 
     if(TARGET break_cell_link)
-        add_executable(test_break_cell_link tests/test_break_cell_link.c src/platform/time.c)
+        add_executable(test_break_cell_link tests/test_break_cell_link.c src/platform/time.c
+            src/network/break_cell_link.c src/network/break_replay_window.c src/network/network.c)
+        set_property(TARGET test_break_cell_link PROPERTY C_STANDARD 11)
         target_include_directories(test_break_cell_link PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
-        target_link_libraries(test_break_cell_link PRIVATE break_cell_link)
+        target_compile_definitions(test_break_cell_link PRIVATE BREAK_CELL_LINK_TESTING=1)
+        target_link_libraries(test_break_cell_link PRIVATE break_replication_core break_crypto)
         if(ENGINE_PLATFORM STREQUAL "windows")
             target_compile_definitions(test_break_cell_link PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+            target_link_libraries(test_break_cell_link PRIVATE ws2_32)
         else()
             target_compile_definitions(test_break_cell_link PRIVATE
                 ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=200112L)

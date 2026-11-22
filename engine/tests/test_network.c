@@ -404,6 +404,36 @@ TEST(poll_ignores_null_socket_entries)
 
 /* ----------------------------------------------------------------------- */
 
+TEST(udp_oversize_datagram_is_truncated_and_consumed)
+{
+    ASSERT_TRUE(net_init());
+    NetSocket *recv_s = net_udp_create(0);
+    NetSocket *send_s = net_udp_create(0);
+    ASSERT_NOT_NULL(recv_s);
+    ASSERT_NOT_NULL(send_s);
+    net_set_nonblocking(recv_s, true);
+
+    NetAddress dst;
+    ASSERT_TRUE(net_socket_get_local_address(recv_s, &dst));
+    net_test_normalize_loopback(&dst);
+    u8 large[32];
+    memset(large, 0xa5, sizeof large);
+    ASSERT_EQ(net_sendto(send_s, large, (u32)sizeof large, &dst), (i32)sizeof large);
+    u8 small[8];
+    ASSERT_EQ(recvfrom_wait_readable(recv_s, small, (u32)sizeof small, NULL),
+              (i32)sizeof small);
+    for (u32 i = 0u; i < sizeof small; i++) ASSERT_EQ(small[i], 0xa5u);
+
+    /* The oversized datagram is gone, not an error that poisons this socket. */
+    ASSERT_EQ(net_sendto(send_s, "ok", 3u, &dst), 3);
+    ASSERT_EQ(recvfrom_wait_readable(recv_s, small, (u32)sizeof small, NULL), 3);
+    ASSERT_STR_EQ((const char *)small, "ok");
+
+    net_close(send_s);
+    net_close(recv_s);
+    net_shutdown();
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(init_shutdown);
     RUN_TEST(udp_create_close);
@@ -422,6 +452,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(sendto_const_address);
     RUN_TEST(sendto_repeated_sends_with_cache);
     RUN_TEST(udp_send_to_closed_port_does_not_poison_socket);
+    RUN_TEST(udp_oversize_datagram_is_truncated_and_consumed);
     RUN_TEST(tcp_listen_same_port_twice_fails);
     RUN_TEST(poll_ignores_null_socket_entries);
 TEST_MAIN_END()
