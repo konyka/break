@@ -70,6 +70,16 @@ bool break_cell_view_report(BreakCellView *view, u32 cell, const u64 *ids, u32 c
             if (ids[i] == ids[j]) return false;
     for (slot = 0; slot < view->report_count; slot++)
         if (view->reports[slot].cell == cell) break;
+    if (count == 0u) {
+        /* An empty report contributes nothing, so the slot is released and a
+         * client that crosses many cells never runs out of slots. */
+        if (slot < view->report_count) {
+            free(view->reports[slot].ids);
+            view->reports[slot] = view->reports[--view->report_count];
+            memset(&view->reports[view->report_count], 0, sizeof view->reports[0]);
+        }
+        return true;
+    }
     if (slot == view->report_count && slot == BREAK_CELL_VIEW_MAX_CELLS) return false;
     for (u32 i = 0; i < count; i++)
         if (view_find(view, ids[i]) == NULL) added++;

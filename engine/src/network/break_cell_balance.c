@@ -45,7 +45,7 @@ u32 break_cell_hilbert_order(const BreakCellPartition *p, u32 *out_order, u32 ca
     n = break_cell_partition_cell_count(p);
     if (capacity < n) return 0u;
     while (side < p->columns || side < p->rows) {
-        if (side > 0x80000000u) return 0u;
+        if (side >= 0x80000000u) return 0u;
         side *= 2u;
     }
     keys = (CellBalanceKey *)malloc((usize)n * sizeof(CellBalanceKey));

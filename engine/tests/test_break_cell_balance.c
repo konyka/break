@@ -50,6 +50,10 @@ TEST(hilbert_order_visits_every_cell_once_through_neighbours) {
     }
     ASSERT_EQ(break_cell_hilbert_order(&q, order, 14u), 0u); /* too small */
     ASSERT_EQ(break_cell_hilbert_order(NULL, order, 64u), 0u);
+    /* a grid wider than 2^31 cells needs a curve side past u32: refused
+     * before anything is written (the side once wrapped to 0 and looped) */
+    BreakCellPartition wide = grid(0x80000001u, 1u);
+    ASSERT_EQ(break_cell_hilbert_order(&wide, order, UINT32_MAX), 0u);
 }
 
 /* For each server, the cells it got must be one run of the Hilbert order. */

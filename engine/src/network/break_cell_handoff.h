@@ -140,9 +140,11 @@ u32 break_cell_outbox_count(BreakCell *cell);
  * is the same as losing them on the network. Writes made after the latest
  * snapshot are lost with the crash.
  *
- * break_cell_snapshot_size gives the bytes needed (0 for NULL).
+ * break_cell_snapshot_size gives the bytes needed (0 for NULL or for a
+ * snapshot that would not fit in 32 bits).
  * break_cell_snapshot writes the snapshot and its size; false for NULL
- * arguments or a buffer that is too small. */
+ * arguments, a snapshot that would not fit in 32 bits, or a buffer that is
+ * too small. */
 u32 break_cell_snapshot_size(BreakCell *cell);
 bool break_cell_snapshot(BreakCell *cell, void *out, u32 capacity, u32 *out_size);
 /* Creates a cell from a snapshot. NULL for an invalid config (as

@@ -419,11 +419,11 @@ static u64 snap_get_u64(const u8 *p) {
 }
 
 u32 break_cell_snapshot_size(BreakCell *cell) {
-    u32 n = SNAP_HEADER + SNAP_HASH;
+    u64 n = SNAP_HEADER + SNAP_HASH;
     if (!cell) return 0u;
     for (u32 i = 0; i < cell->cfg.capacity; i++)
         if (cell->records[i].used) n += SNAP_RECORD + cell->records[i].size;
-    return n;
+    return n > UINT32_MAX ? 0u : (u32)n;
 }
 
 bool break_cell_snapshot(BreakCell *cell, void *out, u32 capacity, u32 *out_size) {
@@ -431,7 +431,7 @@ bool break_cell_snapshot(BreakCell *cell, void *out, u32 capacity, u32 *out_size
     u32 size, at = SNAP_HEADER, count = 0u;
     if (!cell || !out || !out_size) return false;
     size = break_cell_snapshot_size(cell);
-    if (capacity < size) return false;
+    if (size == 0u || capacity < size) return false;
     for (u32 i = 0; i < cell->cfg.capacity; i++) {
         const CellRecord *r = &cell->records[i];
         if (!r->used) continue;

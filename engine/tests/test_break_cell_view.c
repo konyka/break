@@ -114,16 +114,38 @@ TEST(view_rejects_bad_reports_without_changing) {
     ASSERT_TRUE(tick(v, &e)); /* entity 3 leaves: its slot frees up */
     ASSERT_EQ(e.leave_count, 1u);
     ASSERT_TRUE(break_cell_view_report(v, 2u, four, 1u));
-    /* the cell table is bounded */
+    /* the cell table is bounded; entity 4 is already in the view, so these
+     * reports cost no capacity */
     for (u32 c = 3u; c < 3u + BREAK_CELL_VIEW_MAX_CELLS - 2u; c++)
-        ASSERT_TRUE(break_cell_view_report(v, c, NULL, 0u));
-    ASSERT_FALSE(break_cell_view_report(v, 999u, NULL, 0u));
+        ASSERT_TRUE(break_cell_view_report(v, c, four, 1u));
+    ASSERT_FALSE(break_cell_view_report(v, 999u, four, 1u));
+    /* an empty report needs no slot, and frees the one its cell held */
+    ASSERT_TRUE(break_cell_view_report(v, 999u, NULL, 0u));
+    ASSERT_TRUE(break_cell_view_report(v, 3u, NULL, 0u));
+    ASSERT_TRUE(break_cell_view_report(v, 999u, four, 1u));
     ASSERT_FALSE(break_cell_view_tick(v, NULL, &e.enter_count, e.leave, &e.leave_count));
     ASSERT_FALSE(break_cell_view_tick(NULL, e.enter, &e.enter_count, e.leave, &e.leave_count));
     ASSERT_FALSE(break_cell_view_is_visible(NULL, 1u));
     ASSERT_EQ(break_cell_view_visible_count(NULL), 0u);
     break_cell_view_destroy(v);
     break_cell_view_destroy(NULL);
+}
+
+/* A client crossing more cells than the table holds: each cell it leaves
+ * sends an empty report. Empty reports once kept their slot, so the 33rd
+ * cell was refused and its entities never became visible. */
+TEST(cells_that_report_nothing_free_their_slot) {
+    BreakCellView *v = break_cell_view_create(CAP, 1u);
+    Events e;
+    ASSERT_NOT_NULL(v);
+    for (u32 c = 0; c < 2u * BREAK_CELL_VIEW_MAX_CELLS; c++) {
+        const u64 here[] = {1000u + c};
+        ASSERT_TRUE(break_cell_view_report(v, c, here, 1u));
+        if (c > 0u) ASSERT_TRUE(break_cell_view_report(v, c - 1u, NULL, 0u));
+        ASSERT_TRUE(tick(v, &e));
+        ASSERT_TRUE(break_cell_view_is_visible(v, 1000u + c));
+    }
+    break_cell_view_destroy(v);
 }
 
 TEST(route_follows_the_highest_epoch) {
@@ -293,6 +315,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(view_is_the_union_of_cell_reports);
     RUN_TEST(an_entity_leaves_only_after_the_grace_period);
     RUN_TEST(view_rejects_bad_reports_without_changing);
+    RUN_TEST(cells_that_report_nothing_free_their_slot);
     RUN_TEST(route_follows_the_highest_epoch);
     RUN_TEST(a_walker_stays_visible_and_reachable_across_handoffs);
 TEST_MAIN_END()

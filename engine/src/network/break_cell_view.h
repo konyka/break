@@ -38,9 +38,10 @@ BreakCellView *break_cell_view_create(u32 capacity, u32 grace_ticks);
 void break_cell_view_destroy(BreakCellView *view);
 
 /* Replaces what `cell` reports as visible. An empty report (count 0) means
- * the cell sees nothing, as after the cell went away. False, with no
- * change, for NULL arguments, a duplicate id in the report, a 33rd distinct
- * cell, or when the new entities would exceed the capacity. */
+ * the cell sees nothing, as after the cell went away, and frees its slot.
+ * False, with no change, for NULL arguments, a duplicate id in the report,
+ * a 33rd cell with a non-empty report, or when the new entities would
+ * exceed the capacity. */
 bool break_cell_view_report(BreakCellView *view, u32 cell, const u64 *ids, u32 count);
 
 /* Advances one tick and writes the entities that became visible and the
