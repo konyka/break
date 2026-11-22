@@ -376,6 +376,12 @@
   - `test_anim_aim` 1→5 例：可达目标使根、中关节旋转而末端不变，结果为单位四元数；半权重的修正小于全权重；权重夹到 [0, 1]，aim 与 look 两槽互不影响，非法槽与 NULL 不改状态；链关节超出调用方骨骼数时跳过。
 - **验证**：五种变异均被检出：去掉包围对查找、socket 只用平移、名字长度上限放宽、IK 忽略权重、权重不设上限。原生 CTest 458/458；arm64 计数文件追加这三项分项数。
 
+## PAL/MainLoop 接入消息总线（2026-11-22）
+
+- **问题**：`missing_capabilities.md` 第 5 节记录 PAL/MainLoop 尚未接入总线。
+- **变更**：新增 `runtime_mainloop`（runtime_core）与 `runtime_mainloop_platform`（平台适配，不进 runtime_core）；编辑器主循环每帧观察一次，退出时打印通知计数。
+- **验证**：`test_runtime_mainloop` 5/5、`test_runtime_mainloop_platform` 1/1，八种变异均被检出；Wayland 实机编辑器脚本运行 `observed=31`。
+
 ## 网络事件接入消息总线（2026-11-22）
 
 - **问题**：`missing_capabilities.md` 第 5 节记录 Network 队列尚未接入总线。

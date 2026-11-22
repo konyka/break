@@ -45,6 +45,9 @@
 #endif
 
 #include <core/profiler.h>
+#include <runtime/runtime_bus.h>
+#include <runtime/runtime_mainloop.h>
+#include <runtime/runtime_mainloop_platform.h>
 #include <platform/filewatch.h>
 #include <editor/editor_plugin_manifest.h>
 #ifdef BREAK_EDITOR_PLUGINS
@@ -385,10 +388,30 @@ int main(int argc, char **argv) {
    * is a pure view over profiler_last_frame and never touches state). */
   profiler_set_enabled(true);
 
+  /* PAL/MainLoop on the runtime bus: window facts observed once per frame
+   * become notices for owners on other threads (docs/design/
+   * runtime_message_model.md "PAL/MainLoop 接入总线"). Optional: the
+   * editor runs the same without it. */
+  BreakRuntimeBus *mainloop_bus = NULL;
+  BreakRuntimeMainLoop *mainloop = NULL;
+  if (break_runtime_bus_create(&mainloop_bus) != BREAK_RUNTIME_OK ||
+      break_runtime_mainloop_create(mainloop_bus, &mainloop) != BREAK_RUNTIME_OK) {
+    fprintf(stderr, "editor: main loop notices unavailable\n");
+  }
+  u64 mainloop_frame = 0u;
+
   u32 title_revision = 0u; /* 0: the configured title is still up */
   for (;;) {
     RHICmdBuffer *cmd;
-    if (platform_poll(platform) == PLATFORM_EVENT_QUIT) {
+    const bool close_requested = platform_poll(platform) == PLATFORM_EVENT_QUIT;
+    if (mainloop != NULL) {
+      BreakRuntimeMainLoopFacts facts;
+      if (break_runtime_mainloop_platform_facts(platform, ++mainloop_frame,
+                                                close_requested, &facts)) {
+        (void)break_runtime_mainloop_observe(mainloop, &facts);
+      }
+    }
+    if (close_requested) {
       /* unsaved changes: the first close is refused (console + status bar
        * explain); closing again discards them */
       if (break_editor_shell_request_close(shell)) {
@@ -458,6 +481,18 @@ int main(int argc, char **argv) {
   script_exit = break_editor_input_driver_exit_code(script);
   break_editor_input_driver_destroy(script);
 #endif
+  if (mainloop != NULL) {
+    BreakRuntimeMainLoopStats mainloop_stats;
+    if (break_runtime_mainloop_stats(mainloop, &mainloop_stats) == BREAK_RUNTIME_OK) {
+      fprintf(stderr,
+              "editor: main loop notices observed=%llu published=%llu dropped=%llu\n",
+              (unsigned long long)mainloop_stats.observed,
+              (unsigned long long)mainloop_stats.published,
+              (unsigned long long)mainloop_stats.dropped);
+    }
+  }
+  break_runtime_mainloop_destroy(mainloop);
+  break_runtime_bus_destroy(mainloop_bus);
   if (keyring_watched) {
     filewatch_shutdown(&keyring_watch);
   }

@@ -417,3 +417,15 @@ Network 是第四个接入总线的线程域，分两层：
 测试：`test_break_net_adapter` 新增 1 例（共 45 例）：打开、带 correlation 的消息、队列满时丢弃的事件各上报一次且身份正确，移除后不再上报；变异检查（丢弃时不上报、丢失 correlation_id、丢失消息 id、移除不生效）均被检出。`test_core_app_net_transport` 新增 2 例（共 4 例）：事件按顺序出现在总线上，字段与 correlation_id 正确；只有 2 槽的订阅者队列使 4 条通知中 2 条计为未送达；运行中 attach 被拒绝；冲突的 kind 被拒绝。`test_core_app_network_loopback` 要求 `network_events` 的 seen 不少于 opened + closed，且 reactor_dropped 为 0（本地一次运行：opened=7、closed=7、seen=436）。transport 不调用 attach 时该用例失败；把每条通知都计为 reactor 丢弃时也失败。
 
 仍未做：LogicThread 与 PAL/MainLoop 的现有队列接入总线。
+
+### 补充（2026-11-22）：PAL/MainLoop 接入总线
+
+平台层（`engine/src/platform/`）不链接 runtime_core，所以 PAL/MainLoop 不由平台后端直接发布，而是由主循环在每帧 `platform_poll` 之后读取平台事实，交给观察器：
+
+- `engine/src/runtime/runtime_mainloop.{h,c}`（属于 runtime_core）：`break_runtime_mainloop_create(bus, &ml)` 登记 control kind `BREAK_RUNTIME_MAINLOOP_NOTICE_KIND`（0x4C4D，版本 1，24 字节，`runtime.mainloop.notice`），已以相同参数登记时复用，参数不同时返回 REJECTED。`break_runtime_mainloop_observe(ml, &facts)` 比较本帧事实（帧号、drawable 尺寸、关闭请求、WSI 状态、content scale）与上一次观察，按固定顺序为每项变化发布一条通知：CLOSE_REQUESTED（每次请求一次，持续挂起不重复，取消后再次请求会再发）、RESIZED（宽、高，最小化时为 0×0）、WSI_CHANGED（新状态、旧状态）、SCALE_CHANGED（千分之一单位）。第一次观察报告初始尺寸、WSI 状态和缩放。发布从不等待，订阅者队列满时丢弃并计入 `stats.dropped`；跟踪的状态总是跟随最新事实，丢掉的通知不会重发。非有限或负的缩放返回 INVALID。观察器属于主循环线程。
+- `engine/src/runtime/runtime_mainloop_platform.{h,c}`（不属于 runtime_core，与平台后端一起链接）：`break_runtime_mainloop_platform_facts(platform, frame, close_requested, &facts)` 从 `Platform` 读取 drawable 尺寸、content scale 与 WSI 状态。
+- 编辑器主循环（`engine/apps/editor/editor_main.c`）每帧观察一次，退出时在 stderr 打印 `editor: main loop notices observed=N published=M dropped=K`。
+
+测试：`test_runtime_mainloop` 5 例：初始状态只报一次、不变的帧不发布；多项变化按固定顺序各一条；仅高度变化也算 resize；关闭请求不重复、取消后再发；最小化 0×0 是 resize；2 槽队列时 7 条中 5 条计为丢弃，之后的变化相对最后一次观察计算；缩放为负或 NaN 被拒；冲突 kind 被拒；通知解析拒绝未知类型、错误长度和错误 kind。`test_runtime_mainloop_platform` 1 例：用无需显示器的 mobile 平台层，`platform_mobile_resize` 产生 RESIZED 与 WSI_CHANGED（RESIZED 状态），`platform_mobile_notify_suspend` 产生 WSI_CHANGED（SUSPENDED，旧状态 RESIZED），关闭请求按调用方传入。变异检查（关闭请求重复发送、关闭请求不随取消清除、不报旧 WSI 状态、只比较宽度、丢弃计为送达、缩放截断而不是四舍五入、解析不检查类型上限、从不记录已观察）均被检出；“只比较宽度”第一轮未检出，补充仅高度变化的用例后检出。实机：Fedora Wayland 上以 `BREAK_EDITOR_INPUT_SCRIPT=ON` 构建的编辑器运行 `wait 30` + `quit` 脚本，Vulkan 后端，正常退出并打印 `observed=31 published=0 dropped=3`。编辑器内目前没有订阅者，所以初始的三条通知计为丢弃。
+
+仍未做：编辑器内的订阅方（例如远程会话把窗口变化转告客户端）；LogicThread 的现有队列接入总线。

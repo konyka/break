@@ -935,7 +935,8 @@ add_library(runtime_core STATIC
     src/runtime/runtime_thread.c
     src/runtime/runtime_io.c
     src/runtime/runtime_reload.c
-    src/runtime/runtime_profiler.c)
+    src/runtime/runtime_profiler.c
+    src/runtime/runtime_mainloop.c)
 set_property(TARGET runtime_core PROPERTY C_STANDARD 11)
 target_include_directories(runtime_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -2266,6 +2267,7 @@ add_executable(editor apps/editor/editor_main.c apps/editor/editor_panels.c apps
     apps/editor/editor_remote.c apps/editor/editor_panel_network.c
         apps/editor/editor_panel_render.c apps/editor/editor_hot_reload.c
     apps/editor/editor_fonts.c
+    src/runtime/runtime_mainloop_platform.c
     src/myui/mypal/dummy/my_pal_dummy.c)
 set_property(TARGET editor PROPERTY C_STANDARD 11)
 # Editor UI fonts (editor_fonts.c): fontconfig is optional; without it the
@@ -6565,7 +6567,8 @@ endif()
         src/runtime/runtime_thread.c
         src/runtime/runtime_io.c
         src/runtime/runtime_reload.c
-        src/runtime/runtime_profiler.c)
+        src/runtime/runtime_profiler.c
+        src/runtime/runtime_mainloop.c)
     set_property(TARGET runtime_core_test PROPERTY C_STANDARD 11)
     target_include_directories(runtime_core_test PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -6605,6 +6608,43 @@ endif()
     target_link_libraries(test_runtime_bus PRIVATE runtime_core_test)
     add_test(NAME test_runtime_bus COMMAND test_runtime_bus)
     set_tests_properties(test_runtime_bus PROPERTIES
+        LABELS "headless;runtime_core")
+
+    add_executable(test_runtime_mainloop tests/test_runtime_mainloop.c
+        src/core/log.c src/core/profiler.c src/platform/time.c)
+    target_include_directories(test_runtime_mainloop PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_runtime_mainloop PRIVATE
+            ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_runtime_mainloop PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_runtime_mainloop PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_runtime_mainloop PRIVATE kernel32)
+    endif()
+    target_link_libraries(test_runtime_mainloop PRIVATE runtime_core_test)
+    add_test(NAME test_runtime_mainloop COMMAND test_runtime_mainloop)
+    set_tests_properties(test_runtime_mainloop PROPERTIES
+        LABELS "headless;runtime_core")
+
+    # The platform adapter against the display-free mobile platform layer.
+    add_executable(test_runtime_mainloop_platform tests/test_runtime_mainloop_platform.c
+        src/runtime/runtime_mainloop_platform.c
+        src/platform/window_mobile.c src/platform/input.c
+        src/platform/input_extended.c src/platform/platform_config.c
+        src/core/log.c src/core/profiler.c src/platform/time.c)
+    target_include_directories(test_runtime_mainloop_platform PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_runtime_mainloop_platform PRIVATE ENGINE_PLATFORM_IOS=1)
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_runtime_mainloop_platform PRIVATE _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_runtime_mainloop_platform PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_link_libraries(test_runtime_mainloop_platform PRIVATE kernel32)
+    endif()
+    target_link_libraries(test_runtime_mainloop_platform PRIVATE runtime_core_test)
+    add_test(NAME test_runtime_mainloop_platform COMMAND test_runtime_mainloop_platform)
+    set_tests_properties(test_runtime_mainloop_platform PROPERTIES
         LABELS "headless;runtime_core")
 
     # Formal thread + IO/VFS facade focused tests (Task 5). vfs.c/log.c are

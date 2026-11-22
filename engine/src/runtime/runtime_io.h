@@ -114,8 +114,10 @@ typedef struct BreakRuntimeIoRequest BreakRuntimeIoRequest; /* opaque, caller-ow
  * state, error and byte count in little-endian order, never the file bytes
  * (the completion itself still goes to the request). attach registers the
  * kind as a control kind when it is not registered yet; it must otherwise
- * match exactly. Notices are published outside the facade mutex and never
- * wait: a full subscriber queue drops the notice (stats.notices_dropped). */
+ * match exactly. A notice is published before waiters are woken, so once a
+ * wait returns the completion its notice is on the bus (or counted as
+ * dropped). Publishing never waits: a full subscriber queue drops the
+ * notice (stats.notices_dropped). */
 #define BREAK_RUNTIME_IO_NOTICE_KIND 0x4F4Eu /* 'N' | 'O'<<8 */
 #define BREAK_RUNTIME_IO_NOTICE_VERSION 1u
 #define BREAK_RUNTIME_IO_NOTICE_SIZE 24u
