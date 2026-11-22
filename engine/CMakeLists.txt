@@ -7516,6 +7516,24 @@ endif()
         target_compile_definitions(core_app_crash_record PRIVATE BREAK_BUILD_ID="${BREAK_BUILD_ID}")
         target_link_libraries(core_app_crash_record PRIVATE break_crash m)
         add_dependencies(test_core_app_diagnostics core_app_crash_record)
+        add_dependencies(core_app_crash_record core_app)
+
+        add_test(NAME test_core_app_crash_context
+            COMMAND ${CMAKE_COMMAND}
+                -DCORE_APP=$<TARGET_FILE:core_app>
+                -DCRASH_RECORD=$<TARGET_FILE:core_app_crash_record>
+                -DASSET_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_crash_context
+                -DFAULT_LIBRARY=${_core_app_lifecycle_fault_library}
+                -DFAULT_SUPPORTED=${_core_app_lifecycle_fault_supported}
+                -DSANITIZER_PRELOAD=${_core_app_lifecycle_sanitizer_preload}
+                -DCROSSCOMPILING=${CMAKE_CROSSCOMPILING}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_crash_context.cmake)
+        set_tests_properties(test_core_app_crash_context PROPERTIES
+            LABELS "headless;core_app;crash;lifecycle"
+            SKIP_RETURN_CODE 77
+            SKIP_REGULAR_EXPRESSION "UNVERIFIED: core_app crash-context full-process case skipped:"
+            TIMEOUT 120)
     endif()
 
     # test_pbr_math: CPU reference Cook-Torrance PBR (header-only, R579)

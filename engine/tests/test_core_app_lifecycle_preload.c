@@ -23,6 +23,8 @@ static int fail_io_stop_flush;
 static int fail_quiesced_flush;
 static int fail_next_flush;
 static int slow_completed;
+static unsigned long frame_messages;
+static unsigned long abort_on_frame;
 
 static void load_symbol(void *destination, size_t size, const char *name) {
     void *symbol = dlsym(RTLD_NEXT, name);
@@ -40,15 +42,24 @@ __attribute__((constructor)) static void app_faults_init(void) {
     fail_unload_flush = getenv("CORE_APP_TEST_FAIL_UNLOAD_FLUSH") != NULL;
     fail_io_stop_flush = getenv("CORE_APP_TEST_FAIL_IO_STOP_FLUSH") != NULL;
     fail_quiesced_flush = getenv("CORE_APP_TEST_FAIL_QUIESCED_FLUSH") != NULL;
+    const char *abort_frame = getenv("CORE_APP_TEST_ABORT_ON_FRAME");
+    abort_on_frame = abort_frame ? strtoul(abort_frame, NULL, 10) : 0u;
 }
 
 int vfprintf(FILE *stream, const char *format, va_list args) {
+    int abort_frame = 0;
     if ((fail_unload_flush && strstr(format, "event=level_unloaded")) ||
         (fail_io_stop_flush && strstr(format, "event=io_stopped")) ||
         (fail_quiesced_flush && strstr(format, "event=io_quiesced"))) {
         fail_next_flush = 1;
     }
-    return real_vfprintf(stream, format, args);
+    if (abort_on_frame > 0u && strstr(format, "event=frame frame=")) {
+        ++frame_messages;
+        abort_frame = frame_messages == abort_on_frame;
+    }
+    int result = real_vfprintf(stream, format, args);
+    if (abort_frame) abort();
+    return result;
 }
 
 int fflush(FILE *stream) {

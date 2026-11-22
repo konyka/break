@@ -1,5 +1,9 @@
 #include "core_app.h"
 
+#if CORE_APP_CRASH_CONTEXT
+#include "core_app_diagnostics.h"
+#endif
+
 #include <core/trace_core_app.h>
 #include <platform/time.h>
 
@@ -29,6 +33,7 @@ static void print_help(void) {
          "  --assets DIR\n"
          "  --scenario PATH\n"
          "  --checkpoint DIR\n"
+         "  --crash-context DIR\n"
          "  --trace PATH\n"
          "  --trace-json PATH\n"
          "  --trace-timestamps\n"
@@ -79,6 +84,18 @@ static bool parse_render(const char *value, CoreAppRenderMode *out) {
     else return false;
     return true;
 }
+
+#if CORE_APP_CRASH_CONTEXT
+static const char *requested_render_backend(CoreAppRenderMode mode) {
+    switch (mode) {
+        case CORE_APP_RENDER_RECORD: return "record";
+        case CORE_APP_RENDER_VULKAN: return "vulkan";
+        case CORE_APP_RENDER_OPENGL: return "opengl";
+        case CORE_APP_RENDER_AUTO:
+        default: return "auto";
+    }
+}
+#endif
 
 static bool parse_audio(const char *value, CoreAppAudioMode *out) {
     if (strcmp(value, "record") == 0) *out = CORE_APP_AUDIO_RECORD;
@@ -165,6 +182,11 @@ static int core_app_main(int argc, char **argv) {
     const char *trace_json_path = NULL;
     bool trace_timestamps = false;
     BreakRuntimeError result;
+#if CORE_APP_CRASH_CONTEXT
+    const char *crash_context = NULL;
+    CoreAppDiagnosticsHooks diagnostics_hooks = {0};
+    bool diagnostics_started = false;
+#endif
 #if CORE_APP_NET_TRANSPORT
     CoreAppNetTransportConfig net_config = {0};
     CoreAppNetTransport *transport = NULL;
@@ -207,6 +229,13 @@ static int core_app_main(int argc, char **argv) {
         } else if ((matched = take_value(argc, argv, &i, "--checkpoint", &value)) != 0) {
             if (matched < 0) return cli_error("--checkpoint requires a nonempty directory");
             config.checkpoint_dir = value;
+        } else if ((matched = take_value(argc, argv, &i, "--crash-context", &value)) != 0) {
+            if (matched < 0) return cli_error("--crash-context requires a nonempty directory");
+#if CORE_APP_CRASH_CONTEXT
+            crash_context = value;
+#else
+            return cli_error("--crash-context is unavailable in this build");
+#endif
         } else if ((matched = take_value(argc, argv, &i, "--trace", &value)) != 0) {
             if (matched < 0) return cli_error("--trace requires a nonempty path");
             config.trace_path = value;
@@ -309,7 +338,28 @@ static int core_app_main(int argc, char **argv) {
         config.network_hooks = &net_hooks;
     }
 #endif
+#if CORE_APP_CRASH_CONTEXT
+    if (crash_context) {
+        CoreAppDiagnosticsSnapshot initial_snapshot;
+        memset(&initial_snapshot, 0, sizeof(initial_snapshot));
+        initial_snapshot.rhi_backend = requested_render_backend(config.render_mode);
+        initial_snapshot.gpu_name = "pending";
+        diagnostics_hooks.publish = core_app_diagnostics_publish;
+        config.diagnostics = &diagnostics_hooks;
+        if (!core_app_diagnostics_start(crash_context)) {
+#if CORE_APP_NET_TRANSPORT
+            core_app_net_transport_free(transport);
+#endif
+            return cli_error("could not start --crash-context");
+        }
+        diagnostics_started = true;
+        core_app_diagnostics_publish(diagnostics_hooks.user, &initial_snapshot);
+    }
+#endif
     result = core_app_run(&config, &exit_code);
+#if CORE_APP_CRASH_CONTEXT
+    if (diagnostics_started) core_app_diagnostics_stop();
+#endif
 #if CORE_APP_NET_TRANSPORT
     core_app_net_transport_free(transport);
 #endif
