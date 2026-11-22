@@ -24,6 +24,7 @@
 #include <physics/vehicle.h>
 #include <platform/platform_fs.h>
 #include <runtime/runtime_coordinator.h>
+#include <runtime/runtime_bus.h>
 #include <runtime/runtime_io.h>
 #include <scene/scene_serial.h>
 #include <script/break_lua.h>
@@ -229,9 +230,11 @@ typedef struct CoreAppVoiceLane {
      * switch counters already reported. */
     bool switch_requested;
     char switch_name[128];
-    u64 seen_switches;
-    u64 seen_switch_rejected;
-    u64 seen_switch_failures;
+    /* Device events from the voice's pumping thread (the lane's own bus and
+     * queue); app_voice_report_switch drains them on the CoreAppThread. */
+    BreakRuntimeBus *bus;
+    BreakRuntimeQueue *events;
+    u32 subscriber;
 } CoreAppVoiceLane;
 
 struct CoreApp {
@@ -2080,6 +2083,33 @@ static BreakRuntimeError app_voice_unavailable(CoreApp *app, const char *reason)
     return required ? BREAK_RUNTIME_UNAVAILABLE : BREAK_RUNTIME_OK;
 }
 
+
+/* The lane's device event queue: one subscriber on a bus of its own. The
+ * queue has room for every event a tick can produce several times over;
+ * a fuller queue only drops events, which the trace at stop still totals. */
+static BreakRuntimeError app_voice_open_events(CoreAppVoiceLane *lane) {
+    const BreakRuntimeQueueConfig queue_config = {64u, 16u};
+    const u16 kind = CORE_APP_VOICE_EVENT_KIND;
+    BreakRuntimeError result = break_runtime_bus_create(&lane->bus);
+    if (result == BREAK_RUNTIME_OK) result = break_runtime_queue_create(&queue_config, &lane->events);
+    if (result == BREAK_RUNTIME_OK) result = core_app_voice_attach_bus(lane->voice, lane->bus);
+    if (result == BREAK_RUNTIME_OK) {
+        result = break_runtime_bus_subscribe(lane->bus, "core_app.voice", lane->events, &kind, 1u,
+                                             &lane->subscriber);
+    }
+    return result;
+}
+
+/* After the voice is destroyed (it publishes until then). */
+static void app_voice_close_events(CoreAppVoiceLane *lane) {
+    if (lane->bus && lane->subscriber) (void)break_runtime_bus_unsubscribe(lane->bus, lane->subscriber);
+    break_runtime_queue_destroy(lane->events);
+    break_runtime_bus_destroy(lane->bus);
+    lane->events = NULL;
+    lane->bus = NULL;
+    lane->subscriber = 0u;
+}
+
 static BreakRuntimeError app_voice_start(CoreApp *app) {
     CoreAppVoiceLane *lane = &app->voice;
     const CoreAppVoiceMode mode = app->config.voice_mode;
@@ -2104,6 +2134,7 @@ static BreakRuntimeError app_voice_start(CoreApp *app) {
         config.capture_device_name = app->config.voice_capture_device_name;
     }
     BreakRuntimeError result = core_app_voice_create(&config, &lane->voice);
+    if (result == BREAK_RUNTIME_OK) result = app_voice_open_events(lane);
     if (result == BREAK_RUNTIME_REJECTED && mode == CORE_APP_VOICE_DEVICE) {
         if (lane->fake_playback) audio_system_destroy(lane->fake_playback);
         lane->fake_playback = NULL;
@@ -2133,6 +2164,7 @@ static BreakRuntimeError app_voice_start(CoreApp *app) {
     if (result != BREAK_RUNTIME_OK) {
         core_app_voice_destroy(lane->voice);
         lane->voice = NULL;
+        app_voice_close_events(lane);
         if (lane->fake_playback) audio_system_destroy(lane->fake_playback);
         lane->fake_playback = NULL;
         if (mode == CORE_APP_VOICE_DEVICE && result == BREAK_RUNTIME_UNAVAILABLE) {
@@ -2175,38 +2207,43 @@ static BreakRuntimeError app_voice_consume(CoreApp *app) {
 }
 
 /* Traces the result of the accepted capture switch once the pumping thread
- * handled it (one of the three counters moved). */
+ * handled it: the voice publishes the outcome as a device event. Other device
+ * events are drained and ignored here; their totals are traced at stop. */
 static BreakRuntimeError app_voice_report_switch(CoreApp *app) {
     CoreAppVoiceLane *lane = &app->voice;
-    if (!lane->switch_requested) return BREAK_RUNTIME_OK;
-    CoreAppVoiceStats stats = {0};
-    BreakRuntimeError result = core_app_voice_stats(lane->voice, &stats);
-    if (result != BREAK_RUNTIME_OK) return result;
-    if (stats.capture_switches != lane->seen_switches) {
-        char device[128];
-        snprintf(device, sizeof(device), "%s",
-                 lane->switch_name[0] != '\0' ? lane->switch_name : "default");
-        for (char *c = device; *c != '\0'; ++c) {
-            if (*c == ' ' || *c == '\t' || *c == '\n' || *c == '\r') *c = '_';
+    for (;;) {
+        BreakRuntimeOwnedMessage *message = NULL;
+        BreakRuntimeMessageView view;
+        CoreAppVoiceEvent event;
+        BreakRuntimeError result = break_runtime_queue_poll(lane->events, &message);
+        if (result != BREAK_RUNTIME_OK || message == NULL) return BREAK_RUNTIME_OK;
+        const bool decoded = break_runtime_message_view(message, &view) == BREAK_RUNTIME_OK &&
+                             core_app_voice_event_decode(view.data, view.size, &event);
+        break_runtime_message_release(message);
+        if (!decoded || !lane->switch_requested) continue;
+        if (event.type == CORE_APP_VOICE_EVENT_CAPTURE_SWITCHED) {
+            char device[128];
+            snprintf(device, sizeof(device), "%s",
+                     lane->switch_name[0] != '\0' ? lane->switch_name : "default");
+            for (char *c = device; *c != '\0'; ++c) {
+                if (*c == ' ' || *c == '\t' || *c == '\n' || *c == '\r') *c = '_';
+            }
+            result = app_trace(app,
+                "COREAPPTRACE version=1 event=voice_capture_device result=switched device=%s\n",
+                device);
+        } else if (event.type == CORE_APP_VOICE_EVENT_CAPTURE_SWITCH_REJECTED) {
+            result = app_trace(app,
+                "COREAPPTRACE version=1 event=voice_capture_device result=rejected"
+                " reason=device_name\n");
+        } else if (event.type == CORE_APP_VOICE_EVENT_CAPTURE_SWITCH_FAILED) {
+            result = app_trace(app,
+                "COREAPPTRACE version=1 event=voice_capture_device result=failed\n");
+        } else {
+            continue;
         }
-        result = app_trace(app,
-            "COREAPPTRACE version=1 event=voice_capture_device result=switched device=%s\n",
-            device);
-    } else if (stats.capture_switch_rejected != lane->seen_switch_rejected) {
-        result = app_trace(app,
-            "COREAPPTRACE version=1 event=voice_capture_device result=rejected"
-            " reason=device_name\n");
-    } else if (stats.capture_switch_failures != lane->seen_switch_failures) {
-        result = app_trace(app,
-            "COREAPPTRACE version=1 event=voice_capture_device result=failed\n");
-    } else {
-        return BREAK_RUNTIME_OK;
+        lane->switch_requested = false;
+        if (result != BREAK_RUNTIME_OK) return result;
     }
-    lane->seen_switches = stats.capture_switches;
-    lane->seen_switch_rejected = stats.capture_switch_rejected;
-    lane->seen_switch_failures = stats.capture_switch_failures;
-    lane->switch_requested = false;
-    return result;
 }
 
 /* A scenario voice-capture-device event. Refusals are traced and the run
@@ -2324,6 +2361,7 @@ static BreakRuntimeError app_voice_join_cb(void *user) {
     }
     core_app_voice_destroy(lane->voice);
     lane->voice = NULL;
+    app_voice_close_events(lane);
     if (lane->fake_playback) audio_system_destroy(lane->fake_playback);
     lane->fake_playback = NULL;
     lane->live = false;

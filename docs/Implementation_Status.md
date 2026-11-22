@@ -1,5 +1,8 @@
 ## 语音设备事件接入消息总线（2026-11-22）
 
+- **主循环订阅**：core_app 语音通道创建自己的总线和队列，切换结果追踪改由事件驱动；`test_core_app_voice_lane`/`_device` 守护，相关变异被检出。
+- **远端收据**：`88a84059`（可见性与路由）主 CI run 44972803325 成功，arm64 job 137056043996 通过 275 项。
+
 - **实现**：`core_app_voice_attach_bus` 让语音泵线程把设备事件（采集恢复/重开失败/放弃、播放重开、切换成功/拒绝/失败）作为 control kind 消息发布到 `BreakRuntimeBus`，从不阻塞；新增 `core_app_voice_event_decode`、`core_app_voice_event_stats`，以及总线的 `break_runtime_bus_kind_matches`。设计见 `docs/design/runtime_message_model.md`「语音设备事件接入总线」。
 - **TDD**：先写测试（链接失败）再实现；`test_core_app_voice` 新增 3 例，`test_runtime_bus` 新增 1 例。15 个变异全部被检出。`test_runtime_bus` 在 TSan 下无告警。
 - **远端收据**：`e4fb2fc3`（密钥轮换）主 CI run 44971267546 成功；`228a3010`（崩溃恢复）主 CI run 44972252884 成功。

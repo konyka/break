@@ -371,4 +371,6 @@ C++11 framework 在 `Init/Tick/DeInit` 建立 runtime；每 tick 由 LogicThread
 
 测试：`test_runtime_bus` 新增 `a_registration_can_be_compared`（共 11 例，逐项改变版本、预算、名字、control、配额）；`test_core_app_voice` 新增 3 例（共 24 例）：手动泵模式下各类事件按发生顺序送达且计数正确、放弃事件不重复；worker 线程模式下订阅者从不排空时 worker 照常恢复 5 次采集，前 2 次送达、后 3 次计为未送达；payload 严格解码与已登记 kind 参数不一致时拒绝 attach。变异检查：非 control、重复放弃事件、计数错误、保留字段与类型范围不检查、运行中允许 attach、接受参数不同的 kind、count 不编码、事件类型错误，以及 `kind_matches` 逐项比较，均被检出。`test_runtime_bus` 在 ThreadSanitizer 下无告警。
 
-仍未做：把 LogicThread、Task workers、Network/IO、PAL/MainLoop 与 Profiler 的现有队列接到总线上（这些队列各有自己的所有权与生命周期约束，需要逐个迁移）；core_app 主循环订阅语音事件，替代现在的计数器比较。
+core_app 主循环随后改为订阅这些事件（2026-11-22）：语音通道创建自己的总线和一个 64 项（16 项预留给 control）的队列，`app_voice_report_switch` 每个 tick 在 CoreAppThread 上排空队列，用切换成功/拒绝/失败事件写出 `voice_capture_device` 追踪，替代原来对三个计数器的逐帧比较；其他设备事件被排空后忽略，总数仍由停止时的追踪给出。语音销毁后才解除订阅并销毁队列与总线。已有的 `test_core_app_voice_lane` 与 `test_core_app_voice_device` 端到端检查追踪内容，覆盖这次改动：把切换成功或拒绝事件的类型改错时，4 个语音用例都失败；去掉“只在有请求时追踪”的判断是等价变异，因为语音只会在 core_app 请求时切换设备。
+
+仍未做：把 LogicThread、Task workers、Network/IO、PAL/MainLoop 与 Profiler 的现有队列接到总线上（这些队列各有自己的所有权与生命周期约束，需要逐个迁移）。
