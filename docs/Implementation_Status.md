@@ -1,3 +1,10 @@
+## Windows ARM64 本机验证与测试契约修复（2026-11-22）
+
+- **范围与记录**：源码为 `master` 的 `728f700f`，仅验证该分支，其他远程分支未构建或测试。W9 组合、完整复现命令、每用户 ARM64 OpenSSL/Python 环境和执行记录见 `docs/testing/cross_platform_matrix.md` §4.7、§6；构建入口同步见 `docs/Build_Guide.md`。本机为 Windows 11 ARM64（Snapdragon X Elite X1E78100），最终工具链为 VS 18.12.1 / MSVC 14.52.37025 HostARM64、CMake 4.5.0-rc2、OpenSSL 4.1.0 ARM64。
+- **构建与聚焦验证**：Ninja Debug/OpenGL headless、crypto=ON，`cmake --fresh` 全量与 11 个 fuzz 目标构建成功。`test_platform_win32_runtime` 26/26、`test_rhi_backend_selection`、`test_core_app_ctest_config_contract` 通过；`test_break_update_target_contract` 连续两次通过。MSVC 的三个 core_app target/NM 用例按既有能力合同跳过，不再于跳过前误配。VS 从 14.51 自动更新到 14.52 后，旧缓存的版本化编译器路径失效，fresh 配置恢复；构建日志的 6 条既有 D9025 选项覆盖警告没有写成零警告。
+- **最终全量**：fresh 首次 configure 即选择完整的 428 项，`-j4` headless 为 **422 PASS + 6 个既有 SKIP + 0 FAIL**，耗时 443.81 秒。跳过项为 D3D12 依赖闸门、三个 core_app target/NM 用例、悬空检出属性和离线网络用例；`test_async_loader` 在隔离运行下 0.90 秒通过，`test_release_config_contract` 在 fresh 首轮即注册并通过。
+- **缺陷修复**：RHI metal/d3d12 fail-closed 配置先删除旧嵌套构建目录，避免中断缓存掩盖预期诊断。core_app 多层契约现在把父 `CMAKE_GENERATOR` 传到 target/nested/nm/compat 每一跳，实际 configure 使用 `-G` 并断言缓存，target 目录每次重建。更新契约的直接 `cl` 输出由 `update_link_check.exe` 改为 `archive_link_check.exe`：原名无 manifest 且含 `update`，触发 Windows 安装器提权检测，CMake 报 `permission denied`；同一二进制仅改名即可执行，红绿对照确认后只改测试名称，不改更新产品逻辑。对应 runner 设计文档同步更新。另将 `test_async_loader` 设为 `RUN_SERIAL`：其 burst 用例自身启动 8 个 I/O worker，两轮并行全量均耗尽既有 5 秒等待预算，最新单跑 1.00 秒通过；现在隔离其他 CTest 作业，17 项功能断言与等待预算不变。`CMAKE_NM` 探测也前移到首个 NM 门控注册之前，修复 fresh 首次 configure 漏掉 `test_release_config_contract`、第二次 configure 才由缓存补出的覆盖缺口。
+
 ## cell link 拒绝事件（2026-11-22）
 
 - **实现**：`break_cell_link_set_reject_hook` 在每个被拒绝的数据报（格式错误、未知密钥、HMAC 错误、未知对端、重放）处理后同步上报原因和声称的发送方，便于把安全事件送往总线或日志。设计见 `docs/design/cell_handoff.md`「拒绝事件」。

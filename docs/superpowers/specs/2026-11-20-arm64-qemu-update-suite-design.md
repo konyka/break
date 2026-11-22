@@ -45,9 +45,10 @@ For `test_break_update_target_contract`, add:
 "-DUPDATE_CONTRACT_RUNNER=${CMAKE_CROSSCOMPILING_EMULATOR}"
 ```
 
-Prefix only its generated `update_link_check` execution. The existing compiler,
-libcrypto selection, exact export list, manifest/store/client checks, and return
-codes remain unchanged.
+Prefix only its generated `archive_link_check` execution. The name avoids the
+Windows installer-detection heuristic applied to unmanifested executables whose
+names contain `update`; the existing compiler, libcrypto selection, exact export
+list, manifest/store/client checks, and return codes remain unchanged.
 
 For `test_break_http_target_contract`, add `-DNM=${CMAKE_NM}`. It executes no
 target program. Existing TLS-policy and export assertions remain unchanged.

@@ -525,6 +525,21 @@ cmake -S engine -B build-msvc -DCMAKE_TOOLCHAIN_FILE=engine/toolchain-msvc.cmake
 cmake --build build-msvc --parallel
 ```
 
+#### Windows ARM64 原生（Snapdragon X Elite 本机）
+
+命令与上面的 MSVC 配置相同，只差环境初始化：在 ARM64 主机上调
+`vcvarsall.bat arm64`（生成 HostARM64→ARM64 的原生工具链，不经 x64 模拟），Ninja 可用
+VS 自带的 `Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe`。CMake 的
+`FindOpenSSL` 从 3.27 起在 MSVC 分支识别 `lib/VC/arm64/<CRT>` 布局（对应
+`MD`/`MDd` 目录下的 `libcrypto.lib`），因此需要 ARM64 版 OpenSSL（ShiningLight 的
+`Win64ARMOpenSSL` 安装器，winget id `ShiningLight.OpenSSL.Dev`）；x64 的 OpenSSL 安装包
+对 ARM64 构建不可见，configure 会按预期 fail-closed 报 `Could NOT find OpenSSL`。机器级
+安装需要 UAC；非提权时可从 MSI 管理安装取出的内嵌 Inno 安装程序用 `/CURRENTUSER`
+安装到用户可写前缀。OpenSSL ARM64 的 `bin`（`libcrypto-4-arm64.dll`）和 ARM64 Python
+要在运行 ctest 前加入 `PATH`，构建与测试保持同一个 `vcvarsall.bat arm64` 会话，供嵌套
+契约继承 MSVC 环境。完整命令、每用户安装步骤与实机结果见
+`docs/testing/cross_platform_matrix.md` §4.7（W9）。
+
 #### Windows Clang 构建（从 Linux 交叉编译）
 
 ```bash

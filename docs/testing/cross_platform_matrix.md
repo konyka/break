@@ -4,7 +4,7 @@
 
 ## 1. 访问约定（脱敏）
 
-- 实机有两台：一台 macOS（Apple Silicon，arm64），一台 Windows 11（x86-64，带独立 GPU）。账号、口令和地址只保存在执行者本机的环境变量里：macOS 用 `MACOS_USERNAME`、`MACOS_KEY`，Windows 用 `WINDOWS_USERNAME`、`WINDOWS_KEY`、`WINDOWS_IP`。本仓库、日志和提交信息中不得出现它们的值。
+- 通过 SSH 管理的实机有两台：一台 macOS（Apple Silicon，arm64），一台 Windows 11（x86-64，带独立 GPU）；W9 另在 Windows 11 ARM64 本机直接执行，不使用以下 SSH 约定。账号、口令和地址只保存在执行者本机的环境变量里：macOS 用 `MACOS_USERNAME`、`MACOS_KEY`，Windows 用 `WINDOWS_USERNAME`、`WINDOWS_KEY`、`WINDOWS_IP`。本仓库、日志和提交信息中不得出现它们的值。
 - 连接通过 SSH 口令认证（`sshpass -e`，口令经 `SSHPASS` 环境变量传入，不出现在命令行参数中）。所有远程输出在显示前把用户名和地址替换为 `<user>`、`<windows-ip>`。
 - Windows 主机访问 GitHub 超时，所以源码用 `git archive HEAD` 打包后经 `scp` 复制过去（解压到 `E:\break`）。macOS 主机可以访问 GitHub，直接 `git fetch` 后对齐到 `origin/master`。
 - 远程命令：macOS 用 zsh；Windows 用 PowerShell 的 `-EncodedCommand`（UTF-16LE + base64），避免引号转义问题。长时间构建在远程后台运行，日志写到 macOS 的 `/tmp/break-mac-*.log`、Windows 的 `E:\break-logs\*.log`。
@@ -37,6 +37,7 @@
 | W6 | Windows x86-64 | Clang | Release | D3D12（WARP 软件实现） | Debug layer | windows-d3d12.yml | Windows 主机（§4.6） |
 | W7 | Windows x86-64 | Clang | Release | D3D12 真实 GPU | — | lane-gpu-runtime-windows-d3d12（需 `ENABLE_GPU_LANES`，默认不运行） | Windows 主机真实 GPU（§4.6），CI 不覆盖，只能实机 |
 | W8 | Linux + Proton | — | — | D3D12 → vkd3d | — | lane-proton、proton-d3d12.yml | — |
+| W9 | Windows arm64 | MSVC（cl，HostARM64 原生） | Debug | headless（无 Vulkan） | `/W4 /WX`，fuzz smoke | 无（CI 尚无 arm64 Windows runner） | Windows ARM64 本机（§4.7） |
 | X1 | 任意 | — | — | — | 无源码依赖的干净检出 | clean-room | — |
 
 ## 3. 场景清单
@@ -99,6 +100,42 @@ macOS 主机：`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`，`cma
 - W7：同 W6，但使用真实 GPU（不强制 WARP），运行 `-L "graphics|gpu"` 的 D3D12 测试和 `test_rhi_golden_parity`。CI 的这个作业需要自托管 GPU runner，默认不运行，所以实机是唯一的验证途径。
 - 注意：这些测试需要交互式桌面会话。经 SSH 启动的进程在服务会话（session 0）中，可能无法创建窗口或访问 GPU。若出现这种情况，记录为“需在 Windows 主机的桌面会话中执行”，并在该主机上按本节命令手动运行。
 
+### 4.7 Windows：ARM64 原生（W9）
+
+主机为 Windows 11 ARM64（Snapdragon X Elite 级），Visual Studio 18 Community 带 HostARM64
+原生 MSVC 工具链，无需 x64 模拟交叉。配置命令与 W1（§4.4）相同，只是先调 `vcvarsall.bat
+arm64`（不是 `vcvars64.bat`），Ninja 用 VS 自带的
+`Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe`：
+
+以下命令从仓库根目录执行。`<python-dir>` 是 ARM64 CPython 的安装目录；测试工程的
+configure 需要 `python3`，本机用 uv 安装 CPython 3.13 ARM64。`OPENSSL_PREFIX` 可换成其他
+用户可写的 OpenSSL 前缀：
+
+```cmd
+call "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvarsall.bat" arm64
+set "OPENSSL_PREFIX=%CD%\build-openssl\slpro"
+set "PATH=%OPENSSL_PREFIX%\bin;<python-dir>;C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja;%PATH%"
+set ENGINE_LOCKED_DEPS_ALLOW_ABSENT=1
+cmake -S engine -B build-arm64 -G Ninja -DCMAKE_C_COMPILER=cl -DCMAKE_BUILD_TYPE=Debug -DENGINE_VULKAN=OFF -DENGINE_ENABLE_IPO=OFF -DENGINE_BUILD_FUZZ_SMOKE=ON -DBREAK_ENABLE_CRYPTO=ON "-DOPENSSL_ROOT_DIR=%OPENSSL_PREFIX%"
+cmake --build build-arm64 --parallel
+ctest --test-dir build-arm64 -LE "graphics|gpu|audio_device" --output-on-failure
+```
+
+构建与 CTest 必须在同一个已初始化 MSVC 的 cmd 会话中执行，因为嵌套契约还要使用其
+`INCLUDE`、`LIB`、`PATH` 和编译器；只让最外层 configure 找到 `cl.exe` 不够。Visual Studio
+自动更新期间可能暂时移除工具链，更新后旧缓存里的版本化编译器绝对路径也会失效；若报
+`cl.exe is not a full path to an existing compiler tool`，确认更新结束后用 `cmake --fresh`
+重新配置（本机从 14.51 升到 14.52 后以此恢复），不要继续复用旧编译器缓存。
+
+OpenSSL 必须是 ARM64 构建（`find_package(OpenSSL)` 在 MSVC 分支按 `lib/VC/arm64/<CRT>`
+布局探测，CMake 3.27+ 起支持该后缀；x64 安装包对 ARM64 构建不可见）。可用
+ShiningLight 的 `Win64ARMOpenSSL` 安装器（winget id `ShiningLight.OpenSSL.Dev`）。机器级
+安装需要 UAC；非提权会话可对 MSI 执行 `msiexec /a`（`TARGETDIR` 用带末尾 `\` 的绝对
+路径）取出内嵌 Inno 安装程序，再以 `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+/CURRENTUSER /DIR="<prefix>"` 做每用户安装。此方式直接运行安装程序而不提权，不把
+`/a` 误解为会生成可用文件树。安装后的 `<prefix>\bin`（含 `libcrypto-4-arm64.dll`）须在
+运行测试前加入 `PATH`。其余筛选与核对项同 §4.4。
+
 ## 5. 无法在实机覆盖的组合
 
 | 组合 | 原因 | 现有证据 |
@@ -135,3 +172,42 @@ macOS 主机：`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`，`cma
 ### CI 复核（2026-11-22）
 
 `4d849f88` 的主 CI run 44979952499 全部作业成功，包括此前因 ghcr.io 登录失败的 Linux + Clang/LLD（Release）作业，以及 Windows + MSVC。arm64 QEMU 作业 275/275 通过，其中 `blending_matches_the_cross_architecture_golden_hashes` 与 `two_bone_ik_matches_the_cross_platform_golden_hash` 均为 OK。因此动画混合与两骨骼 IK 的金标准哈希在 x86-64（GCC、Clang、MSVC、MinGW）、arm64 Linux（QEMU）与 arm64 macOS（实机）上一致。
+
+
+### W9：Windows ARM64 本机，源码 `728f700f`（2026-11-22）
+
+- **验证范围**：仅 `origin/master`；其他远程分支未构建或测试。主机为 Windows 11
+  26100 ARM64、Snapdragon X Elite X1E78100；工具链为 VS 18.12.1 / MSVC 14.52.37025
+  （HostARM64 原生 `cl.exe`）、CMake 4.5.0-rc2、OpenSSL 4.1.0 ARM64、CPython 3.13
+  ARM64。Ninja Debug、OpenGL/headless、`ENGINE_VULKAN=OFF`、`BREAK_ENABLE_CRYPTO=ON`。
+- **构建**：`cmake --fresh` 全量构建与 11 个 fuzz 目标成功。日志记录 6 条既有
+  D9025（`/w` 覆盖 `/W4`、`/EHs-`/`/EHc-` 覆盖 `/EHs`/`/EHc`）选项覆盖警告，不写成
+  “零警告”；没有编译或链接错误。
+- **环境处理**：最初缺少 ARM64 Python/OpenSSL，按 §4.7 用 uv 和每用户 Inno 安装补齐。
+  无 `vcvarsall` 环境的 CTest 会让嵌套 configure 找不到 MSVC 环境，必须构建与测试
+  同会话。验证期间 VS 自动更新暂时移除 14.51 工具链，更新到 14.52 后旧缓存的编译器
+  绝对路径失效，`--fresh` 重新配置后恢复；这些是环境处理，不计为产品修复。
+- **缺陷修复**：① `test_rhi_backend_selection` 的 metal/d3d12 fail-closed 分支复用旧
+  构建目录，会让上次中断的缓存掩盖预期选择器诊断；现在与成功分支一样先清理。
+  ② `core_app` target/nested/nm/compat 多层契约只传编译器、未传外层 generator，导致
+  Ninja 外层误选默认 Visual Studio；现在全链路传 `NESTED_CMAKE_GENERATOR`，实际 configure
+  使用 `-G`，并断言缓存值、清理 target 嵌套目录。③ 直接 `cl` 链接的
+  `update_link_check.exe` 没有 manifest，名称中的 `update` 触发 Windows 安装器检测，
+  CMake 启动报 `permission denied`；同一二进制只改名为 `archive_link_check.exe` 即成功，
+  契约因此改名，更新产品逻辑不变。④ `test_async_loader` 的 burst 用例自身启动 8 个
+  I/O worker，在 `-j8`、`-j4` 全量中均因其他测试争用而超过既有 5 秒等待预算，单跑
+  1.00 秒即通过；现在该 CTest 设为 `RUN_SERIAL`，17 项功能断言和等待预算均不变。
+  ⑤ `CMAKE_NM` 原先到 crypto 契约前才探测，fresh 首次 configure 会漏掉前面的
+  `test_release_config_contract`，第二次 configure 才由缓存补出；现在在任何 NM 门控
+  注册之前探测，避免首轮少测一项。
+- **聚焦复测**：`test_platform_win32_runtime` 26/26；`test_rhi_backend_selection` 通过；
+  `test_core_app_ctest_config_contract` 1/1；`test_break_update_target_contract` 连续
+  2/2。MSVC 下 `test_core_app_target_contract`、`test_core_app_nm_missing`、
+  `test_core_app_nm_unsupported` 按既有 NM 能力合同跳过，不再于 skip 前误配失败。
+- **最终全量**：fresh 首次 configure 即选择完整的 428 项，`-j4` 运行 headless，结果
+  **422 PASS + 6 个既有 SKIP + 0 FAIL**，耗时 443.81 秒。跳过项为 D3D12 依赖闸门、
+  三个 core_app target/NM 用例、悬空检出属性和离线网络用例；`test_async_loader`
+  在 `RUN_SERIAL` 下 0.90 秒通过，fresh 首轮注册的 `test_release_config_contract`
+  0.56 秒通过。
+- **覆盖边界**：本机未安装 Vulkan SDK，本记录不宣称 Vulkan、GPU、native surface 或
+  present 证据；仅运行 fuzz smoke/语料用例，不运行覆盖率引导的长时 fuzz。
