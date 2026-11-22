@@ -1,3 +1,11 @@
+## 按负载把 cell 分配给服务器（2026-11-22）
+
+- **实现**：新增 `engine/src/network/break_cell_balance.{h,c}`，加入 `break_replication_core`。cell 按 Hilbert 曲线排序，再切成每台服务器一段，使最大负载最小：对上限二分查找，以贪心装箱判定可行性。`break_cell_balance_needed` 只在当前最大负载超过最优值的 `ratio` 倍时建议重新分配。设计见 `docs/design/cell_handoff.md`「按负载分配」。
+- **TDD**：新增 `test_break_cell_balance`（5 例），先确认链接失败 20 处，再实现。最优性由 300 组随机实例与穷举切分逐一比对。阈值相关的两个变异第一轮未被检出，于是补充了 1.0/1.25/1.5 三档阈值的定向断言。
+- **变异检查**：检出 8 处，见设计文档；另有 2 处是等价变异（二分下界、空闲判断）。
+- **验证**：原生全量 468/468 通过；arm64 lane 加入 `test_break_cell_balance`（选择数 273）。
+- **远端收据**：`ff5c820a`（跨 cell 交接）主 CI run 44953254180 成功，windows-d3d12、QUIC Weak Network 成功；arm64 job 136995643852 严格断言通过（271 项、93 组）。
+
 ## Cell 分区与滞后迁移（2026-11-22）
 
 - **实现**：新增 `engine/src/network/break_cell_partition.{h,c}`，加入 `break_replication_core`（该库在非 Windows 平台上同时链接 `m`）。均匀网格把 XZ 位置映射到行优先的 cell id，越界的位置钳制到边缘 cell。`break_cell_partition_migrate_target` 只在实体到当前 cell 的欧氏距离超过滞后阈值时，才返回新的 cell。设计见 `docs/design/cell_handoff.md`「分区」。

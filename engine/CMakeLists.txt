@@ -858,7 +858,8 @@ add_library(break_replication_core STATIC
     src/network/break_replication.c
     src/network/break_replication_fragment.c
     src/network/break_cell_handoff.c
-    src/network/break_cell_partition.c)
+    src/network/break_cell_partition.c
+    src/network/break_cell_balance.c)
 set_property(TARGET break_replication_core PROPERTY C_STANDARD 11)
 target_include_directories(break_replication_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -6832,6 +6833,14 @@ endif()
     target_link_libraries(test_break_cell_partition PRIVATE break_replication_core)
     add_test(NAME test_break_cell_partition COMMAND test_break_cell_partition)
     set_tests_properties(test_break_cell_partition PROPERTIES
+        TIMEOUT 60 LABELS "network;replication;world")
+
+    add_executable(test_break_cell_balance tests/test_break_cell_balance.c)
+    target_include_directories(test_break_cell_balance PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_break_cell_balance PRIVATE break_replication_core)
+    add_test(NAME test_break_cell_balance COMMAND test_break_cell_balance)
+    set_tests_properties(test_break_cell_balance PROPERTIES
         TIMEOUT 60 LABELS "network;replication;world")
 
     # Adapter-backed test executables link the formal top-level break_net
