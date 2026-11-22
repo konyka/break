@@ -389,6 +389,7 @@
 - **修复**：五处失败日志全部移到 `async_finalize` 之前；worker 不再于请求交出后访问槽位。公开 API、完成队列、回调线程和内存所有权不变。
 - **TDD**：`async_loader_completion_burst` 先扩为 8 轮回收压力测试，增强后未修代码第一轮即 RED（同一 TSan 栈）。修复后同一测试先在两个 CPU 上连续 10 次通过，再连续 100 次通过；最后一轮覆盖 800 个 burst、960000 个请求，`test_async_loader` 保持 17 例。CI 的 TSan 非图形套件与证据收据已恢复此测试，不再使用排除过滤器。
 - **全量验证**：Vulkan 全量 452 项零失败、OpenGL 全量 450 项零失败（各有 4 项平台条件跳过）；ASan+UBSan 非图形 437 项零失败（同样 4 项跳过），fuzz 14/14；资产相关 TSan 的 async loader、mipmap stream、runtime IO、hotreload 共 4/4。独立静态代码审查检查全部 9 个 `async_finalize` 调用点，确认无发布后槽位读取，未留下 Critical、Important 或 Minor 问题。
+- **远端验收**：提交 `461200d5dda66e36acfa068ea68addbbb5d1175b` 的 [CI run 45006483635](https://github.com/konyka/break/actions/runs/45006483635)、[windows-d3d12 run 45006483424](https://github.com/konyka/break/actions/runs/45006483424) 和 [proton-d3d12 run 45007616337](https://github.com/konyka/break/actions/runs/45007616337) 均成功。CI 共 27 个矩阵作业，无失败项；恢复后的 TSan 作业 `137159388456` 成功，确认 `test_async_loader` 已在该通道重新执行并通过。
 
 ## 编辑器订阅主循环通知（2026-11-22）
 

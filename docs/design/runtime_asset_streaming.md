@@ -393,3 +393,5 @@ arm64 lane 新增 `test_vfs`（36 例）、`test_async_loader`（17 例）和 `t
 回归测试把真实 `async_loader_completion_burst` 扩为 8 轮。未修代码在两个 CPU 上第一轮就报告主线程 `async_submit_request` 写路径与 worker 日志读路径的数据竞争；修复后连续 100 次完整 `test_async_loader` 通过，即 800 轮、960000 个请求。TSan CI 非图形套件和证据收据均恢复 `test_async_loader`，不再以旧告警为由排除。
 
 回归结果：Vulkan 452 项、OpenGL 450 项均零失败（各有 4 项平台条件跳过）；ASan+UBSan 非图形 437 项零失败，fuzz 14/14；资产相关 TSan 集成测试 4/4。独立静态审查覆盖全部 9 个 `async_finalize` 调用点，无剩余 Critical、Important 或 Minor 问题。
+
+远端提交 `461200d5dda66e36acfa068ea68addbbb5d1175b` 的 CI run 45006483635、windows-d3d12 run 45006483424 与 proton-d3d12 run 45007616337 均成功。CI 的 27 个矩阵作业无失败项；TSan 作业 137159388456 在移除 `test_async_loader` 排除后成功。
