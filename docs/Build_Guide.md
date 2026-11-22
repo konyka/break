@@ -1743,3 +1743,5 @@ int RunRuntimeBusApplication() {
 `test_framework_runtime_bus` 当前覆盖 9 个行为用例；现有证据是 focused CTest 3/3、根构建契约 1/1（四个子树）以及实现者记录的 focused ASan/UBSan/TSan 通过。完整 Vulkan/OpenGL、ASan 非图形套件、fuzz、Windows/macOS/其他生成器与远端 CI 尚待最终验收，上述构建与示例不代表这些矩阵已经通过。
 
 后续本地验收补充：标准 Wayland Vulkan 453/453、OpenGL 451/451、ASan+UBSan 非图形 438/438、fuzz 14/14、相关 TSan 6/6 均已通过。增强根契约在 Unix Makefiles 与 Ninja Multi-Config 各 1/1 通过，显式 ON 子树实际构建并运行新测试 1/1；总评审指出的 shutdown 超时交接问题已复审关闭。arm64、Windows、macOS 与远端流水线仍以实际平台结果为准。
+
+远端验收补充：首批提交 `77878229` 的主 CI、Windows D3D12、QUIC 和 Proton 工作流均成功，arm64 QEMU 276/276；macOS 实机 Metal 与 MoltenVK 均通过 headless、graphics/gpu 和根构建契约。详细计数、run 标识及 Proton 跳过语义见 `docs/Implementation_Status.md` 的「framework 总线远端与实机验收」。

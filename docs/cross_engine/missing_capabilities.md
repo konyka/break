@@ -494,3 +494,5 @@
 当前证据限于 `test_framework_runtime_bus` 的 9 个行为用例、focused CTest 3/3、根契约 1/1（四个子树）以及实现者记录的 focused ASan/UBSan/TSan 通过。完整 Vulkan/OpenGL、ASan 非图形套件、fuzz、Windows/macOS/其他生成器与远端 CI 尚待最终验收；不能据此把第 5 节全部线程/消息能力或全平台验收标记为完成。
 
 验证补充（2026-11-22）：本项在 rebase 后源码上完成标准 Wayland Vulkan 453/453、OpenGL 451/451、ASan+UBSan 非图形 438/438、fuzz 14/14 与相关 TSan 6/6，未改变默认依赖边界。arm64、Windows、macOS 和远端流水线结果不由 Linux 本地证据推断，须以实际平台收据关闭对应验证缺口。
+
+平台验证补充（2026-11-22）：本项的 arm64 QEMU 276/276、Windows MSVC/D3D12 远端作业、macOS Metal/MoltenVK 实机及两种根构建生成器均已取得实际通过证据；主 CI 为 24 成功、3 条件跳过、0 失败。Proton 仅按兼容通道记录，两个合同在无 GPU 时返回 77 跳过，不将其写成 GPU 通过。详见 `docs/Implementation_Status.md` 的 framework 总线远端与实机验收。

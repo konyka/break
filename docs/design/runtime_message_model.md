@@ -471,3 +471,5 @@ Network 是第四个接入总线的线程域，分两层：
 验收补充（2026-11-22）：rebase 到远端 `bdb9aaa4` 后，标准 Wayland Vulkan 全量 453/453、OpenGL 全量 451/451；ASan+UBSan 非图形 438/438，fuzz 14/14；相关 TSan 6/6。上述套件均零失败，普通套件和 ASan 非图形各有 4 项平台条件跳过。总评审要求的文档关停修正、远端 CI 与实机矩阵仍以各自的最终记录为准。
 
 总评审补充（2026-11-22）：Build Guide 的示例已统一检查应用、shutdown 和 detach 结果，`BREAK_RUNTIME_TIMEOUT` 以独立非零码明确交接 facade 的 `STOPPING` 与继续 shutdown 责任；scoped 复审无遗留发现。增强根契约在 Unix Makefiles 和 Ninja Multi-Config 各 1/1 通过，显式 ON 子树真实构建并运行本测试 1/1。
+
+远端验收补充（2026-11-22）：首批提交 `77878229` 的 CI run `45016241068` 为 24 成功、3 条件跳过、0 失败；arm64 QEMU 276/276，Windows D3D12 与 QUIC 成功，Proton 兼容工作流成功。macOS 实机 Metal 422/422、MoltenVK 425/425，二者 graphics/gpu 均 6/6，根契约 1/1。完整 run 标识、Proton 的 artifact 归属及跳过边界见 `docs/Implementation_Status.md` 与本文件的后续最终提交记录。

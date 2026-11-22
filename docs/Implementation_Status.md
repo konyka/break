@@ -13250,3 +13250,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 
 - **总评审关闭与根契约终验**：独立总评审的 shutdown 超时责任发现已修复并 scoped 复审通过，结论 Ready to merge。Build Guide 现在以独立非零码交接 `STOPPING` 和继续 shutdown 的责任，不再把超时写成完整清理；公共头补充借用、线程与回调寿命契约。增强后的根构建契约在 Unix Makefiles 与 Ninja Multi-Config 各 1/1 通过，四子树均通过，显式 ON 子树还实际构建并运行 `test_framework_runtime_bus` 1/1。生产实现未在该文档修复波中改变。
 - **macOS 复核（2026-11-22）**：default 子树不再显式传入 `BREAK_FRAMEWORK_ENABLE_RUNTIME=OFF`，而是使用真实默认值并断言缓存为 OFF；临时改为 ON 的变异被检出，恢复后根契约 1/1。根构建及 CTest 1/1、Metal 432/432、MoltenVK 435/435、graphics 6/6 通过。生产适配实现未改。
+
+### 2026-11-22 framework 总线远端与实机验收
+
+- **首批提交**：`7787822976de3b7966f7033f8f8410a2d7dda85b`。[CI run 45016241068](https://github.com/konyka/break/actions/runs/45016241068) 共 27 个矩阵作业，24 成功、3 按条件跳过、0 失败；[windows-d3d12 run 45016241029](https://github.com/konyka/break/actions/runs/45016241029) 与 [QUIC Weak Network run 45016241045](https://github.com/konyka/break/actions/runs/45016241045) 均成功。
+- **arm64 与 Windows**：arm64 作业 `137189044127` 实际编译、链接并在 QEMU 运行 `test_framework_runtime_bus`，选择套件 **276/276**，零失败。Windows MSVC 作业 `137189044139` 构建 `test_framework_runtime_bus.exe` 并通过其 headless 套件，验证不再请求 UNIX 数学库。
+- **Proton 归属与边界**：[proton-d3d12 run 45017384077](https://github.com/konyka/break/actions/runs/45017384077) 成功，日志明确下载上游 `45016241029` 的 artifact；页面所示触发时默认分支 SHA 不作为本批归属依据。无 GPU 环境下 device/pipeline 合同均按既有约定返回 77 跳过，本记录只表示兼容工作流成功，不冒充原生 D3D12 或通过 GPU 测试。
+- **macOS 实机**：同一首批提交上，Metal headless **422/422**、graphics/gpu **6/6**；MoltenVK headless **425/425**、graphics/gpu **6/6**。两者均实际构建并运行 `test_framework_runtime_bus`，根构建契约另为 **1/1**（四个子树）。headless 各有 4 项平台条件跳过；连接信息未写入文档或日志。
+- **同步后复核**：首批结果后远端新增至 `c8990472`，本批已对齐。增强默认 OFF 断言后的根契约在 Unix Makefiles 与 Ninja Multi-Config 各 1/1；网络边界与框架交集 `test_break_cell_link`、`test_network`、`test_framework_runtime_bus` 3/3。最终文档提交的新流水线另行核验。

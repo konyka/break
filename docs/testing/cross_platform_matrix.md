@@ -225,3 +225,10 @@ ShiningLight 的 `Win64ARMOpenSSL` 安装器（winget id `ShiningLight.OpenSSL.D
 - 源码：`aa89d48f`（已 rebase 到当时远端 `bdb9aaa4`）。标准 Fedora Wayland Vulkan **453/453**、OpenGL **451/451**，均零失败、4 项平台条件跳过。
 - ASan+UBSan 非图形 **438/438**，零失败、4 项条件跳过；fuzz **14/14**。TSan 的 framework bus、runtime bus/io、async loader、mipmap stream、hotreload **6/6**，无诊断。
 - 这些结果覆盖 L1/L2/L3 的本地实现与 L7/L8 的标准构建回归，不替代 L6、Windows 或 macOS 的实际收据。arm64 的 276 项选择与各远端作业结果待实际运行后追加。
+
+### 2026-11-22 framework 总线的远端执行记录
+
+- 首批源码 `77878229`：CI run `45016241068` **24 成功 + 3 条件跳过 + 0 失败**；windows-d3d12 run `45016241029`、QUIC run `45016241045` 成功。L6 的 arm64 作业 `137189044127` 为 **276/276**，新 C++ 测试在 QEMU 下实际通过；W1 的 MSVC 作业 `137189044139` 构建新测试可执行文件并通过 headless 套件。
+- M1 实机 Metal headless **422/422**、graphics/gpu **6/6**；M2 实机 MoltenVK headless **425/425**、graphics/gpu **6/6**，各 4 项条件跳过。新测试在两个构建中均实际运行，macOS 根构建契约 **1/1**（四个子树）。
+- Proton run `45017384077` 成功，日志中的上游 artifact run-id 为 `45016241029`。device/pipeline 均按无 GPU 约定返回 77 跳过，只记录兼容通道成功，不写成 GPU 或原生 D3D12 通过。
+- 后续同步 `c8990472`：根契约在 Makefiles 与 Ninja Multi-Config 各 1/1，网络与框架交集 3/3。最终收据文档提交的工作流结果继续追加。
