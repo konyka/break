@@ -42,7 +42,7 @@ Fixed storage, 16 rows x 96 bytes; refresh performs no RHI/GPU allocation. The r
 
 ## 5. Refresh and threading
 
-At most 4 refreshes per second from `break_editor_shell_tick` (250 000 us), first tick after create or device attach/detach always refreshes, injectable clock for tests — identical to the network panel. Shell thread only; the device is borrowed on the same thread that renders.
+At most 4 refreshes per second from `break_editor_shell_tick` (250 000 us), first tick after create, device attach/detach or window-row attach/detach always refreshes, injectable clock for tests — identical to the network panel. Window-notice text changes alone do not bypass the throttle. Main-loop window state is scoped to each bus attachment; a field not received since the current attachment is shown as `?`, never copied from an earlier subscription. Shell thread only; the device is borrowed on the same thread that renders.
 
 ## 6. Layout
 

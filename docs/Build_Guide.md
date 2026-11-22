@@ -1042,6 +1042,17 @@ rebase 后两套全量构建无 error，Metal CTest **431/431**、MoltenVK **434
 处理、`timespec_get` 失败时 sequence 回落、物理示例主程序未进入并行路径；这些不改变本次
 macOS 回归结论。
 
+2026-11-22 第八次复核：快进同步 `728f700f..461200d5`（7 个远程提交），随后 rebase 到纯文档
+提交 `35cbc5f7`，无冲突。编辑器窗口通知审查发现两处问题：重挂后只有部分字段变化时会混入
+上一次挂接的旧状态；每次文本变化都强制刷新，绕过渲染面板 250 ms 节流。现在每次挂接独立
+记录字段可见性，未收到的尺寸、缩放或 WSI 显示 `?`；只有新增或移除窗口行才立即刷新。
+扩展 `render_panel_shows_main_loop_window_notices`：未修代码先在 1 ms 节流断言失败；单独修复
+节流后在重挂 close-only 断言失败，两次均为 187 passed、1 failed、188 total，完整修复后 188/188。
+异步资源失败日志与槽位生命周期、Windows NM/生成器契约隔离变更未发现新的确定缺陷。修复后
+两套全量构建无 error，Metal CTest **431/431**、MoltenVK **434/434**、graphics **6/6**，
+跳过项同前；rebase 后又完成两套构建与源码/文档契约检查。测试期间出现 root:wheel 所有的
+`/private/tmp/powerlog` 目录，仓库无此路径引用，判断为系统条目，未删除；没有新增本仓库测试残留。
+
 RHI 第一阶段还提供统一的设备健康状态查询 `rhi_device_get_status()`。`UNKNOWN` 表示
 没有有效设备，`READY` 表示设备可用，`LOST` 表示后端报告设备丢失；该接口是后续 Vulkan、
 Metal、D3D12 后端共用的生命周期合同。
