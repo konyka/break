@@ -18,7 +18,13 @@ struct RuntimeBusApplicationStats {
 
 class RuntimeBusApplication : public BaseApplication {
  public:
+  RuntimeBusApplication() = default;
   ~RuntimeBusApplication() override;
+
+  RuntimeBusApplication(const RuntimeBusApplication&) = delete;
+  RuntimeBusApplication& operator=(const RuntimeBusApplication&) = delete;
+  RuntimeBusApplication(RuntimeBusApplication&&) = delete;
+  RuntimeBusApplication& operator=(RuntimeBusApplication&&) = delete;
 
   BreakRuntimeError AttachRuntimeBus(BreakRuntimeBus* bus);
   void DetachRuntimeBus();

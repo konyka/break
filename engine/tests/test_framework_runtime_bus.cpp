@@ -7,10 +7,15 @@
 #include <cstdio>
 #include <set>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 static_assert(__cplusplus >= 202002L, "the framework bridge test requires C++20");
+static_assert(!std::is_copy_constructible_v<bk::RuntimeBusApplication>);
+static_assert(!std::is_copy_assignable_v<bk::RuntimeBusApplication>);
+static_assert(!std::is_move_constructible_v<bk::RuntimeBusApplication>);
+static_assert(!std::is_move_assignable_v<bk::RuntimeBusApplication>);
 
 namespace {
 
@@ -506,10 +511,12 @@ bool concurrent_publish_and_tick_are_race_free() {
   BreakRuntimeBusKindStats kind_stats{};
   CHECK(break_runtime_bus_kind_stats(fixture.bus(), BREAK_RUNTIME_IO_NOTICE_KIND,
                                      &kind_stats) == BREAK_RUNTIME_OK);
+  CHECK(kind_stats.delivered > 0u);
   CHECK(kind_stats.published == kTotalNotices);
   CHECK(kind_stats.delivered + kind_stats.dropped == kTotalNotices);
   const auto app_stats = app.runtime_bus_stats();
   CHECK(app_stats.malformed_notices == 0u);
+  CHECK(!app.notices.empty());
   CHECK(app_stats.io_notices == kind_stats.delivered);
   CHECK(app.notices.size() == app_stats.io_notices);
   CHECK(app.callback_threads.size() == app.notices.size());

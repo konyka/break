@@ -6587,9 +6587,11 @@ endif()
     set_property(TARGET test_framework_runtime_bus PROPERTY CXX_STANDARD 20)
     set_property(TARGET test_framework_runtime_bus PROPERTY CXX_STANDARD_REQUIRED ON)
     target_link_libraries(test_framework_runtime_bus PRIVATE
-        common_runtime Threads::Threads m)
+        common_runtime Threads::Threads)
     if(ENGINE_PLATFORM STREQUAL "windows")
         target_link_libraries(test_framework_runtime_bus PRIVATE kernel32)
+    elseif(UNIX)
+        target_link_libraries(test_framework_runtime_bus PRIVATE m)
     endif()
     add_test(NAME test_framework_runtime_bus COMMAND test_framework_runtime_bus)
     set_tests_properties(test_framework_runtime_bus PROPERTIES
