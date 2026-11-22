@@ -329,6 +329,11 @@ static BreakRuntimeOwnedMessage *io_build_completion(
  * (the bus calls nothing back), so a notice may be published with or
  * without the facade mutex held. */
 static _Atomic(BreakRuntimeBus *) g_io_bus = NULL;
+/* Notices between loading g_io_bus and returning from the publish. Attach
+ * swaps the pointer, then waits for this to reach zero, so the caller may
+ * destroy the old bus once attach returns. Both sides use seq_cst: either
+ * the sender sees the new pointer or attach sees the sender. */
+static _Atomic u32 g_io_notice_senders = 0u;
 static _Atomic u64 g_io_notices_published = 0u;
 static _Atomic u64 g_io_notices_dropped = 0u;
 
@@ -363,11 +368,14 @@ static u64 io_get_u64(const u8 *p)
 static void io_send_notice(u64 request_id, BreakRuntimeIoCompletionState state,
                            BreakRuntimeError error, u64 byte_size)
 {
-    BreakRuntimeBus *bus = atomic_load(&g_io_bus);
+    BreakRuntimeBus *bus;
     u8 payload[BREAK_RUNTIME_IO_NOTICE_SIZE];
     BreakRuntimeMessageView view;
     u32 delivered = 0u;
+    atomic_fetch_add(&g_io_notice_senders, 1u);
+    bus = atomic_load(&g_io_bus);
     if (!bus) {
+        atomic_fetch_sub(&g_io_notice_senders, 1u);
         return;
     }
     io_put_u64(payload, request_id);
@@ -386,6 +394,7 @@ static void io_send_notice(u64 request_id, BreakRuntimeIoCompletionState state,
     } else {
         atomic_fetch_add(&g_io_notices_dropped, 1u);
     }
+    atomic_fetch_sub(&g_io_notice_senders, 1u);
 }
 
 BreakRuntimeError break_runtime_io_attach_bus(BreakRuntimeBus *bus)
@@ -401,6 +410,9 @@ BreakRuntimeError break_runtime_io_attach_bus(BreakRuntimeBus *bus)
         }
     }
     atomic_store(&g_io_bus, bus);
+    while (atomic_load(&g_io_notice_senders) != 0u) {
+        platform_thread_yield();
+    }
     return BREAK_RUNTIME_OK;
 }
 

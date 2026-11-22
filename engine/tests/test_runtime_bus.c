@@ -54,6 +54,63 @@ static BreakRuntimeBus *make_bus(void) {
     return bus;
 }
 
+/* A kind with a maximum-length name, the largest limits and counters in the
+ * tens of millions produces a record longer than 255 bytes; the export once
+ * formatted each record through a 256-byte buffer, cut it short and still
+ * returned OK with malformed JSON. */
+TEST(topology_export_keeps_long_records_whole) {
+    BreakRuntimeBus *bus = NULL;
+    ASSERT_EQ(break_runtime_bus_create(&bus), BREAK_RUNTIME_OK);
+    const char *name = "abcdefghijklmnopqrstuvwxyz01234";
+    ASSERT_EQ(strlen(name), (usize)BREAK_RUNTIME_BUS_MAX_NAME);
+    BreakRuntimeBusKind big = {65535u, 65535u, BREAK_RUNTIME_MAX_MESSAGE_PAYLOAD, name, false,
+                               4294967295u};
+    ASSERT_EQ(break_runtime_bus_register_kind(bus, &big), BREAK_RUNTIME_OK);
+    BreakRuntimeQueue *q = make_queue(1u);
+    ASSERT_NOT_NULL(q);
+    const u16 kinds[1] = {65535u};
+    ASSERT_EQ(break_runtime_bus_subscribe(bus, "s", q, kinds, 1u, NULL), BREAK_RUNTIME_OK);
+    const u32 n = 10000000u;
+    static const u8 byte = 0u;
+    BreakRuntimeMessageView ok = view_of(65535u, 1u, &byte, 1u);
+    BreakRuntimeMessageView bad = view_of(65535u, 0u, NULL, 0u);
+    /* rejected on size before the payload is read */
+    BreakRuntimeMessageView huge = view_of(65535u, 1u, &byte, BREAK_RUNTIME_MAX_MESSAGE_PAYLOAD + 1u);
+    for (u32 i = 0; i < n; i++) {
+        (void)break_runtime_bus_publish(bus, &ok, NULL);
+        (void)break_runtime_bus_publish(bus, &bad, NULL);
+        (void)break_runtime_bus_publish(bus, &bad, NULL);
+        (void)break_runtime_bus_publish(bus, &huge, NULL);
+    }
+    char buf[1024];
+    usize len = 0u;
+    ASSERT_EQ(break_runtime_bus_export_topology(bus, buf, sizeof buf, &len), BREAK_RUNTIME_OK);
+    ASSERT_EQ(len, strlen(buf));
+    const char *rec = strstr(buf, "{\"kind\":65535,");
+    ASSERT_NOT_NULL(rec);
+    const char *end = strchr(rec, '}');
+    ASSERT_NOT_NULL(end);
+    ASSERT_TRUE((usize)(end - rec) + 1u > 255u);
+    ASSERT_NOT_NULL(strstr(rec, "\"published\":10000000,"));
+    ASSERT_NOT_NULL(strstr(rec, "\"version_rejects\":20000000,"));
+    ASSERT_NOT_NULL(strstr(rec, "\"delivered\":1,\"dropped\":9999999,"));
+    ASSERT_NOT_NULL(strstr(rec, "\"size_rejects\":10000000,\"quota_rejects\":0}"));
+    ASSERT_EQ(buf[len - 1u], '}');
+
+    usize need = 0u;
+    ASSERT_EQ(break_runtime_bus_export_topology(bus, NULL, 0u, &need), BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(need, len);
+    char exact[1024];
+    ASSERT_EQ(break_runtime_bus_export_topology(bus, exact, len, &need), BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(need, len);
+    ASSERT_EQ(break_runtime_bus_export_topology(bus, exact, len + 1u, &need), BREAK_RUNTIME_OK);
+    ASSERT_EQ(strcmp(exact, buf), 0);
+    u16 drained[1];
+    ASSERT_EQ(drain(q, drained, 1u), 1u);
+    break_runtime_bus_destroy(bus);
+    break_runtime_queue_destroy(q);
+}
+
 TEST(kind_registration_is_validated) {
     BreakRuntimeBus *bus = NULL;
     ASSERT_EQ(break_runtime_bus_create(NULL), BREAK_RUNTIME_INVALID);
@@ -664,6 +721,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(full_subscriber_queue_is_backpressure_not_blocking);
     RUN_TEST(subscriptions_are_validated_and_removable);
     RUN_TEST(topology_export_lists_kinds_subscribers_and_counters);
+    RUN_TEST(topology_export_keeps_long_records_whole);
     RUN_TEST(allocation_failure_is_reported_and_counted);
     RUN_TEST(concurrent_publishers_and_unsubscribe);
     RUN_TEST(control_kinds_use_reserved_queue_capacity);

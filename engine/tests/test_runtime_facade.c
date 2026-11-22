@@ -998,6 +998,10 @@ TEST(task_allocation_failure_injection)
     break_runtime_test_set_alloc_budget(0u);
     ASSERT_EQ(break_runtime_task_queue_create(NULL, &q), BREAK_RUNTIME_OOM);
     ASSERT_EQ(q, NULL);
+    /* the queue allocates, its completion counter block does not */
+    break_runtime_test_set_alloc_budget(1u);
+    ASSERT_EQ(break_runtime_task_queue_create(NULL, &q), BREAK_RUNTIME_OOM);
+    ASSERT_EQ(q, NULL);
 
     break_runtime_test_set_alloc_budget(BREAK_RUNTIME_TEST_ALLOC_DISABLED);
     ASSERT_EQ(break_runtime_task_queue_create(NULL, &q), BREAK_RUNTIME_OK);
@@ -1219,6 +1223,48 @@ TEST(task_completions_are_published_on_the_bus)
     break_runtime_bus_destroy(bus);
 }
 
+/* The owner may destroy the task queue as soon as it has polled a task's
+ * completion notice, while the worker that published it is still returning
+ * from the trampoline. The trampoline once bumped counters inside the queue
+ * after publishing, a use-after-free that AddressSanitizer reports here. */
+TEST(task_queue_can_be_destroyed_once_the_notice_arrives)
+{
+    BreakRuntimeBus *bus = NULL;
+    BreakRuntimeQueue *done = NULL;
+    BreakRuntimeQueueConfig qc = {4u, 0u};
+    const u16 kind = 0x0903u;
+    BreakRuntimeBusKind completion = {0x0903u, 1u, 8u, "task.done3", false, 0u};
+    u32 sub = 0u;
+    TaskSystem *ts = task_system_create(2);
+    ASSERT_NOT_NULL(ts);
+    ASSERT_EQ(break_runtime_bus_create(&bus), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_bus_register_kind(bus, &completion), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_queue_create(&qc, &done), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_bus_subscribe(bus, "owner", done, &kind, 1u, &sub), BREAK_RUNTIME_OK);
+    for (u32 round = 0; round < 200u; round++) {
+        BreakRuntimeTaskQueue *q = NULL;
+        BreakRuntimeOwnedMessage *m = NULL;
+        u32 forwarded = 0u;
+        ASSERT_EQ(break_runtime_task_queue_create(NULL, &q), BREAK_RUNTIME_OK);
+        ASSERT_EQ(break_runtime_task_queue_publish_completions(q, bus, kind), BREAK_RUNTIME_OK);
+        ASSERT_EQ(break_runtime_task_submit(q, accumulate_task, make_correlated_msg(1u, 1u),
+                                            TASK_PRIORITY_NORMAL), BREAK_RUNTIME_OK);
+        ASSERT_EQ(break_runtime_task_queue_drain(q, ts, 1u, &forwarded), BREAK_RUNTIME_OK);
+        ASSERT_EQ(forwarded, 1u);
+        while (m == NULL) {
+            ASSERT_EQ(break_runtime_queue_poll(done, &m), BREAK_RUNTIME_OK);
+            if (m == NULL) platform_thread_yield();
+        }
+        break_runtime_message_release(m);
+        break_runtime_task_queue_destroy(q);
+    }
+    task_wait(ts);
+    task_system_destroy(ts);
+    ASSERT_EQ(break_runtime_bus_unsubscribe(bus, sub), BREAK_RUNTIME_OK);
+    break_runtime_queue_destroy(done);
+    break_runtime_bus_destroy(bus);
+}
+
 /* A full owner queue drops the completion; the task still ran and the
  * worker never waited. */
 TEST(task_completions_never_block_a_worker)
@@ -1276,6 +1322,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(task_drain_forward_failure_retains_queue);
     RUN_TEST(task_allocation_failure_injection);
     RUN_TEST(task_completions_are_published_on_the_bus);
+    RUN_TEST(task_queue_can_be_destroyed_once_the_notice_arrives);
     RUN_TEST(task_completions_never_block_a_worker);
     RUN_TEST(message_copy_keeps_correlation_id);
     RUN_TEST(correlation_next_is_unique_across_threads);

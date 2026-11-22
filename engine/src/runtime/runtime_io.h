@@ -116,8 +116,9 @@ typedef struct BreakRuntimeIoRequest BreakRuntimeIoRequest; /* opaque, caller-ow
  * kind as a control kind when it is not registered yet; it must otherwise
  * match exactly. A notice is published before waiters are woken, so once a
  * wait returns the completion its notice is on the bus (or counted as
- * dropped). Publishing never waits: a full subscriber queue drops the
- * notice (stats.notices_dropped). */
+ * dropped); it is published while the facade mutex is held, which is safe
+ * because the bus never calls back into the facade. Publishing never waits:
+ * a full subscriber queue drops the notice (stats.notices_dropped). */
 #define BREAK_RUNTIME_IO_NOTICE_KIND 0x4F4Eu /* 'N' | 'O'<<8 */
 #define BREAK_RUNTIME_IO_NOTICE_VERSION 1u
 #define BREAK_RUNTIME_IO_NOTICE_SIZE 24u
@@ -214,7 +215,10 @@ BreakRuntimeError break_runtime_io_completion_view(
     BreakRuntimeIoCompletion *out_completion);
 
 /* Sends a notice for every later completion to `bus` (NULL detaches).
- * Legal before or after init; the bus must outlive the attachment.
+ * Legal before or after init. Returns only after every notice that was
+ * already being sent to the previous bus has finished, so the previous bus
+ * may be destroyed once this returns; a worker never waits on it. Must not
+ * be called with a bus mutex held.
  * REJECTED when the bus already has the notice kind with other parameters. */
 BreakRuntimeError break_runtime_io_attach_bus(BreakRuntimeBus *bus);
 

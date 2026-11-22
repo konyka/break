@@ -25,6 +25,23 @@ _Atomic u64 g_break_runtime_test_forward_fail_budget = 0u;
 
 typedef struct BreakRuntimeTaskQueue BreakRuntimeTaskQueue;
 
+/* Completion counters live outside the queue: a worker bumps them after it
+ * published the notice, and the owner may destroy the queue as soon as it
+ * has seen that notice. The queue holds one reference and every forwarded
+ * call that publishes holds one; the last release frees the block. */
+typedef struct BreakRuntimeTaskCompletionCounters {
+    _Atomic u32 refs;
+    _Atomic u64 published;
+    _Atomic u64 dropped;
+} BreakRuntimeTaskCompletionCounters;
+
+static void runtime_task_counters_release(BreakRuntimeTaskCompletionCounters *c)
+{
+    if (c && atomic_fetch_sub_explicit(&c->refs, 1u, memory_order_acq_rel) == 1u) {
+        free(c);
+    }
+}
+
 typedef struct BreakRuntimeTaskCall {
     BreakRuntimeTaskFn fn;
     BreakRuntimeOwnedMessage *payload;
@@ -32,7 +49,7 @@ typedef struct BreakRuntimeTaskCall {
     /* Set at drain: where the completion notice goes (bus NULL = none). */
     BreakRuntimeBus *bus;
     u16 kind;
-    BreakRuntimeTaskQueue *queue;
+    BreakRuntimeTaskCompletionCounters *counters; /* referenced when bus != NULL */
 } BreakRuntimeTaskCall;
 
 struct BreakRuntimeTaskQueue {
@@ -50,9 +67,7 @@ struct BreakRuntimeTaskQueue {
     u64 high_water;
     BreakRuntimeBus *completion_bus;
     u16 completion_kind;
-    /* bumped by workers: atomic, outside the mutex */
-    _Atomic u64 completions_published;
-    _Atomic u64 completions_dropped;
+    BreakRuntimeTaskCompletionCounters *counters; /* bumped by workers */
 };
 
 static usize runtime_task_align_up(usize value, usize alignment)
@@ -85,10 +100,11 @@ static void break_runtime_task_trampoline(void *ctx)
         notice.size = sizeof(sequence);
         (void)break_runtime_bus_publish(call->bus, &notice, &delivered);
         if (delivered > 0u) {
-            atomic_fetch_add(&call->queue->completions_published, 1u);
+            atomic_fetch_add(&call->counters->published, 1u);
         } else {
-            atomic_fetch_add(&call->queue->completions_dropped, 1u);
+            atomic_fetch_add(&call->counters->dropped, 1u);
         }
+        runtime_task_counters_release(call->counters);
     }
     free(call);
 }
@@ -125,6 +141,14 @@ BreakRuntimeError break_runtime_task_queue_create(
     if (!queue) {
         return BREAK_RUNTIME_OOM;
     }
+    queue->counters = break_runtime_test_calloc(sizeof(*queue->counters));
+    if (!queue->counters) {
+        free(queue);
+        return BREAK_RUNTIME_OOM;
+    }
+    atomic_init(&queue->counters->refs, 1u);
+    atomic_init(&queue->counters->published, 0u);
+    atomic_init(&queue->counters->dropped, 0u);
     platform_mutex_init(&queue->mutex);
     queue->ring = (BreakRuntimeTaskCall **)((char *)queue + header_bytes);
     queue->capacity = capacity;
@@ -149,6 +173,7 @@ void break_runtime_task_queue_destroy(BreakRuntimeTaskQueue *queue)
         break_runtime_message_release(call->payload);
         free(call);
     }
+    runtime_task_counters_release(queue->counters);
     platform_mutex_destroy(&queue->mutex);
     free(queue);
 }
@@ -249,7 +274,10 @@ BreakRuntimeError break_runtime_task_queue_drain(
         call = queue->ring[queue->head];
         call->bus = queue->completion_bus;
         call->kind = queue->completion_kind;
-        call->queue = queue;
+        call->counters = call->bus ? queue->counters : NULL;
+        if (call->counters) {
+            atomic_fetch_add_explicit(&call->counters->refs, 1u, memory_order_relaxed);
+        }
         platform_mutex_unlock(&queue->mutex);
 
         /* Outside the queue mutex: on acceptance the legacy system takes over
@@ -273,6 +301,12 @@ BreakRuntimeError break_runtime_task_queue_drain(
             platform_mutex_lock(&queue->mutex);
             queue->forward_rejects++;
             platform_mutex_unlock(&queue->mutex);
+            if (call->counters) {
+                /* the next drain takes a fresh reference */
+                runtime_task_counters_release(call->counters);
+                call->counters = NULL;
+                call->bus = NULL;
+            }
             break;
         }
 
@@ -307,8 +341,8 @@ BreakRuntimeError break_runtime_task_queue_stats(
     out_stats->forward_rejects = queue->forward_rejects;
     out_stats->high_water = queue->high_water;
     platform_mutex_unlock(&queue->mutex);
-    out_stats->completions_published = atomic_load(&queue->completions_published);
-    out_stats->completions_dropped = atomic_load(&queue->completions_dropped);
+    out_stats->completions_published = atomic_load(&queue->counters->published);
+    out_stats->completions_dropped = atomic_load(&queue->counters->dropped);
     return BREAK_RUNTIME_OK;
 }
 

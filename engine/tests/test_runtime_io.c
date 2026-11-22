@@ -6,6 +6,7 @@
 #include <runtime/runtime_test_hooks.h>
 #include <core/platform_thread.h>
 #include <asset/vfs.h>
+#include <platform/time.h>
 #include <stdatomic.h>
 #include <string.h>
 #include <stdio.h>
@@ -1198,6 +1199,22 @@ static bool io_next_notice(IoBusFixture *f, BreakRuntimeIoNotice *out)
     return ok;
 }
 
+/* A worker wakes the waiter before it publishes the notice, so a test that
+ * just returned from wait_completion may run ahead of the last notice. Waits
+ * up to 5 s for published + dropped to grow by `want`. */
+static bool io_wait_notices(u64 base, u64 want)
+{
+    for (u32 i = 0; i < 5000u; i++) {
+        BreakRuntimeIoStats st;
+        if (break_runtime_io_stats(&st) == BREAK_RUNTIME_OK &&
+            st.notices_published + st.notices_dropped - base >= want) {
+            return true;
+        }
+        time_sleep_us(1000u);
+    }
+    return false;
+}
+
 TEST(io_completions_send_notices_on_the_bus)
 {
     VFS *vfs = fixture_setup();
@@ -1217,6 +1234,9 @@ TEST(io_completions_send_notices_on_the_bus)
     cfg.worker_count = 1u;
     cfg.request_capacity = 8u;
     ASSERT_EQ(break_runtime_io_init(&cfg), BREAK_RUNTIME_OK);
+    BreakRuntimeIoStats st0;
+    ASSERT_EQ(break_runtime_io_stats(&st0), BREAK_RUNTIME_OK);
+    const u64 base = st0.notices_published + st0.notices_dropped;
 
     ASSERT_EQ(break_runtime_io_submit(&ok_req, "payload.bin", 0u, 0u), BREAK_RUNTIME_OK);
     ASSERT_EQ(break_runtime_io_submit(&missing, "no-such-file.bin", 0u, 0u), BREAK_RUNTIME_OK);
@@ -1240,6 +1260,7 @@ TEST(io_completions_send_notices_on_the_bus)
     cancelled_id = completion.request_id;
     break_runtime_message_release(msg);
 
+    ASSERT_TRUE(io_wait_notices(base, 3u));
     while (io_next_notice(&f, &notice)) {
         seen++;
         if (notice.request_id == ok_id) {
@@ -1294,6 +1315,7 @@ TEST(io_notices_are_dropped_not_waited_for_and_can_be_detached)
         ASSERT_EQ(break_runtime_io_wait_completion(reqs[i], 5000u, &msg), BREAK_RUNTIME_OK);
         break_runtime_message_release(msg);
     }
+    ASSERT_TRUE(io_wait_notices(published0 + dropped0, 6u));
     ASSERT_EQ(break_runtime_io_stats(&stats), BREAK_RUNTIME_OK);
     ASSERT_EQ(stats.completed, 6u);
     ASSERT_EQ(stats.notices_published - published0, 2u);

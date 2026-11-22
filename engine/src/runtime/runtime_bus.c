@@ -438,23 +438,26 @@ typedef struct {
     usize len;
 } RuntimeBusWriter;
 
+/* Formats straight into the caller's buffer so a record of any length is
+ * either written whole or only measured; w->len always counts the full
+ * output, which is what out_len reports when the buffer is too small. */
 static void runtime_bus_printf(RuntimeBusWriter *w, const char *fmt, ...)
 {
-    char tmp[256];
     va_list ap;
     int n;
-    usize len;
+    char *dst = NULL;
+    usize room = 0u;
+    if (w->len < w->capacity) {
+        dst = w->buf + w->len;
+        room = w->capacity - w->len;
+    }
     va_start(ap, fmt);
-    n = vsnprintf(tmp, sizeof(tmp), fmt, ap);
+    n = vsnprintf(dst, room, fmt, ap);
     va_end(ap);
     if (n <= 0) {
         return;
     }
-    len = (usize)n < sizeof(tmp) ? (usize)n : sizeof(tmp) - 1u;
-    if (w->len + len < w->capacity) {
-        memcpy(w->buf + w->len, tmp, len);
-    }
-    w->len += len;
+    w->len += (usize)n;
 }
 
 /* Names passed validation ([A-Za-z0-9._-]), so they need no JSON escaping. */
