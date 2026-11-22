@@ -1,3 +1,7 @@
+## MSVC C4701 修复（2026-11-22）
+
+- `41703704` 的主 CI run 44974582978 中，Windows + MSVC（`/W4 /WX`）在 `core_app.c` 报 C4701：`app_voice_report_switch` 里的 `event` 只在短路 `&&` 的右侧被赋值，MSVC 无法证明使用前已初始化。`event` 与 `view` 现在显式清零（`test_core_app_voice.c` 中同样的用法一并处理）。其他作业全部成功。
+
 ## 两骨骼 IK：逐位一致与弯曲链修复（2026-11-22）
 
 - **实现**：`anim_ik_two_bone` 改用 `math_atan2f`；已弯曲的链保留自己的弯曲平面，修复末端偏离目标（最多 0.5）的缺陷。`test_physics_determinism_contract` 检查动画源码不调用平台三角函数。

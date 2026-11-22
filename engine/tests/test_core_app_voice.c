@@ -1106,6 +1106,7 @@ static bool next_event(EventFixture *f, CoreAppVoiceEvent *out)
 {
     BreakRuntimeOwnedMessage *message = NULL;
     BreakRuntimeMessageView view;
+    memset(&view, 0, sizeof(view));
     if (break_runtime_queue_poll(f->queue, &message) != BREAK_RUNTIME_OK || message == NULL) {
         return false;
     }
@@ -1135,7 +1136,7 @@ TEST(device_events_are_published_on_the_bus)
     ASSERT_EQ(core_app_voice_start(voice), BREAK_RUNTIME_OK);
     ASSERT_EQ(core_app_voice_attach_bus(voice, NULL), BREAK_RUNTIME_REJECTED);
 
-    CoreAppVoiceEvent event;
+    CoreAppVoiceEvent event = {0u, 0u, 0u};
     ASSERT_FALSE(next_event(&f, &event)); /* nothing happened yet */
     /* a refused reopen, then a recovery */
     ASSERT_EQ(core_app_voice_simulate_capture_event(voice, AUDIO_CAPTURE_EVENT_DEVICE_LOST),
@@ -1235,7 +1236,7 @@ TEST(device_events_never_block_the_pumping_thread)
     ASSERT_EQ(core_app_voice_event_stats(voice, &es), BREAK_RUNTIME_OK);
     ASSERT_EQ(es.published, 2u);
     ASSERT_EQ(es.undelivered, 3u);
-    CoreAppVoiceEvent event;
+    CoreAppVoiceEvent event = {0u, 0u, 0u};
     ASSERT_TRUE(next_event(&f, &event));
     ASSERT_EQ(event.count, 1u);
     ASSERT_TRUE(next_event(&f, &event));
@@ -1249,7 +1250,7 @@ TEST(device_events_never_block_the_pumping_thread)
 TEST(event_payloads_decode_strictly_and_kinds_must_match)
 {
     u8 bytes[CORE_APP_VOICE_EVENT_SIZE] = {5, 0, 0, 0, 0, 0, 0, 0, 0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01};
-    CoreAppVoiceEvent event;
+    CoreAppVoiceEvent event = {0u, 0u, 0u};
     ASSERT_TRUE(core_app_voice_event_decode(bytes, sizeof(bytes), &event));
     ASSERT_EQ(event.type, 5u);
     ASSERT_EQ(event.count, 0x0102030405060708ull);

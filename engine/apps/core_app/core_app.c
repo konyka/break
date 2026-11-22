@@ -2214,7 +2214,8 @@ static BreakRuntimeError app_voice_report_switch(CoreApp *app) {
     for (;;) {
         BreakRuntimeOwnedMessage *message = NULL;
         BreakRuntimeMessageView view;
-        CoreAppVoiceEvent event;
+        memset(&view, 0, sizeof(view));
+        CoreAppVoiceEvent event = {0u, 0u, 0u};
         BreakRuntimeError result = break_runtime_queue_poll(lane->events, &message);
         if (result != BREAK_RUNTIME_OK || message == NULL) return BREAK_RUNTIME_OK;
         const bool decoded = break_runtime_message_view(message, &view) == BREAK_RUNTIME_OK &&
