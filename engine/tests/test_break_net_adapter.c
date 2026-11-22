@@ -429,6 +429,79 @@ TEST(break_net_adapter_event_queue_full_releases_owned_packet)
     break_net_reactor_destroy(reactor);
 }
 
+typedef struct {
+    uint32_t calls;
+    uint32_t queued;
+    uint32_t dropped;
+    BreakNetEventType last_type;
+    uint64_t last_key;
+    uint64_t last_correlation;
+    uint16_t last_message_id;
+} NetHookLog;
+
+static void net_hook_record(void *user, const BreakNetEventInfo *info)
+{
+    NetHookLog *log = (NetHookLog *)user;
+    log->calls++;
+    if (info->queued) log->queued++; else log->dropped++;
+    log->last_type = info->type;
+    log->last_key = info->connection_key;
+    log->last_correlation = info->correlation_id;
+    log->last_message_id = info->message_id;
+}
+
+TEST(break_net_adapter_event_hook_reports_queued_and_dropped_events)
+{
+    BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_STEP);
+    BreakNetReactor *reactor = break_net_reactor_create(&config);
+    unsigned char payload[] = {1u, 2u};
+    BreakNetEvent event = {0};
+    NetHookLog log;
+    size_t i;
+
+    memset(&log, 0, sizeof(log));
+    ASSERT_NOT_NULL(reactor);
+    ASSERT_FALSE(break_net_reactor_set_event_hook(NULL, net_hook_record, &log));
+    ASSERT_TRUE(break_net_reactor_set_event_hook(reactor, net_hook_record, &log));
+
+    ASSERT_TRUE(break_net_reactor_enqueue_opened_for_test(reactor, 7u));
+    ASSERT_EQ(log.calls, 1u);
+    ASSERT_EQ(log.queued, 1u);
+    ASSERT_EQ(log.last_type, BREAK_NET_EVENT_CONNECTION_OPENED);
+    ASSERT_EQ(log.last_key, 7u);
+    ASSERT_EQ(log.last_correlation, 0u);
+
+    ASSERT_TRUE(break_net_reactor_enqueue_correlated_message_for_test(
+        reactor, 9u, 33u, 1u, 0xabcdefu, payload, sizeof(payload)));
+    ASSERT_EQ(log.calls, 2u);
+    ASSERT_EQ(log.last_type, BREAK_NET_EVENT_MESSAGE_RECEIVED);
+    ASSERT_EQ(log.last_key, 9u);
+    ASSERT_EQ(log.last_correlation, 0xabcdefu);
+    ASSERT_EQ(log.last_message_id, 33u);
+
+    for (i = 2u; i < BREAK_NET_EVENT_QUEUE_CAPACITY; ++i)
+        ASSERT_TRUE(break_net_reactor_enqueue_opened_for_test(reactor, (uint64_t)i + 100u));
+    ASSERT_EQ(log.queued, (uint32_t)BREAK_NET_EVENT_QUEUE_CAPACITY);
+    ASSERT_EQ(log.dropped, 0u);
+    /* full: the event is dropped and still reported, with its identity */
+    ASSERT_FALSE(break_net_reactor_enqueue_correlated_message_for_test(
+        reactor, 12u, 44u, 1u, 0x77u, payload, sizeof(payload)));
+    ASSERT_EQ(log.dropped, 1u);
+    ASSERT_EQ(log.last_key, 12u);
+    ASSERT_EQ(log.last_correlation, 0x77u);
+    ASSERT_EQ(log.last_message_id, 44u);
+
+    /* removed: queueing goes on, no more reports */
+    ASSERT_TRUE(break_net_reactor_set_event_hook(reactor, NULL, NULL));
+    ASSERT_EQ(break_net_reactor_poll_event(reactor, &event), BREAK_NET_EVENT_OK);
+    break_net_event_release(&event);
+    ASSERT_TRUE(break_net_reactor_enqueue_opened_for_test(reactor, 5u));
+    ASSERT_EQ(log.calls, (uint32_t)BREAK_NET_EVENT_QUEUE_CAPACITY + 1u);
+    while (break_net_reactor_poll_event(reactor, &event) == BREAK_NET_EVENT_OK)
+        break_net_event_release(&event);
+    break_net_reactor_destroy(reactor);
+}
+
 TEST(break_net_adapter_outbound_drain_drops_stale_uid)
 {
     BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_STEP);
@@ -1827,6 +1900,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(break_net_adapter_new_connection_failure_releases_identity_slot);
     RUN_TEST(break_net_adapter_event_queue_fifo_and_payload_ownership);
     RUN_TEST(break_net_adapter_event_queue_full_releases_owned_packet);
+    RUN_TEST(break_net_adapter_event_hook_reports_queued_and_dropped_events);
     RUN_TEST(break_net_adapter_outbound_drain_drops_stale_uid);
     RUN_TEST(break_net_adapter_outbound_copies_and_bounds_queue);
     RUN_TEST(break_net_message_copies_payload_lifetime);

@@ -36,6 +36,45 @@ void core_app_net_transport_free(CoreAppNetTransport *transport);
 /* Fills hooks bound to the transport. The transport must outlive the run. */
 void core_app_net_transport_hooks(CoreAppNetTransport *transport, CoreAppNetworkHooks *out);
 
+/* Network events on the runtime message bus (design:
+ * docs/design/runtime_message_model.md "网络事件接入总线"). After attach,
+ * every event the reactor produces (queued, or dropped because the reactor
+ * queue was full) is published as one message of kind
+ * CORE_APP_NET_EVENT_KIND on the thread that steps the reactor. The
+ * payload is a CoreAppNetEventNotice in little-endian order
+ * (CORE_APP_NET_EVENT_SIZE bytes) and the message carries the event's
+ * correlation id; the event payload itself never goes on the bus, the
+ * transport still handles it. Publishing never waits: a full subscriber
+ * queue drops that copy and the event counts as undelivered. attach
+ * registers the kind as a control kind unless it is registered already
+ * with the same parameters (REJECTED otherwise), and is REJECTED while the
+ * transport runs; NULL detaches. The bus must outlive the run. */
+#define CORE_APP_NET_EVENT_VERSION 1u
+#define CORE_APP_NET_EVENT_SIZE 40u
+
+typedef struct {
+    u32 type;            /* BreakNetEventType */
+    u32 reason;
+    u64 connection_key;
+    u64 correlation_id;  /* MESSAGE_RECEIVED only */
+    u64 payload_size;    /* MESSAGE_RECEIVED only */
+    u16 message_id;      /* MESSAGE_RECEIVED only */
+    bool queued;         /* false: the reactor queue was full */
+} CoreAppNetEventNotice;
+
+typedef struct {
+    u64 published;    /* notices delivered to at least one subscriber */
+    u64 undelivered;  /* notices at least one subscriber missed */
+} CoreAppNetEventStats;
+
+struct BreakRuntimeBus;
+BreakRuntimeError core_app_net_transport_attach_bus(CoreAppNetTransport *transport,
+                                                    struct BreakRuntimeBus *bus);
+BreakRuntimeError core_app_net_transport_event_stats(CoreAppNetTransport *transport,
+                                                     CoreAppNetEventStats *out);
+/* False for a wrong size or a nonzero reserved byte. */
+bool core_app_net_event_notice_decode(const void *data, usize size, CoreAppNetEventNotice *out);
+
 #ifdef CORE_APP_NET_TRANSPORT_TESTING
 typedef struct BreakNetReactor BreakNetReactor;
 /* Test-only (test_core_app_net_transport): the live reactor, or NULL. */

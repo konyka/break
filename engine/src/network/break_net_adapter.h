@@ -114,6 +114,31 @@ size_t break_net_reactor_outbound_count(BreakNetReactor *reactor);
  * TLS close_notify, so strict clients may report an unexpected EOF. */
 bool break_net_reactor_close(BreakNetReactor *reactor, uint64_t connection_key);
 
+/* Event hook (design: docs/design/runtime_message_model.md "网络事件接入总线").
+ * Called once for every event the reactor produces, after it was queued
+ * (queued=true) or dropped because the event queue was full (queued=false),
+ * on the thread that produced it (the driver thread, or the stepping thread
+ * in STEP mode). It runs with no reactor lock held and gets only the event's
+ * identity, never the payload; it may poll the reactor but must not block.
+ * Typical use: forward a notice to the runtime message bus so the owner
+ * learns about network events from the same queue as everything else.
+ * Set it before start or while no step is running; NULL removes it. False
+ * for a NULL reactor. */
+typedef struct BreakNetEventInfo {
+    BreakNetEventType type;
+    uint64_t connection_key;
+    uint32_t reason;
+    uint16_t message_id;      /* MESSAGE_RECEIVED only, else 0 */
+    uint64_t correlation_id;  /* MESSAGE_RECEIVED only, else 0 */
+    size_t payload_size;      /* MESSAGE_RECEIVED only, else 0 */
+    bool queued;
+} BreakNetEventInfo;
+
+typedef void (*BreakNetEventHookFn)(void *user, const BreakNetEventInfo *info);
+
+bool break_net_reactor_set_event_hook(BreakNetReactor *reactor,
+                                      BreakNetEventHookFn hook, void *user);
+
 #ifdef BREAK_NET_TESTING
 /* Test seams below exist only in the break_net_test library
  * (BREAK_NET_TESTING=1); the shipped break_net carries none of them. */

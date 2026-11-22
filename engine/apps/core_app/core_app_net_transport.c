@@ -11,6 +11,7 @@
 #include <core/clock_offset.h>
 #include <core/trace_core_app.h>
 #include <platform/time.h>
+#include <runtime/runtime_bus.h>
 #include <snow/acceptor.h>
 #include <snow/endpoint.h>
 
@@ -172,6 +173,9 @@ struct CoreAppNetTransport {
     u32 current_tick;
     FILE *trace;
     BreakNetReactor *reactor;
+    BreakRuntimeBus *bus;
+    u64 events_published;
+    u64 events_undelivered;
     BreakSessionManager *manager;
     SnowAcceptor *acceptor;
     bool started;
@@ -869,6 +873,86 @@ static BreakRuntimeError net_write_port_file(CoreAppNetTransport *t, u16 port) {
     return BREAK_RUNTIME_OK;
 }
 
+static const BreakRuntimeBusKind k_net_event_kind = {
+    CORE_APP_NET_EVENT_KIND, CORE_APP_NET_EVENT_VERSION, CORE_APP_NET_EVENT_SIZE,
+    "core_app.net.event", true, 0u};
+
+static void net_put(u8 *p, u64 v, u32 bytes) {
+    for (u32 i = 0u; i < bytes; ++i) p[i] = (u8)(v >> (8u * i));
+}
+
+static u64 net_get(const u8 *p, u32 bytes) {
+    u64 v = 0u;
+    for (u32 i = 0u; i < bytes; ++i) v |= (u64)p[i] << (8u * i);
+    return v;
+}
+
+/* Reactor event hook: runs on the stepping thread with no reactor lock. */
+static void net_on_reactor_event(void *user, const BreakNetEventInfo *info) {
+    CoreAppNetTransport *t = (CoreAppNetTransport *)user;
+    u8 payload[CORE_APP_NET_EVENT_SIZE] = {0};
+    BreakRuntimeMessageView view;
+    u32 delivered = 0u;
+    if (!t->bus) return;
+    net_put(payload, (u64)info->type, 4u);
+    net_put(payload + 4, info->reason, 4u);
+    net_put(payload + 8, info->connection_key, 8u);
+    net_put(payload + 16, info->correlation_id, 8u);
+    net_put(payload + 24, (u64)info->payload_size, 8u);
+    net_put(payload + 32, info->message_id, 2u);
+    payload[34] = info->queued ? 1u : 0u;
+    memset(&view, 0, sizeof(view));
+    view.kind = CORE_APP_NET_EVENT_KIND;
+    view.version = CORE_APP_NET_EVENT_VERSION;
+    view.correlation_id = info->correlation_id;
+    view.data = payload;
+    view.size = sizeof(payload);
+    if (break_runtime_bus_publish(t->bus, &view, &delivered) != BREAK_RUNTIME_OK) {
+        t->events_undelivered++;
+    }
+    if (delivered > 0u) t->events_published++;
+}
+
+bool core_app_net_event_notice_decode(const void *data, usize size, CoreAppNetEventNotice *out) {
+    const u8 *p = (const u8 *)data;
+    if (!data || !out || size != CORE_APP_NET_EVENT_SIZE) return false;
+    if (p[34] > 1u) return false;
+    for (u32 i = 35u; i < CORE_APP_NET_EVENT_SIZE; ++i)
+        if (p[i] != 0u) return false;
+    out->type = (u32)net_get(p, 4u);
+    out->reason = (u32)net_get(p + 4, 4u);
+    out->connection_key = net_get(p + 8, 8u);
+    out->correlation_id = net_get(p + 16, 8u);
+    out->payload_size = net_get(p + 24, 8u);
+    out->message_id = (u16)net_get(p + 32, 2u);
+    out->queued = p[34] == 1u;
+    return true;
+}
+
+BreakRuntimeError core_app_net_transport_attach_bus(CoreAppNetTransport *transport,
+                                                    BreakRuntimeBus *bus) {
+    if (!transport) return BREAK_RUNTIME_INVALID;
+    if (transport->started || transport->reactor) return BREAK_RUNTIME_REJECTED;
+    if (bus) {
+        const BreakRuntimeError registered = break_runtime_bus_register_kind(bus, &k_net_event_kind);
+        if (registered == BREAK_RUNTIME_INVALID &&
+            break_runtime_bus_kind_matches(bus, &k_net_event_kind) != BREAK_RUNTIME_OK) {
+            return BREAK_RUNTIME_REJECTED;
+        }
+        if (registered != BREAK_RUNTIME_OK && registered != BREAK_RUNTIME_INVALID) return registered;
+    }
+    transport->bus = bus;
+    return BREAK_RUNTIME_OK;
+}
+
+BreakRuntimeError core_app_net_transport_event_stats(CoreAppNetTransport *transport,
+                                                     CoreAppNetEventStats *out) {
+    if (!transport || !out) return BREAK_RUNTIME_INVALID;
+    out->published = transport->events_published;
+    out->undelivered = transport->events_undelivered;
+    return BREAK_RUNTIME_OK;
+}
+
 static BreakRuntimeError net_destroy(void *user);
 
 static BreakRuntimeError net_start(void *user, FILE *trace) {
@@ -887,6 +971,8 @@ static BreakRuntimeError net_start(void *user, FILE *trace) {
     reactor_config.drive_mode = BREAK_NET_DRIVE_STEP;
     reactor_config.max_connections = CORE_APP_NET_MAX_CONNECTIONS;
     t->reactor = break_net_reactor_create(&reactor_config);
+    if (t->reactor && t->bus && !break_net_reactor_set_event_hook(t->reactor, net_on_reactor_event, t))
+        goto fail;
     memset(&session_config, 0, sizeof(session_config));
     session_config.max_sessions = CORE_APP_NET_MAX_CONNECTIONS;
     session_config.first_session_id = 1u;
@@ -1060,6 +1146,13 @@ static void net_trace_stats(CoreAppNetTransport *t) {
              t->stats.voice_mute_rejected, t->stats.voice_frames_muted,
              t->stats.voice_frames_rate_limited);
     net_trace(t, line);
+    if (t->bus) {
+        snprintf(line, sizeof(line),
+                 "COREAPPTRACE version=1 event=network_bus net_events_published=%" PRIu64
+                 " net_events_undelivered=%" PRIu64 "\n",
+                 t->events_published, t->events_undelivered);
+        net_trace(t, line);
+    }
 }
 
 /* Idempotent. The reactor is stopped whenever it exists, whatever state a
@@ -1248,6 +1341,10 @@ static void net_voice_frame(void *user, const BreakVoiceFrame *frame) {
     }
 }
 
+static BreakRuntimeError net_attach_bus(void *user, BreakRuntimeBus *bus) {
+    return core_app_net_transport_attach_bus((CoreAppNetTransport *)user, bus);
+}
+
 void core_app_net_transport_hooks(CoreAppNetTransport *transport, CoreAppNetworkHooks *out) {
     if (!out) return;
     memset(out, 0, sizeof(*out));
@@ -1262,4 +1359,5 @@ void core_app_net_transport_hooks(CoreAppNetTransport *transport, CoreAppNetwork
     out->physics_correction_wanted = net_physics_correction_wanted;
     out->physics_correction = net_physics_correction;
     out->voice_frame = net_voice_frame;
+    out->attach_bus = net_attach_bus;
 }

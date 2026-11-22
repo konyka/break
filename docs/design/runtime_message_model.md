@@ -406,3 +406,14 @@ IO workers 是第三个接入总线的线程域。`break_runtime_io_attach_bus(b
 测试：`test_runtime_io` 新增 4 例（共 20 例）：成功、文件不存在、取消三种完成各发一条通知，状态、错误码、字节数正确；订阅者队列只有 2 槽时 6 次读取全部完成，2 条送达、4 条计为丢弃；解除后读取照常完成但不再发通知；通知解析拒绝错误长度、错误 kind 和空指针；shutdown 清空队列时的取消也发通知（拉取闸门一直关闭到清空完成，shutdown 在辅助线程上运行，所以该请求必定走清空路径）。变异检查：worker、cancel、shutdown 清空三条路径中任一条不发通知，状态或字节数不编码，丢弃计为送达，解除不生效，解析不检查长度或 kind，均被检出（shutdown 清空路径最初没有测试覆盖，补充用例后检出）。`test_runtime_io` 在 ThreadSanitizer 下无告警。
 
 仍未做：LogicThread、Network 与 PAL/MainLoop 的现有队列接入总线。
+
+### 补充（2026-11-22）：网络事件接入总线
+
+Network 是第四个接入总线的线程域，分两层：
+
+- `break_net`：`break_net_reactor_set_event_hook(reactor, hook, user)`（`engine/src/network/break_net_adapter.h`）。reactor 每产生一个事件（连接打开、收到消息、发送排空、连接关闭、传输错误）都会在产生它的线程上调用一次 hook：入队成功时 `queued=true`，事件队列已满被丢弃时 `queued=false`。hook 拿到的 `BreakNetEventInfo` 只有身份信息（类型、连接 key、原因，收到消息时还有消息 id、correlation_id 和负载长度），不含负载。调用时不持有 reactor 的锁。传 NULL 移除。
+- core_app：`core_app_net_transport_attach_bus(transport, bus)` 在启动前挂接总线，transport 把 hook 收到的每个事件编码为 40 字节小端的 `CoreAppNetEventNotice`，以 control kind `CORE_APP_NET_EVENT_KIND`（0x0702，`core_app.net.event`）发布，消息带事件的 correlation_id。发布从不等待：订阅者队列满时丢弃该副本，计入 `CoreAppNetEventStats.undelivered`。kind 已以不同参数登记时 attach 返回 REJECTED，运行中 attach 也返回 REJECTED。runtime 通过新增的可选 hook `CoreAppNetworkHooks.attach_bus` 在 `network_start` 之前创建自己的总线和 256 槽队列，CoreAppThread 每个 tick 发布快照后取空队列，销毁网络时写出 `event=network_events seen=N reactor_dropped=M`。离线 core_app 不链接任何网络代码，这一路径也不改变。
+
+测试：`test_break_net_adapter` 新增 1 例（共 45 例）：打开、带 correlation 的消息、队列满时丢弃的事件各上报一次且身份正确，移除后不再上报；变异检查（丢弃时不上报、丢失 correlation_id、丢失消息 id、移除不生效）均被检出。`test_core_app_net_transport` 新增 2 例（共 4 例）：事件按顺序出现在总线上，字段与 correlation_id 正确；只有 2 槽的订阅者队列使 4 条通知中 2 条计为未送达；运行中 attach 被拒绝；冲突的 kind 被拒绝。`test_core_app_network_loopback` 要求 `network_events` 的 seen 不少于 opened + closed，且 reactor_dropped 为 0（本地一次运行：opened=7、closed=7、seen=436）。transport 不调用 attach 时该用例失败；把每条通知都计为 reactor 丢弃时也失败。
+
+仍未做：LogicThread 与 PAL/MainLoop 的现有队列接入总线。

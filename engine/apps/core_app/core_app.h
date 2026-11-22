@@ -8,6 +8,7 @@
 
 #include "core_app_network.h"
 
+struct BreakRuntimeBus;
 typedef struct CoreAppConfig CoreAppConfig;
 typedef struct CoreApp CoreApp;
 
@@ -62,7 +63,15 @@ typedef struct CoreAppNetworkHooks {
      * runtime links no codec; real time: it sends now or drops the frame,
      * and returns nothing. */
     void (*voice_frame)(void *user, const BreakVoiceFrame *frame);
+    /* Optional. Called once before start with a bus the runtime owns; the
+     * transport then publishes one CORE_APP_NET_EVENT_KIND notice per
+     * network event on it, which the CoreAppThread drains after every tick
+     * and totals at stop ("event=network_events"). */
+    BreakRuntimeError (*attach_bus)(void *user, struct BreakRuntimeBus *bus);
 } CoreAppNetworkHooks;
+
+/* The network event notice kind (core_app_net_transport.h has the layout). */
+#define CORE_APP_NET_EVENT_KIND 0x0702u
 
 /* Corrections above the net payload cap are never encoded. */
 #define CORE_APP_PHYSICS_CORRECTION_MAX_BYTES (64u * 1024u)

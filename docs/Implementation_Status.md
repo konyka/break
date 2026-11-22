@@ -376,6 +376,12 @@
   - `test_anim_aim` 1→5 例：可达目标使根、中关节旋转而末端不变，结果为单位四元数；半权重的修正小于全权重；权重夹到 [0, 1]，aim 与 look 两槽互不影响，非法槽与 NULL 不改状态；链关节超出调用方骨骼数时跳过。
 - **验证**：五种变异均被检出：去掉包围对查找、socket 只用平移、名字长度上限放宽、IK 忽略权重、权重不设上限。原生 CTest 458/458；arm64 计数文件追加这三项分项数。
 
+## 网络事件接入消息总线（2026-11-22）
+
+- **问题**：`missing_capabilities.md` 第 5 节记录 Network 队列尚未接入总线。
+- **变更**：`break_net_reactor_set_event_hook` 在 reactor 每次入队或丢弃事件时上报事件身份；`core_app_net_transport_attach_bus` 把这些事件作为 `CORE_APP_NET_EVENT_KIND`（0x0702）control 通知发布；core_app runtime 通过可选的 `attach_bus` hook 订阅，每个 tick 取空，停止时写 `event=network_events`。
+- **验证**：`test_break_net_adapter` 45/45、`test_core_app_net_transport` 4/4、`test_core_app_network*` 12/12；变异检查见设计文档。
+
 ## IO 完成通知顺序与测试闸门修复（2026-11-22）
 
 - **问题**：CI run 44983968111 的 arm64 QEMU 通道中，`test_runtime_io` 的通知丢弃计数少计，随后超时退出。

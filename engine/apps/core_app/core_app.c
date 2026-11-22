@@ -266,6 +266,14 @@ struct CoreApp {
     bool render_live;
     bool audio_live;
     bool network_live;
+    /* Network event notices (CORE_APP_NET_EVENT_KIND) the transport
+     * publishes on the run's bus; drained on the CoreAppThread after every
+     * tick, totalled at destroy. */
+    BreakRuntimeBus *net_bus;
+    BreakRuntimeQueue *net_events;
+    u32 net_subscriber;
+    u64 net_events_seen;
+    u64 net_events_reactor_dropped;
 };
 
 static BreakRuntimeError app_request_skins(CoreApp *app, CoreLevel *level);
@@ -2439,13 +2447,73 @@ static BreakRuntimeError app_network_drain_cb(void *user) {
     return hooks ? hooks->drain(hooks->user) : BREAK_RUNTIME_OK;
 }
 
+static void app_network_drain_events(CoreApp *app);
+static void app_network_close_events(CoreApp *app);
+
 static BreakRuntimeError app_network_destroy_cb(void *user) {
     CoreApp *app = (CoreApp *)user;
     const CoreAppNetworkHooks *hooks = app_network(app);
     if (!hooks) return BREAK_RUNTIME_OK;
     BreakRuntimeError result = hooks->destroy(hooks->user);
-    if (result == BREAK_RUNTIME_OK) app->network_live = false;
+    if (result == BREAK_RUNTIME_OK) {
+        app->network_live = false;
+        if (app->net_events) {
+            app_network_drain_events(app);
+            result = app_trace(app,
+                "COREAPPTRACE version=1 event=network_events seen=%" PRIu64
+                " reactor_dropped=%" PRIu64 "\n",
+                app->net_events_seen, app->net_events_reactor_dropped);
+        }
+        app_network_close_events(app);
+    }
     return result;
+}
+
+/* The notice layout is the transport's; the runtime only needs the
+ * "queued" byte (34) to count events the reactor itself had to drop. */
+#define APP_NET_EVENT_SIZE 40u
+
+static BreakRuntimeError app_network_open_events(CoreApp *app) {
+    const CoreAppNetworkHooks *hooks = app->config.network_hooks;
+    const BreakRuntimeQueueConfig queue_config = {256u, 64u};
+    const u16 kind = CORE_APP_NET_EVENT_KIND;
+    if (!hooks || !hooks->attach_bus) return BREAK_RUNTIME_OK;
+    BreakRuntimeError result = break_runtime_bus_create(&app->net_bus);
+    if (result == BREAK_RUNTIME_OK)
+        result = break_runtime_queue_create(&queue_config, &app->net_events);
+    if (result == BREAK_RUNTIME_OK) result = hooks->attach_bus(hooks->user, app->net_bus);
+    if (result == BREAK_RUNTIME_OK) {
+        result = break_runtime_bus_subscribe(app->net_bus, "core_app.net", app->net_events, &kind,
+                                             1u, &app->net_subscriber);
+    }
+    return result;
+}
+
+static void app_network_drain_events(CoreApp *app) {
+    if (!app->net_events) return;
+    for (;;) {
+        BreakRuntimeOwnedMessage *message = NULL;
+        BreakRuntimeMessageView view;
+        if (break_runtime_queue_poll(app->net_events, &message) != BREAK_RUNTIME_OK || !message)
+            return;
+        if (break_runtime_message_view(message, &view) == BREAK_RUNTIME_OK &&
+            view.kind == CORE_APP_NET_EVENT_KIND && view.size == APP_NET_EVENT_SIZE) {
+            app->net_events_seen++;
+            if (((const u8 *)view.data)[34] == 0u) app->net_events_reactor_dropped++;
+        }
+        break_runtime_message_release(message);
+    }
+}
+
+/* After the transport is destroyed (it publishes until then). */
+static void app_network_close_events(CoreApp *app) {
+    if (app->net_bus && app->net_subscriber)
+        (void)break_runtime_bus_unsubscribe(app->net_bus, app->net_subscriber);
+    break_runtime_queue_destroy(app->net_events);
+    break_runtime_bus_destroy(app->net_bus);
+    app->net_events = NULL;
+    app->net_bus = NULL;
+    app->net_subscriber = 0u;
 }
 
 /* Publishes read-only copies of the two simulated units. The hook cannot
@@ -2469,6 +2537,7 @@ static void app_network_publish(CoreApp *app, u32 tick, Vec3 user_position) {
     entities[1].flags = 2u;
     hooks->tick(hooks->user, tick, level->generation, entities, 2u,
                 physics_state_hash(level->physics));
+    app_network_drain_events(app);
     if (!hooks->physics_correction_wanted || !hooks->physics_correction ||
         !hooks->physics_correction_wanted(hooks->user)) {
         return;
@@ -2802,6 +2871,7 @@ static void app_rollback(CoreApp *app) {
         (void)hooks->destroy(hooks->user);
         app->network_live = false;
     }
+    if (!app->network_live) app_network_close_events(app);
     if (app->voice.live) {
         (void)app_voice_stop_producers_cb(app);
         (void)app_voice_drain_cb(app);
@@ -2960,7 +3030,9 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
     if (result != BREAK_RUNTIME_OK) goto finished;
     if (config->network) {
         stage = "network_start";
-        result = config->network_hooks->start(config->network_hooks->user, app->trace);
+        result = app_network_open_events(app);
+        if (result == BREAK_RUNTIME_OK)
+            result = config->network_hooks->start(config->network_hooks->user, app->trace);
         if (result != BREAK_RUNTIME_OK) goto finished;
         app->network_live = true;
     }

@@ -5662,7 +5662,7 @@ endif()
             apps/core_app/core_app_net_transport.c src/network/network.c src/platform/platform_fs.c
             src/core/trace_core_app.c src/core/clock_offset.c
             src/platform/time.c src/physics/physics_sync.c src/physics/physics.c
-            src/physics/bvh.c src/math/math.c src/core/log.c)
+            src/physics/bvh.c src/math/math.c src/core/log.c src/core/profiler.c)
         set_property(TARGET test_core_app_net_transport PROPERTY C_STANDARD 11)
         target_include_directories(test_core_app_net_transport PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/apps/core_app ${TEST_INCLUDE_DIRS})
@@ -5670,8 +5670,10 @@ endif()
             CORE_APP_NET_TRANSPORT=1 CORE_APP_NET_TRANSPORT_TESTING=1
             ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=200809L
             CORE_APP_TEST_SSL_FIXTURE_DIR=${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl)
+        # runtime_core: the transport publishes reactor events on the bus,
+        # and the bus records drops through the engine profiler.
         target_link_libraries(test_core_app_net_transport PRIVATE
-            core_app_network break_net_test break_online m Threads::Threads)
+            core_app_network break_net_test break_online runtime_core m Threads::Threads)
         add_test(NAME test_core_app_net_transport COMMAND test_core_app_net_transport)
         set_tests_properties(test_core_app_net_transport PROPERTIES
             LABELS "network;snowflake;core_app" TIMEOUT 30)

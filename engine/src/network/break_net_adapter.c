@@ -171,6 +171,8 @@ struct BreakNetReactor {
     atomic_bool host_active;
     atomic_bool host_exited;
     PlatformMutex queue_mutex;
+    _Atomic(BreakNetEventHookFn) event_hook;
+    _Atomic(void *) event_hook_user;
     BreakNetEvent events[BREAK_NET_EVENT_QUEUE_CAPACITY];
     size_t event_head;
     size_t event_count;
@@ -1690,21 +1692,47 @@ bool break_net_reactor_is_ready(const BreakNetReactor *reactor)
     return ready;
 }
 
+bool break_net_reactor_set_event_hook(BreakNetReactor *reactor,
+                                      BreakNetEventHookFn hook, void *user)
+{
+    if (reactor == NULL) return false;
+    atomic_store(&reactor->event_hook, (BreakNetEventHookFn)NULL);
+    atomic_store(&reactor->event_hook_user, user);
+    atomic_store(&reactor->event_hook, hook);
+    return true;
+}
+
 static bool break_net_event_push(BreakNetReactor *reactor, BreakNetEvent *event)
 {
     size_t index;
+    bool queued = false;
+    BreakNetEventInfo info;
+    BreakNetEventHookFn hook;
     if (reactor == NULL || event == NULL) return false;
-    platform_mutex_lock(&reactor->queue_mutex);
-    if (reactor->event_count == BREAK_NET_EVENT_QUEUE_CAPACITY) {
-        platform_mutex_unlock(&reactor->queue_mutex);
-        return false;
+    memset(&info, 0, sizeof(info));
+    info.type = event->type;
+    info.connection_key = event->connection_key;
+    info.reason = event->reason;
+    if (event->type == BREAK_NET_EVENT_MESSAGE_RECEIVED) {
+        info.message_id = event->message.message_id;
+        info.correlation_id = event->message.correlation_id;
+        info.payload_size = event->message.size;
     }
-    index = (reactor->event_head + reactor->event_count) % BREAK_NET_EVENT_QUEUE_CAPACITY;
-    reactor->events[index] = *event;
-    memset(event, 0, sizeof(*event));
-    reactor->event_count++;
+    platform_mutex_lock(&reactor->queue_mutex);
+    if (reactor->event_count < BREAK_NET_EVENT_QUEUE_CAPACITY) {
+        index = (reactor->event_head + reactor->event_count) % BREAK_NET_EVENT_QUEUE_CAPACITY;
+        reactor->events[index] = *event;
+        memset(event, 0, sizeof(*event));
+        reactor->event_count++;
+        queued = true;
+    }
     platform_mutex_unlock(&reactor->queue_mutex);
-    return true;
+    hook = atomic_load(&reactor->event_hook);
+    if (hook != NULL) {
+        info.queued = queued;
+        hook(atomic_load(&reactor->event_hook_user), &info);
+    }
+    return queued;
 }
 
 BreakNetPollResult break_net_reactor_poll_event(BreakNetReactor *reactor,
