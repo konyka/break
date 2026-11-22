@@ -211,3 +211,11 @@ ShiningLight 的 `Win64ARMOpenSSL` 安装器（winget id `ShiningLight.OpenSSL.D
   0.56 秒通过。
 - **覆盖边界**：本机未安装 Vulkan SDK，本记录不宣称 Vulkan、GPU、native surface 或
   present 证据；仅运行 fuzz smoke/语料用例，不运行覆盖率引导的长时 fuzz。
+
+
+### 2026-11-22 framework 总线接入的矩阵补充
+
+- §3 的“运行时总线”场景新增 `test_framework_runtime_bus`：9 个 C++20 行为用例，覆盖真实 IO notice ABI、所有权、失败重试、畸形消息、背压和并发发布/Tick。默认 `empty` 仍不链接运行时；`BREAK_FRAMEWORK_ENABLE_RUNTIME=ON` 才生成 `common_runtime`。
+- L6 的 arm64 显式构建清单与 QEMU CTest 选择各新增该目标，选择数由上文的 275 项变为 **276 项**。本机没有 arm64 交叉 C++ 编译器，本次不提前写成 arm64 通过，须以 L6 实际作业收据确认。
+- L1/L2/L3、W1–W6、M1/M2 的完整构建会自动包含新目标；Windows 的测试链接把数学库限制在 UNIX 分支，避免请求不存在的 `m.lib`。各平台的实际结果仍以本次对应作业或实机记录为准。
+- 根 `test_framework_runtime_build_contract` 已在 Unix Makefiles 与 **Ninja Multi-Config 1.13** 各通过 1/1；每次均检查 default、显式引擎测试 OFF、未定义引擎测试开关、显式 ON 四个子树。该契约实际配置和构建目标，并用 CMake File API 核对目标与链接片段，不是源码文本匹配。
