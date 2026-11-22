@@ -269,6 +269,16 @@ struct CoreApp {
     /* Network event notices (CORE_APP_NET_EVENT_KIND) the transport
      * publishes on the run's bus; drained on the CoreAppThread after every
      * tick, totalled at destroy. */
+    /* IO completion notices on the run's own bus: the CoreAppThread drains
+     * them every tick and checks each names a scene read it waited for. */
+    BreakRuntimeBus *io_bus;
+    BreakRuntimeQueue *io_notices;
+    u32 io_subscriber;
+    u64 io_finished_ids[8];
+    u32 io_finished_count;
+    u64 io_finished_total;
+    u64 io_notices_seen;
+    u64 io_notices_unknown;
     BreakRuntimeBus *net_bus;
     BreakRuntimeQueue *net_events;
     u32 net_subscriber;
@@ -579,6 +589,59 @@ static void app_level_hook_unload(void *user, World *world) {
     (void)world;
 }
 
+/* A finished scene read, by request id, so the notice for it is
+ * recognised; a small ring is enough because notices are drained every
+ * tick and the facade runs at most four requests. */
+static void app_io_remember_finished(CoreApp *app, u64 request_id) {
+    app->io_finished_ids[app->io_finished_total % 8u] = request_id;
+    if (app->io_finished_count < 8u) app->io_finished_count++;
+    app->io_finished_total++;
+}
+
+static void app_io_drain_notices(CoreApp *app) {
+    if (!app->io_notices) return;
+    for (;;) {
+        BreakRuntimeOwnedMessage *message = NULL;
+        BreakRuntimeIoNotice notice;
+        bool known = false;
+        if (break_runtime_queue_poll(app->io_notices, &message) != BREAK_RUNTIME_OK || !message)
+            return;
+        if (break_runtime_io_notice_view(message, &notice) == BREAK_RUNTIME_OK) {
+            app->io_notices_seen++;
+            for (u32 i = 0u; i < app->io_finished_count; ++i)
+                if (app->io_finished_ids[i] == notice.request_id) known = true;
+            if (!known) app->io_notices_unknown++;
+        }
+        break_runtime_message_release(message);
+    }
+}
+
+static BreakRuntimeError app_io_open_notices(CoreApp *app) {
+    const BreakRuntimeQueueConfig queue_config = {32u, 8u};
+    const u16 kind = BREAK_RUNTIME_IO_NOTICE_KIND;
+    BreakRuntimeError result = break_runtime_bus_create(&app->io_bus);
+    if (result == BREAK_RUNTIME_OK)
+        result = break_runtime_queue_create(&queue_config, &app->io_notices);
+    if (result == BREAK_RUNTIME_OK) result = break_runtime_io_attach_bus(app->io_bus);
+    if (result == BREAK_RUNTIME_OK) {
+        result = break_runtime_bus_subscribe(app->io_bus, "core_app.io", app->io_notices, &kind,
+                                             1u, &app->io_subscriber);
+    }
+    return result;
+}
+
+/* After IO shut down (its workers publish until then). */
+static void app_io_close_notices(CoreApp *app) {
+    if (!app->io_bus) return;
+    (void)break_runtime_io_attach_bus(NULL);
+    if (app->io_subscriber) (void)break_runtime_bus_unsubscribe(app->io_bus, app->io_subscriber);
+    break_runtime_queue_destroy(app->io_notices);
+    break_runtime_bus_destroy(app->io_bus);
+    app->io_notices = NULL;
+    app->io_bus = NULL;
+    app->io_subscriber = 0u;
+}
+
 static BreakRuntimeError stage_bscn(CoreApp *app, CoreLevel *candidate,
                                          const char *root, const char *name,
                                          bool *runtime_fatal) {
@@ -618,6 +681,7 @@ static BreakRuntimeError stage_bscn(CoreApp *app, CoreLevel *candidate,
     BreakRuntimeIoCompletion completion;
     memset(&completion, 0, sizeof(completion));
     result = break_runtime_io_completion_view(message, &completion);
+    if (result == BREAK_RUNTIME_OK) app_io_remember_finished(app, completion.request_id);
     if (result != BREAK_RUNTIME_OK ||
         completion.state != BREAK_RUNTIME_IO_COMPLETED ||
         completion.byte_size == 0u || completion.byte_size > BSCN_MAX_FILE_BYTES ||
@@ -2570,7 +2634,18 @@ static BreakRuntimeError core_app_stop_io(CoreApp *app) {
     memset(&stats, 0, sizeof(stats));
     result = break_runtime_io_stats(&stats);
     if (result != BREAK_RUNTIME_OK || stats.active != 0u) return BREAK_RUNTIME_FAILED;
-    return app_trace(app, "COREAPPTRACE version=1 event=io_stopped active=0\n");
+    result = app_trace(app, "COREAPPTRACE version=1 event=io_stopped active=0\n");
+    if (result == BREAK_RUNTIME_OK && app->io_notices) {
+        app_io_drain_notices(app);
+        result = app_trace(app,
+            "COREAPPTRACE version=1 event=io_notices seen=%" PRIu64 " finished=%" PRIu64
+            " unknown=%" PRIu64 " dropped=%" PRIu64 "\n",
+            app->io_notices_seen, app->io_finished_total, app->io_notices_unknown,
+            app->io_finished_total > app->io_notices_seen
+                ? app->io_finished_total - app->io_notices_seen : 0u);
+    }
+    app_io_close_notices(app);
+    return result;
 }
 
 static BreakRuntimeError app_level_join_cb(void *user) {
@@ -2975,6 +3050,8 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
     io_config.vfs = app->vfs;
     io_config.worker_count = 1u;
     io_config.request_capacity = 4u;
+    result = app_io_open_notices(app);
+    if (result != BREAK_RUNTIME_OK) goto finished;
     result = break_runtime_io_init(&io_config);
     if (result != BREAK_RUNTIME_OK) goto finished;
     app->io_running = true;
@@ -3051,6 +3128,7 @@ BreakRuntimeError core_app_run(const CoreAppConfig *config, int *out_exit_code) 
             ended = true;
             break;
         }
+        app_io_drain_notices(app);
         stage = "input";
         result = core_app_input_begin_tick(app->input, tick,
                                            (u64)tick * CORE_APP_FIXED_DT_NS / 1000000u);
@@ -3264,6 +3342,9 @@ finished:
         result = BREAK_RUNTIME_OK;
     }
     break_runtime_coordinator_destroy(app->coordinator);
+    /* A live IO facade (a shutdown that timed out) may still publish: its
+     * bus is then kept, like the facade itself. */
+    if (!app->io_running) app_io_close_notices(app);
     if (app->trace) fclose(app->trace);
     core_app_input_destroy(app->input);
     free(app->scenario.events);

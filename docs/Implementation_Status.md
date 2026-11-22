@@ -376,6 +376,12 @@
   - `test_anim_aim` 1→5 例：可达目标使根、中关节旋转而末端不变，结果为单位四元数；半权重的修正小于全权重；权重夹到 [0, 1]，aim 与 look 两槽互不影响，非法槽与 NULL 不改状态；链关节超出调用方骨骼数时跳过。
 - **验证**：五种变异均被检出：去掉包围对查找、socket 只用平移、名字长度上限放宽、IK 忽略权重、权重不设上限。原生 CTest 458/458；arm64 计数文件追加这三项分项数。
 
+## LogicThread 订阅 IO 通知（2026-11-22）
+
+- **问题**：`missing_capabilities.md` 第 5 节记录 LogicThread 尚未接入总线。
+- **变更**：core_app 在 IO 初始化前创建总线并挂接 IO facade，CoreAppThread 每个 tick 取空 IO 通知，按请求 id 核对，停止时写 `event=io_notices`。
+- **验证**：`test_core_app_lifecycle_load_unload` 实测 `seen=2 finished=2 unknown=0 dropped=0`；三种变异均被检出。
+
 ## PAL/MainLoop 接入消息总线（2026-11-22）
 
 - **问题**：`missing_capabilities.md` 第 5 节记录 PAL/MainLoop 尚未接入总线。

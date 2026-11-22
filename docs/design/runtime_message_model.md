@@ -429,3 +429,11 @@ Network 是第四个接入总线的线程域，分两层：
 测试：`test_runtime_mainloop` 5 例：初始状态只报一次、不变的帧不发布；多项变化按固定顺序各一条；仅高度变化也算 resize；关闭请求不重复、取消后再发；最小化 0×0 是 resize；2 槽队列时 7 条中 5 条计为丢弃，之后的变化相对最后一次观察计算；缩放为负或 NaN 被拒；冲突 kind 被拒；通知解析拒绝未知类型、错误长度和错误 kind。`test_runtime_mainloop_platform` 1 例：用无需显示器的 mobile 平台层，`platform_mobile_resize` 产生 RESIZED 与 WSI_CHANGED（RESIZED 状态），`platform_mobile_notify_suspend` 产生 WSI_CHANGED（SUSPENDED，旧状态 RESIZED），关闭请求按调用方传入。变异检查（关闭请求重复发送、关闭请求不随取消清除、不报旧 WSI 状态、只比较宽度、丢弃计为送达、缩放截断而不是四舍五入、解析不检查类型上限、从不记录已观察）均被检出；“只比较宽度”第一轮未检出，补充仅高度变化的用例后检出。实机：Fedora Wayland 上以 `BREAK_EDITOR_INPUT_SCRIPT=ON` 构建的编辑器运行 `wait 30` + `quit` 脚本，Vulkan 后端，正常退出并打印 `observed=31 published=0 dropped=3`。编辑器内目前没有订阅者，所以初始的三条通知计为丢弃。
 
 仍未做：编辑器内的订阅方（例如远程会话把窗口变化转告客户端）；LogicThread 的现有队列接入总线。
+
+### 补充（2026-11-22）：LogicThread 订阅 IO 通知
+
+前面各节让 worker、reactor 与主循环成为总线的发布方；core_app 的 CoreAppThread（core_app 中的 LogicThread，拥有 World、关卡与资源状态）现在是 IO 通知的订阅方。`core_app_run` 在 `break_runtime_io_init` 之前创建自己的总线和 32 槽队列（8 个 control 预留槽），`break_runtime_io_attach_bus` 挂接，订阅 `BREAK_RUNTIME_IO_NOTICE_KIND`。CoreAppThread 每个 tick 开始时取空队列；每次关卡场景读取完成时记下请求 id，每条通知都要能对应一个已完成的读取，否则计为 unknown。IO 停止后写出 `event=io_notices seen=N finished=M unknown=U dropped=D`（`io_stopped` 行保持不变），随后解除挂接并销毁总线；若 IO shutdown 超时，facade 仍可能发布，总线与 facade 一样保留。
+
+测试：`test_core_app_lifecycle_load_unload` 要求两次关卡加载各有一条通知（seen = finished ≥ 2），unknown 与 dropped 均为 0。实测 `seen=2 finished=2 unknown=0 dropped=0`。变异检查：不挂接总线、不记录完成的请求、记录错误的请求 id，均使该用例失败。
+
+至此，Task、IO、Network、PAL/MainLoop、语音和 Profiler 都已接到总线上，LogicThread 也作为订阅方接入。仍未做：编辑器内的主循环通知订阅方；core_app 之外（C++ framework 的 `Init/Tick/DeInit`）的 LogicThread 尚未消费总线。

@@ -1553,6 +1553,15 @@ else()
     if(NOT normal_trace MATCHES "event=io_stopped active=0\n")
         record_error("load_unload: runtime IO did not finish with zero live requests")
     endif()
+    # The CoreAppThread follows IO completions through the runtime bus: one
+    # notice per finished scene read (two level loads here), none dropped,
+    # and every notice names a request the app submitted.
+    if(NOT normal_trace MATCHES "event=io_notices seen=([0-9]+) finished=([0-9]+) unknown=([0-9]+) dropped=([0-9]+)\n")
+        record_error("load_unload: no io_notices line: ${normal_trace}")
+    elseif(CMAKE_MATCH_1 LESS 2 OR NOT CMAKE_MATCH_1 EQUAL CMAKE_MATCH_2 OR  # two level loads
+           NOT CMAKE_MATCH_3 EQUAL 0 OR NOT CMAKE_MATCH_4 EQUAL 0)
+        record_error("load_unload: io notices seen=${CMAKE_MATCH_1} finished=${CMAKE_MATCH_2} unknown=${CMAKE_MATCH_3} dropped=${CMAKE_MATCH_4}")
+    endif()
     if(normal_trace MATCHES "event=load_rejected")
         record_error("load_unload: formal assets were unexpectedly rejected: ${normal_trace}")
     endif()
