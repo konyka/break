@@ -41,6 +41,8 @@
 #include <stb_image_write.h>
 #define BREAK_RUNTIME_TESTING 1
 #include <runtime/runtime_test_hooks.h>
+#include <runtime/runtime_bus.h>
+#include <runtime/runtime_mainloop.h>
 #undef BREAK_RUNTIME_TESTING
 
 #include <core/profiler.h>
@@ -8446,6 +8448,115 @@ TEST(render_panel_throttle_4hz_and_device_lost)
 #define RENDER_PANEL_STR2(x) #x
 #define RENDER_PANEL_STR(x) RENDER_PANEL_STR2(x)
 
+/* Window facts from the main loop reach the render debugger through the
+ * runtime bus: the shell subscribes, drains its queue every tick and shows
+ * the latest size, surface state, scale and close requests. */
+TEST(render_panel_shows_main_loop_window_notices)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakRuntimeBus *bus = NULL;
+    BreakRuntimeMainLoop *ml = NULL;
+    BreakRuntimeMainLoopFacts f;
+    BreakEditorMainLoopStats st;
+    char detached_rows[32][96];
+    u32 detached_count;
+    u32 i;
+    ASSERT_NOT_NULL(shell);
+    ASSERT_EQ(break_runtime_bus_create(&bus), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_mainloop_create(bus, &ml), BREAK_RUNTIME_OK);
+    ASSERT_FALSE(break_editor_shell_attach_mainloop_bus(NULL, bus));
+    ASSERT_TRUE(break_editor_shell_attach_mainloop_bus(shell, bus));
+    ASSERT_FALSE(break_editor_shell_attach_mainloop_bus(shell, bus)); /* once */
+    g_render_clock_us = UINT64_C(5000000);
+    break_editor_shell_set_render_clock_for_test(shell, render_test_clock, NULL);
+    break_editor_shell_set_render_source_for_test(shell, &k_render_fake_source);
+    break_editor_shell_set_render_device(shell, (RHIDevice *)&g_render_fake_device);
+
+    break_editor_shell_tick(shell);
+    ASSERT_TRUE(render_row_has(shell, "window: no notices"));
+
+    memset(&f, 0, sizeof(f));
+    f.frame = 1u;
+    f.drawable_width = 1280u;
+    f.drawable_height = 800u;
+    f.content_scale = 1.25f;
+    f.wsi_state = 1u;
+    ASSERT_EQ(break_runtime_mainloop_observe(ml, &f), BREAK_RUNTIME_OK);
+    g_render_clock_us += UINT64_C(300000);
+    break_editor_shell_tick(shell);
+    ASSERT_TRUE(render_row_has(shell, "window: 1280x800 scale=1.250 wsi=created closes=0"));
+
+    f.frame = 2u;
+    f.drawable_width = 640u;
+    f.wsi_state = 4u;
+    f.close_requested = true;
+    ASSERT_EQ(break_runtime_mainloop_observe(ml, &f), BREAK_RUNTIME_OK);
+    g_render_clock_us += UINT64_C(300000);
+    break_editor_shell_tick(shell);
+    ASSERT_TRUE(render_row_has(shell, "window: 640x800 scale=1.250 wsi=suspended closes=1"));
+
+    ASSERT_TRUE(break_editor_shell_mainloop_stats(shell, &st));
+    ASSERT_EQ(st.received, 6u);
+    ASSERT_EQ(st.last_frame, 2u);
+
+    /* NULL unsubscribes, removes the row and is safe to repeat. */
+    ASSERT_TRUE(break_editor_shell_attach_mainloop_bus(shell, NULL));
+    ASSERT_TRUE(break_editor_shell_attach_mainloop_bus(shell, NULL));
+    g_render_clock_us += UINT64_C(300000);
+    break_editor_shell_tick(shell);
+    ASSERT_FALSE(render_row_has(shell, "window:"));
+    detached_count = break_editor_shell_render_row_count(shell);
+    ASSERT_TRUE(detached_count <= 32u);
+    for (i = 0u; i < detached_count; i++) {
+        const char *text = break_editor_shell_render_row_text(shell, i);
+        ASSERT_NOT_NULL(text);
+        (void)snprintf(detached_rows[i], sizeof(detached_rows[i]), "%s", text);
+    }
+
+    /* A real fact change after detach must not reach the old shell queue. */
+    f.frame = 3u;
+    f.drawable_width = 320u;
+    f.close_requested = false;
+    ASSERT_EQ(break_runtime_mainloop_observe(ml, &f), BREAK_RUNTIME_OK);
+    g_render_clock_us += UINT64_C(300000);
+    break_editor_shell_tick(shell);
+    ASSERT_TRUE(break_editor_shell_mainloop_stats(shell, &st));
+    ASSERT_EQ(st.received, 6u);
+    ASSERT_EQ(st.last_frame, 2u);
+    ASSERT_EQ(break_editor_shell_render_row_count(shell), detached_count);
+    for (i = 0u; i < detached_count; i++) {
+        ASSERT_STR_EQ(break_editor_shell_render_row_text(shell, i), detached_rows[i]);
+    }
+
+    /* The same bus can be attached again and delivers subsequent changes. */
+    ASSERT_TRUE(break_editor_shell_attach_mainloop_bus(shell, bus));
+    ASSERT_FALSE(break_editor_shell_attach_mainloop_bus(shell, bus));
+    g_render_clock_us += UINT64_C(300000);
+    break_editor_shell_tick(shell);
+    ASSERT_TRUE(render_row_has(shell, "window: no notices"));
+    f.frame = 4u;
+    f.drawable_width = 160u;
+    ASSERT_EQ(break_runtime_mainloop_observe(ml, &f), BREAK_RUNTIME_OK);
+    g_render_clock_us += UINT64_C(300000);
+    break_editor_shell_tick(shell);
+    ASSERT_TRUE(render_row_has(shell, "window: 160x800 scale=1.250 wsi=suspended closes=0"));
+    ASSERT_TRUE(break_editor_shell_mainloop_stats(shell, &st));
+    ASSERT_EQ(st.received, 1u);
+    ASSERT_EQ(st.last_frame, 4u);
+
+    /* Detach before destroying the bus; shell destruction then has no stale
+     * subscription or queue to touch. */
+    ASSERT_TRUE(break_editor_shell_attach_mainloop_bus(shell, NULL));
+    ASSERT_TRUE(break_editor_shell_attach_mainloop_bus(shell, NULL));
+    g_render_clock_us += UINT64_C(300000);
+    break_editor_shell_tick(shell);
+    ASSERT_FALSE(render_row_has(shell, "window:"));
+    break_runtime_mainloop_destroy(ml);
+    break_runtime_bus_destroy(bus);
+    break_editor_shell_set_render_device(shell, NULL);
+    break_editor_shell_destroy(shell);
+}
+
 TEST(render_panel_source_is_read_only)
 {
     /* source-scan pin: the panel reaches the renderer only through the
@@ -14927,6 +15038,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(render_panel_rows_from_device_source_and_viewport_stats);
     RUN_TEST(render_panel_throttle_4hz_and_device_lost);
     RUN_TEST(render_panel_source_is_read_only);
+    RUN_TEST(render_panel_shows_main_loop_window_notices);
     RUN_TEST(shader_reload_ctrl_shift_r_queues_without_sync_rhi);
     RUN_TEST(shader_reload_watcher_applies_pair_keeps_old_and_recovers);
     RUN_TEST(shader_reload_follows_included_files);

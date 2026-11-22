@@ -383,6 +383,11 @@
   - `test_anim_aim` 1→5 例：可达目标使根、中关节旋转而末端不变，结果为单位四元数；半权重的修正小于全权重；权重夹到 [0, 1]，aim 与 look 两槽互不影响，非法槽与 NULL 不改状态；链关节超出调用方骨骼数时跳过。
 - **验证**：五种变异均被检出：去掉包围对查找、socket 只用平移、名字长度上限放宽、IK 忽略权重、权重不设上限。原生 CTest 458/458；arm64 计数文件追加这三项分项数。
 
+## 编辑器订阅主循环通知（2026-11-22）
+
+- **变更**：`break_editor_shell_attach_mainloop_bus` 让 shell 以自有队列订阅主循环通知，每帧取空；渲染调试面板增加 `window:` 行；`editor_main.c` 挂接与解除。修复 NULL 挂接未实际解除的问题：现在会同步退订、销毁队列并移除 `window:` 行，之后可用同一总线重新挂接。
+- **验证**：生命周期回归先在 `test_editor_shell.c:8507` 因解除后仍有 `window:` 行而 RED（186 passed、1 failed、187 total），修复后 `build-current-vk/test_editor_shell` 187/187。用变化事实验证解除后 `received/last_frame` 和其余面板行不变，并覆盖同总线重挂、重复解除与销毁顺序。五种原有变异均被检出；Wayland 实机 `published=3 dropped=0 shell_received=3`。
+
 ## LogicThread 订阅 IO 通知（2026-11-22）
 
 - **问题**：`missing_capabilities.md` 第 5 节记录 LogicThread 尚未接入总线。

@@ -395,7 +395,8 @@ int main(int argc, char **argv) {
   BreakRuntimeBus *mainloop_bus = NULL;
   BreakRuntimeMainLoop *mainloop = NULL;
   if (break_runtime_bus_create(&mainloop_bus) != BREAK_RUNTIME_OK ||
-      break_runtime_mainloop_create(mainloop_bus, &mainloop) != BREAK_RUNTIME_OK) {
+      break_runtime_mainloop_create(mainloop_bus, &mainloop) != BREAK_RUNTIME_OK ||
+      !break_editor_shell_attach_mainloop_bus(shell, mainloop_bus)) {
     fprintf(stderr, "editor: main loop notices unavailable\n");
   }
   u64 mainloop_frame = 0u;
@@ -484,13 +485,19 @@ int main(int argc, char **argv) {
   if (mainloop != NULL) {
     BreakRuntimeMainLoopStats mainloop_stats;
     if (break_runtime_mainloop_stats(mainloop, &mainloop_stats) == BREAK_RUNTIME_OK) {
+      BreakEditorMainLoopStats shell_stats;
+      memset(&shell_stats, 0, sizeof(shell_stats));
+      (void)break_editor_shell_mainloop_stats(shell, &shell_stats);
       fprintf(stderr,
-              "editor: main loop notices observed=%llu published=%llu dropped=%llu\n",
+              "editor: main loop notices observed=%llu published=%llu dropped=%llu"
+              " shell_received=%llu\n",
               (unsigned long long)mainloop_stats.observed,
               (unsigned long long)mainloop_stats.published,
-              (unsigned long long)mainloop_stats.dropped);
+              (unsigned long long)mainloop_stats.dropped,
+              (unsigned long long)shell_stats.received);
     }
   }
+  (void)break_editor_shell_attach_mainloop_bus(shell, NULL);
   break_runtime_mainloop_destroy(mainloop);
   break_runtime_bus_destroy(mainloop_bus);
   if (keyring_watched) {

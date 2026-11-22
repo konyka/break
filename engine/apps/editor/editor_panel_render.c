@@ -25,6 +25,9 @@
  *     [7] viewport: proxies=<n> gizmo=<n> draws=<n> skipped=<reason>
  *     [8] shader reload: <watching|manual-only|shutdown-pending>
  *         busy=<0|1> applied=<n> failed=<n>, or "shader reload: unavailable"
+ *     [9] window: <w>x<h> scale=<s> wsi=<state> closes=<n> (only while the
+ *         shell has a main loop bus attached; "window: no notices" until the
+ *         first notice)
  *
  * THROTTLE: at most 4 refreshes per second (250,000 us) from
  * break_editor_shell_tick; the first tick after create and after any device
@@ -69,6 +72,8 @@ struct BreakEditorPanelRender {
     u64 last_refresh_us;
     u32 row_count;
     char rows[EDITOR_RENDER_MAX_ROWS][EDITOR_RENDER_ROW_BYTES];
+    bool has_window_row;
+    char window_row[EDITOR_RENDER_ROW_BYTES];
 };
 
 /* RENDER_PANEL_READONLY_BEGIN */
@@ -265,10 +270,30 @@ static void render_panel_refresh(BreakEditorPanelRender *p,
             }
         }
         p->row_count = 9u;
+        if (p->has_window_row) {
+            (void)snprintf(p->rows[p->row_count++], EDITOR_RENDER_ROW_BYTES, "%s",
+                           p->window_row);
+        }
     }
     render_panel_append_textures(p, textures);
     if (p->list != NULL) {
         (void)my_list_view_refresh(p->list);
+    }
+}
+
+void editor_panel_render_set_window_row(BreakEditorPanelRender *p, const char *text) {
+    if (p == NULL) {
+        return;
+    }
+    if (text == NULL) {
+        if (p->has_window_row) p->force_refresh = true;
+        p->has_window_row = false;
+        return;
+    }
+    if (!p->has_window_row || strncmp(p->window_row, text, EDITOR_RENDER_ROW_BYTES) != 0) {
+        (void)snprintf(p->window_row, EDITOR_RENDER_ROW_BYTES, "%s", text);
+        p->has_window_row = true;
+        p->force_refresh = true;
     }
 }
 

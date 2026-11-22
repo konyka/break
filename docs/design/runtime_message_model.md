@@ -437,3 +437,11 @@ Network 是第四个接入总线的线程域，分两层：
 测试：`test_core_app_lifecycle_load_unload` 要求两次关卡加载各有一条通知（seen = finished ≥ 2），unknown 与 dropped 均为 0。实测 `seen=2 finished=2 unknown=0 dropped=0`。变异检查：不挂接总线、不记录完成的请求、记录错误的请求 id，均使该用例失败。
 
 至此，Task、IO、Network、PAL/MainLoop、语音和 Profiler 都已接到总线上，LogicThread 也作为订阅方接入。仍未做：编辑器内的主循环通知订阅方；core_app 之外（C++ framework 的 `Init/Tick/DeInit`）的 LogicThread 尚未消费总线。
+
+### 补充（2026-11-22）：编辑器订阅主循环通知
+
+编辑器 shell 成为主循环通知的订阅方。`break_editor_shell_attach_mainloop_bus(shell, bus)`（`engine/apps/editor/editor_panels.h`）登记 kind 并以 64 槽（16 个 control 预留）的自有队列订阅，同时只能挂接一次，重复挂接被拒；传 NULL 同步退订、销毁队列并移除面板行，之后可用同一总线重新挂接。`break_editor_shell_destroy` 在释放渲染面板之前也会解除。`break_editor_shell_tick` 每帧取空队列，记录最新尺寸、WSI 状态、缩放与关闭请求次数，渲染调试面板在固定的 9 行之后多显示一行 `window: <w>x<h> scale=<s> wsi=<状态> closes=<n>`（挂接后、收到第一条通知前为 `window: no notices`）。未挂接时面板行数与内容不变。`editor_main.c` 创建观察器后立即挂接，退出时先解除再销毁总线，stderr 行增加 `shell_received=N`。
+
+测试：`test_editor_shell` 新增 `render_panel_shows_main_loop_window_notices`（`build-current-vk` 当前配置共 187 例）：挂接前后的行、两次观察后行内容随尺寸、缩放、WSI 状态和关闭请求更新，共收到 6 条通知，重复挂接被拒；解除后发布确有变化的事实，shell 的 `received/last_frame` 与其余面板行不变且 `window:` 行移除；同一总线可重新挂接并接收后续变化，重复解除安全，解除后再销毁总线和 shell 不留下订阅。该回归修复前在“解除后仍有 `window:` 行”断言失败（186 passed、1 failed、187 total），修复后 187/187。变异检查：不统计关闭请求、不更新 WSI 状态、允许重复挂接、解除不生效、tick 不取空队列，均被检出。实机：Wayland 上编辑器脚本运行输出 `observed=31 published=3 dropped=0 shell_received=3`（此前没有订阅方时为 `published=0 dropped=3`）。
+
+仍未做：core_app 之外（C++ framework 的 `Init/Tick/DeInit`）的 LogicThread 尚未消费总线。

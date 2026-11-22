@@ -37,6 +37,9 @@ void break_editor_shell_fail_diag_attach_for_test(void) {
 #include <editor/editor_plugin_sections.h>
 
 #include "platform/time.h"
+#include <runtime/runtime_bus.h>
+#include <runtime/runtime_mainloop.h>
+#include <runtime/runtime_queue.h>
 
 #include "mypal/dummy/my_pal_dummy.h"
 #include "mypal/my_event.h"
@@ -189,6 +192,15 @@ struct BreakEditorShell {
     /* render debugger (pure view over the borrowed device + vp3d stats;
      * diagnostics column, under the network panel) */
     BreakEditorPanelRender *render_panel;
+    /* main loop window notices (runtime_mainloop.h): borrowed bus, owned
+     * queue, drained every tick; latest state shown by the render panel */
+    BreakRuntimeBus *mainloop_bus;
+    BreakRuntimeQueue *mainloop_queue;
+    u32 mainloop_subscriber;
+    bool mainloop_seen;
+    u32 mainloop_width, mainloop_height, mainloop_scale_milli, mainloop_wsi;
+    u64 mainloop_closes;
+    BreakEditorMainLoopStats mainloop_stats;
 
     /* Phase 4 Task 1: host-attached remote session (BORROWED — DEFAULT OFF;
      * the shell only ticks it, never creates or destroys it). */
@@ -3245,6 +3257,101 @@ BreakEditorShell *break_editor_shell_create_for_test(void) {
 }
 #endif
 
+static const char *shell_wsi_name(u32 state) {
+    static const char *const names[] = {"unavailable", "created", "resized",
+                                        "lost", "suspended", "destroying"};
+    return state < sizeof(names) / sizeof(names[0]) ? names[state] : "unknown";
+}
+
+static void shell_mainloop_detach(BreakEditorShell *shell) {
+    if (shell->mainloop_bus != NULL && shell->mainloop_subscriber != 0u) {
+        (void)break_runtime_bus_unsubscribe(shell->mainloop_bus, shell->mainloop_subscriber);
+    }
+    break_runtime_queue_destroy(shell->mainloop_queue);
+    shell->mainloop_queue = NULL;
+    shell->mainloop_bus = NULL;
+    shell->mainloop_subscriber = 0u;
+    editor_panel_render_set_window_row(shell->render_panel, NULL);
+}
+
+bool break_editor_shell_attach_mainloop_bus(BreakEditorShell *shell, BreakRuntimeBus *bus) {
+    const BreakRuntimeQueueConfig queue_config = {64u, 16u};
+    const u16 kind = BREAK_RUNTIME_MAINLOOP_NOTICE_KIND;
+    if (shell == NULL) {
+        return false;
+    }
+    if (bus == NULL) {
+        shell_mainloop_detach(shell);
+        return true;
+    }
+    if (shell->mainloop_bus != NULL ||
+        break_runtime_mainloop_register_kind(bus) != BREAK_RUNTIME_OK ||
+        break_runtime_queue_create(&queue_config, &shell->mainloop_queue) != BREAK_RUNTIME_OK) {
+        return false;
+    }
+    if (break_runtime_bus_subscribe(bus, "editor.shell", shell->mainloop_queue, &kind, 1u,
+                                    &shell->mainloop_subscriber) != BREAK_RUNTIME_OK) {
+        break_runtime_queue_destroy(shell->mainloop_queue);
+        shell->mainloop_queue = NULL;
+        return false;
+    }
+    shell->mainloop_bus = bus;
+    shell->mainloop_seen = false;
+    shell->mainloop_closes = 0u;
+    memset(&shell->mainloop_stats, 0, sizeof(shell->mainloop_stats));
+    editor_panel_render_set_window_row(shell->render_panel, "window: no notices");
+    return true;
+}
+
+bool break_editor_shell_mainloop_stats(const BreakEditorShell *shell,
+                                       BreakEditorMainLoopStats *out) {
+    if (shell == NULL || out == NULL) {
+        return false;
+    }
+    *out = shell->mainloop_stats;
+    return true;
+}
+
+static void shell_mainloop_drain(BreakEditorShell *shell) {
+    bool changed = false;
+    char row[96];
+    if (shell->mainloop_queue == NULL) {
+        return;
+    }
+    for (;;) {
+        BreakRuntimeOwnedMessage *m = NULL;
+        BreakRuntimeMainLoopNotice n;
+        if (break_runtime_queue_poll(shell->mainloop_queue, &m) != BREAK_RUNTIME_OK || m == NULL) {
+            break;
+        }
+        if (break_runtime_mainloop_notice_view(m, &n) == BREAK_RUNTIME_OK) {
+            shell->mainloop_stats.received++;
+            shell->mainloop_stats.last_frame = n.frame;
+            shell->mainloop_seen = true;
+            changed = true;
+            switch (n.type) {
+            case BREAK_RUNTIME_MAINLOOP_CLOSE_REQUESTED: shell->mainloop_closes++; break;
+            case BREAK_RUNTIME_MAINLOOP_RESIZED:
+                shell->mainloop_width = n.a;
+                shell->mainloop_height = n.b;
+                break;
+            case BREAK_RUNTIME_MAINLOOP_WSI_CHANGED: shell->mainloop_wsi = n.a; break;
+            default: shell->mainloop_scale_milli = n.a; break;
+            }
+        }
+        break_runtime_message_release(m);
+    }
+    if (changed && shell->mainloop_seen) {
+        (void)snprintf(row, sizeof(row), "window: %ux%u scale=%u.%03u wsi=%s closes=%llu",
+                       (unsigned)shell->mainloop_width, (unsigned)shell->mainloop_height,
+                       (unsigned)(shell->mainloop_scale_milli / 1000u),
+                       (unsigned)(shell->mainloop_scale_milli % 1000u),
+                       shell_wsi_name(shell->mainloop_wsi),
+                       (unsigned long long)shell->mainloop_closes);
+        editor_panel_render_set_window_row(shell->render_panel, row);
+    }
+}
+
 bool break_editor_shell_destroy(BreakEditorShell *shell) {
     if (shell == NULL) {
         return true;
@@ -3270,6 +3377,7 @@ bool break_editor_shell_destroy(BreakEditorShell *shell) {
      * doc-borrowing console, so its later destroy never reaches this shell */
     editor_remote_shell_destroyed(shell->remote, shell);
     shell->remote = NULL;
+    shell_mainloop_detach(shell);
     /* same for an attached hot-reload object: it drops its shell pointer, so
      * its later tick/destroy never reaches freed memory */
     editor_hot_reload_shell_destroyed(shell->hot_reload, shell);
@@ -4099,6 +4207,7 @@ void break_editor_shell_tick(BreakEditorShell *shell) {
     editor_panel_network_tick(shell->network_panel);
     /* render debugger: <= 4 Hz pure read of the borrowed device and the
      * viewport's last-render stats */
+    shell_mainloop_drain(shell);
     editor_panel_render_tick(shell->render_panel, shell->vp3d,
                              shell->scene_textures);
     break_editor_viewport3d_tick(shell->vp3d);

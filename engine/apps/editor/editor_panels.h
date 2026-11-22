@@ -638,6 +638,23 @@ void break_editor_shell_network_tick_for_test(BreakEditorShell *shell);
 void break_editor_shell_fail_diag_attach_for_test(void);
 #endif
 
+/* ---------------- main loop window notices ----------------
+ * The host's main loop publishes window facts on a runtime bus
+ * (runtime/runtime_mainloop.h). attach subscribes the shell once (false
+ * when one is attached already, or for a NULL shell/bus registration
+ * failure); break_editor_shell_tick drains the queue and the render
+ * debugger shows the latest state as a "window:" row. NULL detaches; detach
+ * before the bus is destroyed (break_editor_shell_destroy detaches too). */
+struct BreakRuntimeBus;
+bool break_editor_shell_attach_mainloop_bus(BreakEditorShell *shell,
+                                            struct BreakRuntimeBus *bus);
+typedef struct BreakEditorMainLoopStats {
+    u64 received;   /* notices drained */
+    u64 last_frame; /* frame of the newest notice */
+} BreakEditorMainLoopStats;
+bool break_editor_shell_mainloop_stats(const BreakEditorShell *shell,
+                                       BreakEditorMainLoopStats *out);
+
 /* ---------------- render debugger panel ----------------
  * Pure view (docs/design/editor_render_debugger.md): backend / GPU / caps /
  * status / resource slots of the BORROWED render device plus the viewport's

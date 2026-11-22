@@ -264,6 +264,9 @@ struct BreakEditorSceneTextures;
 void editor_panel_render_tick(BreakEditorPanelRender *p,
                               const struct BreakEditorViewport3D *vp,
                               const struct BreakEditorSceneTextures *textures);
+/* Optional extra row after the fixed ones (the main loop window state);
+ * NULL removes it. Copied; marks the rows stale when it changes. */
+void editor_panel_render_set_window_row(BreakEditorPanelRender *p, const char *text);
 /* Marks the rows stale so the next tick rebuilds them (a texture changed). */
 void editor_panel_render_invalidate(BreakEditorPanelRender *p);
 void editor_panel_render_set_device(BreakEditorPanelRender *p, void *device);
