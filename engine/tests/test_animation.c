@@ -865,7 +865,7 @@ static u64 pose_hash(const AnimBlendState *st)
  * walk to lean midway, and odd frame times. Sampling and blending use only
  * +, *, / and sqrt, which IEEE 754 rounds exactly, and math sources build
  * without FMA contraction, so every architecture must reach the same bits.
- * IK is left out: it calls the platform atan2f. */
+ * IK is left out of these hashes. */
 TEST(blending_matches_the_cross_architecture_golden_hashes)
 {
     static AnimClip clips[2];

@@ -2097,7 +2097,7 @@ void physics_step(PhysicsWorld *pw, f32 dt) {
     /* Integration, then (R418) the post-integration leaf refit. A body that
      * is not CCD only reads and writes itself here, and its refit only reads
      * itself and writes its own leaf, so both can run per body and in any
-     * order: physics_integrate_range does them together, serially or on
+     * order: physics_integrate_job does them together, serially or on
      * jobs over disjoint body ranges (see physics_integrate_parallel). */
     if (!physics_integrate_parallel(pw, dt, &leaves_changed)) {
         for (u32 i = 0; i < pw->count; i++) {

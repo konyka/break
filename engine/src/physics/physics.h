@@ -91,7 +91,8 @@ typedef void (*PhysicsPostStepFn)(PhysicsWorld *pw, void *user);
  * Jobs touch disjoint bodies (islands of bodies with mass, solved in the
  * serial pair order) and the world statistics are replayed in pair order,
  * so the step is bit-identical to the serial solve. physics_step calls the
- * dispatcher up to twice per step (pair collection, then the solve), and it
+ * dispatcher up to three times per step (integration and refit, pair
+ * collection, then the solve), and it
  * must make the jobs' writes visible to the caller before it returns. The
  * solve stays serial while a contact callback is set, for steps with fewer
  * pairs than the world's minimum (default PHYSICS_PARALLEL_MIN_PAIRS, the

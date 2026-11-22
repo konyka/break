@@ -360,6 +360,17 @@ static int check(const char *name, const char *src, setup_fn setup) {
     return !same;
 }
 
+/* check() plus the requirement that the rule `fired` (e.g. "Watch@") shows
+ * up in the trace, so the case really exercises the invalidation. */
+static int check_fires(const char *name, const char *src, setup_fn setup, const char *fired) {
+    ProbeTrace off; uint64_t m;
+    if (check(name, src, setup)) return 1;
+    if (probe_run(src, 0, setup, &off, &m) != RE_STATUS_OK) return 1;
+    if (strstr(off.text, fired) != NULL) return 0;
+    printf("[NOFIRE] %s: %s missing from %.*s\n", name, fired, (int)off.size, off.text);
+    return 1;
+}
+
 static void set_int(re_facts_t *f, const char *n, int64_t v) {
     re_value_t x = {RE_VALUE_INT64, {.int64_value = v}};
     re_facts_set(f, (re_string_t){n, strlen(n)}, &x);
@@ -414,8 +425,8 @@ static const char focus2_src[] =
     "rule \"G1\" { agenda-group \"g\"; when Go == 1 then G1Hit = 1; }\n"
     "rule \"Z\" salience -10 { agenda-group \"main\"; when Go == 1 then Trig = 1; }\n";
 
-/* Member creation on an existing structured root: the failed read of Obj.y
- * leaves nothing in the read-set and set_member does not bump structure. */
+/* Member creation on an existing structured root: Watch first reads a
+ * missing member, and creating it later must still re-match Watch. */
 static void setup_member(re_facts_t *f, re_program_t *p) {
     (void)p;
     re_value_handle_t *obj = NULL;
@@ -430,7 +441,7 @@ static const char member_src[] =
     "rule \"Watch\" salience 5 { when Obj.y == 5 then Seen = 1; }\n"
     "rule \"Add\" { when Go == 1 then Obj.y = 5; Go = 2; }\n";
 static const char member_method_src[] =
-    "rule \"Watch\" salience 5 { when Obj.y == 5 then Seen = 1; }\n"
+    "rule \"Watch\" salience 5 { when Obj.Y == 5 then Seen = 1; }\n"
     "rule \"Add\" { when Go == 1 then $Obj.setY(5); Go = 2; }\n";
 
 /* goal(): reads of the goal rule's condition */
@@ -461,7 +472,7 @@ static const char arr_idx_src[] =
     "rule \"Watch\" salience 5 { when Arr.1 == 3 then Hit = 1; }\n"
     "rule \"Add\" { when Go == 1 then Arr += 3; Go = 2; }\n";
 static const char reset_src[] =
-    "rule \"Watch\" salience 5 { when Obj.x == 0 then Hit = 1; }\n"
+    "rule \"Watch\" salience 5 { when Obj.x == 7 then Hit = 1; }\n"
     "rule \"Add\" { when Go == 1 then Obj.x = 7; Go = 2; }\n";
 static void setup_tick(re_facts_t *f, re_program_t *p) { (void)p; g_tick = 0; set_int(f, "Go", 1); set_int(f, "N", 0); }
 static const char tick_src[] =
@@ -524,14 +535,14 @@ TEST(review_counterexamples_match_the_full_rematch) {
     bad += check("value toggle A->B->A stale pop", toggle_src, setup_toggle);
     bad += check("retract then clear flag", retract_src, setup_retract);
     bad += check("agenda focus pop-back v2", focus2_src, setup_focus);
-    bad += check("member creation Obj.y =", member_src, setup_member);
-    bad += check("member creation setY()", member_method_src, setup_member);
+    bad += check_fires("member creation Obj.y =", member_src, setup_member, "Watch@");
+    bad += check_fires("member creation setY()", member_method_src, setup_member, "Watch@");
     bad += check("goal() read-set", goal_src, setup_goal);
     bad += check("agenda focus with preset fact", focus2_src, setup_focus3);
     bad += check("agenda focus v4", focus4_src, setup_focus3);
     bad += check("agenda focus v3", focus3_src, setup_focus3);
     bad += check("Arr.1 failed read, then append", arr_idx_src, setup_arr);
-    bad += check("member write via dotted target", reset_src, setup_member);
+    bad += check_fires("member write via dotted target", reset_src, setup_member, "Watch@");
     bad += check("host function nested in arithmetic", tick_src, setup_tick);
     bad += check("random() nested in arithmetic", rnd_src, setup_tick);
     bad += check("goal() into exists over candidates", goal_exists_src, setup_two_obj);
