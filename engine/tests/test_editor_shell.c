@@ -8448,6 +8448,53 @@ TEST(render_panel_throttle_4hz_and_device_lost)
 #define RENDER_PANEL_STR2(x) #x
 #define RENDER_PANEL_STR(x) RENDER_PANEL_STR2(x)
 
+static u32 mainloop_editor_subscriber_id(BreakRuntimeBus *bus) {
+    char topology[2048];
+    usize len = 0u;
+    const char *subscribers;
+    u32 id = 0u;
+    if (break_runtime_bus_export_topology(bus, topology, sizeof(topology), &len) !=
+            BREAK_RUNTIME_OK ||
+        strstr(topology, "\"name\":\"editor.shell\"") == NULL) {
+        return 0u;
+    }
+    subscribers = strstr(topology, "\"subscribers\":[{\"id\":");
+    if (subscribers == NULL ||
+        sscanf(subscribers, "\"subscribers\":[{\"id\":%u", &id) != 1) {
+        return 0u;
+    }
+    return id;
+}
+
+static void assert_mainloop_editor_detached(BreakRuntimeBus *bus, u32 subscriber_id) {
+    BreakRuntimeBusSubscriberStats stats;
+    char topology[2048];
+    usize len = 0u;
+    /* Check the id first: a broken destroy leaves a freed queue in topology. */
+    ASSERT_EQ(break_runtime_bus_subscriber_stats(bus, subscriber_id, &stats),
+              BREAK_RUNTIME_STALE);
+    ASSERT_EQ(break_runtime_bus_export_topology(bus, topology, sizeof(topology), &len),
+              BREAK_RUNTIME_OK);
+    ASSERT_TRUE(strstr(topology, "\"name\":\"editor.shell\"") == NULL);
+}
+
+TEST(main_loop_shell_destroy_detaches_bus)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakRuntimeBus *bus = NULL;
+    u32 subscriber_id;
+    ASSERT_NOT_NULL(shell);
+    ASSERT_EQ(break_runtime_bus_create(&bus), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(break_editor_shell_attach_mainloop_bus(shell, bus));
+    subscriber_id = mainloop_editor_subscriber_id(bus);
+    ASSERT_NEQ(subscriber_id, 0u);
+
+    /* No explicit detach: destroying the owner must remove the subscription. */
+    ASSERT_TRUE(break_editor_shell_destroy(shell));
+    assert_mainloop_editor_detached(bus, subscriber_id);
+    break_runtime_bus_destroy(bus);
+}
+
 /* Window facts from the main loop reach the render debugger through the
  * runtime bus: the shell subscribes, drains its queue every tick and shows
  * the latest size, surface state, scale and close requests. */
@@ -13008,7 +13055,13 @@ static void shader_reload_shell_timeout_retry_body(ShaderReloadFixture *fx) {
     BreakEditorViewport3D *vp;
     BreakEditorDoc *doc;
     BreakEditorShaderReloadStats stats;
+    BreakRuntimeBus *bus = NULL;
+    BreakRuntimeMainLoop *ml = NULL;
+    BreakRuntimeMainLoopFacts facts;
+    BreakEditorMainLoopStats mainloop_stats;
+    BreakRuntimeBusSubscriberStats subscriber_stats;
     EditorRhiFakeStats fake;
+    u32 subscriber_id;
     u64 popped;
     shader_reload_fixture_open(fx, "editor_shader_reload_shell_stop_retry",
                                "REV=1 vertex\n", "REV=1 fragment\n");
@@ -13016,6 +13069,11 @@ static void shader_reload_shell_timeout_retry_body(ShaderReloadFixture *fx) {
     shell = fx->shell;
     vp = fx->vp;
     doc = break_editor_shell_doc(shell);
+    ASSERT_EQ(break_runtime_bus_create(&bus), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_mainloop_create(bus, &ml), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(break_editor_shell_attach_mainloop_bus(shell, bus));
+    subscriber_id = mainloop_editor_subscriber_id(bus);
+    ASSERT_NEQ(subscriber_id, 0u);
     popped = atomic_load_explicit(&g_break_runtime_test_reload_popped,
                                   memory_order_acquire);
     break_runtime_test_reload_set_gates(0u, 1u);
@@ -13030,6 +13088,8 @@ static void shader_reload_shell_timeout_retry_body(ShaderReloadFixture *fx) {
     ASSERT_FALSE(break_editor_viewport3d_destroy(vp));
     ASSERT_TRUE(break_editor_shell_viewport3d(shell) == vp);
     ASSERT_FALSE(break_editor_shell_destroy(shell));
+    ASSERT_EQ(break_runtime_bus_subscriber_stats(bus, subscriber_id, &subscriber_stats),
+              BREAK_RUNTIME_OK);
     ASSERT_TRUE(fx->shell == shell);
     ASSERT_TRUE(fx->vp == vp);
     ASSERT_TRUE(break_editor_shell_viewport3d(shell) == vp);
@@ -13044,7 +13104,17 @@ static void shader_reload_shell_timeout_retry_body(ShaderReloadFixture *fx) {
     ASSERT_FALSE(stats.busy);
     ASSERT_FALSE(break_editor_viewport3d_request_shader_reload(vp));
     break_editor_shell_set_render_device(shell, (RHIDevice *)&fx->device);
+    memset(&facts, 0, sizeof(facts));
+    facts.frame = 1u;
+    facts.drawable_width = 640u;
+    facts.drawable_height = 480u;
+    facts.content_scale = 1.0f;
+    facts.wsi_state = 1u;
+    ASSERT_EQ(break_runtime_mainloop_observe(ml, &facts), BREAK_RUNTIME_OK);
     break_editor_shell_tick(shell);
+    ASSERT_TRUE(break_editor_shell_mainloop_stats(shell, &mainloop_stats));
+    ASSERT_EQ(mainloop_stats.received, 3u);
+    ASSERT_EQ(mainloop_stats.last_frame, 1u);
     ASSERT_STR_EQ(break_editor_shell_render_row_text(shell, 8u),
                   "shader reload: shutdown-pending busy=0 applied=0 failed=0");
     break_editor_shell_set_render_device(shell, NULL);
@@ -13061,6 +13131,9 @@ static void shader_reload_shell_timeout_retry_body(ShaderReloadFixture *fx) {
     ASSERT_TRUE(break_editor_shell_destroy(shell));
     fx->shell = NULL;
     fx->vp = NULL;
+    assert_mainloop_editor_detached(bus, subscriber_id);
+    break_runtime_mainloop_destroy(ml);
+    break_runtime_bus_destroy(bus);
     editor_rhi_fake_stats(&fake);
     ASSERT_EQ(fake.live_shaders, 0u);
     ASSERT_EQ(fake.live_pipelines, 0u);
@@ -15039,6 +15112,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(render_panel_throttle_4hz_and_device_lost);
     RUN_TEST(render_panel_source_is_read_only);
     RUN_TEST(render_panel_shows_main_loop_window_notices);
+    RUN_TEST(main_loop_shell_destroy_detaches_bus);
     RUN_TEST(shader_reload_ctrl_shift_r_queues_without_sync_rhi);
     RUN_TEST(shader_reload_watcher_applies_pair_keeps_old_and_recovers);
     RUN_TEST(shader_reload_follows_included_files);
