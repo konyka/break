@@ -143,9 +143,47 @@ TEST(due_continuations_run_on_the_task_system) {
     ASSERT_EQ(seen6, 40u);
 }
 
+/* Continuations that run on workers may defer more work at the same time.
+ * defer once did an unlocked count++, so two workers could take the last
+ * free slot together and write one entry past the end of the buffer. */
+static TaskFrameQueue *g_shared;
+static _Atomic u32 g_redeferred;
+static _Atomic u32 g_refused;
+static void defer_from_worker(void *ctx) {
+    (void)ctx;
+    TaskFrameError e = task_frame_defer(g_shared, 6u, count_ran, NULL, NULL);
+    if (e == TASK_FRAME_OK) atomic_fetch_add(&g_redeferred, 1u);
+    else if (e == TASK_FRAME_FULL) atomic_fetch_add(&g_refused, 1u);
+}
+
+TEST(continuations_on_workers_may_defer_concurrently) {
+    TaskSystem *ts = task_system_create(4);
+    ASSERT_NOT_NULL(ts);
+    for (u32 round = 0; round < 200u; round++) {
+        TaskFrameQueue q;
+        ASSERT_TRUE(task_frame_queue_init(&q, 40u));
+        g_shared = &q;
+        atomic_store(&g_redeferred, 0u);
+        atomic_store(&g_refused, 0u);
+        atomic_store(&g_ran, 0u);
+        for (u32 i = 0; i < 40u; i++)
+            ASSERT_EQ(task_frame_defer(&q, 5u, defer_from_worker, NULL, NULL), TASK_FRAME_OK);
+        ASSERT_EQ(task_frame_run(&q, 5u, ts), 40u);
+        ASSERT_EQ(atomic_load(&g_redeferred) + atomic_load(&g_refused), 40u);
+        ASSERT_EQ(atomic_load(&g_redeferred), 40u);
+        ASSERT_EQ(task_frame_pending(&q), 40u);
+        ASSERT_EQ(task_frame_run(&q, 6u, ts), 40u);
+        ASSERT_EQ(atomic_load(&g_ran), 40u);
+        ASSERT_EQ(task_frame_pending(&q), 0u);
+        task_frame_queue_destroy(&q);
+    }
+    task_system_destroy(ts);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(continuations_run_at_their_frame_in_submission_order);
     RUN_TEST(continuation_deferred_from_a_continuation_waits_for_the_next_run);
     RUN_TEST(capacity_and_cancellation);
     RUN_TEST(due_continuations_run_on_the_task_system);
+    RUN_TEST(continuations_on_workers_may_defer_concurrently);
 TEST_MAIN_END()

@@ -9,11 +9,13 @@ bool task_frame_queue_init(TaskFrameQueue *q, u32 capacity) {
     q->entries = (TaskFrameEntry *)calloc(capacity, sizeof(*q->entries));
     if (!q->entries) return false;
     q->capacity = capacity;
+    platform_mutex_init(&q->mutex);
     return true;
 }
 
 void task_frame_queue_destroy(TaskFrameQueue *q) {
     if (!q) return;
+    if (q->entries) platform_mutex_destroy(&q->mutex);
     free(q->entries);
     memset(q, 0, sizeof(*q));
 }
@@ -21,13 +23,18 @@ void task_frame_queue_destroy(TaskFrameQueue *q) {
 TaskFrameError task_frame_defer(TaskFrameQueue *q, u64 frame, TaskFn fn, void *ctx,
                                 const TaskCancelToken *cancel) {
     if (!q || !q->entries || !fn) return TASK_FRAME_INVALID;
-    if (q->count == q->capacity) return TASK_FRAME_FULL;
+    platform_mutex_lock(&q->mutex);
+    if (q->count == q->capacity) {
+        platform_mutex_unlock(&q->mutex);
+        return TASK_FRAME_FULL;
+    }
     TaskFrameEntry *e = &q->entries[q->count++];
     e->frame = frame;
     e->sequence = q->next_sequence++;
     e->fn = fn;
     e->ctx = ctx;
     e->cancel = cancel;
+    platform_mutex_unlock(&q->mutex);
     return TASK_FRAME_OK;
 }
 
@@ -59,21 +66,30 @@ static u32 partition_due(TaskFrameQueue *q, u64 frame) {
 }
 
 u32 task_frame_run(TaskFrameQueue *q, u64 frame, TaskSystem *ts) {
-    if (!q || !q->entries || q->running) return 0u;
+    if (!q || !q->entries) return 0u;
+    platform_mutex_lock(&q->mutex);
+    if (q->running) {
+        platform_mutex_unlock(&q->mutex);
+        return 0u;
+    }
     u32 due = partition_due(q, frame);
-    if (due == 0u) return 0u;
     /* Detach the due entries first: continuations may defer into q while
      * they run, and those land in q, not in this batch, so they wait for the
      * next run even when they are due now. */
-    TaskFrameEntry *batch = (TaskFrameEntry *)malloc((size_t)due * sizeof(*batch));
-    if (!batch) return 0u;
+    TaskFrameEntry *batch = due ? (TaskFrameEntry *)malloc((size_t)due * sizeof(*batch)) : NULL;
+    if (!batch) {
+        platform_mutex_unlock(&q->mutex);
+        return 0u;
+    }
     memcpy(batch, q->entries, (size_t)due * sizeof(*batch));
     memmove(q->entries, q->entries + due, (size_t)(q->count - due) * sizeof(*batch));
     q->count -= due;
     q->running = true;
+    platform_mutex_unlock(&q->mutex);
+    u64 skipped = 0u;
     for (u32 i = 0; i < due; i++) {
         if (task_cancel_requested(batch[i].cancel)) {
-            q->cancelled++;
+            skipped++;
             continue;
         }
         /* a task that cannot be submitted runs inline rather than being lost */
@@ -82,15 +98,28 @@ u32 task_frame_run(TaskFrameQueue *q, u64 frame, TaskSystem *ts) {
             batch[i].fn(batch[i].ctx);
     }
     if (ts) task_wait(ts);
+    platform_mutex_lock(&q->mutex);
+    q->cancelled += skipped;
     q->running = false;
+    platform_mutex_unlock(&q->mutex);
     free(batch);
     return due;
 }
 
 u32 task_frame_pending(const TaskFrameQueue *q) {
-    return q ? q->count : 0u;
+    if (!q || !q->entries) return 0u;
+    TaskFrameQueue *m = (TaskFrameQueue *)q;
+    platform_mutex_lock(&m->mutex);
+    u32 n = m->count;
+    platform_mutex_unlock(&m->mutex);
+    return n;
 }
 
 u64 task_frame_cancelled(const TaskFrameQueue *q) {
-    return q ? q->cancelled : 0u;
+    if (!q || !q->entries) return 0u;
+    TaskFrameQueue *m = (TaskFrameQueue *)q;
+    platform_mutex_lock(&m->mutex);
+    u64 n = m->cancelled;
+    platform_mutex_unlock(&m->mutex);
+    return n;
 }

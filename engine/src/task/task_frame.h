@@ -3,8 +3,8 @@
 
 /* Cross-frame continuations: work scheduled to run when the owner reaches a
  * later frame. The queue belongs to one owner thread, which calls
- * task_frame_defer and task_frame_run; continuations may themselves defer
- * more work. It is not safe for several threads to defer concurrently.
+ * task_frame_run. task_frame_defer is safe from any thread, which covers
+ * continuations that defer more work while they run on several workers.
  *
  * task_frame_run(q, frame, ts) runs every continuation whose frame is <= the
  * given frame, oldest frame first and in submission order within a frame.
@@ -41,6 +41,7 @@ typedef struct TaskFrameQueue {
     u64 next_sequence;
     u64 cancelled;
     bool running;
+    PlatformMutex mutex; /* initialized when entries != NULL */
 } TaskFrameQueue;
 
 /* capacity must be > 0; returns false on a zero capacity or allocation
