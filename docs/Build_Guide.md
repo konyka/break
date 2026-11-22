@@ -1723,3 +1723,5 @@ int RunRuntimeBusApplication() {
 完整应用必须先停止 IO 生产者，再进入上述收尾路径；bus 只在 detach 后销毁。`RuntimeBusApplication` 不拥有也不自动执行进程级 IO shutdown；全局 attach 返回后，调用方还必须保证 bus 比所有挂接关系长寿。`BREAK_RUNTIME_TIMEOUT` 独立返回非零码 2，其他应用、shutdown 或 detach 失败返回非零码 1。返回 2 不表示完整清理：IO facade 可能仍为 `STOPPING` 并保留 live ownership，调用方必须继续调用 `break_runtime_io_shutdown` 直到返回 `BREAK_RUNTIME_OK`；在此之前不能重启 IO，也不能把这次返回当作关停完成。示例在 shutdown 后仍执行 detach；detach 后销毁 bus 本身安全，但这不会替代调用方继续完成 facade 关停的责任。
 
 `test_framework_runtime_bus` 当前覆盖 9 个行为用例；现有证据是 focused CTest 3/3、根构建契约 1/1（四个子树）以及实现者记录的 focused ASan/UBSan/TSan 通过。完整 Vulkan/OpenGL、ASan 非图形套件、fuzz、Windows/macOS/其他生成器与远端 CI 尚待最终验收，上述构建与示例不代表这些矩阵已经通过。
+
+后续本地验收补充：标准 Wayland Vulkan 453/453、OpenGL 451/451、ASan+UBSan 非图形 438/438、fuzz 14/14、相关 TSan 6/6 均已通过。增强根契约在 Unix Makefiles 与 Ninja Multi-Config 各 1/1 通过，显式 ON 子树实际构建并运行新测试 1/1；总评审指出的 shutdown 超时交接问题已复审关闭。arm64、Windows、macOS 与远端流水线仍以实际平台结果为准。

@@ -13246,3 +13246,5 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **缺口解释**：旧记录中“C++ framework 的 `Init/Tick/DeInit` 尚未消费总线”的 IO notice 缺口由本批关闭。适配类不创建线程，不改变既有 LogicThread 的线程归属；本批也不声称所有消息类型均已接入总线。
 
 - **本地全量验证（rebase 后 `aa89d48f`）**：标准 Wayland Vulkan CTest 453/453、OpenGL 451/451，均零失败并各有 4 项平台条件跳过。ASan+UBSan 非图形 438/438，零失败、4 项条件跳过；fuzz 14/14。TSan 的 framework bus、runtime bus/io、async loader、mipmap stream、hotreload 共 6/6，无诊断。独立总评审未发现代码 Critical/Important；其指出的 Build Guide shutdown 超时责任正在按单独修复波处理，远端矩阵与实机结果另行追加，不在此处提前记为通过。
+
+- **总评审关闭与根契约终验**：独立总评审的 shutdown 超时责任发现已修复并 scoped 复审通过，结论 Ready to merge。Build Guide 现在以独立非零码交接 `STOPPING` 和继续 shutdown 的责任，不再把超时写成完整清理；公共头补充借用、线程与回调寿命契约。增强后的根构建契约在 Unix Makefiles 与 Ninja Multi-Config 各 1/1 通过，四子树均通过，显式 ON 子树还实际构建并运行 `test_framework_runtime_bus` 1/1。生产实现未在该文档修复波中改变。
