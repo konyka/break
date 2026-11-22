@@ -3,7 +3,7 @@
 # The golden hashes in test_physics_replay only fail where the platform
 # differs (for example glibc 2.44 for atan2f), so a regression could pass on
 # the CI hosts. This contract checks the sources directly:
-#   1. physics code never calls the platform atan2, sin, cos, tan or sincos
+#   1. physics code, and the animation blending and IK sources, never call the platform atan2, sin, cos, tan or sincos
 #      (also as __builtin_ or with an f/l suffix; math_atan2f and
 #      math_sincosf only), and quat_from_axis_angle uses math_sincosf. The
 #      check is textual, so a comment written like a call also fails it,
@@ -27,6 +27,17 @@ foreach(path IN LISTS physics_sources)
     endif()
     if(text MATCHES "_mm_rsqrt|_mm_rcp")
         string(APPEND errors "${path}: uses an approximate SSE reciprocal\n")
+    endif()
+endforeach()
+
+file(GLOB animation_sources "${ENGINE_SOURCE_DIR}/src/animation/animation.c" "${ENGINE_SOURCE_DIR}/src/animation/skeleton.c")
+foreach(path IN LISTS animation_sources)
+    file(READ "${path}" text)
+    if(text MATCHES "[^_a-zA-Z0-9]atan2f?[ \t]*\\(")
+        string(APPEND errors "${path}: calls the platform atan2; use math_atan2f\n")
+    endif()
+    if(text MATCHES "(^|[^_a-zA-Z0-9]|[^_a-zA-Z0-9]__builtin_)(sin|cos|tan|sincos)[fl]?[ \t]*\\(")
+        string(APPEND errors "${path}: calls the platform sin/cos/tan; use math_sincosf\n")
     endif()
 endforeach()
 

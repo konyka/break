@@ -1,3 +1,8 @@
+## 两骨骼 IK：逐位一致与弯曲链修复（2026-11-22）
+
+- **实现**：`anim_ik_two_bone` 改用 `math_atan2f`；已弯曲的链保留自己的弯曲平面，修复末端偏离目标（最多 0.5）的缺陷。`test_physics_determinism_contract` 检查动画源码不调用平台三角函数。
+- **TDD**：先写 `two_bone_ik_matches_the_cross_platform_golden_hash`，它暴露了弯曲链缺陷；修复后通过，撤销修复时失败；契约在恢复一处 `atan2f` 时失败。GCC/Clang 多种优化级别哈希一致。
+
 ## 动画混合的跨架构金标准（2026-11-22）
 
 - **实现**：`test_animation` 新增分层混合的金标准哈希（第 40/120/240 帧）；`animation.c`、`skeleton.c`、`test_animation.c` 加入 `-ffp-contract=off` 源列表，`test_physics_determinism_contract` 同步检查（去掉其中一项时契约失败）。设计见 `docs/design/animation_extended.md`「跨架构逐位一致的混合」。

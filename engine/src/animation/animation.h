@@ -155,7 +155,9 @@ void anim_loco1d_apply(const AnimLoco1D *loco, AnimBlendState *state, f32 speed)
 /*
  * Two-Bone IK analytic solver. Outputs world-space rotation deltas to
  * apply to the root and mid joints so that the tip reaches `target`.
- * `pole_target` controls the bend plane.
+ * A chain that is already bent keeps its bend plane; `pole_target` picks the
+ * plane for a straight chain. Uses only IEEE + - * / and sqrt (math_atan2f,
+ * math_sincosf), so the result is the same bits on every architecture.
  */
 void anim_ik_two_bone(Vec3 root_pos, Vec3 mid_pos, Vec3 tip_pos,
                       Vec3 target, Vec3 pole_target,

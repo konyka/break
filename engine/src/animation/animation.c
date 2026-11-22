@@ -520,35 +520,41 @@ void anim_ik_two_bone(Vec3 root_pos, Vec3 mid_pos, Vec3 tip_pos,
         return;
     }
 
-    /* Current angles — atan2f(cross_len, dot) avoids clamp and is more robust
-     * near 0 and pi than acosf(clamp(dot)). */
+    /* Current angles: the arctangent of cross_len over dot avoids the clamp
+     * and is more robust near 0 and pi than acosf(clamp(dot)). math_atan2f is
+     * built from IEEE + - * / only, so the angles are the same bits on every
+     * libm. */
     Vec3 ac_n = vec3_normalize(ac);
     Vec3 ab_n = vec3_normalize(ab);
     Vec3 ba_n = vec3_normalize(vec3_sub(root_pos, mid_pos));
     Vec3 bc_n = vec3_normalize(vec3_sub(tip_pos, mid_pos));
     Vec3 at_n = vec3_normalize(at);
 
-    f32 ac_ab_0 = atan2f(vec3_len(vec3_cross(ac_n, ab_n)), vec3_dot(ac_n, ab_n));
-    f32 ba_bc_0 = atan2f(vec3_len(vec3_cross(ba_n, bc_n)), vec3_dot(ba_n, bc_n));
-    f32 ac_at_0 = atan2f(vec3_len(vec3_cross(ac_n, at_n)), vec3_dot(ac_n, at_n));
+    f32 ac_ab_0 = math_atan2f(vec3_len(vec3_cross(ac_n, ab_n)), vec3_dot(ac_n, ab_n));
+    f32 ba_bc_0 = math_atan2f(vec3_len(vec3_cross(ba_n, bc_n)), vec3_dot(ba_n, bc_n));
+    f32 ac_at_0 = math_atan2f(vec3_len(vec3_cross(ac_n, at_n)), vec3_dot(ac_n, at_n));
 
-    /* Desired angles (law of cosines via atan2f — avoids clamp + acosf).
+    /* Desired angles (law of cosines via atan2 — avoids clamp + acosf).
      * Use fast_rsqrt for sin computation: sqrt(x) = x * rsqrt(x). */
     f32 lab2 = lab * lab, lcb2 = lcb * lcb, lat2 = lat * lat;
     f32 cos_ac_ab = (lab2 + lat2 - lcb2) / (2.0f * lab * lat);
     f32 sin2_ac_ab = fmaxf(1.0f - cos_ac_ab * cos_ac_ab, 0.0f);
     f32 sin_ac_ab = sin2_ac_ab > 1e-12f ? sin2_ac_ab * fast_rsqrt(sin2_ac_ab) : 0.0f;
-    f32 ac_ab_1 = atan2f(sin_ac_ab, cos_ac_ab);
+    f32 ac_ab_1 = math_atan2f(sin_ac_ab, cos_ac_ab);
 
     f32 cos_ba_bc = (lab2 + lcb2 - lat2) / (2.0f * lab * lcb);
     f32 sin2_ba_bc = fmaxf(1.0f - cos_ba_bc * cos_ba_bc, 0.0f);
     f32 sin_ba_bc = sin2_ba_bc > 1e-12f ? sin2_ba_bc * fast_rsqrt(sin2_ba_bc) : 0.0f;
-    f32 ba_bc_1 = atan2f(sin_ba_bc, cos_ba_bc);
+    f32 ba_bc_1 = math_atan2f(sin_ba_bc, cos_ba_bc);
 
-    /* Bend axis: derived from current chain and pole direction. Falls
-     * back to a stable axis when the pole is collinear with the chain. */
+    /* Bend axis. The angle corrections below are exact only about the
+     * normal of the plane the chain bends in, so a bent chain keeps its own
+     * bend plane (the axis that turns ac toward ab). A straight chain has
+     * no plane yet: the pole picks it, and an axis perpendicular to ac is
+     * used when the pole is collinear with the chain too. */
     Vec3 pole_dir = vec3_sub(pole_target, root_pos);
-    Vec3 axis0 = vec3_cross(ac, pole_dir);
+    Vec3 axis0 = vec3_cross(ac_n, ab_n);
+    if (vec3_len(axis0) < 1e-4f) axis0 = vec3_cross(ac, pole_dir);
     if (vec3_len(axis0) < eps) {
         /* Pole degenerate: pick any perpendicular to ac. */
         Vec3 up = (Vec3){{0, 1, 0}};

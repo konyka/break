@@ -109,4 +109,8 @@ arm64 lane 新增八项动画测试（37/2/10/8/13/1/1/1 例），统一选择�
 
 采样与混合只用加减乘除、`sqrtf` 和 `fmodf`，IEEE 754 对它们的结果有精确规定，所以只要编译器不把乘加融合成 FMA，每个架构都应得到相同的位。因此 `animation.c`、`skeleton.c` 和 `test_animation.c` 加入了 `-ffp-contract=off` 源文件列表（与物理和数学源相同），`test_physics_determinism_contract` 也检查这三项。实测：GCC -O0/-O2/-O3 -march=native、Clang -O2/-O3 -march=native 在关闭收缩时哈希相同；Clang 打开 `-ffp-contract=fast` 后，前两个哈希改变。哈希值在 x86-64 上测得，arm64（QEMU）、macOS 和 Windows 由 CI 验证。
 
-IK 不在这个测试中：两骨骼 IK 调用平台的 `atan2f`，不同 libm 之间可能相差 1 ULP（物理用 `math_atan2f` 解决了同样的问题）。GPU 蒙皮仍未实现。
+两骨骼 IK 随后也改为逐位一致（2026-11-22）：`anim_ik_two_bone` 的 5 处角度计算从平台 `atan2f` 改为 `math_atan2f`（只用 IEEE 加减乘除，与物理相同），`test_physics_determinism_contract` 检查动画源码不调用平台的 atan2/sin/cos/tan。新增测试 `two_bone_ik_matches_the_cross_platform_golden_hash`：一条已经弯曲的链对 64 个目标求解（可达与不可达、带 z 偏移），对输出四元数的位模式计算哈希并与固定值比较，同时要求每个可达目标都被链末端命中（误差 2e-3）。
+
+写这个测试时发现了一个缺陷：原实现总是绕“链方向 × pole 方向”这根轴修正角度，但这些角度修正只在链所在的弯曲平面内才精确。链本来就弯曲、且弯曲平面与 pole 不一致时，末端会偏离目标：中关节偏 0.05 时最多偏 0.09，偏 0.3 时最多偏 0.5。现在已弯曲的链保留自己的弯曲平面（使 ac 转向 ab 的轴），只有笔直的链才由 pole 决定平面。修复后上述各种弯曲情况都没有偏差；去掉修复时新测试失败。原有 IK 测试使用笔直的链，所以没有发现这个问题。
+
+GPU 蒙皮仍未实现。

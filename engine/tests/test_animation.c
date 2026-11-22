@@ -912,6 +912,54 @@ TEST(blending_matches_the_cross_architecture_golden_hashes)
     anim_blend_state_destroy(&st);
 }
 
+static u64 quat_bits_hash(u64 h, Quat q)
+{
+    for (u32 i = 0; i < 4u; i++) {
+        u32 bits;
+        memcpy(&bits, &q.e[i], sizeof bits);
+        for (u32 k = 0; k < 4u; k++) {
+            h ^= (bits >> (8u * k)) & 0xffu;
+            h *= 0x100000001b3ull;
+        }
+    }
+    return h;
+}
+
+/* Two-bone IK over 64 targets around the chain, bent and nearly straight,
+ * reachable and not. Its angles go through math_atan2f, which uses only
+ * IEEE + - * /, so the deltas are the same bits on every libm and
+ * architecture; each solved tip must still reach a reachable target. */
+TEST(two_bone_ik_matches_the_cross_platform_golden_hash)
+{
+    const Vec3 root_pos = {{0, 0, 0}};
+    const Vec3 mid_pos = {{0.05f, 1, 0}};
+    const Vec3 tip_pos = {{0, 2, 0.02f}};
+    const Vec3 pole = {{0, 0, 1}};
+    u64 h = 0xcbf29ce484222325ull;
+    u32 reached = 0u;
+    for (u32 i = 0; i < 64u; i++) {
+        f32 a = (f32)i * 0.0981747704f; /* 2*pi/64 */
+        f32 s, c;
+        math_sincosf(a, &s, &c);
+        f32 radius = 0.6f + 0.025f * (f32)(i % 37u); /* up to 1.5, plus unreachable 2.0+ */
+        if (i % 9u == 0u) radius = 2.4f;
+        Vec3 target = {{radius * c, radius * s, 0.3f * s * c}};
+        Quat r0, r1;
+        anim_ik_two_bone(root_pos, mid_pos, tip_pos, target, pole, &r0, &r1);
+        h = quat_bits_hash(quat_bits_hash(h, r0), r1);
+        if (radius < 1.9f) {
+            Vec3 tip = ik_solved_tip(root_pos, mid_pos, tip_pos, r0, r1);
+            ASSERT_FLOAT_EQ(tip.e[0], target.e[0], 2e-3f);
+            ASSERT_FLOAT_EQ(tip.e[1], target.e[1], 2e-3f);
+            ASSERT_FLOAT_EQ(tip.e[2], target.e[2], 2e-3f);
+            reached++;
+        }
+    }
+    ASSERT_TRUE(reached > 50u);
+    if (h != UINT64_C(0x0bb2f478718fddc5)) printf("    hash %016llx\n", (unsigned long long)h);
+    ASSERT_EQ(h, UINT64_C(0x0bb2f478718fddc5));
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(blend_state_init);
     RUN_TEST(layer_play_sets_active);
@@ -953,4 +1001,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(event_no_callback_safe);
     RUN_TEST(event_add_max_clamped);
     RUN_TEST(blending_matches_the_cross_architecture_golden_hashes);
+    RUN_TEST(two_bone_ik_matches_the_cross_platform_golden_hash);
 TEST_MAIN_END()
