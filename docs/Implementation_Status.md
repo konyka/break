@@ -13249,3 +13249,4 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **本地全量验证（rebase 后 `aa89d48f`）**：标准 Wayland Vulkan CTest 453/453、OpenGL 451/451，均零失败并各有 4 项平台条件跳过。ASan+UBSan 非图形 438/438，零失败、4 项条件跳过；fuzz 14/14。TSan 的 framework bus、runtime bus/io、async loader、mipmap stream、hotreload 共 6/6，无诊断。独立总评审未发现代码 Critical/Important；其指出的 Build Guide shutdown 超时责任正在按单独修复波处理，远端矩阵与实机结果另行追加，不在此处提前记为通过。
 
 - **总评审关闭与根契约终验**：独立总评审的 shutdown 超时责任发现已修复并 scoped 复审通过，结论 Ready to merge。Build Guide 现在以独立非零码交接 `STOPPING` 和继续 shutdown 的责任，不再把超时写成完整清理；公共头补充借用、线程与回调寿命契约。增强后的根构建契约在 Unix Makefiles 与 Ninja Multi-Config 各 1/1 通过，四子树均通过，显式 ON 子树还实际构建并运行 `test_framework_runtime_bus` 1/1。生产实现未在该文档修复波中改变。
+- **macOS 复核（2026-11-22）**：default 子树不再显式传入 `BREAK_FRAMEWORK_ENABLE_RUNTIME=OFF`，而是使用真实默认值并断言缓存为 OFF；临时改为 ON 的变异被检出，恢复后根契约 1/1。根构建及 CTest 1/1、Metal 432/432、MoltenVK 435/435、graphics 6/6 通过。生产适配实现未改。

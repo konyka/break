@@ -1064,6 +1064,13 @@ POSIX 对照，Windows 分支仍需 Windows 环境复验。物理主示例固定
 压力模式。修复后两套全量构建无 error，Metal CTest **431/431**、MoltenVK **434/434**、
 graphics **6/6**，跳过项同前；`/private/tmp` 非 `kc_*` 条目前后相同。
 
+第九次复核推送前又同步 `8cfcf993..77878229`（11 个 framework 总线提交），本地修复无冲突
+rebase。生产适配类未发现新的所有权或生命周期缺陷，但根构建契约的 default 子树原来显式
+传入 `BREAK_FRAMEWORK_ENABLE_RUNTIME=OFF`，无法检出默认值被误改。现在该子树不传开关并检查
+CMakeCache：临时改成 ON 时按预期失败，恢复 OFF 后完整四子树契约 1/1。rebase 后顶层构建与
+CTest **1/1**、Metal **432/432**、MoltenVK **435/435**、graphics **6/6** 均通过，
+`/private/tmp` 非 `kc_*` 条目前后相同；默认契约修复后再次通过顶层构建和根契约 1/1。
+
 RHI 第一阶段还提供统一的设备健康状态查询 `rhi_device_get_status()`。`UNKNOWN` 表示
 没有有效设备，`READY` 表示设备可用，`LOST` 表示后端报告设备丢失；该接口是后续 Vulkan、
 Metal、D3D12 后端共用的生命周期合同。
