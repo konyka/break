@@ -1,3 +1,8 @@
+## cell link 密钥轮换（2026-11-22）
+
+- **实现**：`break_cell_link` 线格式升到版本 2，头部增加 `key_id`（64 字节）。link 持有当前密钥和上一个密钥，新增 `break_cell_link_rotate_key` 与 `break_cell_link_retire_previous_key`，统计增加 `unknown_key`。设计见 `docs/design/cell_handoff.md`「跨进程传输」中的密钥轮换。
+- **TDD**：先改测试（编译失败），再实现；新增用例 `keys_rotate_without_interrupting_a_handoff`，交接进行中轮换密钥仍然完成。11 个变异全部被检出，其中“允许 key_id 为 0”第一轮未被检出，补充了编码与解码两侧的断言。ASan/UBSan 下通过。
+
 ## cell 交接的跨进程传输（2026-11-22）
 
 - **实现**：新增 `engine/src/network/break_cell_link.{h,c}` 与静态库 `break_cell_link`（依赖 `break_replication_core`、`break_crypto`，只在 `BREAK_ENABLE_CRYPTO` 下构建）。`BreakCellMsg` 编码为带 HMAC-SHA256 的 UDP 数据报，接收方校验长度、头部、HMAC、对端和每个对端的重放窗口后再交给 `break_cell_receive`。设计见 `docs/design/cell_handoff.md`「跨进程传输」。

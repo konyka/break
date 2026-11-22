@@ -39,11 +39,11 @@ TEST(wire_round_trips_every_type_and_state_size) {
             u8 buf[BREAK_CELL_WIRE_MAX_SIZE];
             u32 n = 0;
             u64 seq = 0;
-            ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 1000u + size, &in, buf, sizeof buf, &n),
+            ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 1u, 1000u + size, &in, buf, sizeof buf, &n),
                       BREAK_CELL_WIRE_OK);
             ASSERT_EQ(n, BREAK_CELL_WIRE_HEADER_SIZE + size + BREAK_CELL_WIRE_TAG_SIZE);
             memset(&out, 0xcc, sizeof out);
-            ASSERT_EQ(break_cell_wire_decode(kKey, 32u, buf, n, &out, &seq), BREAK_CELL_WIRE_OK);
+            ASSERT_EQ(break_cell_wire_decode(kKey, 32u, buf, n, &out, &seq, NULL), BREAK_CELL_WIRE_OK);
             ASSERT_TRUE(same_msg(&in, &out));
             ASSERT_EQ(seq, 1000u + size);
         }
@@ -53,7 +53,7 @@ TEST(wire_round_trips_every_type_and_state_size) {
         BreakCellMsg in = sample(BREAK_CELL_MSG_COMMIT, 0u);
         u8 buf[BREAK_CELL_WIRE_MAX_SIZE];
         u32 n = 0;
-        ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 0x0102030405060708ull, &in, buf, sizeof buf, &n),
+        ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 1u, 0x0102030405060708ull, &in, buf, sizeof buf, &n),
                   BREAK_CELL_WIRE_OK);
         ASSERT_EQ(buf[0], 0x42u);
         ASSERT_EQ(buf[1], 0x52u);
@@ -62,6 +62,8 @@ TEST(wire_round_trips_every_type_and_state_size) {
         ASSERT_EQ(buf[6], (u8)BREAK_CELL_MSG_COMMIT);
         ASSERT_EQ(buf[52], 0x08u);
         ASSERT_EQ(buf[59], 0x01u);
+        ASSERT_EQ(buf[60], 0x01u); /* key id */
+        ASSERT_EQ(buf[4], 0x02u); /* version */
     }
 }
 
@@ -69,30 +71,30 @@ TEST(wire_encode_rejects_bad_arguments) {
     BreakCellMsg m = sample(BREAK_CELL_MSG_OFFER, 8u);
     u8 buf[BREAK_CELL_WIRE_MAX_SIZE];
     u32 n = 0;
-    ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 0u, &m, buf, sizeof buf, &n),
+    ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 1u, 0u, &m, buf, sizeof buf, &n),
               BREAK_CELL_WIRE_INVALID_ARGUMENT);
-    ASSERT_EQ(break_cell_wire_encode(NULL, 32u, 1u, &m, buf, sizeof buf, &n),
+    ASSERT_EQ(break_cell_wire_encode(NULL, 32u, 1u, 1u, &m, buf, sizeof buf, &n),
               BREAK_CELL_WIRE_INVALID_ARGUMENT);
-    ASSERT_EQ(break_cell_wire_encode(kKey, 0u, 1u, &m, buf, sizeof buf, &n),
+    ASSERT_EQ(break_cell_wire_encode(kKey, 0u, 1u, 1u, &m, buf, sizeof buf, &n),
               BREAK_CELL_WIRE_INVALID_ARGUMENT);
-    ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 1u, NULL, buf, sizeof buf, &n),
+    ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 1u, 1u, NULL, buf, sizeof buf, &n),
               BREAK_CELL_WIRE_INVALID_ARGUMENT);
-    ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 1u, &m, NULL, sizeof buf, &n),
+    ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 1u, 1u, &m, NULL, sizeof buf, &n),
               BREAK_CELL_WIRE_INVALID_ARGUMENT);
-    ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 1u, &m, buf, sizeof buf, NULL),
+    ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 1u, 1u, &m, buf, sizeof buf, NULL),
               BREAK_CELL_WIRE_INVALID_ARGUMENT);
-    ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 1u, &m, buf,
+    ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 1u, 1u, &m, buf,
                                      BREAK_CELL_WIRE_HEADER_SIZE + 8u + BREAK_CELL_WIRE_TAG_SIZE - 1u,
                                      &n),
               BREAK_CELL_WIRE_BUFFER_TOO_SMALL);
     m.state_size = BREAK_CELL_STATE_MAX + 1u;
-    ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 1u, &m, buf, sizeof buf, &n),
+    ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 1u, 1u, &m, buf, sizeof buf, &n),
               BREAK_CELL_WIRE_BAD_HEADER);
     m = sample(0u, 0u);
-    ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 1u, &m, buf, sizeof buf, &n),
+    ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 1u, 1u, &m, buf, sizeof buf, &n),
               BREAK_CELL_WIRE_BAD_HEADER);
     m = sample(BREAK_CELL_MSG_ABORT + 1u, 0u);
-    ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 1u, &m, buf, sizeof buf, &n),
+    ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 1u, 1u, &m, buf, sizeof buf, &n),
               BREAK_CELL_WIRE_BAD_HEADER);
 }
 
@@ -101,40 +103,65 @@ TEST(wire_decode_rejects_every_truncation_and_every_flipped_bit) {
     u8 buf[BREAK_CELL_WIRE_MAX_SIZE];
     u32 n = 0;
     u64 seq = 0;
-    ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 77u, &in, buf, sizeof buf, &n), BREAK_CELL_WIRE_OK);
+    ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 1u, 77u, &in, buf, sizeof buf, &n), BREAK_CELL_WIRE_OK);
     for (u32 len = 0; len < n; len++)
-        ASSERT_TRUE(break_cell_wire_decode(kKey, 32u, buf, len, &out, &seq) != BREAK_CELL_WIRE_OK);
+        ASSERT_TRUE(break_cell_wire_decode(kKey, 32u, buf, len, &out, &seq, NULL) != BREAK_CELL_WIRE_OK);
     {
         u8 longer[BREAK_CELL_WIRE_MAX_SIZE + 1u];
         memcpy(longer, buf, n);
         longer[n] = 0u;
-        ASSERT_EQ(break_cell_wire_decode(kKey, 32u, longer, n + 1u, &out, &seq),
+        ASSERT_EQ(break_cell_wire_decode(kKey, 32u, longer, n + 1u, &out, &seq, NULL),
                   BREAK_CELL_WIRE_BAD_LENGTH);
     }
     for (u32 byte = 0; byte < n; byte++) {
         for (u32 bit = 0; bit < 8u; bit++) {
             buf[byte] ^= (u8)(1u << bit);
-            ASSERT_TRUE(break_cell_wire_decode(kKey, 32u, buf, n, &out, &seq) != BREAK_CELL_WIRE_OK);
+            ASSERT_TRUE(break_cell_wire_decode(kKey, 32u, buf, n, &out, &seq, NULL) != BREAK_CELL_WIRE_OK);
             buf[byte] ^= (u8)(1u << bit);
         }
     }
-    ASSERT_EQ(break_cell_wire_decode(kKey, 32u, buf, n, &out, &seq), BREAK_CELL_WIRE_OK);
+    ASSERT_EQ(break_cell_wire_decode(kKey, 32u, buf, n, &out, &seq, NULL), BREAK_CELL_WIRE_OK);
     {
         u8 other[32];
         memcpy(other, kKey, 32u);
         other[31] ^= 1u;
-        ASSERT_EQ(break_cell_wire_decode(other, 32u, buf, n, &out, &seq), BREAK_CELL_WIRE_BAD_TAG);
-        ASSERT_EQ(break_cell_wire_decode(kKey, 31u, buf, n, &out, &seq), BREAK_CELL_WIRE_BAD_TAG);
+        ASSERT_EQ(break_cell_wire_decode(other, 32u, buf, n, &out, &seq, NULL), BREAK_CELL_WIRE_BAD_TAG);
+        ASSERT_EQ(break_cell_wire_decode(kKey, 31u, buf, n, &out, &seq, NULL), BREAK_CELL_WIRE_BAD_TAG);
     }
-    ASSERT_EQ(break_cell_wire_decode(kKey, 32u, NULL, n, &out, &seq), BREAK_CELL_WIRE_INVALID_ARGUMENT);
-    ASSERT_EQ(break_cell_wire_decode(kKey, 32u, buf, n, NULL, &seq), BREAK_CELL_WIRE_INVALID_ARGUMENT);
-    ASSERT_EQ(break_cell_wire_decode(kKey, 32u, buf, n, &out, NULL), BREAK_CELL_WIRE_INVALID_ARGUMENT);
-    ASSERT_EQ(break_cell_wire_decode(NULL, 32u, buf, n, &out, &seq), BREAK_CELL_WIRE_INVALID_ARGUMENT);
+    ASSERT_EQ(break_cell_wire_decode(kKey, 32u, NULL, n, &out, &seq, NULL), BREAK_CELL_WIRE_INVALID_ARGUMENT);
+    ASSERT_EQ(break_cell_wire_decode(kKey, 32u, buf, n, NULL, &seq, NULL), BREAK_CELL_WIRE_INVALID_ARGUMENT);
+    ASSERT_EQ(break_cell_wire_decode(kKey, 32u, buf, n, &out, NULL, NULL), BREAK_CELL_WIRE_INVALID_ARGUMENT);
+    ASSERT_EQ(break_cell_wire_decode(NULL, 32u, buf, n, &out, &seq, NULL), BREAK_CELL_WIRE_INVALID_ARGUMENT);
+    /* the key id is reported and covered by the tag */
+    {
+        u32 key_id = 0;
+        u8 tagged[BREAK_CELL_WIRE_MAX_SIZE];
+        u32 tn = 0;
+        ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 0xa0b0c0d0u, 9u, &in, tagged, sizeof tagged, &tn),
+                  BREAK_CELL_WIRE_OK);
+        ASSERT_EQ(break_cell_wire_key_id(tagged, tn, &key_id), true);
+        ASSERT_EQ(key_id, 0xa0b0c0d0u);
+        key_id = 0;
+        ASSERT_EQ(break_cell_wire_decode(kKey, 32u, tagged, tn, &out, &seq, &key_id), BREAK_CELL_WIRE_OK);
+        ASSERT_EQ(key_id, 0xa0b0c0d0u);
+        ASSERT_FALSE(break_cell_wire_key_id(tagged, BREAK_CELL_WIRE_HEADER_SIZE - 1u, &key_id));
+        ASSERT_FALSE(break_cell_wire_key_id(NULL, tn, &key_id));
+        ASSERT_FALSE(break_cell_wire_key_id(tagged, tn, NULL));
+    }
     /* a zero sequence is never valid, even with a correct tag */
     memset(buf + 52, 0, 8u);
     ASSERT_TRUE(break_crypto_hmac_sha256(kKey, 32u, buf, n - BREAK_CELL_WIRE_TAG_SIZE,
                                          buf + n - BREAK_CELL_WIRE_TAG_SIZE));
-    ASSERT_EQ(break_cell_wire_decode(kKey, 32u, buf, n, &out, &seq), BREAK_CELL_WIRE_BAD_HEADER);
+    ASSERT_EQ(break_cell_wire_decode(kKey, 32u, buf, n, &out, &seq, NULL), BREAK_CELL_WIRE_BAD_HEADER);
+    /* nor is key id 0 */
+    ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 1u, 77u, &in, buf, sizeof buf, &n), BREAK_CELL_WIRE_OK);
+    memset(buf + 60, 0, 4u);
+    ASSERT_TRUE(break_crypto_hmac_sha256(kKey, 32u, buf, n - BREAK_CELL_WIRE_TAG_SIZE,
+                                         buf + n - BREAK_CELL_WIRE_TAG_SIZE));
+    ASSERT_EQ(break_cell_wire_decode(kKey, 32u, buf, n, &out, &seq, NULL), BREAK_CELL_WIRE_BAD_HEADER);
+    /* and the encoder refuses key id 0 */
+    ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 0u, 77u, &in, buf, sizeof buf, &n),
+              BREAK_CELL_WIRE_INVALID_ARGUMENT);
 }
 
 static BreakCellLinkConfig link_config(u32 self, const BreakCellPeer *peers, u32 count) {
@@ -143,6 +170,7 @@ static BreakCellLinkConfig link_config(u32 self, const BreakCellPeer *peers, u32
     c.cell_id = self;
     c.key = kKey;
     c.key_size = 32u;
+    c.key_id = 1u;
     c.peers = peers;
     c.peer_count = count;
     return c;
@@ -183,6 +211,9 @@ TEST(link_create_validates_configuration) {
     ASSERT_TRUE(break_cell_link_create(&c) == NULL);
     c.key_size = 32u;
     c.key = NULL;
+    ASSERT_TRUE(break_cell_link_create(&c) == NULL);
+    c.key = kKey;
+    c.key_id = 0u; /* key id 0 is reserved */
     ASSERT_TRUE(break_cell_link_create(&c) == NULL);
     /* the config's key buffer may be reused once the link exists */
     {
@@ -318,7 +349,7 @@ TEST(forged_replayed_misaddressed_and_malformed_datagrams_are_dropped) {
     offer.txn = 1u;
 
     /* a valid datagram from cell 1 is delivered once, its replay is not */
-    ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 10u, &offer, buf, sizeof buf, &n), BREAK_CELL_WIRE_OK);
+    ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 1u, 10u, &offer, buf, sizeof buf, &n), BREAK_CELL_WIRE_OK);
     inject(s, p.link[1], buf, n);
     inject(s, p.link[1], buf, n);
     drain(&p, 1u);
@@ -329,10 +360,10 @@ TEST(forged_replayed_misaddressed_and_malformed_datagrams_are_dropped) {
 
     /* a newer sequence is accepted, one far below the window is too old */
     offer.entity = 501u;
-    ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 200u, &offer, buf, sizeof buf, &n), BREAK_CELL_WIRE_OK);
+    ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 1u, 200u, &offer, buf, sizeof buf, &n), BREAK_CELL_WIRE_OK);
     inject(s, p.link[1], buf, n);
     offer.entity = 502u;
-    ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 11u, &offer, buf, sizeof buf, &n), BREAK_CELL_WIRE_OK);
+    ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 1u, 11u, &offer, buf, sizeof buf, &n), BREAK_CELL_WIRE_OK);
     inject(s, p.link[1], buf, n);
     drain(&p, 1u);
     ASSERT_TRUE(break_cell_link_stats(p.link[1], &st));
@@ -344,11 +375,11 @@ TEST(forged_replayed_misaddressed_and_malformed_datagrams_are_dropped) {
     offer.entity = 503u;
     memcpy(wrong_key, kKey, 32u);
     wrong_key[0] ^= 0x80u;
-    ASSERT_EQ(break_cell_wire_encode(wrong_key, 32u, 201u, &offer, forged, sizeof forged, &n),
+    ASSERT_EQ(break_cell_wire_encode(wrong_key, 32u, 1u, 201u, &offer, forged, sizeof forged, &n),
               BREAK_CELL_WIRE_OK);
     inject(s, p.link[1], forged, n);
     drain(&p, 1u);
-    ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 201u, &offer, buf, sizeof buf, &n), BREAK_CELL_WIRE_OK);
+    ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 1u, 201u, &offer, buf, sizeof buf, &n), BREAK_CELL_WIRE_OK);
     inject(s, p.link[1], buf, n);
     drain(&p, 1u);
     ASSERT_TRUE(break_cell_link_stats(p.link[1], &st));
@@ -359,20 +390,25 @@ TEST(forged_replayed_misaddressed_and_malformed_datagrams_are_dropped) {
     /* an unknown sender, and a message addressed to another cell */
     offer.entity = 504u;
     offer.from_cell = 3u;
-    ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 300u, &offer, buf, sizeof buf, &n), BREAK_CELL_WIRE_OK);
+    ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 1u, 300u, &offer, buf, sizeof buf, &n), BREAK_CELL_WIRE_OK);
     inject(s, p.link[1], buf, n);
     offer.from_cell = 1u;
     offer.to_cell = 4u;
-    ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 301u, &offer, buf, sizeof buf, &n), BREAK_CELL_WIRE_OK);
+    ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 1u, 301u, &offer, buf, sizeof buf, &n), BREAK_CELL_WIRE_OK);
     inject(s, p.link[1], buf, n);
-    /* garbage and a truncated datagram */
-    memset(buf, 0x5a, sizeof buf);
+    /* a truncated datagram, a valid one cut short by a byte, and garbage
+     * whose key id is not held */
+    offer.to_cell = 2u;
+    ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 1u, 302u, &offer, buf, sizeof buf, &n), BREAK_CELL_WIRE_OK);
     inject(s, p.link[1], buf, 20u);
+    inject(s, p.link[1], buf, n - 1u);
+    memset(buf, 0x5a, sizeof buf);
     inject(s, p.link[1], buf, BREAK_CELL_WIRE_HEADER_SIZE + BREAK_CELL_WIRE_TAG_SIZE);
     drain(&p, 1u);
     ASSERT_TRUE(break_cell_link_stats(p.link[1], &st));
     ASSERT_EQ(st.unknown_peer, 2u);
     ASSERT_EQ(st.bad_format, 2u);
+    ASSERT_EQ(st.unknown_key, 1u);
     ASSERT_EQ(st.received, 3u);
     ASSERT_EQ(break_cell_entity_state(p.cell[1], 504u), BREAK_CELL_ENTITY_NONE);
 
@@ -434,6 +470,90 @@ TEST(a_restarted_sender_is_not_mistaken_for_a_replay) {
     pair_close(&p);
 }
 
+static const u8 kKey2[32] = {201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214, 215, 216,
+                             217, 218, 219, 220, 221, 222, 223, 224, 225, 226, 227, 228, 229, 230, 231, 232};
+
+TEST(keys_rotate_without_interrupting_a_handoff) {
+    Pair p;
+    NetSocket *s = net_udp_create(0u);
+    BreakCellLinkStats st;
+    BreakCellMsg offer;
+    u8 buf[BREAK_CELL_WIRE_MAX_SIZE], state[1] = {7};
+    u32 n = 0;
+    ASSERT_NOT_NULL(s);
+    ASSERT_TRUE(pair_open(&p, 3u));
+
+    /* invalid rotations leave the link unchanged */
+    ASSERT_FALSE(break_cell_link_rotate_key(p.link[1], 1u, kKey2, 32u)); /* id in use */
+    ASSERT_FALSE(break_cell_link_rotate_key(p.link[1], 2u, kKey2, BREAK_CELL_LINK_MIN_KEY_SIZE - 1u));
+    ASSERT_FALSE(break_cell_link_rotate_key(p.link[1], 2u, NULL, 32u));
+    ASSERT_FALSE(break_cell_link_rotate_key(NULL, 2u, kKey2, 32u));
+    ASSERT_FALSE(break_cell_link_retire_previous_key(p.link[1])); /* nothing to retire */
+
+    /* B learns key 2 first; A still sends with key 1 and is accepted */
+    ASSERT_TRUE(break_cell_link_rotate_key(p.link[1], 2u, kKey2, 32u));
+    ASSERT_TRUE(break_cell_spawn(p.cell[0], 1u, state, 1u));
+    ASSERT_TRUE(break_cell_begin_handoff(p.cell[0], 1u, 2u));
+    for (u32 i = 0; i < 3u; i++) pair_step(&p);
+    /* A switches mid-handoff; B still holds key 1 as the previous key */
+    ASSERT_TRUE(break_cell_link_rotate_key(p.link[0], 2u, kKey2, 32u));
+    for (u32 i = 0; i < 2000u && break_cell_entity_state(p.cell[0], 1u) != BREAK_CELL_ENTITY_NONE; i++)
+        pair_step(&p);
+    ASSERT_EQ(break_cell_entity_state(p.cell[0], 1u), BREAK_CELL_ENTITY_NONE);
+    ASSERT_TRUE(break_cell_is_authoritative(p.cell[1], 1u));
+    ASSERT_TRUE(break_cell_link_stats(p.link[1], &st));
+    ASSERT_EQ(st.bad_tag + st.unknown_key, 0u);
+
+    /* after retiring key 1, datagrams under key 1 are refused, key 2 works */
+    ASSERT_TRUE(break_cell_link_retire_previous_key(p.link[1]));
+    ASSERT_FALSE(break_cell_link_retire_previous_key(p.link[1]));
+    memset(&offer, 0, sizeof offer);
+    offer.type = BREAK_CELL_MSG_OFFER;
+    offer.from_cell = 1u;
+    offer.to_cell = 2u;
+    offer.entity = 900u;
+    offer.epoch = 1u;
+    offer.txn = 1u;
+    ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 1u, (u64)1 << 62, &offer, buf, sizeof buf, &n),
+              BREAK_CELL_WIRE_OK);
+    inject(s, p.link[1], buf, n);
+    /* a datagram claiming key id 2 but signed with key 1 is a bad tag */
+    offer.entity = 901u;
+    ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 2u, ((u64)1 << 62) + 1u, &offer, buf, sizeof buf, &n),
+              BREAK_CELL_WIRE_OK);
+    inject(s, p.link[1], buf, n);
+    offer.entity = 902u;
+    ASSERT_EQ(break_cell_wire_encode(kKey2, 32u, 2u, ((u64)1 << 62) + 2u, &offer, buf, sizeof buf, &n),
+              BREAK_CELL_WIRE_OK);
+    inject(s, p.link[1], buf, n);
+    drain(&p, 1u);
+    ASSERT_TRUE(break_cell_link_stats(p.link[1], &st));
+    ASSERT_EQ(st.unknown_key, 1u);
+    ASSERT_EQ(st.bad_tag, 1u);
+    ASSERT_EQ(break_cell_entity_state(p.cell[1], 900u), BREAK_CELL_ENTITY_NONE);
+    ASSERT_EQ(break_cell_entity_state(p.cell[1], 901u), BREAK_CELL_ENTITY_NONE);
+    ASSERT_EQ(break_cell_entity_state(p.cell[1], 902u), BREAK_CELL_ENTITY_RECEIVING);
+
+    /* rotating again replaces the previous key: only the two newest remain */
+    ASSERT_TRUE(break_cell_link_rotate_key(p.link[1], 3u, kKey, 32u));
+    ASSERT_TRUE(break_cell_link_rotate_key(p.link[1], 4u, kKey2, 32u));
+    offer.entity = 903u;
+    ASSERT_EQ(break_cell_wire_encode(kKey2, 32u, 2u, ((u64)1 << 62) + 3u, &offer, buf, sizeof buf, &n),
+              BREAK_CELL_WIRE_OK);
+    inject(s, p.link[1], buf, n);
+    offer.entity = 904u;
+    ASSERT_EQ(break_cell_wire_encode(kKey, 32u, 3u, ((u64)1 << 62) + 4u, &offer, buf, sizeof buf, &n),
+              BREAK_CELL_WIRE_OK);
+    inject(s, p.link[1], buf, n);
+    drain(&p, 1u);
+    ASSERT_TRUE(break_cell_link_stats(p.link[1], &st));
+    ASSERT_EQ(st.unknown_key, 2u);
+    ASSERT_EQ(break_cell_entity_state(p.cell[1], 903u), BREAK_CELL_ENTITY_NONE);
+    ASSERT_EQ(break_cell_entity_state(p.cell[1], 904u), BREAK_CELL_ENTITY_RECEIVING);
+    net_close(s);
+    pair_close(&p);
+}
+
 TEST_MAIN_BEGIN()
     if (!net_init()) return 1;
     time_init();
@@ -444,5 +564,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(a_handoff_completes_over_udp_and_carries_the_latest_state);
     RUN_TEST(forged_replayed_misaddressed_and_malformed_datagrams_are_dropped);
     RUN_TEST(a_restarted_sender_is_not_mistaken_for_a_replay);
+    RUN_TEST(keys_rotate_without_interrupting_a_handoff);
     net_shutdown();
 TEST_MAIN_END()

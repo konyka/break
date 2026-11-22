@@ -88,21 +88,24 @@ OFFER 和 COMMIT 重传到得到回应为止，ACCEPT 重传到记录被提交�
 
 `break_cell_link`（`engine/src/network/break_cell_link.{h,c}`，独立静态库 `break_cell_link`，只在 `BREAK_ENABLE_CRYPTO` 打开时存在）把 `BreakCell` 的消息放到 UDP 上，每条消息一个数据报。用法：把 `break_cell_link_send` 设为 cell 的 `send` 回调，把 link 设为 `user`；cell 线程每个 tick 先调用 `break_cell_link_poll(link, cell, n)`，再调用 `break_cell_tick`。
 
-线格式（小端）：`magic 'BRC1'`、`version`、`type`、`from_cell`、`to_cell`、`state_size`、`entity`、`epoch`、`txn`、`nonce`、`sequence`（共 60 字节），然后是 `state`（最多 `BREAK_CELL_STATE_MAX` 字节），最后是对前面所有字节计算的 HMAC-SHA256（32 字节）。同一个世界的所有 cell 共用一个密钥（16~64 字节），密钥由调用方分发。
+线格式（小端，版本 2）：`magic 'BRC1'`、`version`、`type`、`from_cell`、`to_cell`、`state_size`、`entity`、`epoch`、`txn`、`nonce`、`sequence`、`key_id`（共 64 字节），然后是 `state`（最多 `BREAK_CELL_STATE_MAX` 字节），最后是对前面所有字节计算的 HMAC-SHA256（32 字节）。同一个世界的所有 cell 共用一个密钥（16~64 字节），密钥由调用方分发。
 
-接收方只在以下条件都满足时才把消息交给 cell：长度与 `state_size` 一致；magic、版本、类型合法，序号不为 0；HMAC 一致（常量时间比较）；`from_cell` 是配置的对端，`to_cell` 是本 cell；序号通过该对端的重放窗口（`BreakReplayWindow`，64 个序号）。重放窗口只在 HMAC 验证通过后才标记，伪造的数据报不能占用序号。发送方拒绝 `from_cell` 不是本 cell 或 `to_cell` 不是已配置对端的消息，计入 `send_failed`。
+接收方只在以下条件都满足时才把消息交给 cell：长度与 `state_size` 一致；`key_id` 是自己持有的密钥（否则计入 `unknown_key`）；magic、版本、类型合法，序号和 `key_id` 不为 0；HMAC 一致（常量时间比较）；`from_cell` 是配置的对端，`to_cell` 是本 cell；序号通过该对端的重放窗口（`BreakReplayWindow`，64 个序号）。重放窗口只在 HMAC 验证通过后才标记，伪造的数据报不能占用序号。发送方拒绝 `from_cell` 不是本 cell 或 `to_cell` 不是已配置对端的消息，计入 `send_failed`。
 
 序号从创建 link 时的墙钟微秒数开始递增，所以发送方重启后序号仍然高于重启前发出的所有序号，接收方不会把它当成重放。接收方自己重启时重放窗口清空，旧数据报可能再次送达；协议本身容忍重复消息（见上文），所以不影响正确性。传输不提供保密性：状态是明文，只保证来源与完整性。需要保密时应在 QUIC/TLS 通道上传输。
 
-测试 `test_break_cell_link`（7 例）：
+密钥轮换（2026-11-22）：每个 link 持有当前密钥（发送用）和上一个密钥（仍接受）。`break_cell_link_rotate_key(link, id, key, size)` 把新密钥设为当前密钥，原当前密钥降为上一个，更早的密钥丢弃；`id` 已被持有或密钥非法时不做任何改变并返回 false。`break_cell_link_retire_previous_key` 停止接受上一个密钥。不停机轮换的顺序：先让所有接收方轮换，再让所有发送方轮换，最后让所有 link 退役旧密钥。每个 link 都同时收发，所以实际做法是所有 link 依次调用 rotate（此时可能有一方先用新密钥发送，另一方仍以“上一个”接受旧密钥、以“当前”接受新密钥，见测试），全部完成后再调用 retire。`key_id` 不参与保密，只用来选择校验密钥，并由 HMAC 覆盖。
+
+测试 `test_break_cell_link`（8 例）：
 - 6 种消息类型 × 0~64 字节状态的往返编解码，固定字节布局；
 - 编码参数校验：序号为 0、空指针、缓冲区不足一字节、状态过大、非法类型；
 - 解码：每一种截断长度、多一个字节、每一个比特翻转都被拒绝；换密钥或密钥长度不同时 HMAC 不一致；序号为 0 的数据报即使 HMAC 正确也被拒绝；
 - 创建参数校验：没有对端、对端过多、对端编号与本 cell 相同、对端编号重复、密钥过短或过长；创建后可以复用配置里的密钥缓冲区；
 - 经回环 UDP 完成一次真实交接：OFFER 期间的写入随 COMMIT 送达，epoch 变为 2，任何时刻最多一个权威；
 - 注入数据报：重放只送达一次，远低于窗口的序号被拒绝，伪造的数据报不会占用它声称的序号，未知发送方与发往其他 cell 的消息被拒绝，垃圾与截断数据报计入格式错误，发往未配置 cell 或冒充其他 cell 的发送被拒绝；
-- 发送方重启后（同一端口、新的 link），新交接不被当作重放。
+- 发送方重启后（同一端口、新的 link），新交接不被当作重放；
+- 密钥轮换：非法轮换不改变 link；接收方先轮换、发送方在交接进行中轮换，交接照常完成且没有 HMAC 错误；退役后旧密钥被拒绝（`unknown_key`），声称新 `key_id` 却用旧密钥签名的数据报是 HMAC 错误；连续轮换两次后只保留最新两个密钥；`key_id` 为 0 时编码和解码都拒绝。
 
-变异检查（均被检出）：跳过 HMAC 比较、允许序号 0、不标记重放窗口、不检查 `to_cell`、不检查发送方是否已配置、序号从 1 开始、序号不递增、允许对端编号与本 cell 相同、允许重复对端、允许尾部多余字节、发送时不检查 `from_cell`、HMAC 错误计为格式错误、nonce 编码错误。
+变异检查（均被检出）：不接受上一个密钥、轮换时丢弃旧密钥、退役不生效、允许复用当前 `key_id`、未知 `key_id` 退回当前密钥、解码或编码允许 `key_id` 为 0、退役总返回成功、`key_id` 不写入线格式、发送时用旧 `key_id`；跳过 HMAC 比较、允许序号 0、不标记重放窗口、不检查 `to_cell`、不检查发送方是否已配置、序号从 1 开始、序号不递增、允许对端编号与本 cell 相同、允许重复对端、允许尾部多余字节、发送时不检查 `from_cell`、HMAC 错误计为格式错误、nonce 编码错误。
 
-仍未实现：持久化、AoI 与客户端连接随交接迁移、密钥轮换。
+仍未实现：持久化、AoI 与客户端连接随交接迁移。密钥本身的分发由调用方负责。
