@@ -474,3 +474,4 @@
 - **第 5 节（线程/消息）追加**：2026-11-22 core_app 主循环改为从总线队列读取语音切换结果，不再逐帧比较计数器。上一条中的「core_app 主循环改为订阅语音事件」由此交付。仍缺：LogicThread、Task、Network/IO、PAL/MainLoop、Profiler 队列接入总线。
 - **动画验证追加**：2026-11-22 `test_animation` 固定了分层混合（加法层、骨骼掩码、交叉淡入）的跨架构金标准哈希，动画采样与混合源码改为 `-ffp-contract=off` 编译，并由 `test_physics_determinism_contract` 检查。见 [`docs/design/animation_extended.md`](../design/animation_extended.md)「跨架构逐位一致的混合」。上文「跨架构逐位回放验证」由此对混合部分交付。仍缺：GPU 蒙皮；两骨骼 IK 仍使用平台 `atan2f`。
 - **动画验证追加**：2026-11-22 两骨骼 IK 改用 `math_atan2f`，固定了跨平台金标准哈希；同时修复已弯曲的链在弯曲平面与 pole 不一致时末端偏离目标（最多 0.5）的缺陷。见 [`docs/design/animation_extended.md`](../design/animation_extended.md)「跨架构逐位一致的混合」。上一条中的「两骨骼 IK 仍使用平台 `atan2f`」由此关闭。仍缺：GPU 蒙皮。
+- **第 5 节（线程/消息）追加**：2026-11-22 Profiler 与消息总线接通：总线的丢弃与拒绝以带 correlation_id 的 profiler 事件记录，Chrome trace 中可见背压发生在因果链的哪一步。仍缺：LogicThread、Task、Network/IO、PAL/MainLoop 队列接入总线。

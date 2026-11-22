@@ -5,9 +5,11 @@
 #include "test_framework.h"
 #include <core/platform_thread.h>
 #include <runtime/runtime_bus.h>
+#include <runtime/runtime_profiler.h>
 #include <runtime/runtime_queue.h>
 #include <runtime/runtime_test_hooks.h>
 #include <stdatomic.h>
+#include <stdio.h>
 #include <string.h>
 
 static BreakRuntimeMessageView view_of(u16 kind, u16 version, const void *data, usize size) {
@@ -546,6 +548,102 @@ TEST(a_registration_can_be_compared) {
     break_runtime_bus_destroy(bus);
 }
 
+/* Collects the profiler window and returns how many entries are named
+ * `name` with the given correlation id ("cid=<id>" in the value, or no cid
+ * when id is 0). */
+static u32 profiler_count(BreakRuntimeProfiler *p, const char *name, u64 cid) {
+    ProfilerMetaInstant meta[64];
+    u32 n = 0, collected = 0, hits = 0;
+    char want[32];
+    (void)break_runtime_profiler_collect(p, 64u, &collected);
+    if (break_runtime_profiler_export_meta(p, meta, 64u, &n) != BREAK_RUNTIME_OK) return 0u;
+    snprintf(want, sizeof want, "cid=%llu", (unsigned long long)cid);
+    for (u32 i = 0; i < n; i++) {
+        if (strcmp(meta[i].key, name) != 0) continue;
+        if (cid == 0u ? strstr(meta[i].value, "cid=") == NULL : strstr(meta[i].value, want) != NULL)
+            hits++;
+    }
+    return hits;
+}
+
+TEST(drops_and_rejections_are_recorded_on_the_profiler) {
+    BreakRuntimeBus *bus = make_bus();
+    BreakRuntimeProfiler *prof = NULL;
+    BreakRuntimeQueue *q = make_queue(1u);
+    const u16 kinds[] = {1u};
+    u32 id = 0, delivered = 0;
+    u8 payload[4] = {1, 2, 3, 4};
+    ASSERT_NOT_NULL(bus);
+    ASSERT_NOT_NULL(q);
+    ASSERT_EQ(break_runtime_profiler_create(NULL, &prof), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_bus_attach_profiler(NULL, prof), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_bus_attach_profiler(bus, prof), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_bus_subscribe(bus, "slow", q, kinds, 1u, &id), BREAK_RUNTIME_OK);
+
+    BreakRuntimeMessageView v = view_of(1u, 1u, payload, sizeof payload);
+    v.correlation_id = 41u;
+    ASSERT_EQ(break_runtime_bus_publish(bus, &v, &delivered), BREAK_RUNTIME_OK);
+    ASSERT_EQ(profiler_count(prof, "bus.drop", 41u), 0u); /* delivered: nothing recorded */
+    v.correlation_id = 42u;
+    ASSERT_EQ(break_runtime_bus_publish(bus, &v, &delivered), BREAK_RUNTIME_OVERLOAD); /* queue full */
+    ASSERT_EQ(profiler_count(prof, "bus.drop", 42u), 1u);
+
+    /* unknown kind, bad version, oversize payload */
+    BreakRuntimeMessageView unknown = view_of(99u, 1u, payload, sizeof payload);
+    unknown.correlation_id = 43u;
+    ASSERT_EQ(break_runtime_bus_publish(bus, &unknown, NULL), BREAK_RUNTIME_REJECTED);
+    BreakRuntimeMessageView version = view_of(1u, 7u, payload, sizeof payload);
+    version.correlation_id = 44u;
+    ASSERT_EQ(break_runtime_bus_publish(bus, &version, NULL), BREAK_RUNTIME_REJECTED);
+    static u8 big[65];
+    BreakRuntimeMessageView oversize = view_of(1u, 1u, big, sizeof big);
+    oversize.correlation_id = 45u;
+    ASSERT_EQ(break_runtime_bus_publish(bus, &oversize, NULL), BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(profiler_count(prof, "bus.reject.kind", 43u), 1u);
+    ASSERT_EQ(profiler_count(prof, "bus.reject.version", 44u), 1u);
+    ASSERT_EQ(profiler_count(prof, "bus.reject.size", 45u), 1u);
+
+    /* an uncorrelated drop is recorded without a cid */
+    v.correlation_id = 0u;
+    ASSERT_EQ(break_runtime_bus_publish(bus, &v, NULL), BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(profiler_count(prof, "bus.drop", 0u), 1u);
+
+    /* detaching stops recording */
+    ASSERT_EQ(break_runtime_bus_attach_profiler(bus, NULL), BREAK_RUNTIME_OK);
+    v.correlation_id = 46u;
+    ASSERT_EQ(break_runtime_bus_publish(bus, &v, NULL), BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(profiler_count(prof, "bus.drop", 46u), 0u);
+    ASSERT_EQ(break_runtime_bus_unsubscribe(bus, id), BREAK_RUNTIME_OK);
+    break_runtime_queue_destroy(q);
+    break_runtime_bus_destroy(bus);
+    break_runtime_profiler_destroy(prof);
+}
+
+TEST(quota_rejections_are_recorded_and_a_full_profiler_never_blocks) {
+    BreakRuntimeBus *bus = NULL;
+    BreakRuntimeProfiler *prof = NULL;
+    BreakRuntimeProfilerConfig pc = {4u, 8u};
+    BreakRuntimeProfilerStats ps;
+    BreakRuntimeBusKind limited = {3u, 1u, 16u, "limited", false, 1u};
+    u8 b = 0;
+    ASSERT_EQ(break_runtime_bus_create(&bus), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_bus_register_kind(bus, &limited), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_profiler_create(&pc, &prof), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_bus_attach_profiler(bus, prof), BREAK_RUNTIME_OK);
+    BreakRuntimeMessageView v = view_of(3u, 1u, &b, 1u);
+    v.correlation_id = 7u;
+    ASSERT_EQ(break_runtime_bus_publish(bus, &v, NULL), BREAK_RUNTIME_OK);
+    /* 10 over-quota publishes against a 4-slot profiler ring: publish still
+     * answers OVERLOAD at once, the profiler counts its own overflow */
+    for (u32 i = 0; i < 10u; i++) ASSERT_EQ(break_runtime_bus_publish(bus, &v, NULL), BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(break_runtime_profiler_stats(prof, &ps), BREAK_RUNTIME_OK);
+    ASSERT_EQ(ps.recorded, 4u);
+    ASSERT_EQ(ps.overload_drops, 6u);
+    ASSERT_EQ(profiler_count(prof, "bus.reject.quota", 7u), 4u);
+    break_runtime_bus_destroy(bus);
+    break_runtime_profiler_destroy(prof);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(kind_registration_is_validated);
     RUN_TEST(publish_fans_out_to_subscribers_of_the_kind);
@@ -558,4 +656,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(control_kinds_use_reserved_queue_capacity);
     RUN_TEST(per_tick_quota_limits_a_kind);
     RUN_TEST(a_registration_can_be_compared);
+    RUN_TEST(drops_and_rejections_are_recorded_on_the_profiler);
+    RUN_TEST(quota_rejections_are_recorded_and_a_full_profiler_never_blocks);
 TEST_MAIN_END()

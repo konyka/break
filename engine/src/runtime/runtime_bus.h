@@ -2,6 +2,7 @@
 
 #include <core/types.h>
 #include <runtime/runtime_message.h>
+#include <runtime/runtime_profiler.h>
 #include <runtime/runtime_queue.h>
 #include <runtime/runtime_types.h>
 
@@ -119,6 +120,17 @@ BreakRuntimeError break_runtime_bus_unsubscribe(BreakRuntimeBus *bus, u32 id);
 BreakRuntimeError break_runtime_bus_publish(BreakRuntimeBus *bus,
                                             const BreakRuntimeMessageView *view,
                                             u32 *out_delivered);
+
+/* Records every dropped copy and every rejected publish as a profiler
+ * event carrying the message's correlation_id, so traces show where a
+ * causal chain hit backpressure: "bus.drop" (a subscriber queue was full or
+ * closed, or the copy failed), "bus.reject.kind", "bus.reject.version",
+ * "bus.reject.size", "bus.reject.quota". Delivered copies record nothing.
+ * Recording follows the profiler's hot-path contract (no allocation, no
+ * wait); a full profiler ring only counts its own overflow. NULL detaches.
+ * The profiler must outlive the attachment. */
+BreakRuntimeError break_runtime_bus_attach_profiler(BreakRuntimeBus *bus,
+                                                    BreakRuntimeProfiler *profiler);
 
 /* Starts a new quota period for every kind (typically once per frame). */
 BreakRuntimeError break_runtime_bus_tick(BreakRuntimeBus *bus);

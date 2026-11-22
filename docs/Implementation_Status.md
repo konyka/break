@@ -1,3 +1,8 @@
+## 总线丢弃与拒绝记入 Profiler（2026-11-22）
+
+- **实现**：`break_runtime_bus_attach_profiler` 把总线的每次丢弃与拒绝记为带 correlation_id 的 profiler 事件（`bus.drop`、`bus.reject.kind/version/size/quota`），不阻塞、不分配。设计见 `docs/design/runtime_message_model.md`「总线丢弃与拒绝记入 Profiler」。
+- **TDD**：`test_runtime_bus` 新增 2 例（先编译失败再实现），8 个变异全部被检出，TSan 无告警。`test_core_app_voice` 的链接行补上 `runtime_core engine`。
+
 ## 实机跨平台验证与 MoltenVK 直链修复（2026-11-22）
 
 - **计划与记录**：新增 `docs/testing/cross_platform_matrix.md`，列出 24 个构建组合（OS × 架构 × 编译器 × 构建类型 × RHI × 平台层 × sanitizer × 可选特性）、8 类场景、每个组合的验证位置与实机步骤，以及执行记录。连接信息只来自环境变量，文档与日志不含账号。

@@ -374,3 +374,11 @@ C++11 framework 在 `Init/Tick/DeInit` 建立 runtime；每 tick 由 LogicThread
 core_app 主循环随后改为订阅这些事件（2026-11-22）：语音通道创建自己的总线和一个 64 项（16 项预留给 control）的队列，`app_voice_report_switch` 每个 tick 在 CoreAppThread 上排空队列，用切换成功/拒绝/失败事件写出 `voice_capture_device` 追踪，替代原来对三个计数器的逐帧比较；其他设备事件被排空后忽略，总数仍由停止时的追踪给出。语音销毁后才解除订阅并销毁队列与总线。已有的 `test_core_app_voice_lane` 与 `test_core_app_voice_device` 端到端检查追踪内容，覆盖这次改动：把切换成功或拒绝事件的类型改错时，4 个语音用例都失败；去掉“只在有请求时追踪”的判断是等价变异，因为语音只会在 core_app 请求时切换设备。
 
 仍未做：把 LogicThread、Task workers、Network/IO、PAL/MainLoop 与 Profiler 的现有队列接到总线上（这些队列各有自己的所有权与生命周期约束，需要逐个迁移）。
+
+### 补充（2026-11-22）：总线丢弃与拒绝记入 Profiler
+
+`break_runtime_bus_attach_profiler(bus, profiler)` 让总线把每一次丢弃和拒绝记为一个 profiler 事件，并带上消息的 `correlation_id`：`bus.drop`（订阅者队列满、已关闭或复制失败）、`bus.reject.kind`、`bus.reject.version`、`bus.reject.size`、`bus.reject.quota`。成功投递不记录。这样同一条因果链在 Chrome trace 中能看到它在哪里遇到了背压（`export_flows` 会把同一 cid 的事件连成 flow）。记录遵守 profiler 的热路径约定：不分配、不等待；profiler 环满时只计入它自己的 `overload_drops`，发布者照常立即得到 OVERLOAD。记录在总线互斥锁内进行；profiler 的互斥锁是叶子锁，不回调总线，所以锁顺序“总线 → profiler”不会死锁。传 NULL 解除；profiler 必须比挂接更长寿。
+
+`runtime_core` 中的总线因此引用 `profiler_*`（来自 `engine`）。`core_app_runtime` 把 `runtime_core` 列在 `engine` 之后，单遍归档链接器（GNU ld）需要在使用者的链接行中再列一次 `runtime_core engine`（`test_core_app_voice`）。
+
+测试：`test_runtime_bus` 新增 2 例（共 13 例）：投递成功不记录；队列满、未知 kind、版本越界、超预算分别以正确的名字和 cid 记录；未关联的丢弃不带 cid；解除后不再记录；超配额 10 次而 profiler 环只有 4 槽时，发布照常返回 OVERLOAD，profiler 记录 4 次、自身溢出 6 次。变异检查：去掉任一类记录、cid 丢失、解除不生效、事件名写错，均被检出。ThreadSanitizer 下无告警。

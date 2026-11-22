@@ -5486,7 +5486,10 @@ endif()
 
     add_executable(test_core_app_voice tests/test_core_app_voice.c)
     target_include_directories(test_core_app_voice PRIVATE ${TEST_INCLUDE_DIRS})
-    target_link_libraries(test_core_app_voice PRIVATE core_app_runtime m Threads::Threads)
+    # runtime_core references profiler_* from engine (the bus records drops),
+    # and core_app_runtime lists runtime_core after engine; repeating both
+    # here resolves them in single-pass archive linkers (GNU ld).
+    target_link_libraries(test_core_app_voice PRIVATE core_app_runtime runtime_core engine m Threads::Threads)
     add_test(NAME test_core_app_voice COMMAND test_core_app_voice)
     set_tests_properties(test_core_app_voice PROPERTIES
         LABELS "headless;core_app;audio" TIMEOUT 300)
@@ -6584,7 +6587,8 @@ endif()
     set_tests_properties(test_runtime_facade PROPERTIES
         LABELS "headless;runtime_core")
 
-    add_executable(test_runtime_bus tests/test_runtime_bus.c)
+    add_executable(test_runtime_bus tests/test_runtime_bus.c
+        src/core/log.c src/core/profiler.c src/platform/time.c)
     target_include_directories(test_runtime_bus PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
     target_compile_definitions(test_runtime_bus PRIVATE BREAK_RUNTIME_TESTING=1)

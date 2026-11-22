@@ -41,6 +41,7 @@ struct BreakRuntimeBus {
     RuntimeBusSubscriber subscribers[BREAK_RUNTIME_BUS_MAX_SUBSCRIBERS];
     u32 next_id;
     BreakRuntimeBusStats stats;
+    BreakRuntimeProfiler *profiler; /* optional; leaf lock, safe under mutex */
 };
 
 static bool runtime_bus_name_ok(const char *name)
@@ -231,6 +232,17 @@ BreakRuntimeError break_runtime_bus_unsubscribe(BreakRuntimeBus *bus, u32 id)
     return result;
 }
 
+/* Under bus->mutex. The profiler's own mutex is a leaf (it never calls
+ * back), so the lock order bus -> profiler cannot deadlock. */
+static void runtime_bus_trace(BreakRuntimeBus *bus, const char *event,
+                              const BreakRuntimeMessageView *view)
+{
+    if (bus->profiler) {
+        (void)break_runtime_profiler_record_correlated(bus->profiler, event,
+                                                       view->correlation_id);
+    }
+}
+
 BreakRuntimeError break_runtime_bus_publish(BreakRuntimeBus *bus,
                                             const BreakRuntimeMessageView *view,
                                             u32 *out_delivered)
@@ -249,15 +261,19 @@ BreakRuntimeError break_runtime_bus_publish(BreakRuntimeBus *bus,
     kind = runtime_bus_find_kind(bus, view->kind);
     if (!kind) {
         bus->stats.unknown_kind_rejects++;
+        runtime_bus_trace(bus, "bus.reject.kind", view);
         result = BREAK_RUNTIME_REJECTED;
     } else if (view->version == 0u || view->version > kind->max_version) {
         kind->stats.version_rejects++;
+        runtime_bus_trace(bus, "bus.reject.version", view);
         result = BREAK_RUNTIME_REJECTED;
     } else if (view->size > kind->max_payload) {
         kind->stats.size_rejects++;
+        runtime_bus_trace(bus, "bus.reject.size", view);
         result = BREAK_RUNTIME_OVERLOAD;
     } else if (kind->max_per_tick != 0u && kind->tick_published >= kind->max_per_tick) {
         kind->stats.quota_rejects++;
+        runtime_bus_trace(bus, "bus.reject.quota", view);
         result = BREAK_RUNTIME_OVERLOAD;
     } else {
         BreakRuntimeMessageView copy_view = *view;
@@ -291,6 +307,7 @@ BreakRuntimeError break_runtime_bus_publish(BreakRuntimeBus *bus,
             } else {
                 s->stats.dropped++;
                 kind->stats.dropped++;
+                runtime_bus_trace(bus, "bus.drop", view);
                 result = BREAK_RUNTIME_OVERLOAD;
             }
         }
@@ -300,6 +317,18 @@ BreakRuntimeError break_runtime_bus_publish(BreakRuntimeBus *bus,
         *out_delivered = delivered;
     }
     return result;
+}
+
+BreakRuntimeError break_runtime_bus_attach_profiler(BreakRuntimeBus *bus,
+                                                    BreakRuntimeProfiler *profiler)
+{
+    if (!bus) {
+        return BREAK_RUNTIME_INVALID;
+    }
+    platform_mutex_lock(&bus->mutex);
+    bus->profiler = profiler;
+    platform_mutex_unlock(&bus->mutex);
+    return BREAK_RUNTIME_OK;
 }
 
 BreakRuntimeError break_runtime_bus_tick(BreakRuntimeBus *bus)
