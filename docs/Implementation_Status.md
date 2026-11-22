@@ -387,6 +387,7 @@
 
 - **变更**：`break_editor_shell_attach_mainloop_bus` 让 shell 以自有队列订阅主循环通知，每帧取空；渲染调试面板增加 `window:` 行；`editor_main.c` 挂接与解除。修复 NULL 挂接未实际解除的问题：现在会同步退订、销毁队列并移除 `window:` 行，之后可用同一总线重新挂接。
 - **验证**：生命周期回归先因解除后仍有 `window:` 行而 RED（186 passed、1 failed、187 total），首次修复后 `build-current-vk/test_editor_shell` 187/187。用变化事实验证解除后 `received/last_frame` 和其余面板行不变，并覆盖同总线重挂与重复解除。新增 `main_loop_shell_destroy_detaches_bus` 不预先 NULL 解除而直接销毁 shell，以公共 subscriber stats 与 topology 确认订阅移除；扩展 `shader_reload_viewport_and_shell_shutdown_retry_same_owner`，首次销毁失败后仍收到 3 条通知，重试成功后订阅为 STALE。受控删除 destroy 内 detach 时两条用例均 RED（186 passed、2 failed、188 total），恢复后 188/188。五种原有变异均被检出；Wayland 实机 `published=3 dropped=0 shell_received=3`。
+- **合并前复核**：rebase 到远端 `e2f8136c` 后，默认配置的 Vulkan CTest 444/444、OpenGL 442/442；ASan+UBSan `test_editor_shell` 188/188、fuzz 14/14；TSan 的 `test_runtime_bus`、`test_runtime_mainloop`、`test_runtime_mainloop_platform` 3/3。Wayland/Vulkan 最新实机输出为 `observed=31 published=4 dropped=0 shell_received=4`。本机 Fedora（GCC 16.2.1、glibc 2.44）的完整 TSan `test_editor_shell` 在第 133 例 Lua console 的受保护加载路径因 `ThreadSanitizer: can't find longjmp buf` 中止，未将该环境记为完整通过；完整 TSan 由 Ubuntu 24.04 CI lane 复验。实机输入回放结束后已恢复 `BREAK_EDITOR_INPUT_SCRIPT=OFF` 并重跑发行配置契约。
 
 ## LogicThread 订阅 IO 通知（2026-11-22）
 

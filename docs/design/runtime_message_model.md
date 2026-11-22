@@ -444,4 +444,6 @@ Network 是第四个接入总线的线程域，分两层：
 
 测试：`test_editor_shell` 新增 `render_panel_shows_main_loop_window_notices` 与 `main_loop_shell_destroy_detaches_bus`，并扩展 `shader_reload_viewport_and_shell_shutdown_retry_same_owner`（`build-current-vk` 当前配置共 188 例）。挂接前后的行、两次观察后行内容随尺寸、缩放、WSI 状态和关闭请求更新，共收到 6 条通知，重复挂接被拒；解除后发布确有变化的事实，shell 的 `received/last_frame` 与其余面板行不变且 `window:` 行移除；同一总线可重新挂接并接收后续变化，重复解除安全。直接销毁仍挂接的 shell 后，公共 subscriber stats 对原 id 返回 STALE，topology 不再含 `editor.shell`；销毁 fail-early 后订阅仍收到初始 3 条通知，重试成功后订阅移除。该回归修复前在“解除后仍有 `window:` 行”断言失败（186 passed、1 failed、187 total），首次修复后 187/187；受控删除 destroy 内 detach 时直接销毁与重试两条用例均失败（186 passed、2 failed、188 total），恢复后 188/188。变异检查：不统计关闭请求、不更新 WSI 状态、允许重复挂接、解除不生效、tick 不取空队列，均被检出。实机：Wayland 上编辑器脚本运行输出 `observed=31 published=3 dropped=0 shell_received=3`（此前没有订阅方时为 `published=0 dropped=3`）。
 
+合并前复核（rebase 到远端 `e2f8136c`）：默认配置 Vulkan 444/444、OpenGL 442/442；ASan+UBSan 的 shell 188/188 与 fuzz 14/14；TSan 的总线、主循环和平台适配 3/3。Wayland/Vulkan 实机最新输出 `observed=31 published=4 dropped=0 shell_received=4`。本机 Fedora GCC 16.2.1/glibc 2.44 的完整 TSan shell 在 Lua console 受保护加载路径发生 `can't find longjmp buf` 工具运行时中止，不作为完整 TSan 通过收据，完整 TSan 由 Ubuntu 24.04 CI lane 复验。实机输入回放结束后恢复 `BREAK_EDITOR_INPUT_SCRIPT=OFF` 并验证发行配置契约。
+
 仍未做：core_app 之外（C++ framework 的 `Init/Tick/DeInit`）的 LogicThread 尚未消费总线。
