@@ -1,17 +1,30 @@
 cmake_minimum_required(VERSION 3.25)
 
-if(NOT DEFINED SOURCE_DIR OR NOT DEFINED BINARY_DIR)
-    message(FATAL_ERROR "SOURCE_DIR and BINARY_DIR are required")
+if(NOT DEFINED SOURCE_DIR OR SOURCE_DIR STREQUAL "")
+    message(FATAL_ERROR "SOURCE_DIR is required and must not be empty")
 endif()
-
+if(NOT DEFINED BINARY_DIR OR BINARY_DIR STREQUAL "")
+    message(FATAL_ERROR "BINARY_DIR is required and must not be empty")
+endif()
+cmake_path(ABSOLUTE_PATH BINARY_DIR NORMALIZE OUTPUT_VARIABLE NORMALIZED_BINARY_DIR)
+cmake_path(GET NORMALIZED_BINARY_DIR ROOT_PATH BINARY_ROOT_PATH)
+if(NORMALIZED_BINARY_DIR STREQUAL BINARY_ROOT_PATH)
+    message(FATAL_ERROR "BINARY_DIR must not be a filesystem root")
+endif()
+set(BINARY_DIR "${NORMALIZED_BINARY_DIR}")
 set(WORK_DIR "${BINARY_DIR}/framework-runtime-build-contract")
+cmake_path(GET WORK_DIR PARENT_PATH WORK_PARENT_DIR)
+if(NOT WORK_PARENT_DIR STREQUAL BINARY_DIR)
+    message(FATAL_ERROR "Refusing to remove anything outside the fixed contract subdirectory")
+endif()
 file(REMOVE_RECURSE "${WORK_DIR}")
 
 function(configure_tree tree)
     file(MAKE_DIRECTORY "${tree}/.cmake/api/v1/query")
     file(WRITE "${tree}/.cmake/api/v1/query/codemodel-v2" "")
     execute_process(
-        COMMAND "${CMAKE_COMMAND}" -S "${SOURCE_DIR}" -B "${tree}" ${ARGN}
+        COMMAND "${CMAKE_COMMAND}" -S "${SOURCE_DIR}" -B "${tree}"
+            -DCMAKE_BUILD_TYPE=Debug ${ARGN}
         RESULT_VARIABLE result
         OUTPUT_VARIABLE output
         ERROR_VARIABLE error)
@@ -23,7 +36,8 @@ endfunction()
 
 function(build_target tree target result_variable output_variable)
     execute_process(
-        COMMAND "${CMAKE_COMMAND}" --build "${tree}" --target "${target}" ${ARGN}
+        COMMAND "${CMAKE_COMMAND}" --build "${tree}" --target "${target}"
+            --config Debug ${ARGN}
         RESULT_VARIABLE result
         OUTPUT_VARIABLE output
         ERROR_VARIABLE error)
@@ -40,13 +54,30 @@ function(get_target_json tree target_name output_variable)
     list(SORT replies)
     list(GET replies -1 reply)
     file(READ "${reply}" codemodel)
-    string(JSON target_count LENGTH "${codemodel}" configurations 0 targets)
+    string(JSON configuration_count LENGTH "${codemodel}" configurations)
+    set(configuration_index 0)
+    set(debug_configuration_index -1)
+    while(configuration_index LESS configuration_count)
+        string(JSON configuration_name GET "${codemodel}"
+            configurations ${configuration_index} name)
+        if(configuration_name STREQUAL "Debug")
+            set(debug_configuration_index "${configuration_index}")
+            break()
+        endif()
+        math(EXPR configuration_index "${configuration_index} + 1")
+    endwhile()
+    if(debug_configuration_index LESS 0)
+        message(FATAL_ERROR "No Debug configuration in ${reply}")
+    endif()
+    string(JSON target_count LENGTH "${codemodel}"
+        configurations ${debug_configuration_index} targets)
     set(index 0)
     while(index LESS target_count)
-        string(JSON name GET "${codemodel}" configurations 0 targets ${index} name)
+        string(JSON name GET "${codemodel}"
+            configurations ${debug_configuration_index} targets ${index} name)
         if(name STREQUAL target_name)
             string(JSON json_file GET "${codemodel}"
-                configurations 0 targets ${index} jsonFile)
+                configurations ${debug_configuration_index} targets ${index} jsonFile)
             get_filename_component(reply_directory "${reply}" DIRECTORY)
             file(READ "${reply_directory}/${json_file}" target_json)
             set("${output_variable}" "${target_json}" PARENT_SCOPE)
@@ -111,6 +142,12 @@ configure_tree("${enabled_tree}"
     -DBUILD_TESTING=OFF
     -DENGINE_RHI_BACKEND=vulkan
     -DMYUI_PAL=dummy)
+get_target_json("${enabled_tree}" test_framework_runtime_bus explicit_off_test_json)
+if(explicit_off_test_json)
+    message(FATAL_ERROR
+        "test_framework_runtime_bus exists with explicit ENGINE_BUILD_TESTS=OFF")
+endif()
+message(STATUS "Explicit OFF keeps test_framework_runtime_bus absent")
 build_target("${enabled_tree}" common_runtime enabled_runtime_result enabled_runtime_output
     --parallel 2)
 if(NOT enabled_runtime_result EQUAL 0)
@@ -123,6 +160,30 @@ if(NOT enabled_empty_result EQUAL 0)
 endif()
 check_empty_link("${enabled_tree}")
 message(STATUS "Enabled runtime bridge contract passed")
+
+set(default_tests_tree "${WORK_DIR}/engine-tests-default")
+configure_tree("${default_tests_tree}"
+    -DBREAK_FRAMEWORK_ENABLE_RUNTIME=ON
+    -DBUILD_TESTING=OFF
+    -DENGINE_RHI_BACKEND=vulkan
+    -DMYUI_PAL=dummy)
+get_target_json("${default_tests_tree}" common_runtime default_tests_runtime_json)
+if(NOT default_tests_runtime_json)
+    message(FATAL_ERROR
+        "common_runtime is missing when ENGINE_BUILD_TESTS uses the root default")
+endif()
+get_target_json("${default_tests_tree}" test_framework_runtime_bus default_tests_test_json)
+if(default_tests_test_json)
+    message(FATAL_ERROR
+        "test_framework_runtime_bus exists when ENGINE_BUILD_TESTS uses the root default")
+endif()
+file(STRINGS "${default_tests_tree}/CMakeCache.txt" default_tests_cache_entry
+    REGEX "^ENGINE_BUILD_TESTS:BOOL=")
+if(NOT default_tests_cache_entry STREQUAL "ENGINE_BUILD_TESTS:BOOL=OFF")
+    message(FATAL_ERROR
+        "Root default must set ENGINE_BUILD_TESTS=OFF; cache entry: ${default_tests_cache_entry}")
+endif()
+message(STATUS "Default engine tests setting keeps the runtime bridge without test targets")
 
 set(tests_tree "${WORK_DIR}/engine-tests-enabled")
 configure_tree("${tests_tree}"
