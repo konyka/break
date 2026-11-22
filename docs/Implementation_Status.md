@@ -13244,3 +13244,5 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **focused 证据**：针对正式 `common_runtime` 的 `test_framework_runtime_bus` 当前含 9 个行为用例。focused CTest 3/3 通过（`test_framework_runtime_bus`、`test_runtime_bus`、`test_runtime_io`）；根 `test_framework_runtime_build_contract` 1/1 通过，内部覆盖 default、显式引擎测试 OFF 的 enabled、未定义引擎测试开关的 engine-tests-default、显式 ON 的 engine-tests-enabled 四个子树。实现者另记录 focused ASan/UBSan 与 TSan 通过，新测试均为 9/9 且无 sanitizer 诊断。
 - **尚待最终验收**：以上不是最终全量测试或远端 CI 结果。完整 Vulkan/OpenGL、ASan 非图形套件、fuzz、Windows/macOS/其他生成器与远端 CI 尚未完成，本批不得提前写成全量或全平台通过。
 - **缺口解释**：旧记录中“C++ framework 的 `Init/Tick/DeInit` 尚未消费总线”的 IO notice 缺口由本批关闭。适配类不创建线程，不改变既有 LogicThread 的线程归属；本批也不声称所有消息类型均已接入总线。
+
+- **本地全量验证（rebase 后 `aa89d48f`）**：标准 Wayland Vulkan CTest 453/453、OpenGL 451/451，均零失败并各有 4 项平台条件跳过。ASan+UBSan 非图形 438/438，零失败、4 项条件跳过；fuzz 14/14。TSan 的 framework bus、runtime bus/io、async loader、mipmap stream、hotreload 共 6/6，无诊断。独立总评审未发现代码 Critical/Important；其指出的 Build Guide shutdown 超时责任正在按单独修复波处理，远端矩阵与实机结果另行追加，不在此处提前记为通过。

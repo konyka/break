@@ -492,3 +492,5 @@
 上文“C++ framework 的 LogicThread 消费总线”这一后续追加缺口由此对 IO notice 关闭，但不表示创建了新的线程，也不表示所有消息类型已经接入。`common_runtime` 使用 C++20；本文历史段落中的 C++11 仅为旧记录。根 `BREAK_FRAMEWORK_ENABLE_RUNTIME` 默认 OFF，默认 `empty` 仍无 `common_runtime`、`runtime_core` 或 `engine` 依赖，因此本项是显式可选能力，不是默认应用行为。
 
 当前证据限于 `test_framework_runtime_bus` 的 9 个行为用例、focused CTest 3/3、根契约 1/1（四个子树）以及实现者记录的 focused ASan/UBSan/TSan 通过。完整 Vulkan/OpenGL、ASan 非图形套件、fuzz、Windows/macOS/其他生成器与远端 CI 尚待最终验收；不能据此把第 5 节全部线程/消息能力或全平台验收标记为完成。
+
+验证补充（2026-11-22）：本项在 rebase 后源码上完成标准 Wayland Vulkan 453/453、OpenGL 451/451、ASan+UBSan 非图形 438/438、fuzz 14/14 与相关 TSan 6/6，未改变默认依赖边界。arm64、Windows、macOS 和远端流水线结果不由 Linux 本地证据推断，须以实际平台收据关闭对应验证缺口。

@@ -467,3 +467,5 @@ Network 是第四个接入总线的线程域，分两层：
 针对正式 `common_runtime` 的 `test_framework_runtime_bus` 当前有 9 个行为用例。实现者记录的 focused CTest 为 3/3（本测试、`test_runtime_bus`、`test_runtime_io`），根构建契约 `test_framework_runtime_build_contract` 为 1/1（default、enabled、engine-tests-default、engine-tests-enabled 四个子树），focused ASan/UBSan 与 TSan 运行也已通过。这些仅是当前 focused 证据；完整 Vulkan/OpenGL、ASan 非图形套件、fuzz、Windows/macOS/其他生成器以及远端 CI 尚待最终验收，不能提前记为全量通过。
 
 因此，上一节及更早记录中“core_app 之外（C++ framework 的 `Init/Tick/DeInit`）的 LogicThread 尚未消费总线”这一具体缺口由本批关闭。这里交付的是既有 framework 生命周期对 IO notice 的可选消费：适配类不创建线程，不改变既有 LogicThread 的归属，也不表示所有消息类型都已接入总线。
+
+验收补充（2026-11-22）：rebase 到远端 `bdb9aaa4` 后，标准 Wayland Vulkan 全量 453/453、OpenGL 全量 451/451；ASan+UBSan 非图形 438/438，fuzz 14/14；相关 TSan 6/6。上述套件均零失败，普通套件和 ASan 非图形各有 4 项平台条件跳过。总评审要求的文档关停修正、远端 CI 与实机矩阵仍以各自的最终记录为准。

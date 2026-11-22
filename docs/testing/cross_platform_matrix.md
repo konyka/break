@@ -219,3 +219,9 @@ ShiningLight 的 `Win64ARMOpenSSL` 安装器（winget id `ShiningLight.OpenSSL.D
 - L6 的 arm64 显式构建清单与 QEMU CTest 选择各新增该目标，选择数由上文的 275 项变为 **276 项**。本机没有 arm64 交叉 C++ 编译器，本次不提前写成 arm64 通过，须以 L6 实际作业收据确认。
 - L1/L2/L3、W1–W6、M1/M2 的完整构建会自动包含新目标；Windows 的测试链接把数学库限制在 UNIX 分支，避免请求不存在的 `m.lib`。各平台的实际结果仍以本次对应作业或实机记录为准。
 - 根 `test_framework_runtime_build_contract` 已在 Unix Makefiles 与 **Ninja Multi-Config 1.13** 各通过 1/1；每次均检查 default、显式引擎测试 OFF、未定义引擎测试开关、显式 ON 四个子树。该契约实际配置和构建目标，并用 CMake File API 核对目标与链接片段，不是源码文本匹配。
+
+### 2026-11-22 framework 总线的 Linux 全量记录
+
+- 源码：`aa89d48f`（已 rebase 到当时远端 `bdb9aaa4`）。标准 Fedora Wayland Vulkan **453/453**、OpenGL **451/451**，均零失败、4 项平台条件跳过。
+- ASan+UBSan 非图形 **438/438**，零失败、4 项条件跳过；fuzz **14/14**。TSan 的 framework bus、runtime bus/io、async loader、mipmap stream、hotreload **6/6**，无诊断。
+- 这些结果覆盖 L1/L2/L3 的本地实现与 L7/L8 的标准构建回归，不替代 L6、Windows 或 macOS 的实际收据。arm64 的 276 项选择与各远端作业结果待实际运行后追加。
