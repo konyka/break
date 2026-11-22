@@ -477,6 +477,10 @@ static void io_worker_finalize(
                 break;
             }
             published = true;
+            /* Sent before waiters can see the completion: once a wait
+             * returns, the notice is on the bus (or counted as dropped),
+             * and the request is never read after the waiter may free it. */
+            io_send_notice(request->id, state, error, (u64)byte_size);
         } else {
             /* Deep OOM: even the failure completion could not be built. The
              * request still reaches a terminal state (waiters wake on
@@ -494,9 +498,7 @@ static void io_worker_finalize(
     }
     platform_mutex_unlock(&facade->mutex);
 
-    if (published) {
-        io_send_notice(request->id, state, error, (u64)byte_size);
-    } else {
+    if (!published) {
         break_runtime_message_release(message);
     }
     free(data);
@@ -516,15 +518,22 @@ static void io_worker_main(void *arg)
         bool claimed = false;
 
         platform_mutex_lock(&facade->mutex);
+        for (;;) {
 #if defined(BREAK_RUNTIME_TESTING)
-        /* Test gate: park BEFORE claiming from the ring. */
-        while (atomic_load_explicit(&g_break_runtime_test_io_gate_pop,
-                                    memory_order_acquire) != 0u) {
-            platform_cond_wait(&facade->work_cond, &facade->mutex);
-        }
+            /* Test gate: park BEFORE claiming from the ring. Re-checked after
+             * every wake, so a worker that was already waiting for work when
+             * the gate closed cannot claim past it. */
+            if (atomic_load_explicit(&g_break_runtime_test_io_gate_pop,
+                                     memory_order_acquire) != 0u) {
+                platform_cond_wait(&facade->work_cond, &facade->mutex);
+                continue;
+            }
 #endif
-        while (facade->ring_count == 0u && !facade->workers_should_exit) {
-            platform_cond_wait(&facade->work_cond, &facade->mutex);
+            if (facade->ring_count == 0u && !facade->workers_should_exit) {
+                platform_cond_wait(&facade->work_cond, &facade->mutex);
+                continue;
+            }
+            break;
         }
         if (facade->ring_count == 0u) {
             /* workers_should_exit with a drained ring: exit. */
@@ -790,8 +799,8 @@ BreakRuntimeError break_runtime_io_shutdown(u32 timeout_ms)
                 request->completion_state = (u32)BREAK_RUNTIME_IO_CANCELLED;
                 request->completion = message;
                 facade->cancelled++;
-                platform_cond_broadcast(&facade->completion_cond);
                 io_send_notice(request->id, BREAK_RUNTIME_IO_CANCELLED, BREAK_RUNTIME_OK, 0u);
+                platform_cond_broadcast(&facade->completion_cond);
             } else {
                 /* Deep OOM building the cancellation completion: the request
                  * is still terminal-cancelled, waiters were already woken. */
@@ -981,9 +990,9 @@ BreakRuntimeError break_runtime_io_cancel(BreakRuntimeIoRequest *request)
     request->completion_state = (u32)BREAK_RUNTIME_IO_CANCELLED;
     request->completion = message;
     facade->cancelled++;
+    io_send_notice(request->id, BREAK_RUNTIME_IO_CANCELLED, BREAK_RUNTIME_OK, 0u);
     platform_cond_broadcast(&facade->completion_cond);
     platform_mutex_unlock(&facade->mutex);
-    io_send_notice(request->id, BREAK_RUNTIME_IO_CANCELLED, BREAK_RUNTIME_OK, 0u);
     return BREAK_RUNTIME_OK;
 }
 

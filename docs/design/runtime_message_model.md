@@ -399,7 +399,7 @@ Task workers 是第二个接入总线的线程域。`break_runtime_task_queue_pu
 
 IO workers 是第三个接入总线的线程域。`break_runtime_io_attach_bus(bus)`（`engine/src/runtime/runtime_io.h`）之后，每发布一个 IO 完成（worker 读完、读取失败或超时、`cancel`、shutdown 清空队列时的取消）都会再发一条 kind `BREAK_RUNTIME_IO_NOTICE_KIND`（0x4F4E，版本 1，名字 `runtime.io.notice`，control kind）的通知。通知是 24 字节小端：请求 id、状态、错误码、字节数；不含文件内容，文件内容仍随完成消息交给请求本身。拥有者因此可以只看一个队列就知道哪些读取已经结束，再去取对应请求的完成消息，不必逐个轮询。
 
-- 通知在 facade 互斥锁之外发布（cancel 与 worker 路径），或在锁内发布（shutdown 清空路径）；总线互斥锁从不回调 facade，所以两种情况都不会死锁。
+- 三条路径都在 facade 互斥锁内、唤醒等待者之前发布通知，所以 `wait_completion`/`poll_completion` 一旦拿到完成，对应通知已经在总线上（或已计为丢弃）。总线互斥锁从不回调 facade，不会死锁。最初 worker 与 cancel 路径在解锁之后才发布：arm64 QEMU 上测试线程拿到完成后立即读统计，通知还没发出，`notices_dropped` 少计（CI run 44983968111）；调整顺序后修复。同一次 CI 还因超时退出（124）：测试用的拉取闸门只在 worker 进入等待前检查一次，已经在等待新请求的 worker 被唤醒后会越过刚关闭的闸门取走请求，shutdown 清空用例于是在 init 中等待残留 worker。现在 worker 每次被唤醒都重新检查闸门。本地以 2 核运行 32 份并发副本复现：修复前 32 份中 17 份失败或卡住，修复后 64 份全部通过，ThreadSanitizer 无告警。
 - 从不等待：订阅者队列满时通知被丢弃。`BreakRuntimeIoStats` 增加 `notices_published` 与 `notices_dropped`，它们和总线挂接一样是进程级的（facade 本身就是进程级单例），跨 init/shutdown 累计。
 - kind 尚未登记时由 attach 登记；已登记时参数必须完全一致（`break_runtime_bus_kind_matches`），否则返回 REJECTED。`break_runtime_io_notice_view` 严格校验 kind、版本和长度。传 NULL 解除。
 
