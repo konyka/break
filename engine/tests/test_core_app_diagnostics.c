@@ -48,6 +48,28 @@ static const char EXPECTED_BLOB[] =
     "touch_status=5\n"
     "haptic_status=6\n";
 
+#define RECORD_BLOB_TEXT \
+    "[rhi]\n" \
+    "backend=record\n" \
+    "gpu=none\n" \
+    "[net]\n" \
+    "live=false\n" \
+    "seen=0\n" \
+    "dropped=0\n" \
+    "[input]\n" \
+    "tick=4\n" \
+    "keys=1\n" \
+    "pads=0\n" \
+    "touches=0\n" \
+    "gestures=0\n" \
+    "touch_status=0\n" \
+    "haptic_status=0\n"
+
+static const char NUL_SUFFIX_BLOB[] =
+    RECORD_BLOB_TEXT "\0[extra]\nvalue=1\n";
+static const char EXTRA_SECTION_BLOB[] =
+    RECORD_BLOB_TEXT "[extra]\nvalue=1\n";
+
 static CoreAppDiagnosticsSnapshot sample_snapshot(void) {
     CoreAppDiagnosticsSnapshot snapshot;
     memset(&snapshot, 0, sizeof(snapshot));
@@ -159,6 +181,18 @@ static pid_t spawn_crash(const char *root, const CoreAppDiagnosticsSnapshot *sna
     return pid;
 }
 
+static pid_t spawn_raw_blob_crash(const char *root, const void *blob, usize size) {
+    pid_t pid = fork();
+    if (pid == 0) {
+        BreakCrashConfig config = {root};
+        if (!break_crash_install(&config)) _exit(51);
+        break_crash_set_context_blob(blob, size);
+        (void)raise(SIGSEGV);
+        _exit(52);
+    }
+    return pid;
+}
+
 static int wait_for_segv(pid_t pid) {
     int status = 0;
     if (test_waitpid_deadline(pid, &status, 30000u) != pid) return 0;
@@ -200,26 +234,36 @@ static int write_invalid_pending(const char *root) {
 
 TEST(start_validates_root_and_stop_uninstalls) {
     char root[512];
+    bool null_rejected;
+    bool empty_rejected;
+    bool started;
+    bool installed;
+    bool stopped;
     test_tmp(root, sizeof(root), "core_app_diag_start");
-    ASSERT_FALSE(core_app_diagnostics_start(NULL));
-    ASSERT_FALSE(core_app_diagnostics_start(""));
+    null_rejected = !core_app_diagnostics_start(NULL);
+    empty_rejected = !core_app_diagnostics_start("");
+    started = core_app_diagnostics_start(root);
+    installed = break_crash_is_installed();
 #if defined(_WIN32)
-    ASSERT_FALSE(core_app_diagnostics_start(root));
-    ASSERT_FALSE(break_crash_is_installed());
     core_app_diagnostics_stop();
+    stopped = !break_crash_is_installed();
+    remove_spool(root);
+    ASSERT_FALSE(started);
+    ASSERT_FALSE(installed);
 #else
     {
-        bool started = core_app_diagnostics_start(root);
-        bool installed = break_crash_is_installed();
         bool second = started ? core_app_diagnostics_start(root) : true;
-        if (started) core_app_diagnostics_stop();
+        core_app_diagnostics_stop();
+        stopped = !break_crash_is_installed();
+        remove_spool(root);
         ASSERT_TRUE(started);
         ASSERT_TRUE(installed);
         ASSERT_FALSE(second);
-        ASSERT_FALSE(break_crash_is_installed());
     }
-    remove_spool(root);
 #endif
+    ASSERT_TRUE(null_rejected);
+    ASSERT_TRUE(empty_rejected);
+    ASSERT_TRUE(stopped);
 }
 
 TEST(real_child_crash_recovers_exact_sanitized_blob) {
@@ -250,17 +294,27 @@ TEST(record_verifier_checks_real_record_and_error_codes) {
 #else
     char root[512];
     char empty_root[512];
+    char nul_root[512];
+    char extra_root[512];
     CoreAppDiagnosticsSnapshot snapshot = record_snapshot();
     pid_t pid;
+    pid_t nul_pid;
+    pid_t extra_pid;
     int signal_ok = 0;
+    int nul_signal_ok = 0;
+    int extra_signal_ok = 0;
     int valid = -1;
     int wrong_tick = -1;
     int usage = -1;
     int recovery = -1;
     int parse = -1;
+    int nul_contract = -1;
+    int extra_contract = -1;
     int planted;
     test_tmp(root, sizeof(root), "core_app_diag_verify");
     test_tmp(empty_root, sizeof(empty_root), "core_app_diag_verify_empty");
+    test_tmp(nul_root, sizeof(nul_root), "core_app_diag_verify_nul");
+    test_tmp(extra_root, sizeof(extra_root), "core_app_diag_verify_extra");
     pid = spawn_crash(root, &snapshot, false);
     if (pid > 0) signal_ok = wait_for_segv(pid);
     if (signal_ok) {
@@ -271,8 +325,22 @@ TEST(record_verifier_checks_real_record_and_error_codes) {
     recovery = run_record_verifier(empty_root, "4");
     planted = write_invalid_pending(empty_root);
     if (planted) parse = run_record_verifier(empty_root, "4");
+    nul_pid = spawn_raw_blob_crash(nul_root, NUL_SUFFIX_BLOB,
+                                   sizeof(NUL_SUFFIX_BLOB) - 1u);
+    if (nul_pid > 0) nul_signal_ok = wait_for_segv(nul_pid);
+    if (nul_signal_ok) nul_contract = run_record_verifier(nul_root, "4");
+    extra_pid = spawn_raw_blob_crash(extra_root, EXTRA_SECTION_BLOB,
+                                     sizeof(EXTRA_SECTION_BLOB) - 1u);
+    if (extra_pid > 0) extra_signal_ok = wait_for_segv(extra_pid);
+    if (extra_signal_ok) extra_contract = run_record_verifier(extra_root, "4");
     remove_spool(root);
     remove_spool(empty_root);
+    remove_spool(nul_root);
+    remove_spool(extra_root);
+    if (nul_contract != 5 || extra_contract != 5) {
+        printf("  raw blob verifier exits: nul=%d extra=%d\n",
+               nul_contract, extra_contract);
+    }
     ASSERT_TRUE(pid > 0);
     ASSERT_TRUE(signal_ok);
     ASSERT_EQ(valid, 0);
@@ -281,6 +349,12 @@ TEST(record_verifier_checks_real_record_and_error_codes) {
     ASSERT_EQ(recovery, 3);
     ASSERT_TRUE(planted);
     ASSERT_EQ(parse, 4);
+    ASSERT_TRUE(nul_pid > 0);
+    ASSERT_TRUE(nul_signal_ok);
+    ASSERT_TRUE(extra_pid > 0);
+    ASSERT_TRUE(extra_signal_ok);
+    ASSERT_EQ(extra_contract, 5);
+    ASSERT_EQ(nul_contract, 5);
 #endif
 }
 

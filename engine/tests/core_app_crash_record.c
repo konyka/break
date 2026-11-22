@@ -70,13 +70,14 @@ static int check_contract(const BreakCrashRecord *record, u32 expected_tick) {
     if (!bytes || size == 0u || size > BREAK_CRASH_CONTEXT_BLOB_MAX) return 0;
     memcpy(blob, bytes, size);
     blob[size] = '\0';
+    if (memchr(blob, '\0', size) != NULL) return 0;
     for (i = 0; i < sizeof(keys) / sizeof(keys[0]); ++i) {
         if (i == 0u && !take_section(&cursor, "[rhi]")) return 0;
         if (i == 2u && !take_section(&cursor, "[net]")) return 0;
         if (i == 5u && !take_section(&cursor, "[input]")) return 0;
         if (!take_field(&cursor, keys[i], &values[i])) return 0;
     }
-    if (*cursor != '\0') return 0;
+    if ((usize)(cursor - blob) != size) return 0;
     if (strcmp(values[0], "record") != 0 || strcmp(values[1], "none") != 0 ||
         strcmp(values[2], "false") != 0) return 0;
     if (!parse_u64(values[3], &number) || !parse_u64(values[4], &number) ||
