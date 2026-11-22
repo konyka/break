@@ -6581,6 +6581,20 @@ endif()
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_compile_definitions(runtime_core_test PRIVATE BREAK_RUNTIME_TESTING=1)
 
+    add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../framework/common"
+        "${CMAKE_CURRENT_BINARY_DIR}/framework/common")
+    add_executable(test_framework_runtime_bus tests/test_framework_runtime_bus.cpp)
+    set_property(TARGET test_framework_runtime_bus PROPERTY CXX_STANDARD 20)
+    set_property(TARGET test_framework_runtime_bus PROPERTY CXX_STANDARD_REQUIRED ON)
+    target_link_libraries(test_framework_runtime_bus PRIVATE
+        common_runtime Threads::Threads m)
+    if(ENGINE_PLATFORM STREQUAL "windows")
+        target_link_libraries(test_framework_runtime_bus PRIVATE kernel32)
+    endif()
+    add_test(NAME test_framework_runtime_bus COMMAND test_framework_runtime_bus)
+    set_tests_properties(test_framework_runtime_bus PROPERTIES
+        LABELS "headless;runtime_core;framework")
+
     add_executable(test_runtime_facade tests/test_runtime_facade.c
         src/task/task.c src/core/log.c src/core/profiler.c src/platform/time.c)
     target_include_directories(test_runtime_facade PRIVATE
