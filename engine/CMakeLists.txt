@@ -892,6 +892,25 @@ if(BREAK_ENABLE_CRYPTO)
     target_link_libraries(break_online PUBLIC break_crypto)
 endif()
 
+# Cross-process transport for cell handoff (docs/design/cell_handoff.md
+# "跨进程传输"): HMAC-authenticated datagrams over UDP with a per-peer replay
+# window. Needs break_crypto, so it exists only with BREAK_ENABLE_CRYPTO; it
+# compiles the socket and replay-window TUs it uses, like break_authority.
+if(BREAK_ENABLE_CRYPTO AND TARGET break_crypto)
+    add_library(break_cell_link STATIC
+        src/network/break_cell_link.c
+        src/network/break_replay_window.c
+        src/network/network.c)
+    set_property(TARGET break_cell_link PROPERTY C_STANDARD 11)
+    target_include_directories(break_cell_link PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(break_cell_link PUBLIC break_replication_core break_crypto)
+    if(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(break_cell_link PRIVATE
+            ENGINE_PLATFORM_WINDOWS=1 _WIN32_WINNT=0x0601)
+        target_link_libraries(break_cell_link PUBLIC ws2_32)
+    endif()
+endif()
+
 # Formal optional Runtime Core library: unified error/lifecycle types, the
 # single-owner lifecycle coordinator, the formal message/queue/task facade,
 # the formal thread + IO/VFS facades, and the reload coordinator + profiler
@@ -6842,6 +6861,22 @@ endif()
     add_test(NAME test_break_cell_balance COMMAND test_break_cell_balance)
     set_tests_properties(test_break_cell_balance PROPERTIES
         TIMEOUT 60 LABELS "network;replication;world")
+
+    if(TARGET break_cell_link)
+        add_executable(test_break_cell_link tests/test_break_cell_link.c src/platform/time.c)
+        target_include_directories(test_break_cell_link PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_break_cell_link PRIVATE break_cell_link)
+        if(ENGINE_PLATFORM STREQUAL "windows")
+            target_compile_definitions(test_break_cell_link PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        else()
+            target_compile_definitions(test_break_cell_link PRIVATE
+                ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=200112L)
+        endif()
+        add_test(NAME test_break_cell_link COMMAND test_break_cell_link)
+        set_tests_properties(test_break_cell_link PROPERTIES
+            TIMEOUT 60 LABELS "network;replication;world;security")
+    endif()
 
     # Adapter-backed test executables link the formal top-level break_net
     # target (defined independent of ENGINE_BUILD_TESTS when
