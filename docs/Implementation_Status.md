@@ -1,3 +1,8 @@
+## 可见性与输入路由随 cell 交接迁移（2026-11-22）
+
+- **实现**：新增 `engine/src/network/break_cell_view.{h,c}`，加入 `break_replication_core`。`BreakCellView` 合并各 cell 的 AoI 报告并加宽限期，实体交接时客户端不会收到 leave/enter；`BreakCellRoute` 按最高 epoch 决定输入发往哪个 cell。设计见 `docs/design/cell_handoff.md`「可见性与连接随交接迁移」。
+- **TDD**：新增 `test_break_cell_view`（5 例），先写测试再实现；端到端用例把 `BreakCellPartition`、`BreakCell`、`break_aoi_compute`、视图和路由串起来，宽限期改为 0 时该用例失败。12 个变异全部被检出（第一轮有 2 处未检出，补充断言后检出）。ASan/UBSan 下通过。arm64 lane 加入 `test_break_cell_view`。
+
 ## cell 崩溃恢复（2026-11-22）
 
 - **实现**：`BreakCell` 新增快照与恢复（`break_cell_snapshot_size`、`break_cell_snapshot`、`break_cell_restore`），以及配置项 `hold_outbox` 和 `break_cell_flush`、`break_cell_outbox_count`。安全顺序是先快照并持久化，再 flush。设计见 `docs/design/cell_handoff.md`「崩溃恢复」。

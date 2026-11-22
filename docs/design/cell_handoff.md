@@ -108,7 +108,7 @@ OFFER 和 COMMIT 重传到得到回应为止，ACCEPT 重传到记录被提交�
 
 变异检查（均被检出）：不接受上一个密钥、轮换时丢弃旧密钥、退役不生效、允许复用当前 `key_id`、未知 `key_id` 退回当前密钥、解码或编码允许 `key_id` 为 0、退役总返回成功、`key_id` 不写入线格式、发送时用旧 `key_id`；跳过 HMAC 比较、允许序号 0、不标记重放窗口、不检查 `to_cell`、不检查发送方是否已配置、序号从 1 开始、序号不递增、允许对端编号与本 cell 相同、允许重复对端、允许尾部多余字节、发送时不检查 `from_cell`、HMAC 错误计为格式错误、nonce 编码错误。
 
-仍未实现：AoI 与客户端连接随交接迁移。密钥本身的分发由调用方负责。
+密钥本身的分发由调用方负责。
 
 ## 崩溃恢复（2026-11-22）
 
@@ -129,3 +129,22 @@ OFFER 和 COMMIT 重传到得到回应为止，ACCEPT 重传到记录被提交�
 - 反向顺序（先 flush 后快照）在同样的 40 个种子下全部破坏了上述性质，说明测试能区分两种顺序。
 
 变异检查：不恢复事务号计数器、不恢复 nonce 计数器、不恢复 epoch、txn、nonce、peer、offer_age、since_send、状态数据，不检查 cell id、哈希、尾部字节、重复实体，不使用发件箱，flush 后不清空，均被检出。“记录数超过容量”的检查未被检出：没有这项检查时，`cell_alloc` 在容量用完后也会失败，恢复同样返回 NULL，所以这项检查只是提前拒绝。
+
+## 可见性与连接随交接迁移（2026-11-22）
+
+`break_cell_view.{h,c}`（属于 `break_replication_core`）解决两件事：客户端看到的实体集合在交接时不闪烁，客户端的输入在交接后仍送到当前权威 cell。
+
+`BreakCellView` 为一个客户端连接合并各 cell 的可见性。客户端附近的每个 cell 用 `break_cell_view_report(view, cell, ids, count)` 报告该客户端能看到的、自己拥有的全部实体（即该 cell 上的 AoI 结果，替换上一次报告）。`break_cell_view_tick` 按所有 cell 最新报告的并集给出 enter 与 leave 事件，均按 id 升序。实体从一个 cell 交给另一个 cell 时，并集不变，所以不产生 leave/enter。源在 COMMIT 前就放弃了权威，目标要等 COMMIT 到达才成为权威，中间有一段时间没有任何 cell 报告这个实体。因此实体要连续超过 `grace_ticks` 个 tick 没有被任何 cell 报告才会 leave；期间重新被报告则不产生任何事件。宽限期内的实体仍占用容量。上限为每个视图 32 个 cell。报告中有重复 id、超过 cell 上限或新实体超过容量时，报告被拒绝且视图不变。
+
+`BreakCellRoute` 供连接网关使用，决定某个实体的输入发往哪个 cell。cell 为自己拥有的实体发布（实体、cell、epoch）。每次 COMMIT 都会让 epoch 加一，所以 epoch 最高的发布就是当前权威；epoch 更低的迟到或乱序发布被忽略（`STALE`），epoch 相同但 cell 不同的发布也被忽略（`CONFLICT`，在正确的协议下不会出现）。
+
+测试 `test_break_cell_view`（5 例）：
+- 视图是各 cell 报告的并集，事件按 id 排序，没有变化时不产生事件，一个 cell 不再报告但另一个仍报告时不 leave；
+- 宽限期：恰好 `grace_ticks` 个 tick 未报告时仍可见，超过才 leave；宽限期内在另一个 cell 重新出现不产生事件；每次报告都重置计时，反复出现 2 tick 的空档不会 leave；`grace_ticks` 为 0 时第一个未报告的 tick 就 leave；
+- 非法报告（重复 id、空指针、超过容量、宽限期实体占用容量、cell 上限）被拒绝且视图不变；
+- 路由：按 epoch 更新，迟到的低 epoch 和同 epoch 冲突被忽略，容量上限，忘记某个实体后其余实体不受影响；
+- 端到端：3 个 cell 各有一个静态标记实体，一个实体沿直线穿过 3 个 cell，由 `BreakCellPartition` 决定交接、`BreakCell` 完成交接。每个 cell 只为自己拥有的实体建立空间索引，用 `break_aoi_compute` 计算客户端的可见集合并报告给视图，同时向路由发布所有权。300 步中只有第一步有 enter（4 个实体），从未出现 leave；实体交接两次，最终归第 3 个 cell，路由也指向第 3 个 cell；输入只在实体处于交接途中时才会送错。把宽限期改为 0 时，这个测试在第一次交接时就出现 leave，说明宽限期是必需的。
+
+变异检查（均被检出）：忽略宽限期、宽限期差一、重新报告时不重置计时、允许重复 id、容量判断不扣除已有实体、不限制 cell 数、enter 不排序、不产生 leave、路由接受低 epoch、同 epoch 冲突当作相同、路由不限容量、忘记实体时破坏其他条目。
+
+至此，本文开头列出的“不在范围内”各项都已实现。客户端连接本身（传输层会话）不随交接迁移：客户端始终连接到网关，网关按 `BreakCellRoute` 转发输入，按 `BreakCellView` 发送可见性事件。
