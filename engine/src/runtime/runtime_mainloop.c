@@ -2,7 +2,6 @@
 
 #include <runtime/runtime_bus.h>
 
-#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -88,11 +87,13 @@ static void ml_publish(BreakRuntimeMainLoop *ml, BreakRuntimeMainLoopNoticeType 
 BreakRuntimeError break_runtime_mainloop_observe(BreakRuntimeMainLoop *ml,
                                                  const BreakRuntimeMainLoopFacts *f) {
     u32 scale_milli;
-    if (!ml || !f || !isfinite(f->content_scale) || f->content_scale < 0.0f ||
+    /* `scale == scale` rejects NaN and the range check rejects infinities,
+     * without libm (runtime_core consumers do not all link it). */
+    if (!ml || !f || f->content_scale != f->content_scale || f->content_scale < 0.0f ||
         f->content_scale > 1000.0f) {
         return BREAK_RUNTIME_INVALID;
     }
-    scale_milli = (u32)lroundf(f->content_scale * 1000.0f);
+    scale_milli = (u32)(f->content_scale * 1000.0f + 0.5f); /* no libm: round half up */
     ml->stats.observed++;
     if (f->close_requested && !ml->close_requested) {
         ml_publish(ml, BREAK_RUNTIME_MAINLOOP_CLOSE_REQUESTED, 0u, 0u, f->frame);
