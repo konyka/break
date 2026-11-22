@@ -321,6 +321,110 @@ static BreakRuntimeOwnedMessage *io_build_completion(
     return message;
 }
 
+/* ------------------------------------------------------------------ */
+/* bus notices                                                         */
+/* ------------------------------------------------------------------ */
+
+/* Process-wide like the facade. The bus mutex never takes the facade mutex
+ * (the bus calls nothing back), so a notice may be published with or
+ * without the facade mutex held. */
+static _Atomic(BreakRuntimeBus *) g_io_bus = NULL;
+static _Atomic u64 g_io_notices_published = 0u;
+static _Atomic u64 g_io_notices_dropped = 0u;
+
+static const BreakRuntimeBusKind k_io_notice_kind = {
+    BREAK_RUNTIME_IO_NOTICE_KIND, BREAK_RUNTIME_IO_NOTICE_VERSION, BREAK_RUNTIME_IO_NOTICE_SIZE,
+    "runtime.io.notice", true, 0u};
+
+static void io_put_u32(u8 *p, u32 v)
+{
+    for (u32 i = 0; i < 4u; i++) p[i] = (u8)(v >> (8u * i));
+}
+
+static void io_put_u64(u8 *p, u64 v)
+{
+    for (u32 i = 0; i < 8u; i++) p[i] = (u8)(v >> (8u * i));
+}
+
+static u32 io_get_u32(const u8 *p)
+{
+    u32 v = 0u;
+    for (u32 i = 0; i < 4u; i++) v |= (u32)p[i] << (8u * i);
+    return v;
+}
+
+static u64 io_get_u64(const u8 *p)
+{
+    u64 v = 0u;
+    for (u32 i = 0; i < 8u; i++) v |= (u64)p[i] << (8u * i);
+    return v;
+}
+
+static void io_send_notice(u64 request_id, BreakRuntimeIoCompletionState state,
+                           BreakRuntimeError error, u64 byte_size)
+{
+    BreakRuntimeBus *bus = atomic_load(&g_io_bus);
+    u8 payload[BREAK_RUNTIME_IO_NOTICE_SIZE];
+    BreakRuntimeMessageView view;
+    u32 delivered = 0u;
+    if (!bus) {
+        return;
+    }
+    io_put_u64(payload, request_id);
+    io_put_u32(payload + 8, (u32)state);
+    io_put_u32(payload + 12, (u32)error);
+    io_put_u64(payload + 16, byte_size);
+    memset(&view, 0, sizeof(view));
+    view.kind = BREAK_RUNTIME_IO_NOTICE_KIND;
+    view.version = BREAK_RUNTIME_IO_NOTICE_VERSION;
+    view.sequence = request_id;
+    view.data = payload;
+    view.size = sizeof(payload);
+    (void)break_runtime_bus_publish(bus, &view, &delivered);
+    if (delivered > 0u) {
+        atomic_fetch_add(&g_io_notices_published, 1u);
+    } else {
+        atomic_fetch_add(&g_io_notices_dropped, 1u);
+    }
+}
+
+BreakRuntimeError break_runtime_io_attach_bus(BreakRuntimeBus *bus)
+{
+    if (bus) {
+        BreakRuntimeError r = break_runtime_bus_register_kind(bus, &k_io_notice_kind);
+        if (r == BREAK_RUNTIME_INVALID &&
+            break_runtime_bus_kind_matches(bus, &k_io_notice_kind) != BREAK_RUNTIME_OK) {
+            return BREAK_RUNTIME_REJECTED;
+        }
+        if (r != BREAK_RUNTIME_OK && r != BREAK_RUNTIME_INVALID) {
+            return r;
+        }
+    }
+    atomic_store(&g_io_bus, bus);
+    return BREAK_RUNTIME_OK;
+}
+
+BreakRuntimeError break_runtime_io_notice_view(
+    const BreakRuntimeOwnedMessage *notice_message,
+    BreakRuntimeIoNotice *out_notice)
+{
+    BreakRuntimeMessageView view;
+    const u8 *p;
+    if (!notice_message || !out_notice ||
+        break_runtime_message_view(notice_message, &view) != BREAK_RUNTIME_OK ||
+        view.kind != BREAK_RUNTIME_IO_NOTICE_KIND ||
+        view.version != BREAK_RUNTIME_IO_NOTICE_VERSION ||
+        view.size != BREAK_RUNTIME_IO_NOTICE_SIZE || !view.data) {
+        return BREAK_RUNTIME_INVALID;
+    }
+    p = (const u8 *)view.data;
+    out_notice->request_id = io_get_u64(p);
+    out_notice->state = io_get_u32(p + 8);
+    out_notice->error = io_get_u32(p + 12);
+    out_notice->byte_size = io_get_u64(p + 16);
+    return BREAK_RUNTIME_OK;
+}
+
 /* Worker-side finalize: publishes (state, error, data[0..byte_size)) iff the
  * request is still in READING at the captured generation and has no
  * completion yet; otherwise the result is STALE — the worker releases its
@@ -390,7 +494,9 @@ static void io_worker_finalize(
     }
     platform_mutex_unlock(&facade->mutex);
 
-    if (!published) {
+    if (published) {
+        io_send_notice(request->id, state, error, (u64)byte_size);
+    } else {
         break_runtime_message_release(message);
     }
     free(data);
@@ -685,6 +791,7 @@ BreakRuntimeError break_runtime_io_shutdown(u32 timeout_ms)
                 request->completion = message;
                 facade->cancelled++;
                 platform_cond_broadcast(&facade->completion_cond);
+                io_send_notice(request->id, BREAK_RUNTIME_IO_CANCELLED, BREAK_RUNTIME_OK, 0u);
             } else {
                 /* Deep OOM building the cancellation completion: the request
                  * is still terminal-cancelled, waiters were already woken. */
@@ -876,6 +983,7 @@ BreakRuntimeError break_runtime_io_cancel(BreakRuntimeIoRequest *request)
     facade->cancelled++;
     platform_cond_broadcast(&facade->completion_cond);
     platform_mutex_unlock(&facade->mutex);
+    io_send_notice(request->id, BREAK_RUNTIME_IO_CANCELLED, BREAK_RUNTIME_OK, 0u);
     return BREAK_RUNTIME_OK;
 }
 
@@ -1059,6 +1167,8 @@ BreakRuntimeError break_runtime_io_stats(BreakRuntimeIoStats *out_stats)
     out_stats->closed_rejects = facade->closed_rejects;
     out_stats->stale_drops = facade->stale_drops;
     out_stats->bytes_published = facade->bytes_published;
+    out_stats->notices_published = atomic_load(&g_io_notices_published);
+    out_stats->notices_dropped = atomic_load(&g_io_notices_dropped);
     out_stats->active = facade->active;
     out_stats->high_water = facade->high_water;
     platform_mutex_unlock(&facade->mutex);

@@ -1,3 +1,8 @@
+## IO 完成通知接入消息总线（2026-11-22）
+
+- **实现**：`break_runtime_io_attach_bus` 让每个 IO 完成（读完、失败、超时、取消、shutdown 清空）再发一条不含文件内容的通知到总线，从不阻塞，送达与丢弃分别计数；新增 `break_runtime_io_notice_view`。设计见 `docs/design/runtime_message_model.md`「IO 完成通知接入总线」。
+- **TDD**：`test_runtime_io` 新增 4 例（先编译失败后实现），9 个变异全部被检出（shutdown 清空路径在补充用例后检出），TSan 无告警。
+
 ## 任务完成接入消息总线（2026-11-22）
 
 - **实现**：`break_runtime_task_queue_publish_completions` 让 worker 在任务回调返回后把带 correlation_id 的完成通知发布到总线，从不阻塞，送达与丢弃分别计数；总线新增 `break_runtime_bus_kind_accepts`。设计见 `docs/design/runtime_message_model.md`「任务完成接入总线」。

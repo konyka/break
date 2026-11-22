@@ -476,3 +476,4 @@
 - **动画验证追加**：2026-11-22 两骨骼 IK 改用 `math_atan2f`，固定了跨平台金标准哈希；同时修复已弯曲的链在弯曲平面与 pole 不一致时末端偏离目标（最多 0.5）的缺陷。见 [`docs/design/animation_extended.md`](../design/animation_extended.md)「跨架构逐位一致的混合」。上一条中的「两骨骼 IK 仍使用平台 `atan2f`」由此关闭。仍缺：GPU 蒙皮。
 - **第 5 节（线程/消息）追加**：2026-11-22 Profiler 与消息总线接通：总线的丢弃与拒绝以带 correlation_id 的 profiler 事件记录，Chrome trace 中可见背压发生在因果链的哪一步。仍缺：LogicThread、Task、Network/IO、PAL/MainLoop 队列接入总线。
 - **第 5 节（线程/消息）追加**：2026-11-22 Task workers 接入消息总线：任务完成后由 worker 发布带 correlation_id 的完成通知，拥有者从自己的队列得知完成情况。见 [`docs/design/runtime_message_model.md`](../design/runtime_message_model.md)「任务完成接入总线」。仍缺：LogicThread、Network/IO、PAL/MainLoop 队列接入总线。
+- **第 5 节（线程/消息）追加**：2026-11-22 IO workers 接入消息总线：每个 IO 完成都会在总线上发一条不含文件内容的通知。仍缺：LogicThread、Network、PAL/MainLoop 队列接入总线。

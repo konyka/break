@@ -6611,7 +6611,7 @@ endif()
     # resolving the legacy TaskSystem). The compatibility async loader is not
     # involved and stays unchanged.
     add_executable(test_runtime_io tests/test_runtime_io.c
-        src/asset/vfs.c src/core/log.c)
+        src/asset/vfs.c src/core/log.c src/core/profiler.c src/platform/time.c)
     target_include_directories(test_runtime_io PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
     target_compile_definitions(test_runtime_io PRIVATE BREAK_RUNTIME_TESTING=1)

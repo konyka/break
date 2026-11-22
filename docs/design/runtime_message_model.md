@@ -394,3 +394,15 @@ Task workers 是第二个接入总线的线程域。`break_runtime_task_queue_pu
 测试：`test_runtime_facade` 新增 2 例（共 20 例）：4 个带 correlation_id 的任务和 1 个无 payload 的任务在 2 个 worker 上执行，拥有者收到 5 条通知，correlation_id 与序号一一对应，无 payload 的任务通知为 0；未登记的 kind 被拒绝；解除后任务照常执行但不再发布；拥有者队列只有 2 槽时 10 个任务全部执行，2 条送达、8 条计为丢弃。`test_runtime_bus` 新增 1 例（共 14 例）覆盖 `kind_accepts` 的版本与大小边界。变异检查：correlation_id 或序号丢失、丢弃计为送达、从不发布、接受未登记的 kind、解除不生效、接受版本 0、大小边界差一，均被检出（“解除不生效”第一轮未检出，因为测试用 kind 0 解除，而发布到未登记的 kind 0 本来就没有订阅者；改为用真实 kind 解除后检出）。`test_runtime_facade` 在 ThreadSanitizer 下无告警。
 
 仍未做：LogicThread、Network/IO 与 PAL/MainLoop 的现有队列接入总线。
+
+### 补充（2026-11-22）：IO 完成通知接入总线
+
+IO workers 是第三个接入总线的线程域。`break_runtime_io_attach_bus(bus)`（`engine/src/runtime/runtime_io.h`）之后，每发布一个 IO 完成（worker 读完、读取失败或超时、`cancel`、shutdown 清空队列时的取消）都会再发一条 kind `BREAK_RUNTIME_IO_NOTICE_KIND`（0x4F4E，版本 1，名字 `runtime.io.notice`，control kind）的通知。通知是 24 字节小端：请求 id、状态、错误码、字节数；不含文件内容，文件内容仍随完成消息交给请求本身。拥有者因此可以只看一个队列就知道哪些读取已经结束，再去取对应请求的完成消息，不必逐个轮询。
+
+- 通知在 facade 互斥锁之外发布（cancel 与 worker 路径），或在锁内发布（shutdown 清空路径）；总线互斥锁从不回调 facade，所以两种情况都不会死锁。
+- 从不等待：订阅者队列满时通知被丢弃。`BreakRuntimeIoStats` 增加 `notices_published` 与 `notices_dropped`，它们和总线挂接一样是进程级的（facade 本身就是进程级单例），跨 init/shutdown 累计。
+- kind 尚未登记时由 attach 登记；已登记时参数必须完全一致（`break_runtime_bus_kind_matches`），否则返回 REJECTED。`break_runtime_io_notice_view` 严格校验 kind、版本和长度。传 NULL 解除。
+
+测试：`test_runtime_io` 新增 4 例（共 20 例）：成功、文件不存在、取消三种完成各发一条通知，状态、错误码、字节数正确；订阅者队列只有 2 槽时 6 次读取全部完成，2 条送达、4 条计为丢弃；解除后读取照常完成但不再发通知；通知解析拒绝错误长度、错误 kind 和空指针；shutdown 清空队列时的取消也发通知（拉取闸门一直关闭到清空完成，shutdown 在辅助线程上运行，所以该请求必定走清空路径）。变异检查：worker、cancel、shutdown 清空三条路径中任一条不发通知，状态或字节数不编码，丢弃计为送达，解除不生效，解析不检查长度或 kind，均被检出（shutdown 清空路径最初没有测试覆盖，补充用例后检出）。`test_runtime_io` 在 ThreadSanitizer 下无告警。
+
+仍未做：LogicThread、Network 与 PAL/MainLoop 的现有队列接入总线。

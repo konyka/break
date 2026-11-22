@@ -2,6 +2,7 @@
 
 #include <core/types.h>
 #include <runtime/runtime_types.h>
+#include <runtime/runtime_bus.h>
 #include <runtime/runtime_message.h>
 
 /* Runtime Core formal IO/VFS facade (design:
@@ -107,6 +108,25 @@ typedef struct BreakRuntimeIoRequest BreakRuntimeIoRequest; /* opaque, caller-ow
 #define BREAK_RUNTIME_IO_COMPLETION_KIND 0x4F49u /* 'I' | 'O'<<8 */
 #define BREAK_RUNTIME_IO_COMPLETION_VERSION 1u
 
+/* Completion notices on the runtime bus (design:
+ * docs/design/runtime_message_model.md "IO 完成通知接入总线"). Every
+ * published completion also sends one notice of this kind: request id,
+ * state, error and byte count in little-endian order, never the file bytes
+ * (the completion itself still goes to the request). attach registers the
+ * kind as a control kind when it is not registered yet; it must otherwise
+ * match exactly. Notices are published outside the facade mutex and never
+ * wait: a full subscriber queue drops the notice (stats.notices_dropped). */
+#define BREAK_RUNTIME_IO_NOTICE_KIND 0x4F4Eu /* 'N' | 'O'<<8 */
+#define BREAK_RUNTIME_IO_NOTICE_VERSION 1u
+#define BREAK_RUNTIME_IO_NOTICE_SIZE 24u
+
+typedef struct BreakRuntimeIoNotice {
+    u64 request_id;
+    u32 state; /* BreakRuntimeIoCompletionState */
+    u32 error; /* BreakRuntimeError */
+    u64 byte_size;
+} BreakRuntimeIoNotice;
+
 typedef struct BreakRuntimeIoConfig {
     VFS *vfs;             /* borrowed; must outlive the facade lifecycle */
     u32 worker_count;     /* 0 = BREAK_RUNTIME_IO_DEFAULT_WORKERS */
@@ -142,6 +162,8 @@ typedef struct BreakRuntimeIoStats {
     u64 closed_rejects;   /* submits rejected CLOSED */
     u64 stale_drops;      /* worker results dropped for stale generation */
     u64 bytes_published;  /* payload bytes handed to consumers via publish */
+    u64 notices_published; /* bus notices delivered to a subscriber; like the */
+    u64 notices_dropped;   /* bus attachment these count process-wide */
     u32 active;           /* live requests right now */
     u32 high_water;       /* maximum live requests observed */
 } BreakRuntimeIoStats;
@@ -188,6 +210,16 @@ void break_runtime_io_request_release(BreakRuntimeIoRequest *request);
 BreakRuntimeError break_runtime_io_completion_view(
     const BreakRuntimeOwnedMessage *completion_message,
     BreakRuntimeIoCompletion *out_completion);
+
+/* Sends a notice for every later completion to `bus` (NULL detaches).
+ * Legal before or after init; the bus must outlive the attachment.
+ * REJECTED when the bus already has the notice kind with other parameters. */
+BreakRuntimeError break_runtime_io_attach_bus(BreakRuntimeBus *bus);
+
+/* Parses a notice message (kind, version, exact size). INVALID otherwise. */
+BreakRuntimeError break_runtime_io_notice_view(
+    const BreakRuntimeOwnedMessage *notice_message,
+    BreakRuntimeIoNotice *out_notice);
 
 /* Facade observability snapshot. INVALID on NULL argument or before any
  * init; remains queryable after shutdown. */

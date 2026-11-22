@@ -2,6 +2,7 @@
 #include "test_fork.h"
 #include <runtime/runtime_thread.h>
 #include <runtime/runtime_io.h>
+#include <runtime/runtime_bus.h>
 #include <runtime/runtime_test_hooks.h>
 #include <core/platform_thread.h>
 #include <asset/vfs.h>
@@ -1158,6 +1159,255 @@ TEST(io_facade_alloc_failure_injection)
     vfs_destroy(vfs);
 }
 
+/* Every published IO completion also sends a small notice on the bus
+ * (request id, state, error, byte count; no file bytes), so an owner can
+ * learn of finished reads from one queue without polling each request. */
+typedef struct {
+    BreakRuntimeBus *bus;
+    BreakRuntimeQueue *queue;
+    u32 sub;
+} IoBusFixture;
+
+static bool io_bus_open(IoBusFixture *f, u32 capacity)
+{
+    BreakRuntimeQueueConfig qc = {capacity, 0u};
+    const u16 kind = BREAK_RUNTIME_IO_NOTICE_KIND;
+    memset(f, 0, sizeof(*f));
+    return break_runtime_bus_create(&f->bus) == BREAK_RUNTIME_OK &&
+           break_runtime_queue_create(&qc, &f->queue) == BREAK_RUNTIME_OK &&
+           break_runtime_io_attach_bus(f->bus) == BREAK_RUNTIME_OK &&
+           break_runtime_bus_subscribe(f->bus, "io.owner", f->queue, &kind, 1u, &f->sub) ==
+               BREAK_RUNTIME_OK;
+}
+
+static void io_bus_close(IoBusFixture *f)
+{
+    (void)break_runtime_io_attach_bus(NULL);
+    if (f->sub) (void)break_runtime_bus_unsubscribe(f->bus, f->sub);
+    break_runtime_queue_destroy(f->queue);
+    break_runtime_bus_destroy(f->bus);
+}
+
+static bool io_next_notice(IoBusFixture *f, BreakRuntimeIoNotice *out)
+{
+    BreakRuntimeOwnedMessage *m = NULL;
+    bool ok;
+    if (break_runtime_queue_poll(f->queue, &m) != BREAK_RUNTIME_OK || m == NULL) return false;
+    ok = break_runtime_io_notice_view(m, out) == BREAK_RUNTIME_OK;
+    break_runtime_message_release(m);
+    return ok;
+}
+
+TEST(io_completions_send_notices_on_the_bus)
+{
+    VFS *vfs = fixture_setup();
+    BreakRuntimeIoConfig cfg;
+    BreakRuntimeIoRequest *ok_req = NULL, *missing = NULL, *cancelled = NULL;
+    BreakRuntimeOwnedMessage *msg = NULL;
+    BreakRuntimeIoCompletion completion;
+    BreakRuntimeIoNotice notice;
+    IoBusFixture f;
+    u64 ok_id, missing_id, cancelled_id;
+    u32 seen = 0u, seen_ok = 0u, seen_failed = 0u, seen_cancelled = 0u;
+
+    ASSERT_NOT_NULL(vfs);
+    ASSERT_TRUE(io_bus_open(&f, 16u));
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.vfs = vfs;
+    cfg.worker_count = 1u;
+    cfg.request_capacity = 8u;
+    ASSERT_EQ(break_runtime_io_init(&cfg), BREAK_RUNTIME_OK);
+
+    ASSERT_EQ(break_runtime_io_submit(&ok_req, "payload.bin", 0u, 0u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_io_submit(&missing, "no-such-file.bin", 0u, 0u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_io_wait_completion(ok_req, 5000u, &msg), BREAK_RUNTIME_OK);
+    ASSERT_EQ(parse_completion(msg, &completion), BREAK_RUNTIME_OK);
+    ok_id = completion.request_id;
+    break_runtime_message_release(msg);
+    ASSERT_EQ(break_runtime_io_wait_completion(missing, 5000u, &msg), BREAK_RUNTIME_OK);
+    ASSERT_EQ(parse_completion(msg, &completion), BREAK_RUNTIME_OK);
+    missing_id = completion.request_id;
+    break_runtime_message_release(msg);
+
+    /* a request cancelled before a worker claims it */
+    break_runtime_test_io_set_gates(1u, 0u);
+    ASSERT_EQ(break_runtime_io_submit(&cancelled, "payload.bin", 0u, 0u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_io_cancel(cancelled), BREAK_RUNTIME_OK);
+    break_runtime_test_io_set_gates(0u, 0u);
+    ASSERT_EQ(break_runtime_io_poll_completion(cancelled, &msg), BREAK_RUNTIME_OK);
+    ASSERT_NOT_NULL(msg);
+    ASSERT_EQ(parse_completion(msg, &completion), BREAK_RUNTIME_OK);
+    cancelled_id = completion.request_id;
+    break_runtime_message_release(msg);
+
+    while (io_next_notice(&f, &notice)) {
+        seen++;
+        if (notice.request_id == ok_id) {
+            ASSERT_EQ(notice.state, (u32)BREAK_RUNTIME_IO_COMPLETED);
+            ASSERT_EQ(notice.error, (u32)BREAK_RUNTIME_OK);
+            ASSERT_EQ(notice.byte_size, (u64)IO_TEST_FILE_BYTES);
+            seen_ok++;
+        } else if (notice.request_id == missing_id) {
+            ASSERT_EQ(notice.state, (u32)BREAK_RUNTIME_IO_FAILED);
+            ASSERT_NEQ(notice.error, (u32)BREAK_RUNTIME_OK);
+            ASSERT_EQ(notice.byte_size, 0u);
+            seen_failed++;
+        } else if (notice.request_id == cancelled_id) {
+            ASSERT_EQ(notice.state, (u32)BREAK_RUNTIME_IO_CANCELLED);
+            seen_cancelled++;
+        }
+    }
+    ASSERT_EQ(seen, 3u);
+    ASSERT_EQ(seen_ok + seen_failed + seen_cancelled, 3u);
+
+    break_runtime_io_request_release(ok_req);
+    break_runtime_io_request_release(missing);
+    break_runtime_io_request_release(cancelled);
+    ASSERT_EQ(break_runtime_io_shutdown(2000u), BREAK_RUNTIME_OK);
+    io_bus_close(&f);
+    vfs_destroy(vfs);
+}
+
+TEST(io_notices_are_dropped_not_waited_for_and_can_be_detached)
+{
+    VFS *vfs = fixture_setup();
+    BreakRuntimeIoConfig cfg;
+    BreakRuntimeIoRequest *reqs[6] = {0};
+    BreakRuntimeOwnedMessage *msg = NULL;
+    BreakRuntimeIoStats stats;
+    BreakRuntimeIoNotice notice;
+    IoBusFixture f;
+    u32 got = 0u;
+
+    ASSERT_NOT_NULL(vfs);
+    ASSERT_TRUE(io_bus_open(&f, 2u));
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.vfs = vfs;
+    cfg.worker_count = 2u;
+    cfg.request_capacity = 8u;
+    ASSERT_EQ(break_runtime_io_init(&cfg), BREAK_RUNTIME_OK);
+    /* the notice counters are process-wide, like the facade itself */
+    ASSERT_EQ(break_runtime_io_stats(&stats), BREAK_RUNTIME_OK);
+    const u64 published0 = stats.notices_published, dropped0 = stats.notices_dropped;
+    for (u32 i = 0; i < 6u; i++) {
+        ASSERT_EQ(break_runtime_io_submit(&reqs[i], "payload.bin", 0u, 0u), BREAK_RUNTIME_OK);
+        ASSERT_EQ(break_runtime_io_wait_completion(reqs[i], 5000u, &msg), BREAK_RUNTIME_OK);
+        break_runtime_message_release(msg);
+    }
+    ASSERT_EQ(break_runtime_io_stats(&stats), BREAK_RUNTIME_OK);
+    ASSERT_EQ(stats.completed, 6u);
+    ASSERT_EQ(stats.notices_published - published0, 2u);
+    ASSERT_EQ(stats.notices_dropped - dropped0, 4u);
+    while (io_next_notice(&f, &notice)) got++;
+    ASSERT_EQ(got, 2u);
+
+    /* detached: completions still arrive, no more notices */
+    ASSERT_EQ(break_runtime_io_attach_bus(NULL), BREAK_RUNTIME_OK);
+    {
+        BreakRuntimeIoRequest *r = NULL;
+        ASSERT_EQ(break_runtime_io_submit(&r, "payload.bin", 0u, 0u), BREAK_RUNTIME_OK);
+        ASSERT_EQ(break_runtime_io_wait_completion(r, 5000u, &msg), BREAK_RUNTIME_OK);
+        break_runtime_message_release(msg);
+        break_runtime_io_request_release(r);
+    }
+    ASSERT_FALSE(io_next_notice(&f, &notice));
+    ASSERT_EQ(break_runtime_io_stats(&stats), BREAK_RUNTIME_OK);
+    ASSERT_EQ(stats.notices_published + stats.notices_dropped - published0 - dropped0, 6u);
+
+    for (u32 i = 0; i < 6u; i++) break_runtime_io_request_release(reqs[i]);
+    ASSERT_EQ(break_runtime_io_shutdown(2000u), BREAK_RUNTIME_OK);
+    io_bus_close(&f);
+    vfs_destroy(vfs);
+}
+
+TEST(io_notice_view_is_strict)
+{
+    BreakRuntimeMessageView v;
+    BreakRuntimeOwnedMessage *m = NULL;
+    BreakRuntimeIoNotice n;
+    u8 bytes[BREAK_RUNTIME_IO_NOTICE_SIZE];
+    memset(bytes, 0, sizeof bytes);
+    memset(&v, 0, sizeof v);
+    v.kind = BREAK_RUNTIME_IO_NOTICE_KIND;
+    v.version = 1u;
+    v.data = bytes;
+    v.size = sizeof bytes;
+    ASSERT_EQ(break_runtime_message_copy(&v, &m), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_io_notice_view(m, &n), BREAK_RUNTIME_OK);
+    break_runtime_message_release(m);
+    v.size = sizeof bytes - 1u;
+    ASSERT_EQ(break_runtime_message_copy(&v, &m), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_io_notice_view(m, &n), BREAK_RUNTIME_INVALID);
+    break_runtime_message_release(m);
+    v.size = sizeof bytes;
+    v.kind = BREAK_RUNTIME_IO_COMPLETION_KIND;
+    ASSERT_EQ(break_runtime_message_copy(&v, &m), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_io_notice_view(m, &n), BREAK_RUNTIME_INVALID);
+    break_runtime_message_release(m);
+    ASSERT_EQ(break_runtime_io_notice_view(NULL, &n), BREAK_RUNTIME_INVALID);
+}
+
+/* A request still queued when shutdown begins is finalized as CANCELLED by
+ * the shutdown drain; that path sends a notice too. The pop gate stays
+ * closed until the drain has run (shutdown runs on a helper thread and the
+ * drain precedes the worker stop), so the worker can never claim it. */
+static _Atomic u32 g_io_shutdown_result;
+
+static PLATFORM_THREAD_RET io_shutdown_main(PLATFORM_THREAD_ARG arg)
+{
+    (void)arg;
+    atomic_store(&g_io_shutdown_result, (u32)break_runtime_io_shutdown(5000u));
+    return PLATFORM_THREAD_RETURN;
+}
+
+TEST(io_shutdown_drain_sends_cancelled_notices)
+{
+    VFS *vfs = fixture_setup();
+    BreakRuntimeIoConfig cfg;
+    BreakRuntimeIoRequest *req = NULL;
+    BreakRuntimeOwnedMessage *msg = NULL;
+    BreakRuntimeIoCompletion completion;
+    BreakRuntimeIoNotice notice;
+    IoBusFixture f;
+    PlatformThread shutdown_thread;
+    u32 got = 0u;
+
+    ASSERT_NOT_NULL(vfs);
+    ASSERT_TRUE(io_bus_open(&f, 8u));
+    break_runtime_test_io_set_gates(1u, 0u); /* workers never claim */
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.vfs = vfs;
+    cfg.worker_count = 1u;
+    cfg.request_capacity = 4u;
+    ASSERT_EQ(break_runtime_io_init(&cfg), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_io_submit(&req, "payload.bin", 0u, 0u), BREAK_RUNTIME_OK);
+    test_sleep_ms(20);
+    ASSERT_FALSE(io_next_notice(&f, &notice));
+    atomic_store(&g_io_shutdown_result, 0xffffffffu);
+    ASSERT_TRUE(platform_thread_create(&shutdown_thread, io_shutdown_main, NULL));
+    for (u32 i = 0; i < 5000u && msg == NULL; i++) {
+        ASSERT_EQ(break_runtime_io_poll_completion(req, &msg), BREAK_RUNTIME_OK);
+        if (msg == NULL) test_sleep_ms(1);
+    }
+    ASSERT_NOT_NULL(msg);
+    break_runtime_test_io_set_gates(0u, 0u); /* let the worker exit */
+    platform_thread_join(shutdown_thread);
+    ASSERT_EQ(atomic_load(&g_io_shutdown_result), (u32)BREAK_RUNTIME_OK);
+    ASSERT_EQ(parse_completion(msg, &completion), BREAK_RUNTIME_OK);
+    ASSERT_EQ(completion.state, BREAK_RUNTIME_IO_CANCELLED);
+    break_runtime_message_release(msg);
+    while (io_next_notice(&f, &notice)) {
+        if (notice.request_id == completion.request_id) {
+            ASSERT_EQ(notice.state, (u32)BREAK_RUNTIME_IO_CANCELLED);
+            got++;
+        }
+    }
+    ASSERT_EQ(got, 1u);
+    break_runtime_io_request_release(req);
+    io_bus_close(&f);
+    vfs_destroy(vfs);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(thread_create_validation_and_oom);
     RUN_TEST(thread_start_runs_and_owner_stops);
@@ -1175,5 +1425,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(io_completion_wait_deadline_and_shutdown_interruption);
     RUN_TEST(io_request_double_release_aborts);
     RUN_TEST(io_facade_alloc_failure_injection);
+    RUN_TEST(io_completions_send_notices_on_the_bus);
+    RUN_TEST(io_notices_are_dropped_not_waited_for_and_can_be_detached);
+    RUN_TEST(io_notice_view_is_strict);
+    RUN_TEST(io_shutdown_drain_sends_cancelled_notices);
     fixture_remove_for_pid((long)TEST_GETPID());
 TEST_MAIN_END()
