@@ -388,7 +388,7 @@ core_app 主循环随后改为订阅这些事件（2026-11-22）：语音通道�
 Task workers 是第二个接入总线的线程域。`break_runtime_task_queue_publish_completions(queue, bus, kind)`（`engine/src/runtime/runtime_task.h`）让每个经该队列转发的任务在 worker 上执行完回调后，发布一条 `kind`（版本 1）消息：payload 为 8 字节的任务 payload 序号（本机字节序），`correlation_id` 取自任务 payload（payload 为 NULL 时两者都为 0）。回调拥有并释放 payload，所以 trampoline 在调用回调之前读取这两个值。拥有者线程从自己的队列得知哪些工作已经完成，并能按 correlation_id 把完成通知与发起请求对应起来，不再需要轮询共享计数器。
 
 - kind 必须已在总线上登记，且接受版本 1、预算至少 8 字节，否则返回 REJECTED。为此总线新增 `break_runtime_bus_kind_accepts(bus, kind, version, size)`：按登记表判断一次发布能否通过版本与大小检查（不考虑配额和订阅者队列）。
-- worker 从不等待：订阅者队列满时通知被丢弃，计入 `BreakRuntimeTaskStats.completions_dropped`；送达至少一个订阅者的计入 `completions_published`。这两个计数由 worker 原子递增，不经队列互斥锁。
+- worker 从不等待：订阅者队列满时通知被丢弃，计入 `BreakRuntimeTaskStats.completions_dropped`；送达至少一个订阅者的计入 `completions_published`。这两个计数由 worker 原子递增，不经队列互斥锁。计数放在独立的引用计数块里，队列和每个带总线转发的任务各持一个引用，所以拥有者收到最后一条通知后立即销毁队列也是安全的（2026-11-22 修复：trampoline 原来在发布之后还写队列里的计数，是 use-after-free）。
 - 设置只对之后 drain 转发的任务生效（转发时把总线与 kind 记入任务节点）；传 NULL 解除。总线必须比所有已转发的任务更长寿。
 
 测试：`test_runtime_facade` 新增 2 例（共 20 例）：4 个带 correlation_id 的任务和 1 个无 payload 的任务在 2 个 worker 上执行，拥有者收到 5 条通知，correlation_id 与序号一一对应，无 payload 的任务通知为 0；未登记的 kind 被拒绝；解除后任务照常执行但不再发布；拥有者队列只有 2 槽时 10 个任务全部执行，2 条送达、8 条计为丢弃。`test_runtime_bus` 新增 1 例（共 14 例）覆盖 `kind_accepts` 的版本与大小边界。变异检查：correlation_id 或序号丢失、丢弃计为送达、从不发布、接受未登记的 kind、解除不生效、接受版本 0、大小边界差一，均被检出（“解除不生效”第一轮未检出，因为测试用 kind 0 解除，而发布到未登记的 kind 0 本来就没有订阅者；改为用真实 kind 解除后检出）。`test_runtime_facade` 在 ThreadSanitizer 下无告警。
@@ -401,7 +401,7 @@ IO workers 是第三个接入总线的线程域。`break_runtime_io_attach_bus(b
 
 - 三条路径都在 facade 互斥锁内、唤醒等待者之前发布通知，所以 `wait_completion`/`poll_completion` 一旦拿到完成，对应通知已经在总线上（或已计为丢弃）。总线互斥锁从不回调 facade，不会死锁。最初 worker 与 cancel 路径在解锁之后才发布：arm64 QEMU 上测试线程拿到完成后立即读统计，通知还没发出，`notices_dropped` 少计（CI run 44983968111）；调整顺序后修复。同一次 CI 还因超时退出（124）：测试用的拉取闸门只在 worker 进入等待前检查一次，已经在等待新请求的 worker 被唤醒后会越过刚关闭的闸门取走请求，shutdown 清空用例于是在 init 中等待残留 worker。现在 worker 每次被唤醒都重新检查闸门。本地以 2 核运行 32 份并发副本复现：修复前 32 份中 17 份失败或卡住，修复后 64 份全部通过，ThreadSanitizer 无告警。
 - 从不等待：订阅者队列满时通知被丢弃。`BreakRuntimeIoStats` 增加 `notices_published` 与 `notices_dropped`，它们和总线挂接一样是进程级的（facade 本身就是进程级单例），跨 init/shutdown 累计。
-- kind 尚未登记时由 attach 登记；已登记时参数必须完全一致（`break_runtime_bus_kind_matches`），否则返回 REJECTED。`break_runtime_io_notice_view` 严格校验 kind、版本和长度。传 NULL 解除。
+- kind 尚未登记时由 attach 登记；已登记时参数必须完全一致（`break_runtime_bus_kind_matches`），否则返回 REJECTED。`break_runtime_io_notice_view` 严格校验 kind、版本和长度。传 NULL 解除。attach 换上新指针后，会等所有正在向旧总线发送的通知结束才返回，所以返回后可以销毁旧总线；worker 本身从不等待。不能在持有总线互斥锁时调用。
 
 测试：`test_runtime_io` 新增 4 例（共 20 例）：成功、文件不存在、取消三种完成各发一条通知，状态、错误码、字节数正确；订阅者队列只有 2 槽时 6 次读取全部完成，2 条送达、4 条计为丢弃；解除后读取照常完成但不再发通知；通知解析拒绝错误长度、错误 kind 和空指针；shutdown 清空队列时的取消也发通知（拉取闸门一直关闭到清空完成，shutdown 在辅助线程上运行，所以该请求必定走清空路径）。变异检查：worker、cancel、shutdown 清空三条路径中任一条不发通知，状态或字节数不编码，丢弃计为送达，解除不生效，解析不检查长度或 kind，均被检出（shutdown 清空路径最初没有测试覆盖，补充用例后检出）。`test_runtime_io` 在 ThreadSanitizer 下无告警。
 

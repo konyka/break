@@ -332,7 +332,7 @@ arm64 lane 新增 `test_task`（16 例）和 `test_task_singleton`（1 例），
 
 ### 追加：跨帧 continuation（2026-11-22）
 
-`task/task_frame.h` 新增 `TaskFrameQueue`：所有者线程用 `task_frame_defer(q, frame, fn, ctx, token)` 登记在某一帧执行的工作，每帧调用 `task_frame_run(q, frame, ts)`。帧号不大于当前帧的工作都会执行，先按帧号从旧到新，同一帧内按登记顺序；跳过的帧不会丢失工作。执行期间新登记的工作留到下一次调用，即使它属于当前帧，所以续体反复为本帧登记自己也不会死循环。`ts` 为 NULL 时在调用线程上内联执行；否则每项作为任务提交给 `TaskSystem`，全部完成后才返回，提交失败的项内联执行。令牌在执行开始时已取消的项被跳过并计入 `task_frame_cancelled`。队列容量固定，满时返回 `TASK_FRAME_FULL`，已排队的工作不受影响；同一队列上的 `task_frame_run` 不会嵌套。队列只属于一个所有者线程。
+`task/task_frame.h` 新增 `TaskFrameQueue`：任何线程都可以用 `task_frame_defer(q, frame, fn, ctx, token)` 登记在某一帧执行的工作，所有者线程每帧调用 `task_frame_run(q, frame, ts)`。队列内部有互斥锁，所以在多个 worker 上并行执行的续体可以同时再登记工作。帧号不大于当前帧的工作都会执行，先按帧号从旧到新，同一帧内按登记顺序；跳过的帧不会丢失工作。执行期间新登记的工作留到下一次调用，即使它属于当前帧，所以续体反复为本帧登记自己也不会死循环。`ts` 为 NULL 时在调用线程上内联执行；否则每项作为任务提交给 `TaskSystem`，全部完成后才返回，提交失败的项内联执行。令牌在执行开始时已取消的项被跳过并计入 `task_frame_cancelled`。队列容量固定，满时返回 `TASK_FRAME_FULL`，已排队的工作不受影响；同一队列上的 `task_frame_run` 不会嵌套，且只由所有者线程调用。`test_task_frame` 共 5 例，包含 4 个 worker 并发登记的 200 轮回归；TSan 无告警。
 
 ### 追加：任务系统诊断计数（2026-11-22）
 

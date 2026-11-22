@@ -1008,6 +1008,25 @@ core_app 生命周期与 voice lane 驱动走交叉模拟器、记录 LD_PRELOAD
 结果一致。Metal CTest **411/415**、graphics **6/6**，MoltenVK **414/418**，跳过项同前；全量
 构建无 error，`/tmp` 下 `break_*` 条目数前后都是 733。未发现需要修复的问题。证据等级不变。
 
+2026-11-22 第七次复核：同步 `52f2266f..c37d8962`（67 个远程提交），第二次同步时把本地修复
+rebase 到 `origin/master`，只出现 `runtime_io.h` 注释冲突；合并时保留远程“通知先于唤醒、
+在 facade 锁内发布”的语义和本地 attach 生命周期说明，没有改写或覆盖远程提交。审查并修复：
+`runtime_bus_printf` 的 256 字节临时缓冲会截断拓扑 JSON，现直接写入调用方缓冲并记录完整长度；
+任务完成计数改为独立引用计数块，消除拥有者收到通知后销毁队列导致的 worker use-after-free；
+`break_runtime_io_attach_bus` 等待旧总线上正在发送的通知结束，返回后即可安全销毁旧总线；
+`TaskFrameQueue` 加互斥锁，允许多个 worker 上的续体并发 `task_frame_defer`；空 cell view 报告
+释放 cell 槽位；Hilbert 曲线边长将溢出时返回 0，不再死循环；快照尺寸用 64 位累加，超过
+`UINT32_MAX` 时尺寸查询返回 0、快照写入失败。另修复规则引擎两个 Watch 永不触发的无效反例，
+并同步过时注释。回归用例覆盖上述行为；修复前总线导出用例失败，cell view 用例 2 处失败，
+宽网格用例在 5 秒 alarm 下未结束；旧任务队列在 ASan 下复现 heap-use-after-free，旧跨帧队列在
+TSan 下报告数据竞争。当前修复的 ASan facade 21/21、TSan task_frame 5/5 通过且无告警。
+rebase 后两套全量构建无 error，Metal CTest **431/431**、MoltenVK **434/434**、graphics **6/6**；
+仅原有的 D3D12 依赖闸门和 3 个 `core_app_nm_*` 共 4 项按平台条件跳过。`/private/tmp` 非
+`kc_*` 条目在测试前后完全相同。外部进程创建的 `/tmp/emfile*` 不属于本仓库，未删除。
+仍未处理：cell_link 测试释放端口后重绑的偶发风险（需要新 API）、Windows `WSAEMSGSIZE`
+处理、`timespec_get` 失败时 sequence 回落、物理示例主程序未进入并行路径；这些不改变本次
+macOS 回归结论。
+
 RHI 第一阶段还提供统一的设备健康状态查询 `rhi_device_get_status()`。`UNKNOWN` 表示
 没有有效设备，`READY` 表示设备可用，`LOST` 表示后端报告设备丢失；该接口是后续 Vulkan、
 Metal、D3D12 后端共用的生命周期合同。

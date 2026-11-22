@@ -76,7 +76,7 @@ OFFER 和 COMMIT 重传到得到回应为止，ACCEPT 重传到记录被提交�
 这个规划器只决定 cell 归属。把 cell 迁到另一台服务器，等于对其中每个实体执行一次 `BreakCell` 交接，由调用方完成。
 
 测试 `test_break_cell_balance`（5 例）：
-- Hilbert 顺序在 1×1 到 16×16 的 2 的幂网格上每个 cell 恰好一次且相邻步都是网格邻居，在 5×3 网格上每个 cell 恰好一次，容量不足时返回 0；
+- Hilbert 顺序在 1×1 到 16×16 的 2 的幂网格上每个 cell 恰好一次且相邻步都是网格邻居，在 5×3 网格上每个 cell 恰好一次，容量不足时返回 0，宽度超过 2^31 的网格返回 0（曲线边长原来会溢出为 0 并死循环）；
 - 300 组随机网格（1~4 列、1~3 行）、随机负载（含零负载）、1~4 台服务器：每台服务器分到的 cell 都是曲线上的一段，报告的最大负载与实际一致，并且等于穷举所有切分得到的最优值；
 - 热点 cell 独占一台服务器；
 - 服务器多于 cell、各种非法参数、超过 cell 上限；
@@ -112,7 +112,7 @@ OFFER 和 COMMIT 重传到得到回应为止，ACCEPT 重传到记录被提交�
 
 ## 崩溃恢复（2026-11-22）
 
-`BreakCell` 可以把自己的全部状态写成快照，崩溃后从快照恢复（`break_cell_snapshot_size`、`break_cell_snapshot`、`break_cell_restore`，见 `break_cell_handoff.h`）。快照包含所有记录（包括 OFFERING、COMMITTING、RECEIVING 这些进行中的记录及其重传与超时计数），以及事务号和 nonce 计数器；不包含待发消息和统计。格式为小端的定长头部、逐条记录，最后是对前面所有字节的 FNV-1a 64 位哈希。哈希只用来发现存储损坏，不防篡改，快照应存放在可信的存储中。恢复时拒绝：截断、哈希不一致、magic 或版本不对、cell id 不同、记录数超过容量、实体重复、记录状态或状态长度非法、尾部多余字节。
+`BreakCell` 可以把自己的全部状态写成快照，崩溃后从快照恢复（`break_cell_snapshot_size`、`break_cell_snapshot`、`break_cell_restore`，见 `break_cell_handoff.h`）。快照包含所有记录（包括 OFFERING、COMMITTING、RECEIVING 这些进行中的记录及其重传与超时计数），以及事务号和 nonce 计数器；不包含待发消息和统计。格式为小端的定长头部、逐条记录，最后是对前面所有字节的 FNV-1a 64 位哈希。哈希只用来发现存储损坏，不防篡改，快照应存放在可信的存储中。快照总长超过 32 位时 `break_cell_snapshot_size` 返回 0，`break_cell_snapshot` 返回 false。恢复时拒绝：截断、哈希不一致、magic 或版本不对、cell id 不同、记录数超过容量、实体重复、记录状态或状态长度非法、尾部多余字节。
 
 只有快照还不够。如果 cell 先发出 COMMIT（放弃权威），再在写快照前崩溃，从旧快照恢复后它会认为自己仍是权威，而目标可能已经接受了 COMMIT，于是出现两个权威。所以新增配置项 `hold_outbox`：打开后，消息先进入发件箱，调用 `break_cell_flush` 时才真正发送。安全的顺序是每批调用之后：
 
@@ -134,7 +134,7 @@ OFFER 和 COMMIT 重传到得到回应为止，ACCEPT 重传到记录被提交�
 
 `break_cell_view.{h,c}`（属于 `break_replication_core`）解决两件事：客户端看到的实体集合在交接时不闪烁，客户端的输入在交接后仍送到当前权威 cell。
 
-`BreakCellView` 为一个客户端连接合并各 cell 的可见性。客户端附近的每个 cell 用 `break_cell_view_report(view, cell, ids, count)` 报告该客户端能看到的、自己拥有的全部实体（即该 cell 上的 AoI 结果，替换上一次报告）。`break_cell_view_tick` 按所有 cell 最新报告的并集给出 enter 与 leave 事件，均按 id 升序。实体从一个 cell 交给另一个 cell 时，并集不变，所以不产生 leave/enter。源在 COMMIT 前就放弃了权威，目标要等 COMMIT 到达才成为权威，中间有一段时间没有任何 cell 报告这个实体。因此实体要连续超过 `grace_ticks` 个 tick 没有被任何 cell 报告才会 leave；期间重新被报告则不产生任何事件。宽限期内的实体仍占用容量。上限为每个视图 32 个 cell。报告中有重复 id、超过 cell 上限或新实体超过容量时，报告被拒绝且视图不变。
+`BreakCellView` 为一个客户端连接合并各 cell 的可见性。客户端附近的每个 cell 用 `break_cell_view_report(view, cell, ids, count)` 报告该客户端能看到的、自己拥有的全部实体（即该 cell 上的 AoI 结果，替换上一次报告）。`break_cell_view_tick` 按所有 cell 最新报告的并集给出 enter 与 leave 事件，均按 id 升序。实体从一个 cell 交给另一个 cell 时，并集不变，所以不产生 leave/enter。源在 COMMIT 前就放弃了权威，目标要等 COMMIT 到达才成为权威，中间有一段时间没有任何 cell 报告这个实体。因此实体要连续超过 `grace_ticks` 个 tick 没有被任何 cell 报告才会 leave；期间重新被报告则不产生任何事件。宽限期内的实体仍占用容量。上限为每个视图 32 个 cell。空报告会释放该 cell 占用的槽位，所以客户端依次经过超过 32 个 cell 也不会被拒绝。报告中有重复 id、第 33 个 cell 的非空报告或新实体超过容量时，报告被拒绝且视图不变。
 
 `BreakCellRoute` 供连接网关使用，决定某个实体的输入发往哪个 cell。cell 为自己拥有的实体发布（实体、cell、epoch）。每次 COMMIT 都会让 epoch 加一，所以 epoch 最高的发布就是当前权威；epoch 更低的迟到或乱序发布被忽略（`STALE`），epoch 相同但 cell 不同的发布也被忽略（`CONFLICT`，在正确的协议下不会出现）。
 
