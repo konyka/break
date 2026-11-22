@@ -16,6 +16,9 @@ struct RuntimeBusApplicationStats {
   std::uint64_t malformed_notices{0};
 };
 
+// The attached bus is borrowed and must outlive all attachments and uses.
+// All public methods, including runtime_bus_stats(), are owner-thread only;
+// the notice reference is valid only during OnRuntimeIoNotice().
 class RuntimeBusApplication : public BaseApplication {
  public:
   RuntimeBusApplication() = default;

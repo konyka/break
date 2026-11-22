@@ -1690,31 +1690,27 @@ int RunRuntimeBusApplication() {
   }
 
   IoApplication application;
-  if (application.AttachRuntimeBus(bus) != BREAK_RUNTIME_OK) {
-    (void)break_runtime_io_shutdown(1000u);
-    (void)break_runtime_io_attach_bus(nullptr);
-    break_runtime_bus_destroy(bus);
-    return 1;
-  }
-
   bk::ApplicationInterface* app = &application;
-  if (app->Init() != 0) {
-    app->DeInit();
-    (void)break_runtime_io_shutdown(1000u);
-    (void)break_runtime_io_attach_bus(nullptr);
-    break_runtime_bus_destroy(bus);
-    return 1;
+  int application_result =
+      static_cast<int>(application.AttachRuntimeBus(bus));
+  if (application_result == BREAK_RUNTIME_OK) {
+    application_result = app->Init();
+    if (application_result == 0) {
+      while (!app->IsQuit()) {
+        app->Tick();
+      }
+    }
   }
 
-  while (!app->IsQuit()) {
-    app->Tick();
-  }
   app->DeInit();
-
   const BreakRuntimeError shutdown_result = break_runtime_io_shutdown(1000u);
   const BreakRuntimeError detach_result = break_runtime_io_attach_bus(nullptr);
   break_runtime_bus_destroy(bus);
-  if (shutdown_result != BREAK_RUNTIME_OK ||
+
+  if (shutdown_result == BREAK_RUNTIME_TIMEOUT) {
+    return 2;
+  }
+  if (application_result != 0 || shutdown_result != BREAK_RUNTIME_OK ||
       detach_result != BREAK_RUNTIME_OK) {
     return 1;
   }
@@ -1722,8 +1718,8 @@ int RunRuntimeBusApplication() {
 }
 ```
 
-生命周期顺序是：创建 bus；由调用方执行 `break_runtime_io_attach_bus(bus)`，完成生产 IO attach 和 notice kind 注册；在应用 Init 前 `AttachRuntimeBus`；通过 `ApplicationInterface` 初始化并在所有者线程 Tick；应用 DeInit；IO shutdown；`break_runtime_io_attach_bus(nullptr)` 解除全局挂接；最后销毁 bus。应用 DeInit 已解除自身订阅并销毁自有队列，所以随后析构不会访问已销毁的 bus。
+生命周期顺序是：创建 bus；由调用方执行 `break_runtime_io_attach_bus(bus)`，完成生产 IO attach 和 notice kind 注册；在应用 Init 前 `AttachRuntimeBus`；通过 `ApplicationInterface` 初始化并在所有者线程 Tick。全局 attach 成功后，应用 Attach、Init 和运行共享同一个清理出口：保存应用结果，先执行应用 DeInit，再始终保存并检查 `shutdown_result` 与 `detach_result`，解除全局挂接后销毁 bus，最后按应用及清理结果返回。两个应用初始化失败路径不会提前跳过或忽略 IO shutdown。应用 DeInit 已解除自身订阅并销毁自有队列，所以随后析构不会访问已销毁的 bus。
 
-完整应用在进入上述收尾路径前必须先停止 IO 生产者，再销毁 bus。`RuntimeBusApplication` 不拥有也不自动执行进程级 IO shutdown；全局 attach 返回后，调用方还必须保证 bus 比所有挂接关系长寿。若 IO shutdown 超时，应按 IO facade 契约继续完成关停，不能把超时写成成功。
+完整应用必须先停止 IO 生产者，再进入上述收尾路径；bus 只在 detach 后销毁。`RuntimeBusApplication` 不拥有也不自动执行进程级 IO shutdown；全局 attach 返回后，调用方还必须保证 bus 比所有挂接关系长寿。`BREAK_RUNTIME_TIMEOUT` 独立返回非零码 2，其他应用、shutdown 或 detach 失败返回非零码 1。返回 2 不表示完整清理：IO facade 可能仍为 `STOPPING` 并保留 live ownership，调用方必须继续调用 `break_runtime_io_shutdown` 直到返回 `BREAK_RUNTIME_OK`；在此之前不能重启 IO，也不能把这次返回当作关停完成。示例在 shutdown 后仍执行 detach；detach 后销毁 bus 本身安全，但这不会替代调用方继续完成 facade 关停的责任。
 
 `test_framework_runtime_bus` 当前覆盖 9 个行为用例；现有证据是 focused CTest 3/3、根构建契约 1/1（四个子树）以及实现者记录的 focused ASan/UBSan/TSan 通过。完整 Vulkan/OpenGL、ASan 非图形套件、fuzz、Windows/macOS/其他生成器与远端 CI 尚待最终验收，上述构建与示例不代表这些矩阵已经通过。

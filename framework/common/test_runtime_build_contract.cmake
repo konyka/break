@@ -197,4 +197,23 @@ if(NOT runtime_bus_test_json)
     message(FATAL_ERROR
         "test_framework_runtime_bus target is missing with ENGINE_BUILD_TESTS=ON")
 endif()
+build_target("${tests_tree}" test_framework_runtime_bus runtime_bus_test_build_result
+    runtime_bus_test_build_output --parallel 2)
+if(NOT runtime_bus_test_build_result EQUAL 0)
+    message(FATAL_ERROR
+        "Explicit ON test_framework_runtime_bus build failed:\n${runtime_bus_test_build_output}")
+endif()
+execute_process(
+    COMMAND "${CMAKE_CTEST_COMMAND}" --test-dir "${tests_tree}/engine"
+        -C Debug -R "^test_framework_runtime_bus$" --output-on-failure
+        --no-tests=error
+    RESULT_VARIABLE runtime_bus_ctest_result
+    OUTPUT_VARIABLE runtime_bus_ctest_output
+    ERROR_VARIABLE runtime_bus_ctest_error)
+set(runtime_bus_ctest_log "${runtime_bus_ctest_output}\n${runtime_bus_ctest_error}")
+if(NOT runtime_bus_ctest_result EQUAL 0)
+    message(FATAL_ERROR
+        "Explicit ON test_framework_runtime_bus CTest failed:\n${runtime_bus_ctest_log}")
+endif()
+message(STATUS "Explicit ON test_framework_runtime_bus CTest passed:\n${runtime_bus_ctest_log}")
 message(STATUS "Explicit engine tests contract passed without duplicate framework targets")
