@@ -40,6 +40,30 @@ u32 platform_vk_instance_create_flags(Platform *p) {
 #endif
 }
 
+bool platform_vk_instance_extension_optional(const char *name) {
+    return name != NULL && strcmp(name, "VK_KHR_portability_enumeration") == 0;
+}
+
+bool platform_vk_resolve_instance_extensions(const char **names, u32 *count, u32 *flags,
+                                             bool (*available)(const char *name, void *user),
+                                             void *user, const char **out_missing) {
+    u32 kept = 0u;
+    if (out_missing) *out_missing = NULL;
+    if (names == NULL || count == NULL || flags == NULL || available == NULL) return false;
+    for (u32 i = 0; i < *count; i++) {
+        if (available(names[i], user)) {
+            names[kept++] = names[i];
+        } else if (platform_vk_instance_extension_optional(names[i])) {
+            *flags &= ~(u32)PVK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+        } else {
+            if (out_missing) *out_missing = names[i];
+            return false;
+        }
+    }
+    *count = kept;
+    return true;
+}
+
 /* get_proc 返回 void *；函数指针与 void * 的互转全部经 memcpy，
  * 否则 -Wpedantic 报错（ISO C 不允许这两类指针直接强转）。
  * 仅在存在可用的平台 WSI 分支时定义；QNX/OHOS 等 fail-closed 平台

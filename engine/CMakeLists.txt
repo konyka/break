@@ -4661,6 +4661,14 @@ endif()
         set_tests_properties(test_macos_metal_consumer_smoke PROPERTIES
             SKIP_RETURN_CODE 77 LABELS "graphics;platform_runtime")
     endif()
+    add_executable(test_platform_vk_instance_extensions
+        tests/test_platform_vk_instance_extensions.c)
+    target_include_directories(test_platform_vk_instance_extensions PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_platform_vk_instance_extensions PRIVATE engine m)
+    engine_link_rhi_backend(test_platform_vk_instance_extensions)
+    add_test(NAME test_platform_vk_instance_extensions COMMAND test_platform_vk_instance_extensions)
+    set_tests_properties(test_platform_vk_instance_extensions PROPERTIES
+        LABELS "headless;platform_contract")
     add_test(NAME test_platform_vk_surface_contract
         COMMAND ${CMAKE_COMMAND}
             -DRHI_VK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_vk.c

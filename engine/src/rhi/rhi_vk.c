@@ -1081,6 +1081,11 @@ static bool vk_instance_extension_available(const char *name) {
     return false;
 }
 
+static bool vk_instance_extension_available_cb(const char *name, void *user) {
+    (void)user;
+    return vk_instance_extension_available(name);
+}
+
 static bool vk_device_extension_available(VkPhysicalDevice physical,
                                           const char *name) {
     u32 count = 0u;
@@ -1914,9 +1919,17 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     const char *extensions[8];
     u32 ext_count = platform_vk_required_instance_extensions(
         NULL, extensions, (u32)(sizeof(extensions) / sizeof(extensions[0])));
-    for (u32 i = 0; i < ext_count; i++) {
-        if (!vk_instance_extension_available(extensions[i])) {
-            LOG_FATAL("VK: required instance extension unavailable: %s", extensions[i]);
+    /* The portability enumeration extension and its create flag come from
+     * the Vulkan loader; an executable linked straight to MoltenVK has
+     * neither and does not need them, so they are dropped together. */
+    u32 instance_flags = platform_vk_instance_create_flags(NULL);
+    {
+        const char *missing = NULL;
+        if (!platform_vk_resolve_instance_extensions(extensions, &ext_count, &instance_flags,
+                                                     vk_instance_extension_available_cb, NULL,
+                                                     &missing)) {
+            LOG_FATAL("VK: required instance extension unavailable: %s",
+                      missing ? missing : "?");
             vk_init_cleanup(dev, vk);
             return false;
         }
@@ -1988,7 +2001,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     ici.ppEnabledExtensionNames = extensions;
     if (validation_features.sType != 0)
         ici.pNext = &validation_features;
-    ici.flags |= platform_vk_instance_create_flags(NULL);
+    ici.flags |= instance_flags;
     if (validation_on) {
         u32 layer_count = 0;
         vkEnumerateInstanceLayerProperties(&layer_count, NULL);

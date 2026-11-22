@@ -1,0 +1,130 @@
+# 跨平台测试矩阵与实机验证计划
+
+状态：2026-11-22 起执行。本文件列出所有构建组合与测试场景、每个组合在哪里验证（GitHub CI 或实机），以及实机上的步骤、测试内容和方法。结果记录在文末「执行记录」，每次执行追加一节。
+
+## 1. 访问约定（脱敏）
+
+- 实机有两台：一台 macOS（Apple Silicon，arm64），一台 Windows 11（x86-64，带独立 GPU）。账号、口令和地址只保存在执行者本机的环境变量里：macOS 用 `MACOS_USERNAME`、`MACOS_KEY`，Windows 用 `WINDOWS_USERNAME`、`WINDOWS_KEY`、`WINDOWS_IP`。本仓库、日志和提交信息中不得出现它们的值。
+- 连接通过 SSH 口令认证（`sshpass -e`，口令经 `SSHPASS` 环境变量传入，不出现在命令行参数中）。所有远程输出在显示前把用户名和地址替换为 `<user>`、`<windows-ip>`。
+- Windows 主机访问 GitHub 超时，所以源码用 `git archive HEAD` 打包后经 `scp` 复制过去（解压到 `E:\break`）。macOS 主机可以访问 GitHub，直接 `git fetch` 后对齐到 `origin/master`。
+- 远程命令：macOS 用 zsh；Windows 用 PowerShell 的 `-EncodedCommand`（UTF-16LE + base64），避免引号转义问题。长时间构建在远程后台运行，日志写到 macOS 的 `/tmp/break-mac-*.log`、Windows 的 `E:\break-logs\*.log`。
+
+## 2. 组合矩阵
+
+维度：操作系统 × CPU 架构 × 编译器 × 构建类型 × RHI 后端 × 窗口/平台层 × 检测工具（sanitizer）× 可选特性（crypto、snowflake/QUIC、Redis、fuzz）。下表每行是一个实际验证的组合；“CI”列给出 `.github/workflows/ci.yml` 中的作业名，“实机”列说明是否在实机上复现。
+
+| # | OS / 架构 | 编译器 | 构建类型 | RHI / 平台层 | 检测 / 特性 | CI 作业 | 实机 |
+|---|---|---|---|---|---|---|---|
+| L1 | Linux x86-64 | Clang + LLD | Release + IPO | OpenGL，headless | — | lane-headless-linux-clang | 开发机（Fedora，Wayland） |
+| L2 | Linux x86-64 | GCC | Debug | OpenGL，headless | ASan + UBSan，fuzz smoke | lane-headless-linux-gcc-asan | 开发机 |
+| L3 | Linux x86-64 | GCC | Debug | OpenGL，headless | TSan | lane-headless-linux-gcc-tsan | 开发机（聚焦测试） |
+| L4 | Linux x86-64 | Clang-18 | Debug | — | libFuzzer + ASan/UBSan | lane-libfuzzer-linux-clang | — |
+| L5 | Linux x86-64 | GCC | Debug | OpenGL / Vulkan | Redis 原生提供者 | lane-rule-engine-redis（Linux） | — |
+| L6 | Linux arm64（QEMU） | GCC 交叉 | Debug | OpenGL | crypto，275 项选择 | lane-cross-aarch64-linux | macOS 主机 arm64 原生对照（§4.3） |
+| L7 | Linux x86-64 | GCC / Clang | Debug | Wayland + OpenGL | — | wayland-gl、lane-gpu-runtime-linux-gl | 开发机（真实 Wayland 桌面） |
+| L8 | Linux x86-64 | GCC / Clang | Debug | Wayland + Vulkan（lavapipe） | 校验层 | lane-native-surface-wayland、lane-gpu-runtime-linux-vk、lane-validation-linux-vk | 开发机（真实 GPU） |
+| L9 | Linux x86-64 | Clang | RelWithDebInfo | Wayland + Vulkan | 基准 | lane-benchmark-linux-vk | — |
+| L10 | Linux（Steam Deck） | — | — | Vulkan 真实 GPU | 基准 | lane-benchmark-steam-deck-vk（需 `ENABLE_GPU_LANES`，默认不运行） | 无设备，见 §5 |
+| M1 | macOS arm64 | Apple Clang | Debug | Metal | crypto | lane-gpu-runtime-macos-metal | macOS 主机（§4.1） |
+| M2 | macOS arm64 | Apple Clang | Debug | Cocoa + MoltenVK | — | lane-native-surface-cocoa | macOS 主机（§4.2，需 Vulkan SDK） |
+| M3 | macOS arm64 | Apple Clang | Debug | — | Redis 原生提供者 | lane-rule-engine-redis（macOS） | — |
+| M4 | iOS 模拟器 | Xcode | — | Metal | 仅构建 | ios-metal-build | macOS 主机需要完整 Xcode，命令行工具不够，见 §5 |
+| W1 | Windows x86-64 | MSVC（cl） | Debug | headless（无 Vulkan） | `/W4 /WX`，fuzz smoke | lane-headless-windows-msvc | Windows 主机（§4.4） |
+| W2 | Windows x86-64 | Clang | Debug | Vulkan，headless | — | lane-headless-windows-clang | Windows 主机（§4.5） |
+| W3 | Windows x86-64 | Clang | Debug | headless | ASan | lane-headless-windows-asan | Windows 主机（§4.5） |
+| W4 | Windows x86-64 | MinGW GCC | Debug | headless | — | lane-headless-windows-mingw | 主机未安装 MinGW-w64，仅 CI（§5） |
+| W5 | Windows x86-64 | Clang | Debug | Win32 原生窗口 + Vulkan | — | lane-native-surface-win32 | Windows 主机（§4.6） |
+| W6 | Windows x86-64 | Clang | Release | D3D12（WARP 软件实现） | Debug layer | windows-d3d12.yml | Windows 主机（§4.6） |
+| W7 | Windows x86-64 | Clang | Release | D3D12 真实 GPU | — | lane-gpu-runtime-windows-d3d12（需 `ENABLE_GPU_LANES`，默认不运行） | Windows 主机真实 GPU（§4.6），CI 不覆盖，只能实机 |
+| W8 | Linux + Proton | — | — | D3D12 → vkd3d | — | lane-proton、proton-d3d12.yml | — |
+| X1 | 任意 | — | — | — | 无源码依赖的干净检出 | clean-room | — |
+
+## 3. 场景清单
+
+每个组合都运行 ctest 的 headless 选择（`-LE "graphics|fuzz|gpu|audio_device"`，W1 不排除 fuzz）。下列场景必须出现在至少一个组合的结果中，实机执行时逐项核对：
+
+1. **构建**：全部目标编译、链接无警告（MSVC `/W4 /WX`、GCC/Clang `-Wall -Wextra`）。
+2. **确定性**：`test_physics_replay` 与 `test_animation` 的金标准哈希（物理 3 组、动画混合 3 帧、两骨骼 IK 64 目标）在 x86-64、arm64、MSVC、Clang、GCC 上相同；`test_physics_determinism_contract` 通过。
+3. **网络与安全**：cell 交接、分区、负载分配、跨进程 UDP link（真实回环套接字）、密钥轮换、崩溃恢复、可见性与路由；`test_break_crypto`、`test_break_integrity`、`test_break_authority`、`test_break_replay_window`。
+4. **运行时总线**：`test_runtime_bus`（含并发发布与退订）、`test_core_app_voice`（设备事件经总线送达、worker 不被慢订阅者阻塞）。
+5. **平台层**：窗口模式、触摸（Win32、Wayland）、手柄反馈、平台配置与空指针安全。
+6. **渲染**：RHI 选择、错误契约、帧生命周期、黄金图像对照（OpenGL 与 Vulkan/Metal/D3D12）。需要窗口或 GPU 的测试只在 W5/W6/W7、M1/M2、L7/L8 上运行。
+7. **编辑器**：i18n、字体、插件、shell、Lua、远程会话。
+8. **崩溃与更新**：符号化、聚类、HTTP 上传、更新清单签名、断点续传、A/B 激活。
+
+## 4. 实机步骤
+
+### 4.1 macOS：Metal（M1）
+
+1. `cd ~/break && git fetch origin && git reset --hard origin/master`（该检出只用于验证，不在其中开发）。
+2. `PATH=$HOME/tools/cmake/bin:$HOME/tools/ninja/bin:$PATH`，`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`，`SDKROOT=$(xcrun --show-sdk-path)`（`metal` 着色器编译器只在完整 Xcode 中）。配置：`cmake -S engine -B build-m1-metal -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_COMPILER=$(xcrun -f clang) -DCMAKE_CXX_COMPILER=$(xcrun -f clang++) -DOPENSSL_ROOT_DIR=~/ossl-4.0.1-install -DENGINE_RHI_BACKEND=metal`，然后 `cmake --build build-m1-metal --parallel 8`。
+3. `ctest --test-dir build-metal -LE "graphics|fuzz|gpu|audio_device" -j8 --output-on-failure`。
+4. 单独运行带 GPU 的 Metal 测试：`ctest --test-dir build-metal -L "graphics|gpu" --output-on-failure`（实机有 GPU，CI 的 macOS runner 也有）。
+5. 核对：失败数为 0；`test_animation`、`test_physics_replay` 的金标准用例为 OK。
+
+### 4.2 macOS：Cocoa + MoltenVK（M2）
+
+1. 主机已有 `~/VulkanSDK`（1.4.357）。设 `S=~/VulkanSDK/macOS`，配置新目录：`cmake -S engine -B build-m2-cocoa-vk -G Ninja -DCMAKE_BUILD_TYPE=Debug -DENGINE_VULKAN=ON -DVulkan_LIBRARY=$S/lib/libvulkan.1.dylib -DVulkan_INCLUDE_DIR=$S/include -DSHADERC_LIB=$S/lib/libshaderc_shared.dylib -DSHADERC_INCLUDE_DIR=$S/include`。`Vulkan_LIBRARY` 必须是 loader（`libvulkan`），不能是 `libMoltenVK.dylib`，否则缺少 `VK_KHR_portability_enumeration`（执行记录问题 3）。
+2. 运行测试前设置 `DYLD_LIBRARY_PATH=$S/lib`、`VK_ICD_FILENAMES=$S/share/vulkan/icd.d/MoltenVK_icd.json`，并保持 Ninja 在 `PATH` 中（若干契约测试会配置嵌套工程）。
+3. 运行 headless 选择、`-R '^(test_platform_config|test_platform_null_safety|test_platform_cocoa_runtime)$'`，以及 `-L "graphics|gpu"`。
+
+### 4.3 arm64 原生对照（L6 的补充）
+
+CI 的 arm64 是 QEMU 用户态模拟。macOS 主机是真实的 arm64 CPU，§4.1 中 `test_physics_replay`、`test_animation` 的金标准结果即为 arm64 原生证据（macOS libm 与 glibc 不同，正好检验这些测试不依赖平台数学库）。
+
+### 4.4 Windows：MSVC（W1）
+
+1. 在开发机执行 `git archive --format=tar.gz -o break-src.tar.gz HEAD`，经 `scp` 复制到 Windows 主机的 `E:\`，解压到 `E:\break`（先删除旧目录）。
+2. 在 `vcvars64.bat`（Visual Studio 18 Community）环境中，配置命令与 CI 完全相同：`cmake -S engine -B build-msvc -G Ninja -DCMAKE_C_COMPILER=cl -DCMAKE_BUILD_TYPE=Debug -DENGINE_VULKAN=OFF -DENGINE_ENABLE_IPO=OFF -DENGINE_BUILD_FUZZ_SMOKE=ON`。
+3. `cmake --build build-msvc --parallel 24`，再构建 fuzz 目标（列表同 CI）。
+4. `ctest --test-dir build-msvc -LE "graphics|gpu|audio_device" --output-on-failure`，设置 `ENGINE_LOCKED_DEPS_ALLOW_ABSENT=1`。
+5. 核对：没有 `warning C` 被当作错误（重点是 C4701，`41703704` 与 `4c61b7c1` 的 CI 曾因此失败，`093d0336` 修复）；失败数为 0。
+
+### 4.5 Windows：Clang、Clang ASan、MinGW（W2–W4）
+
+- W2：`cmake -S engine -B build-clang -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_BUILD_TYPE=Debug -DENGINE_VULKAN=ON`（需要 Vulkan SDK，按 `engine/tools/fetch_vulkan_sdk_windows.cmake`）。
+- W3：同 W2，加 `-DCMAKE_C_FLAGS="-fsanitize=address -fno-omit-frame-pointer"`（C++ 同），测试前把 ASan 运行库 DLL 复制到测试目录（同 CI 步骤）。
+- W4：需要 MinGW-w64 GCC；主机当前未安装，记录为“未执行”，并在 §5 列出。
+- 经 SSH 启动的进程在 session 0，且随 SSH 连接结束而终止。实机上用计划任务运行：`New-ScheduledTaskPrincipal -LogonType Interactive` 使任务进入已登录的桌面会话（session 1），构建脚本 `win-build.cmd <name>` 从 `E:\break-args\<name>.txt` 读取配置参数（cmd 会在 `=` 处拆分命令行参数，所以参数放在文件中）。
+- 每个组合都运行 headless ctest 选择，核对失败数为 0。
+
+### 4.6 Windows：Win32 窗口、D3D12 WARP 与真实 GPU（W5–W7）
+
+- W5：`-DENGINE_VULKAN=ON` 的 Clang 构建，运行 `test_platform_win32_runtime`、`test_platform_config`、`test_platform_null_safety` 和 Win32 原生窗口测试。
+- W6：按 `windows-d3d12.yml`：先 `cmake -P engine/tools/fetch_d3d12_agility_sdk.cmake`，把 Windows SDK 的 `dxc.exe` 加入 PATH，`-DENGINE_RHI_BACKEND=d3d12` 的 Release 构建，强制 WARP 运行 D3D12 测试。
+- W7：同 W6，但使用真实 GPU（不强制 WARP），运行 `-L "graphics|gpu"` 的 D3D12 测试和 `test_rhi_golden_parity`。CI 的这个作业需要自托管 GPU runner，默认不运行，所以实机是唯一的验证途径。
+- 注意：这些测试需要交互式桌面会话。经 SSH 启动的进程在服务会话（session 0）中，可能无法创建窗口或访问 GPU。若出现这种情况，记录为“需在 Windows 主机的桌面会话中执行”，并在该主机上按本节命令手动运行。
+
+## 5. 无法在实机覆盖的组合
+
+| 组合 | 原因 | 现有证据 |
+|---|---|---|
+| L10 Steam Deck | 没有设备 | 无；CI 作业需要自托管 runner |
+| M4 iOS 模拟器 | macOS 主机只有命令行工具，没有完整 Xcode | CI 的 ios-metal-build |
+| W8 Proton | 需要 Linux + Steam Proton 环境 | CI 的 lane-proton |
+| L4、L5、M3 | 与实机无关的工具链特性 | CI |
+| W4 MinGW | Windows 主机未安装 MinGW-w64 | CI 的 lane-headless-windows-mingw |
+| W1/W2/W6 的剪贴板用例 | 主机上的 ToDesk 占用剪贴板 | CI；需在主机上退出 ToDesk 后手动执行（执行记录问题 1） |
+
+## 6. 执行记录
+
+（每次执行追加：日期、源码提交、组合编号、命令、结果、失败项与处理。）
+
+### 2026-11-22，源码 `093d0336`
+
+| 组合 | 主机 | 结果 | 说明 |
+|---|---|---|---|
+| M1 Metal | macOS 26.7.1，Apple M2（arm64） | headless 418/418，graphics/gpu 6/6 | 金标准：`test_physics_replay` 3 组、`test_animation` 混合与 IK 均 OK，即 arm64 原生 + macOS libm 与 x86-64 glibc 的哈希一致 |
+| M2 Cocoa + MoltenVK | 同上 | headless 421/421，graphics/gpu 6/6（含 `test_vulkan`），`test_platform_cocoa_runtime` 等 3/3 | 见下文问题 2、3 |
+| W1 MSVC | Windows 11（10.0.26300），Ryzen 9 7945HX，VS 18 Community | 构建通过（`/W4 /WX`，含 11 个 fuzz 目标）；423/424 | C4701 修复在实机上确认；唯一失败见问题 1 |
+| W2/W5 Clang + Vulkan | 同上，LLVM 22.1.6 | headless 411/412；graphics/gpu 7/7（`test_vulkan`、`test_core_app_gpu_vulkan`、`rhi_swapchain_bench` 等，真实 GPU） | 唯一失败见问题 1 |
+| W6/W7 D3D12 | 同上，Agility SDK 1.619.6（nupkg 与 DLL 的 SHA-512 与 `agility_sdk_lock.txt` 一致） | headless 415/416；graphics/gpu 10/10（设备、交换链、管线、着色器、DXR、UI canvas、WARP 运行时，真实 GPU） | CI 的真实 GPU 作业默认不运行，这是 W7 的首份实机证据；唯一失败见问题 1 |
+| W3 Clang ASan | 同上，OpenGL，`ASAN_OPTIONS=detect_leaks=0` | headless 409/410，无 AddressSanitizer 报告 | 唯一失败见问题 1 |
+| W4 MinGW | — | 未执行 | 主机未安装 MinGW-w64，CI 的 lane-headless-windows-mingw 覆盖 |
+
+问题与处理：
+
+1. **`test_platform_win32_runtime` 的 `clipboard_read_bounds_unterminated_unicode_text` 在 Windows 主机上失败（OpenClipboard failed）**。在桌面会话（session 1）中用独立脚本连续尝试 100 次 `OpenClipboard`，全部失败，`GetOpenClipboardWindow` 也取不到持有者。主机上运行着 ToDesk，它同步远程剪贴板时会占用剪贴板。这是主机环境问题，不是代码缺陷：其余 25 例通过，CI 的 Windows 作业中该用例通过。处理：不停止 ToDesk（会断开远程连接）。需要在 Windows 主机上退出 ToDesk 后，在桌面会话中手动执行 `ctest --test-dir build-msvc -R test_platform_win32_runtime --output-on-failure`，以及 build-clang、build-d3d12 中的同一测试。
+2. **macOS 主机上 Xcode 工具链链接 `c++` 失败，`metal` 编译器只在完整 Xcode 中**。已有的 `build-metal` 缓存使用 `xcode-select` 指向的命令行工具，链接时报 `library 'c++' not found`。处理：设置 `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` 和 `SDKROOT=$(xcrun --show-sdk-path)`，编译器取 `xcrun -f clang`，在新目录 `build-m1-metal` 中配置。三个 target contract 测试（crypto、update、crash）在没有 `SDKROOT` 时报 `library 'System' not found`，设置后 13/13 通过。
+3. **M2 中 `test_vulkan` 报 `VK_KHR_portability_enumeration` 不可用，这是代码缺陷，已修复**。CI 的 Cocoa 作业把 `Vulkan_LIBRARY` 指向 `libMoltenVK.dylib`，即不经 Vulkan loader 直接链接驱动。这个扩展由 loader 提供，用来让 loader 枚举 portability 驱动；直接链接 MoltenVK 时既没有它，也不需要它。但 `vk_init` 把它当作必需扩展，于是 Vulkan 初始化失败。CI 不运行 `graphics` 标签的测试，所以一直没有暴露。修复：新增 `platform_vk_resolve_instance_extensions`（`engine/src/platform/platform_vk_surface.h`），可选扩展缺失时把它移除，并同时清除 `VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR`（不启用扩展却设置这个位，`vkCreateInstance` 会失败）；其余扩展仍为必需。测试 `test_platform_vk_instance_extensions`（5 例，纯逻辑，所有平台运行）。实机红绿：同一个直接链接 MoltenVK 的构建，修复前 `test_vulkan` 失败，修复后通过，graphics/gpu 6/6。经 loader 链接（`libvulkan.1.dylib` + `VK_ICD_FILENAMES`）的方式在修复前后都能通过。
+4. **CI：`093d0336` 的 Linux + Clang/LLD 作业失败于 `Docker login for 'ghcr.io' failed`**，发生在任何构建步骤之前，属于基础设施问题；同一 run 的其余 23 个作业成功，其中包括此前因 C4701 失败的 Windows + MSVC。当前令牌没有重跑或手动触发工作流的权限，下一次推送会重新运行该作业。

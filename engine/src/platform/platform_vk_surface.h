@@ -24,6 +24,21 @@ u32 platform_vk_required_instance_extensions(Platform *p, const char **out,
  * VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR = 0x1；其余平台为 0）。 */
 u32 platform_vk_instance_create_flags(Platform *p);
 
+/* 是否为可选的 instance 扩展：缺失时不算错误，而是不启用。目前只有
+ * VK_KHR_portability_enumeration：它由 Vulkan loader 提供，用来让 loader
+ * 枚举 portability 驱动；可执行文件直接链接 MoltenVK（不经 loader）时没有
+ * 这个扩展，但也不需要它，MoltenVK 本身就是那个驱动。 */
+bool platform_vk_instance_extension_optional(const char *name);
+
+/* 按实际可用的扩展整理 instance 创建参数：available(name, user) 回答某扩展
+ * 是否可用。必需扩展缺失时返回 false，并通过 out_missing 给出第一个缺失的
+ * 名字；可选扩展缺失时把它从 names 中移除（保持其余顺序），并在移除
+ * portability 枚举扩展时清除 *flags 中的 ENUMERATE_PORTABILITY 位（不启用该
+ * 扩展却设置这个位，vkCreateInstance 会失败）。*count 更新为保留的个数。 */
+bool platform_vk_resolve_instance_extensions(const char **names, u32 *count, u32 *flags,
+                                             bool (*available)(const char *name, void *user),
+                                             void *user, const char **out_missing);
+
 /* 经 Platform 句柄创建 surface（platform_surface_native /
  * platform_display_native 解包后转发给 *_handles）。 */
 u64 platform_vk_create_surface(Platform *p, void *vk_instance,
