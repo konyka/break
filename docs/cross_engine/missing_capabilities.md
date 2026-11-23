@@ -645,3 +645,9 @@ Windows scene **123/123**、async **19/19**，两个溢出探针通过；mipmap�
 ## 第 10 节（音频）补充（2026-11-23）：对齐器 sinc 与交叉淡化配置
 
 语音对齐器现在可选 sinc 延迟（自动扣除 8 帧固定延迟，输出总延迟仍等于测得延迟）和交叉淡化，淡化期间到达的更新被跳过并在下一周期重试。剩余缺口：多声道，以及设备/VoiceProcessor/core_app/网络接线与真实声学验证；core_app 语音泵仍使用默认线性、立即切换模式。
+
+#### 延迟线复位与对齐器 sinc/淡化配置远端收据（2026-11-23）
+
+- `e38b633a`（`feat(audio): reset delay lines and voice aligners`）：CI run `45142486616` completed/success，27 个 job 中 24 个 success、3 个按条件 skip（Windows D3D12 GPU lane、Steam Deck 实机基准、Proton 参考 lane），skip 不计为执行通过；arm64 QEMU 选择套件 **276/276**，含 `test_audio_delay_estimator` 与 `test_audio_voice_aligner`。windows-d3d12 run `45142486473` success；Proton run `45144037463` success，artifact 上游 run-id=`45142486473`，`device_contract=77`、`pipeline_contract=77`，仅表示兼容通道。
+- `0e31707c`（`feat(audio): configure sinc and crossfade on voice aligners`）：CI run `45146038454` completed/success，24 success、3 个同样的条件 skip；arm64 **276/276**，含 `test_audio_voice_aligner`。windows-d3d12 run `45146038451` success；Proton run `45147666121` success，上游 run-id=`45146038451`，两项 contract 退出码均为 77，仅表示兼容通道。
+- 同一提交更正 `docs/design/audio_extended.md` 两处过时的“自动更新调度”未做项：固定周期调度已由 `AudioVoiceAligner` 提供。本收据提交自身触发的工作流结果不在此预写。

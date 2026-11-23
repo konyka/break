@@ -239,7 +239,7 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 - 归一化置信度：`audio_gcc_phat_estimate_with_confidence` 返回相同的细化延迟，并在选中的整数 lag 上直接计算 `cr/sqrt(cc*rr)`，与 tracker 的相关性门控同义。该分数描述整数对齐，反相为负；所选参考窗口零能量时返回 false 且两个输出不变。旧 raw-peak 接口与行为不变。
 - 复位：`audio_delay_line_reset` 把历史清为静音并取消进行中的淡化，保留最大延迟、当前延迟、sinc 模式和淡化时长；之后的输出与同配置新建的延迟线逐样本一致，不分配，NULL 为空操作。
 - 用法：把参考与采集推入估计器、tracker 或 GCC-PHAT 对象，得到延迟 D 后把参考延迟线设为 D 减去几帧余量（滤波器从因果的前几个 tap 开始），延迟后的参考与采集送入 `audio_echo_canceller_process_i16`。启用 sinc 时还需减去其 8 帧额外延迟。tracker 由调用者主动 update，没有隐藏后台线程；GCC 后端在创建时选择，不能运行中切换。
-- 未做：自动更新调度与多声道；时钟漂移补偿见后续小节。
+- 未做：多声道；时钟漂移补偿见后续小节。固定周期的自动更新调度由「语音参考自动对齐」中的 `AudioVoiceAligner` 提供（2026-11-23 更正）。
 
 ## 时钟漂移估计
 
@@ -249,7 +249,7 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 - `push(frame_index, delay_frames, correlation)` 只接受有限值、达到门限的相关性和严格递增帧号；拒绝不改窗口。只有 create 分配，reset 清空所有样本与最后帧状态。
 - `estimate(drift_ppm, mean_correlation)` 以最旧环帧为相对基准，做居中最小二乘回归，`ppm = delay/frame 斜率 × 1e6`，并返回接受样本的平均带符号相关性。少于两个样本、零时间方差、非有限或超限时返回 false，输出不变。
 - `estimate_robust` 使用 Siegel repeated-median：逐样本斜率中位数再取总中位数，抵抗孤立离群点；两个 window 长度 scratch 在 create 分配，堆排序不分配。帧差保留大公共基准和符号，非有限斜率/结果及超限均原子失败。平均带符号相关性与旧接口相同，旧最小二乘结果不变。最大窗口 1024 已验证。
-- 未做：自动更新调度/闭环控制与真实设备验证；tracker 可在创建时显式选择 GCC 后端，重采样补偿见下一节。
+- 未做：真实设备验证（2026-11-23 更正：固定周期调度见「语音参考自动对齐」，漂移闭环见「时钟漂移闭环补偿」）；tracker 可在创建时显式选择 GCC 后端，重采样补偿见下一节。
 
 ## 时钟漂移补偿
 

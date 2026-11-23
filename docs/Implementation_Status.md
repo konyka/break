@@ -13432,3 +13432,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD**：先加 5 个用例，编译因缺少符号失败（RED）；评审后再加 2 个，覆盖切换时不启动淡化并保留淡化时长，以及淡化中被跳过的测量不会被后续模式切换应用。实现后 `test_audio_voice_aligner` **14/14**。12.5 帧回声上 sinc 对齐输出与采集的零延迟归一化相关约 0.978，线性约 0.905；未补偿时（总延迟 20.5 帧）约为 0。
 - **变异**：把 REJECTED 当作失败、去掉 sinc 补偿、`delay` 不计 sinc 延迟、切换时不重新应用、不保存测量、复位不清测量、复位时触发淡化七项，以及切换时不清零淡化、切换后不恢复淡化、在应用成功前保存测量三项，均判红。切换失败后的回滚分支不可达（延迟线接受切换说明没有淡化，且延迟始终在范围内），已删除而不保留未测代码。
 - **验证**：本地 Vulkan 全量 **462/462**（4 个既有条件 skip，不计为执行通过）、OpenGL 全量 **453/453**，0 失败；ASan+UBSan 与 TSan 下 `test_audio_voice_aligner`、`test_core_app_voice` 均 2/2 通过。默认线性模式下 `audio_voice_aligner_delay` 返回值不变，core_app 语音泵不受影响（`test_core_app_voice` 24/24）。上述全量与 sanitizer 结果取自评审补测前的代码；补测只增加测试与注释，之后单独重跑 `test_audio_voice_aligner` 14/14。远端结果待推送后核验。
+
+#### 延迟线复位与对齐器 sinc/淡化配置远端收据（2026-11-23）
+
+- `e38b633a`（`feat(audio): reset delay lines and voice aligners`）：CI run `45142486616` completed/success，27 个 job 中 24 个 success、3 个按条件 skip（Windows D3D12 GPU lane、Steam Deck 实机基准、Proton 参考 lane），skip 不计为执行通过；arm64 QEMU 选择套件 **276/276**，含 `test_audio_delay_estimator` 与 `test_audio_voice_aligner`。windows-d3d12 run `45142486473` success；Proton run `45144037463` success，artifact 上游 run-id=`45142486473`，`device_contract=77`、`pipeline_contract=77`，仅表示兼容通道。
+- `0e31707c`（`feat(audio): configure sinc and crossfade on voice aligners`）：CI run `45146038454` completed/success，24 success、3 个同样的条件 skip；arm64 **276/276**，含 `test_audio_voice_aligner`。windows-d3d12 run `45146038451` success；Proton run `45147666121` success，上游 run-id=`45146038451`，两项 contract 退出码均为 77，仅表示兼容通道。
+- 同一提交更正 `docs/design/audio_extended.md` 两处过时的“自动更新调度”未做项：固定周期调度已由 `AudioVoiceAligner` 提供。本收据提交自身触发的工作流结果不在此预写。
