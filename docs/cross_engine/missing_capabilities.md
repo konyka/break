@@ -600,3 +600,20 @@ Windows 在最终 `c4c0d966` 上取得完整 `test_scene_serial` **122/122**，�
 上一波 EINTR 重试在持续中断时绕过超时计数。本轮改用 `CLOCK_MONOTONIC` 绝对截止时间，EINTR 和子进程仍运行都经过同一个期限检查；签名、返回语义、非 EINTR 错误所有权和 ECHILD/PID 0 防护不变。新增持续 200 ms EINTR、50 ms 期限用例，旧实现 **10/11**，修复后 **11/11**，且 fallback 均为 `cleanup=0`。两套 macOS 后端 focused 均 **4/4**，直接 ASan+UBSan **11/11**、无诊断；本机没有 LeakSanitizer 或本轮 TSan 通过结论。
 
 仍保留以下边界：本修改只涉及 POSIX 测试 helper，不解决 qemu-user 下 fork 后创建线程的独立挂起，也不改变产品运行时；Windows/Linux 与远端矩阵须以各自实际结果为准。修复后最终本地完整矩阵：Metal 435/435、MoltenVK 438/438，各 5 项既有条件 skip（不计为执行通过）；未运行 TSan/LSan。
+
+## 共享 test_tmp 截断缺口关闭与剩余边界（2026-11-23）
+
+上文历史段落中的“共享 `test_tmp` 截断整改尚未完成”由本次追加所记录的整改关闭，历史时点保持不改。正常 `snprintf` 能完整写入时，路径字节保持原样；只有该最终格式化确认截断，才在原临时根下使用掩码后的 32 位 FNV-1a 哈希叶名。POSIX 根保持 `/tmp`，Windows 根保持规范化后的原 TEMP，不以替换根目录规避长度问题。
+
+两个截断层都已加防护。Windows 的 `test_tmp` 和 `test_tmp_root` 在规范化后直接检查源字符串是否完整，溢出即输出 `TEST PATH TRUNCATED` 并 `abort()`。常规路径截断后的名称若含 `/` 或 `\` 会失败，避免哈希吞掉父目录；`cap < 32`、常规或回退 `snprintf` 的负结果、回退后仍然溢出，也都明确失败。Windows 动态容量使用 `R + 17 + P` 并 clamp 到 32，其中 `R` 为根长度、`P` 为 PID 位数；17 字节已包含分隔符、固定叶名前缀、八位哈希和 NUL，实际路径长度严格小于容量。
+
+验证包含真实行为而非仅字符串形状：async 用例在文件 I/O 前核对叶名，写入已知字节后挂载临时根，经真实 VFS/async loader 请求该精确叶名并检查一次回调及其字节。两个 Windows 溢出探针分别覆盖 root/tmp 规范化入口，要求非零进程结果和截断标记，并有 30 秒进程超时；旧实现返回 0 时均为 RED，无标记崩溃不能冒充通过。
+
+已取得的结果为 Linux fork **14/14**、async **19/19**、focused CTest **6/6** 和 mipmap/editor **2/2**；Windows scene **123/123**、async **19/19**、root/tmp 溢出探针 **2/2**，以及 mipmap、editor、runtime I/O/reload、diagnostics **5/5**。这些 focused 收据不扩展为完整矩阵或全平台结论。
+
+以下缺口保持打开：
+
+- 完整 Vulkan/OpenGL、ASan+UBSan、TSan 矩阵仍待实际执行，条件跳过必须在结果中保持可见。
+- 远端工作流结果仍待核验，不预写通过结论或运行编号。
+- qemu-user 下 fork 后创建线程的挂起尚未解决。
+- 无关 Windows 平台/GPU 问题尚未解决，不能由上述临时路径测试推断其状态。

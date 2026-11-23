@@ -1904,3 +1904,37 @@ Windows 在最终 `c4c0d966` 上的完整 `test_scene_serial` 为 **122/122**；
 两套后端的 `test_fork_deadline`、`test_runtime_io`、`test_runtime_reload`、`test_core_app_diagnostics` focused CTest 均 **4/4**。直接编译的 ASan+UBSan `test_fork_deadline` **11/11**、无诊断；运行时显式设置 `ASAN_OPTIONS=detect_leaks=0`，因为本机不支持 leak detection，故不声称 LeakSanitizer 通过，也没有新增 TSan 结果。
 
 基线 Metal 全量为 **435/435**，另有 5 项既有平台条件 skip。修复后最终本地全量：Metal（`engine/build-macos-current`）**435/435**，MoltenVK（`engine/build-macos`）**438/438**，各 5 项既有条件 skip（skip 不计为执行通过）；直接 cc 编译的 ASan+UBSan `test_fork_deadline` 11/11 无诊断（本机不支持 LSan）。本轮没有 Windows/Linux 实机或远端 CI 结论，qemu-user 下 fork 后创建线程的独立挂起仍未解决。
+
+## 补充（2026-11-23）：共享 test_tmp 紧凑路径与溢出失败
+
+### 路径构造与失败契约
+
+共享测试临时路径有两层独立截断边界。常规路径仍使用原来的 `snprintf` 格式；完整结果能够写入时，返回字节保持不变。只有常规 `snprintf` 的返回值确认发生截断，才在原临时根下改用掩码后的 32 位 FNV-1a 叶名：POSIX 根仍为 `/tmp`，Windows 根仍为规范化后的原 TEMP，格式为 `break_<八位哈希>_<pid>`。不会把长叶名直接截断成可能碰撞的另一名称，也不会改换临时根。
+
+Windows 的 TEMP 规范化是另一层边界：`test_tmp` 和 `test_tmp_root` 在各自规范化循环后立即检查源字符串是否仍以非 NUL 字节继续；若是，则打印 `TEST PATH TRUNCATED` 并直接 `abort()`，不会格式化、返回或使用已截断的根。
+
+以下情况同样以该标记和 `abort()` 明确失败，而不是继续文件 I/O：
+
+- 常规路径已截断，且名称含 `/` 或 `\`；哈希不能抹掉父目录语义。
+- 需要紧凑回退时 `cap < 32`。
+- 常规或回退 `snprintf` 返回负值。
+- 回退结果仍需大于等于 `cap` 的字节数；回退本身也不假定总能容纳。
+
+Windows scene 与 async 回归按实际根长和 PID 位数计算容量，不假定固定根长或 PID 长度：
+
+```c
+size_t cap = strlen(test_tmp_root()) + 17u + (unsigned)pid_digits;
+if (cap < 32u) cap = 32u;
+```
+
+其中 `R = strlen(test_tmp_root())`、`P = pid_digits`，容量为 `R + 17 + P`，下限为 32。额外的 17 字节覆盖根分隔符、`break_`、八位哈希、PID 分隔符和 NUL；不含 NUL 的路径长度为 `R + 16 + P`，严格小于该容量。调用方仍须提供足够大的实际缓冲区。
+
+### 回归证据与未执行范围
+
+新增 POSIX 用例在旧实现上得到预期 RED：微小缓冲和两种父目录路径的子进程均正常退出，两个长名称发生相同截断；旧 async 回归也在真实文件 I/O 前的叶名断言失败。Windows 旧实现同样出现 scene/async 叶名失败，root/tmp 两个溢出探针均因进程返回 0 而 RED。新实现中，探针同时要求非零进程结果和 `TEST PATH TRUNCATED`，并设置 30 秒进程超时，因此接受截断、无关崩溃或超时都不能作为通过。
+
+`async_loader_compact_path_roundtrip` 不仅检查字符串：它在任何文件 I/O 前核对独立构造的 `break_8073d8d7_<pid>` 叶名，随后写入已知字节 `0x5a`，挂载 `test_tmp_root()`，通过真实 async loader/VFS 请求该精确叶名，并要求一次回调返回同一字节，最后完成关停和删除。
+
+已执行的 GREEN 证据为：Linux `test_fork_deadline` **14/14**、`test_async_loader` **19/19**，包含 scene、async、fork、runtime I/O/reload 和 diagnostics 的 focused CTest **6/6**；mipmap 与 editor 额外回归 **2/2**。Windows `test_scene_serial` **123/123**、`test_async_loader` **19/19**，`test_tmp_root_overflow` 与 `test_tmp_path_overflow` **2/2**，mipmap、editor、runtime I/O/reload 和 diagnostics **5/5**。editor 的缺失父目录用例包含在上述完整目标中。
+
+这些结果不是完整矩阵收据。完整 Vulkan/OpenGL、ASan+UBSan 与 TSan 验证，以及远端工作流结果，仍待实际执行和核验，不预写通过计数或运行编号。qemu-user 下 fork 后创建线程的挂起和无关 Windows 平台/GPU 问题仍未解决；上述 focused 结果不关闭这些独立问题。

@@ -13390,3 +13390,12 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - CI run `45131673385`：completed/success，27 个 job 中 24 个 success，3 个按条件 skip（`lane-gpu-runtime-windows-d3d12`、Steam Deck 实机基准、Proton 参考 lane），skip 不计为执行通过。含 `Linux arm64 cross-build + QEMU tests (GCC)` 成功；本次未取得 job 日志（未认证 API 返回 403），因此不声称已从日志确认 arm64 选择套件包含 `test_fork_deadline`。
 - windows-d3d12 run `45131673312`：completed/success。
 - 本收据提交自身会触发新的工作流，其结果不在此预写。
+
+## 共享 test_tmp 截断整改记录（2026-11-23）
+
+- **根因与正常路径**：旧共享 helper 存在两层静默截断：Windows TEMP 规范化缓冲区可能只保留根前缀，常规最终 `snprintf` 又可能把长叶名截成相同字符串。现在正常格式完全不变，完整写入时返回字节与旧行为一致；只有常规 `snprintf` 确认截断后才进入紧凑叶名回退。POSIX 继续使用 `/tmp`，Windows 继续使用规范化后的原 TEMP 根，叶名由掩码后的 32 位 FNV-1a 和 PID 组成。
+- **明确失败**：`test_tmp` 与 `test_tmp_root` 都在 Windows 规范化后立即检查源字符串末尾，溢出时以 `TEST PATH TRUNCATED` 和 `abort()` 失败，不使用截断根。常规路径截断后，名称含 `/` 或 `\`、`cap < 32` 均明确失败；常规和回退格式化的负返回值，以及回退结果仍大于等于 `cap`，也都明确失败。哈希因此不会消除父目录语义，任何回退容量也不靠假设成立。
+- **动态容量证明**：Windows scene 和 async 用例采用 `cap = strlen(test_tmp_root()) + 17 + pid_digits`，再 clamp 到至少 32。17 字节包含根分隔符、`break_`、八位哈希、PID 分隔符和 NUL；实际路径长度 `R + 16 + P` 严格小于容量。局部缓冲区覆盖允许的最大规范化根与 PID，不再用固定根长推导测试容量。
+- **确定性 RED/GREEN**：旧实现上，四个 POSIX 用例分别暴露子进程未 abort 和长名称碰撞，合计 **10/14**；async 为 **18/19**。Windows scene 为 **122/123**、async 为 **18/19**；root/tmp 两个探针都因旧进程返回 0 而失败。修改后 Linux fork **14/14**、async **19/19**、focused CTest **6/6**，mipmap/editor **2/2**；Windows scene **123/123**、async **19/19**、两个溢出探针 **2/2**，mipmap、editor、runtime I/O/reload、diagnostics **5/5**。
+- **真实 I/O 与探针**：async 回归先断言独立推导的 `break_8073d8d7_<pid>`，再写入 `0x5a`，挂载真实临时根并通过 async loader/VFS 读取精确叶名，要求一次回调和相同字节。两个 Windows 探针分别覆盖 `test_tmp_root` 与 `test_tmp` 的规范化溢出，使用 600 字节 ASCII TEMP、30 秒进程超时，并同时要求非零结果与截断标记；旧实现的零退出和任意无标记崩溃均不能通过。
+- **复核与剩余边界**：路径字节、哈希类型与掩码、容量算术、根保持、父目录、abort 前无 I/O、子进程回收及真实 VFS 读取的已有复核未发现 Critical、Important 或 Minor。完整 Vulkan/OpenGL、ASan+UBSan、TSan 矩阵和远端结果仍待执行与核验，不预写结论。qemu-user 下 fork 后创建线程的挂起，以及无关 Windows 平台/GPU 问题，均未由本次测试基础设施整改解决。
