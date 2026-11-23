@@ -114,6 +114,10 @@ struct CoreAppConfig {
     /* Forces AUDIO_BACKEND_NULL for the voice capture device, so the
      * "no microphone" path is reachable on a host that has one. */
     bool voice_null_capture;
+    /* Voice aligner modes (CoreAppVoiceConfig aligner_sinc and
+     * aligner_crossfade_frames); both off by default. */
+    bool voice_aligner_sinc;
+    u32 voice_aligner_crossfade_frames;
     /* Device names as the audio device lists report them; NULL or "" opens
      * the default. A name no device has ends the run with REJECTED (exit 2),
      * never with the "no device" result, even without require_device. */

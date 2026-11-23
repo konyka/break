@@ -555,6 +555,14 @@ BreakRuntimeError core_app_voice_pop(CoreAppVoice *voice, BreakVoiceFrame *out,
     return BREAK_RUNTIME_OK;
 }
 
+bool core_app_voice_aligner_sinc(const CoreAppVoice *voice) {
+    return voice && audio_voice_aligner_sinc(voice->aligner);
+}
+
+u32 core_app_voice_aligner_crossfade_frames(const CoreAppVoice *voice) {
+    return voice ? audio_voice_aligner_crossfade_frames(voice->aligner) : 0u;
+}
+
 BreakRuntimeError core_app_voice_stats(CoreAppVoice *voice, CoreAppVoiceStats *out) {
     if (!voice || !out) return BREAK_RUNTIME_INVALID;
     CoreAppVoiceStats stats = {

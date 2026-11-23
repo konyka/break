@@ -101,6 +101,10 @@ TEST(create_validates_config_and_lifecycle)
 
     voice = create_voice(&config);
     ASSERT_NOT_NULL(voice);
+    ASSERT_FALSE(core_app_voice_aligner_sinc(voice));
+    ASSERT_EQ(core_app_voice_aligner_crossfade_frames(voice), 0u);
+    ASSERT_FALSE(core_app_voice_aligner_sinc(NULL));
+    ASSERT_EQ(core_app_voice_aligner_crossfade_frames(NULL), 0u);
     BreakVoiceFrame frame = {0};
     bool ready = true;
     ASSERT_EQ(core_app_voice_pop(voice, &frame, &ready), BREAK_RUNTIME_OK);
@@ -259,6 +263,8 @@ TEST(aligner_modes_match_an_independent_pipeline)
     }
     ASSERT_TRUE(audio_voice_aligner_locked(aligner));
     ASSERT_TRUE(fabs(audio_voice_aligner_delay(aligner) - 20.0) < 1.0);
+    ASSERT_TRUE(core_app_voice_aligner_sinc(voice));
+    ASSERT_EQ(core_app_voice_aligner_crossfade_frames(voice), 480u);
     audio_voice_aligner_destroy(aligner);
     audio_voice_processor_destroy(processor);
     ASSERT_EQ(core_app_voice_stop(voice), BREAK_RUNTIME_OK);

@@ -1216,6 +1216,7 @@ core_app --help
 core_app [--render record|auto|vulkan|opengl]
          [--audio record|null|device]
          [--voice off|fake|device] [--voice-null-capture]
+         [--voice-aligner-sinc] [--voice-aligner-crossfade FRAMES]
          [--assets DIR] [--scenario PATH] [--checkpoint DIR]
          [--trace PATH] [--screenshot PATH]
          [--fixed-step] [--frames N] [--require-device] [--network]
@@ -1786,6 +1787,13 @@ arm64 lane 新增 `test_core_app_network`（25/25）和 `test_core_app_network_o
 
 ## 补充（2026-11-23）：语音对齐器模式
 
-- **配置**：`CoreAppVoiceConfig` 新增 `aligner_sinc` 与 `aligner_crossfade_frames`（0..48000）。create 在创建对齐器后依次调用 `audio_voice_aligner_set_sinc` 和 `audio_voice_aligner_set_crossfade_frames`；对齐器拒绝的淡化时长让 create 返回 INVALID，并按创建逆序销毁对齐器与采集。零初始化（`app_voice_config` 与测试均先 `memset`）保持线性、立即切换，CLI 未新增开关。泵内不重建对齐器，采集恢复、设备切换与播放重开都不影响这两项设置。
+- **配置**：`CoreAppVoiceConfig` 新增 `aligner_sinc` 与 `aligner_crossfade_frames`（0..48000）。create 在创建对齐器后依次调用 `audio_voice_aligner_set_sinc` 和 `audio_voice_aligner_set_crossfade_frames`；对齐器拒绝的淡化时长让 create 返回 INVALID，并按创建逆序销毁对齐器与采集。零初始化（`app_voice_config` 与测试均先 `memset`）保持线性、立即切换；命令行开关见下文「语音对齐器模式命令行开关」。泵内不重建对齐器，采集恢复、设备切换与播放重开都不影响这两项设置。
 - **与漂移补偿的关系**：漂移观测读取 `audio_voice_aligner_delay`，sinc 模式下该值包含固定 8 帧延迟，常数偏移不影响斜率。两种情况会削弱测量：sinc 下测得延迟小于 8 帧时线延迟被截到 0，报告值停在 8 帧；淡化时长大于 `update_period_frames`（core_app 为 480）时，淡化中到达的更新被跳过但更新计数仍增加，观测会读到未变化的延迟。默认两项都关闭。
 - **测试**：`test_core_app_voice` 新增 `aligner_modes_match_an_independent_pipeline`，共 25 项。先确认 48001 帧淡化被拒且 `*out` 不变；再启用 sinc 与 480 帧淡化，驱动 6 个带 20 帧回声的包，逐包与同配置独立对齐器 + 处理器逐样本比较，并断言独立对齐器已锁定且延迟在 20±1 帧。线性/sinc、淡化 0/480 都会改变输出，任一设置未应用即判红。
+
+## 补充（2026-11-23）：语音对齐器模式命令行开关
+
+- **CLI**：`--voice-aligner-sinc` 与 `--voice-aligner-crossfade FRAMES`（1..48000 的十进制整数，也接受 `=` 形式）写入 `CoreAppConfig.voice_aligner_sinc`/`voice_aligner_crossfade_frames`，再由语音通道创建时写入 `CoreAppVoiceConfig`。两者都要求 `--voice=fake|device`；未给 `--voice`、帧数为 0、超过 48000 或含非数字时为 CLI 错误（退出 2，诊断以 `core_app: invalid`/`--voice` 开头）。
+- **查询**：`core_app_voice_aligner_sinc`、`core_app_voice_aligner_crossfade_frames` 报告私有对齐器的实际设置，NULL 返回 false/0。
+- **trace**：只有给出任一开关时，在 ready 行之后追加 `COREAPPTRACE version=1 event=voice_aligner sinc=0|1 crossfade=N`，数值取自上述查询而不是命令行；不给开关时 trace 逐字节不变。
+- **测试**：`test_core_app_voice` 增加查询的 NULL、默认与启用值断言；`test_core_app_voice_lane.cmake` 第 6 部分在 `--voice=fake` 下验证 sinc + 480 帧淡化写出 trace 行且紧跟 ready、仍消费全部包、两次运行逐字节一致，仅 sinc 时 `crossfade=0`，无开关时无该行；新增五个错误组合。

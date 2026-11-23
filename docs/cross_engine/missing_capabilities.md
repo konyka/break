@@ -655,3 +655,7 @@ Windows scene **123/123**、async **19/19**，两个溢出探针通过；mipmap�
 ## 第 10 节（音频）补充（2026-11-23）：core_app 语音泵可选对齐器模式
 
 `CoreAppVoiceConfig` 可选 sinc 与交叉淡化，对齐器“core_app 接线”缺口中的模式配置部分关闭。剩余：CLI 开关、多声道、真实声学验证。
+
+## 第 10 节（音频）补充（2026-11-23）：语音对齐器模式命令行开关
+
+core_app 新增 `--voice-aligner-sinc` 与 `--voice-aligner-crossfade`，对齐器模式可从命令行开启并写入 trace。剩余：多声道与真实声学验证。

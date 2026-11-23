@@ -30,6 +30,8 @@ static void print_help(void) {
          "  --voice off|fake|device\n"
          "  --voice-capture-device NAME\n"
          "  --voice-null-capture\n"
+         "  --voice-aligner-sinc\n"
+         "  --voice-aligner-crossfade FRAMES (1..48000)\n"
          "  --assets DIR\n"
          "  --scenario PATH\n"
          "  --checkpoint DIR\n"
@@ -217,6 +219,13 @@ static int core_app_main(int argc, char **argv) {
             config.voice_capture_device_name = value;
         } else if (strcmp(argv[i], "--voice-null-capture") == 0) {
             config.voice_null_capture = true;
+        } else if (strcmp(argv[i], "--voice-aligner-sinc") == 0) {
+            config.voice_aligner_sinc = true;
+        } else if ((matched = take_value(argc, argv, &i, "--voice-aligner-crossfade", &value)) !=
+                   0) {
+            if (matched < 0 || !parse_frames(value, &config.voice_aligner_crossfade_frames) ||
+                config.voice_aligner_crossfade_frames > 48000u)
+                return cli_error("invalid --voice-aligner-crossfade value");
         } else if ((matched = take_value(argc, argv, &i, "--voice", &value)) != 0) {
             if (matched < 0 || !parse_voice(value, &config.voice_mode))
                 return cli_error("invalid --voice value");
@@ -297,6 +306,9 @@ static int core_app_main(int argc, char **argv) {
     }
     if (config.voice_mode == CORE_APP_VOICE_DEVICE && config.audio_mode != CORE_APP_AUDIO_DEVICE)
         return cli_error("--voice=device requires --audio=device");
+    if ((config.voice_aligner_sinc || config.voice_aligner_crossfade_frames > 0u) &&
+        config.voice_mode == CORE_APP_VOICE_OFF)
+        return cli_error("--voice-aligner-sinc/--voice-aligner-crossfade require --voice=fake|device");
     if (config.voice_null_capture && config.voice_mode != CORE_APP_VOICE_DEVICE)
         return cli_error("--voice-null-capture requires --voice=device");
     if (config.audio_device_name && config.audio_mode != CORE_APP_AUDIO_DEVICE)

@@ -13460,3 +13460,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 判断为非复现：该提交只改两份 Markdown，而该契约测试不读取这两份文档；前一提交 `2fa5f8f2`（run `45149438128`）与后一提交 `ac3612bb`（run `45152841237`）在同一 job 上均 success；本地 Metal 构建单独连跑两次均通过（各约 310 s，测试 TIMEOUT 600 s）。未定位根因，不声称该测试在 CI 上稳定；若再次出现，需要取得 job 日志后再分析。
 - 合入 `ac3612bb`（core_app 语音配置 `aligner_sinc`/`aligner_crossfade_frames`）后复审：所有 `CoreAppVoiceConfig` 构造点均 memset 清零，默认行为不变；设置失败路径销毁对齐器，无泄漏。本地 Metal 全量 **435/435**、MoltenVK 全量 **438/438**，各 5 项既有条件 skip（不计为执行通过）。
 - 本收据提交自身触发的工作流结果不在此预写。
+
+## core_app 语音对齐器模式命令行开关（2026-11-23）
+
+- **交付**：`--voice-aligner-sinc`、`--voice-aligner-crossfade FRAMES`（1..48000），要求 `--voice=fake|device`；`core_app_voice_aligner_sinc`/`_crossfade_frames` 查询实际设置，启用时 ready 行后写 `event=voice_aligner sinc=… crossfade=…`。计划见 `docs/superpowers/plans/2026-11-23-core-app-voice-aligner-cli.md`，行为见 `docs/design/core_app_integration.md`。
+- **TDD**：单元测试先因缺少查询函数编译失败；CLI 契约先在旧可执行文件上因不认识新开关退出 2 失败（RED）。实现后 `test_core_app_voice` **25/25**，`test_core_app_voice_lane` 通过。
+- **变异**：不把 sinc 或淡化写入配置、两个查询返回常量、去掉 `--voice` 依赖校验、去掉 48000 上限、无开关时也写 trace 七项均判红；去掉上限时失败点正是 48001 用例。
+- **验证**：本地 Vulkan 全量 **462/462**（4 个既有条件 skip，不计为执行通过）、OpenGL 全量 **453/453**，0 失败；ASan+UBSan 下 `test_core_app_voice` 与 `test_core_app_voice_lane` 2/2。TSan 下 `test_core_app_voice` 通过；`test_core_app_voice_lane` 在本机 TSan 构建中因 `ThreadSanitizer: can't find longjmp buf` 在第一次（不带新开关的）运行即中止，未修改的 `origin/master` 以 `ENGINE_USE_TSAN=ON` 构建同样失败，属本机 TSan 运行时环境问题而非本改动；CI 的 TSan job 运行该测试，以远端结果为准。评审后修正头文件线程说明、依赖错误文本与计划/设计文档措辞，之后重跑 `test_core_app_voice` 与 lane 测试通过。

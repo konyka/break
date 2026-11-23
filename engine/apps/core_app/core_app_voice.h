@@ -80,6 +80,11 @@ BreakRuntimeError core_app_voice_pump(CoreAppVoice *voice, u32 max_packets);
 BreakRuntimeError core_app_voice_pop(CoreAppVoice *voice, BreakVoiceFrame *out,
                                      bool *out_ready);
 BreakRuntimeError core_app_voice_stats(CoreAppVoice *voice, CoreAppVoiceStats *out);
+/* The aligner's delay line modes as applied at create; false/0 for NULL.
+ * Both are fixed at create and never written again, so any thread may read
+ * them while the worker runs. */
+bool core_app_voice_aligner_sinc(const CoreAppVoice *voice);
+u32 core_app_voice_aligner_crossfade_frames(const CoreAppVoice *voice);
 /* The error that ended the worker, readable from any thread while it runs:
  * OK while it pumps, e.g. UNAVAILABLE after the capture device was lost. */
 BreakRuntimeError core_app_voice_worker_error(CoreAppVoice *voice);

@@ -12,7 +12,9 @@
 #   4. an unknown --voice value, --voice=device without --audio=device, and
 #      --voice-null-capture without --voice=device are CLI errors (exit 2),
 #   5. scenario voice-capture-device switches are traced and counted (see
-#      the section below).
+#      the section below),
+#   6. --voice-aligner-sinc and --voice-aligner-crossfade reach the lane's
+#      aligner, and misuse of either is a CLI error.
 
 foreach(var CORE_APP WORK ASSET_ROOT)
     if(NOT DEFINED ${var} OR "${${var}}" STREQUAL "")
@@ -165,8 +167,37 @@ if(NOT late_count EQUAL 1 OR NOT late MATCHES
     message(FATAL_ERROR "a request left at stop got no single stopped result\n${late}")
 endif()
 
+# 6. Aligner modes from the command line: the lane traces the settings its
+#    aligner reports, still delivers every frame, stays deterministic, and a
+#    run without the flags writes no aligner line.
+run_app(modes_a modes_a --voice=fake --voice-aligner-sinc --voice-aligner-crossfade 480)
+run_app(modes_b modes_b --voice=fake --voice-aligner-sinc --voice-aligner-crossfade 480)
+run_app(sinc_only sinc_only --voice=fake --voice-aligner-sinc)
+if(NOT modes_a MATCHES "event=voice mode=fake result=ready frames=480 capture=fake\nCOREAPPTRACE version=1 event=voice_aligner sinc=1 crossfade=480\n")
+    message(FATAL_ERROR "the aligner modes were not traced after ready\n${modes_a}")
+endif()
+if(NOT sinc_only MATCHES "event=voice_aligner sinc=1 crossfade=0\n")
+    message(FATAL_ERROR "--voice-aligner-sinc alone was not traced\n${sinc_only}")
+endif()
+if(NOT modes_a MATCHES "result=stopped produced=([0-9]+) consumed=([0-9]+) dropped=0 sequence_gaps=0 ")
+    message(FATAL_ERROR "the aligner modes lost voice frames\n${modes_a}")
+endif()
+if(CMAKE_MATCH_1 LESS 160 OR NOT CMAKE_MATCH_1 EQUAL CMAKE_MATCH_2)
+    message(FATAL_ERROR "the aligner modes produced ${CMAKE_MATCH_1}, consumed ${CMAKE_MATCH_2}")
+endif()
+if(NOT modes_a STREQUAL modes_b)
+    message(FATAL_ERROR "two identical aligner-mode runs wrote different traces")
+endif()
+if(fake_a MATCHES "event=voice_aligner")
+    message(FATAL_ERROR "a run without aligner flags traced aligner modes\n${fake_a}")
+endif()
+
 foreach(bad_args "--voice=bogus" "--voice=device" "--voice-null-capture"
-                 "--voice=fake;--voice-null-capture")
+                 "--voice=fake;--voice-null-capture"
+                 "--voice-aligner-sinc" "--voice-aligner-crossfade;480"
+                 "--voice=fake;--voice-aligner-crossfade;0"
+                 "--voice=fake;--voice-aligner-crossfade;48001"
+                 "--voice=fake;--voice-aligner-crossfade;12x")
     execute_process(
         COMMAND ${CORE_APP_RUNNER} "${CORE_APP}" --render=record --audio=record --fixed-step
             --assets "${ASSET_ROOT}" --scenario "${scenario}" ${bad_args}

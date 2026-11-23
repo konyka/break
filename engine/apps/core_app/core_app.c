@@ -2224,6 +2224,8 @@ static BreakRuntimeError app_voice_start(CoreApp *app) {
     if (mode == CORE_APP_VOICE_FAKE) capture_backend = AUDIO_BACKEND_FAKE;
     if (app->config.voice_null_capture) capture_backend = AUDIO_BACKEND_NULL;
     CoreAppVoiceConfig config = app_voice_config(playback, capture_backend);
+    config.aligner_sinc = app->config.voice_aligner_sinc;
+    config.aligner_crossfade_frames = app->config.voice_aligner_crossfade_frames;
     if (mode == CORE_APP_VOICE_DEVICE) {
         config.reopen_interval_ms = CORE_APP_VOICE_REOPEN_INTERVAL_MS;
         config.max_reopen_failures = CORE_APP_VOICE_MAX_REOPEN_FAILURES;
@@ -2274,9 +2276,16 @@ static BreakRuntimeError app_voice_start(CoreApp *app) {
     for (char *c = capture; *c != '\0'; ++c) {
         if (*c == ' ' || *c == '\t' || *c == '\n' || *c == '\r') *c = '_';
     }
-    return app_trace(app,
+    BreakRuntimeError traced = app_trace(app,
         "COREAPPTRACE version=1 event=voice mode=%s result=ready frames=%u capture=%s\n",
         app_voice_mode_name(mode), CORE_APP_VOICE_FRAME_FRAMES, capture);
+    if (traced == BREAK_RUNTIME_OK &&
+        (app->config.voice_aligner_sinc || app->config.voice_aligner_crossfade_frames > 0u)) {
+        traced = app_trace(app, "COREAPPTRACE version=1 event=voice_aligner sinc=%d crossfade=%u\n",
+                           core_app_voice_aligner_sinc(lane->voice) ? 1 : 0,
+                           core_app_voice_aligner_crossfade_frames(lane->voice));
+    }
+    return traced;
 }
 
 static const CoreAppNetworkHooks *app_network(const CoreApp *app);
