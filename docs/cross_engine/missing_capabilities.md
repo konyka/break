@@ -577,4 +577,19 @@
 
 Windows 在最终 `c4c0d966` 上取得完整 `test_scene_serial` **122/122**，以及 `test_runtime_io`、`test_runtime_reload`、`test_core_app_diagnostics` 各 **1/1**。
 
-远端结果待推送后核验，不预写 run-id 或通过结论。以下事项仍未解决：共享 `test_tmp` 截断整改、qemu-user 下 fork 后创建线程的挂起，以及无关 Windows 平台/GPU 问题。
+远端验收结果见下节。以下事项仍未解决：共享 `test_tmp` 截断整改、qemu-user 下 fork 后创建线程的挂起，以及无关 Windows 平台/GPU 问题。
+
+
+### Scene 临时路径远端验收收据（`cb38913d`，2026-11-23）
+
+以下结果属于 `cb38913d2a353193b3fd52a8b265570b80dba941`，不是本收据提交之后新触发工作流的结果。
+
+- **主 CI**：[run 45117520898](https://github.com/konyka/break/actions/runs/45117520898) 共 27 个作业，**24 success、3 conditional skipped、0 failure**。
+- **arm64**：job `137503639503` 的 QEMU 选择套件 **276/276**。scene 修复不在该选择中，本结果不覆盖 scene 修复。
+- **Windows D3D12**：[run 45117520942](https://github.com/konyka/break/actions/runs/45117520942) 成功。
+- **Proton**：[run 45119309958](https://github.com/konyka/break/actions/runs/45119309958) 成功；artifact 上游 run-id=`45117520942`，artifact ID `14792364601`。`device_contract=77`、`pipeline_contract=77`，仅表示兼容通道，不是 GPU 或原生 D3D12 通过。
+- **QUIC**：未触发，不声称测试通过。
+
+共享 `test_tmp` 截断整改、qemu-user 下 fork 后创建线程的挂起，以及无关 Windows 平台/GPU 问题仍未解决。
+
+本收据提交还会触发新的工作流，待实际核验，不预写其结果或 run-id。
