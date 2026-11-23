@@ -254,23 +254,39 @@ oom:
     return BREAK_REPLICATION_REASSEMBLY_OUT_OF_MEMORY;
 }
 
+static bool validate_reassembly_fragment(
+    uint64_t expected_base_id, const BreakReplicationFragment *fragment,
+    BreakReplicationReassemblyResult *error)
+{
+    if (!fragment || !fragment->data || !fragment->size ||
+        !fragment->fragment_count || fragment->fragment_count > FRAGMENT_MAX_COUNT ||
+        fragment->fragment_index >= fragment->fragment_count ||
+        fragment->size > BREAK_NET_MAX_PAYLOAD_SIZE) {
+        *error = BREAK_REPLICATION_REASSEMBLY_INVALID;
+        return false;
+    }
+    if (fragment->base_id != expected_base_id) {
+        *error = BREAK_REPLICATION_REASSEMBLY_BASE_MISMATCH;
+        return false;
+    }
+    if (checksum_bytes(fragment->data, fragment->size) != fragment->checksum) {
+        *error = BREAK_REPLICATION_REASSEMBLY_CHECKSUM_MISMATCH;
+        return false;
+    }
+    return true;
+}
+
 BreakReplicationReassemblyResult break_replication_reassembler_push(
     BreakReplicationReassembler *reassembler, const BreakReplicationFragment *fragment,
     uint8_t **payload, size_t *payload_size)
 {
+    BreakReplicationReassemblyResult validation;
     BreakReplicationFragment *copy;
     if (payload) *payload = NULL;
     if (payload_size) *payload_size = 0u;
-    if (!reassembler || !fragment || !fragment->data || !fragment->size ||
-        !fragment->fragment_count || fragment->fragment_count > FRAGMENT_MAX_COUNT ||
-        fragment->fragment_index >= fragment->fragment_count)
-        return BREAK_REPLICATION_REASSEMBLY_INVALID;
-    if (fragment->size > BREAK_NET_MAX_PAYLOAD_SIZE)
-        return BREAK_REPLICATION_REASSEMBLY_INVALID;
-    if (fragment->base_id != reassembler->expected_base_id)
-        return BREAK_REPLICATION_REASSEMBLY_BASE_MISMATCH;
-    if (checksum_bytes(fragment->data, fragment->size) != fragment->checksum)
-        return BREAK_REPLICATION_REASSEMBLY_CHECKSUM_MISMATCH;
+    if (!reassembler) return BREAK_REPLICATION_REASSEMBLY_INVALID;
+    if (!validate_reassembly_fragment(reassembler->expected_base_id, fragment, &validation))
+        return validation;
     if (!reassembler->fragments || fragment->delta_id > reassembler->delta_id) {
         return start_stream(reassembler, fragment, payload, payload_size);
     }
@@ -360,4 +376,119 @@ void break_replication_reassembler_reset(BreakReplicationReassembler *reassemble
         reassembler->highest_delta_id = 0u;
         reassembler->highest_valid = false;
     }
+}
+
+typedef struct BreakReplicationReassemblyPoolSlot {
+    BreakReplicationReassembler reassembler;
+    uint64_t delta_id;
+    bool active;
+} BreakReplicationReassemblyPoolSlot;
+
+struct BreakReplicationReassemblyPool {
+    BreakReplicationReassemblyPoolSlot *slots;
+    size_t stream_capacity;
+    size_t max_pending_bytes;
+    uint64_t expected_base_id;
+};
+
+BreakReplicationReassemblyPool *break_replication_reassembly_pool_create(
+    uint64_t expected_base_id, size_t stream_capacity, size_t max_pending_bytes)
+{
+    BreakReplicationReassemblyPool *pool;
+    size_t i;
+    if (!stream_capacity || stream_capacity > BREAK_REPLICATION_REASSEMBLY_POOL_MAX_STREAMS ||
+        !max_pending_bytes || max_pending_bytes > BREAK_REPLICATION_MAX_REASSEMBLY_SIZE)
+        return NULL;
+    pool = (BreakReplicationReassemblyPool *)calloc(1u, sizeof(*pool));
+    if (!pool) return NULL;
+    pool->slots = (BreakReplicationReassemblyPoolSlot *)calloc(
+        stream_capacity, sizeof(*pool->slots));
+    if (!pool->slots) {
+        free(pool);
+        return NULL;
+    }
+    pool->stream_capacity = stream_capacity;
+    pool->max_pending_bytes = max_pending_bytes;
+    pool->expected_base_id = expected_base_id;
+    for (i = 0u; i < stream_capacity; ++i)
+        pool->slots[i].reassembler.expected_base_id = expected_base_id;
+    return pool;
+}
+
+void break_replication_reassembly_pool_destroy(BreakReplicationReassemblyPool *pool)
+{
+    size_t i;
+    if (!pool) return;
+    for (i = 0u; i < pool->stream_capacity; ++i)
+        clear_reassembly(&pool->slots[i].reassembler);
+    free(pool->slots);
+    free(pool);
+}
+
+BreakReplicationReassemblyResult break_replication_reassembly_pool_push_at(
+    BreakReplicationReassemblyPool *pool, const BreakReplicationFragment *fragment,
+    uint64_t now, uint64_t *completed_delta_id,
+    uint8_t **payload, size_t *payload_size)
+{
+    BreakReplicationReassemblyPoolSlot *slot = NULL;
+    BreakReplicationReassemblyPoolSlot *empty = NULL;
+    BreakReplicationReassemblyResult validation;
+    BreakReplicationReassemblyResult result;
+    size_t i;
+    bool starting = false;
+    if (completed_delta_id) *completed_delta_id = 0u;
+    if (payload) *payload = NULL;
+    if (payload_size) *payload_size = 0u;
+    if (!pool) return BREAK_REPLICATION_REASSEMBLY_INVALID;
+    if (!validate_reassembly_fragment(pool->expected_base_id, fragment, &validation))
+        return validation;
+    for (i = 0u; i < pool->stream_capacity; ++i) {
+        if (pool->slots[i].active && pool->slots[i].delta_id == fragment->delta_id) {
+            slot = &pool->slots[i];
+            break;
+        }
+        if (!pool->slots[i].active && !empty) empty = &pool->slots[i];
+    }
+    if (!slot) {
+        if (!empty) return BREAK_REPLICATION_REASSEMBLY_OVER_LIMIT;
+        slot = empty;
+        break_replication_reassembler_reset(&slot->reassembler);
+        slot->delta_id = fragment->delta_id;
+        slot->active = true;
+        starting = true;
+    }
+    result = break_replication_reassembler_push_at(
+        &slot->reassembler, fragment, now, payload, payload_size);
+    if (result == BREAK_REPLICATION_REASSEMBLY_COMPLETE) {
+        if (completed_delta_id) *completed_delta_id = slot->delta_id;
+        slot->active = false;
+    } else if (starting && result != BREAK_REPLICATION_REASSEMBLY_INCOMPLETE) {
+        slot->active = false;
+    }
+    return result;
+}
+
+size_t break_replication_reassembly_pool_pending_streams(
+    const BreakReplicationReassemblyPool *pool)
+{
+    size_t count = 0u;
+    size_t i;
+    if (!pool) return 0u;
+    for (i = 0u; i < pool->stream_capacity; ++i) {
+        if (pool->slots[i].active) count++;
+    }
+    return count;
+}
+
+size_t break_replication_reassembly_pool_pending_bytes(
+    const BreakReplicationReassemblyPool *pool)
+{
+    size_t total = 0u;
+    size_t i;
+    if (!pool) return 0u;
+    for (i = 0u; i < pool->stream_capacity; ++i) {
+        if (pool->slots[i].active)
+            total += break_replication_reassembler_pending_bytes(&pool->slots[i].reassembler);
+    }
+    return total;
 }

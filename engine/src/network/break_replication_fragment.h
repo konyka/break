@@ -81,6 +81,20 @@ size_t break_replication_reassembler_pending_bytes(
 void break_replication_reassembly_free(void *payload);
 void break_replication_reassembler_reset(BreakReplicationReassembler *reassembler);
 
+#define BREAK_REPLICATION_REASSEMBLY_POOL_MAX_STREAMS 64u
+typedef struct BreakReplicationReassemblyPool BreakReplicationReassemblyPool;
+BreakReplicationReassemblyPool *break_replication_reassembly_pool_create(
+    uint64_t expected_base_id, size_t stream_capacity, size_t max_pending_bytes);
+void break_replication_reassembly_pool_destroy(BreakReplicationReassemblyPool *pool);
+BreakReplicationReassemblyResult break_replication_reassembly_pool_push_at(
+    BreakReplicationReassemblyPool *pool, const BreakReplicationFragment *fragment,
+    uint64_t now, uint64_t *completed_delta_id,
+    uint8_t **payload, size_t *payload_size);
+size_t break_replication_reassembly_pool_pending_streams(
+    const BreakReplicationReassemblyPool *pool);
+size_t break_replication_reassembly_pool_pending_bytes(
+    const BreakReplicationReassemblyPool *pool);
+
 #ifdef __cplusplus
 }
 #endif
