@@ -13488,3 +13488,12 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **根因**：该测试串行执行五次嵌套 configure + build + CTest，且与 `test_core_app_contract_compat` 在 `--parallel 4` 下并行。最近 11 次 CI 的 macOS 耗时为 342–600 s，其中 533–570 s 的运行占多数，600 s 上限没有余量；不是代码回归，本地 Linux 单独运行 148 s。
 - **修改**：只把该测试的 CTest `TIMEOUT` 由 600 改为 1200，并在 `engine/CMakeLists.txt` 注释耗时依据；测试内容、嵌套超时（compat 内 180 s）与 job 的 `timeout-minutes: 45` 不变。之前把 `67379fba` 的失败记为“非复现”，现在有了 job 日志，应归为同一超时原因。
 - **验证**：本地配置后 `CTestTestfile.cmake` 中该测试为 `TIMEOUT "1200"`，单独运行通过（147.91 s）。远端 macOS 耗时与结果待推送后核验。
+
+## 复制分片重组超时与驱逐（2026-11-23）
+
+- **交付**：`break_replication_reassembler_push_at`、`_expire`、`_pending_bytes`，为长期列为未实现的 fragment timeout/eviction 提供调用者时钟驱动的原语；未完成 stream 不再只能等更新的 delta 才释放（负载至多 16 MiB，另有至多 16 MiB 的分片元数据）。计划见 `docs/superpowers/plans/2026-11-23-replication-fragment-expiry.md`，契约补充在 `ecs_snapshot_replication_aoi.md`、`runtime_asset_streaming.md`、`runtime_hot_reload.md`。
+- **TDD**：先加 2 个用例，编译因缺少函数失败（RED）。实现后 `test_break_replication_fragment` **15/15**（评审后加入第 3 个用例，并在复审后补充取代未计时 stream 的断言）：未到期不驱逐、重复分片刷新活动时间、时钟回退不驱逐、到期驱逐并清零 pending、驱逐后更旧 delta 为 CONFLICT 而同一 delta 重新开始、更新 delta 可完成、`max_idle=0` 立即驱逐；`push_at` 与 `push` 在乱序加重复分片下结果、负载与 pending 字节逐位一致；CHECKSUM_MISMATCH、CONFLICT、BASE_MISMATCH 三种被拒分片不刷新计时；普通 `push` 开始的 stream 不计时、不被驱逐，之后同一 stream 的 `push_at` 也不开始计时，而更新 delta 经 `push_at` 取代未计时 stream 后开始计时。首版断言把被驱逐 delta 的迟到分片写成 CONFLICT，与既有 `reassembler_repeated_fragment_after_complete_starts_new_state` 语义（high-water 只拒绝更旧 delta）矛盾，已按既有语义修正契约。
+- **评审修正**：评审指出混用 `push` 与 `push_at` 时，上一个 stream 遗留的时间戳会让 `expire` 立即驱逐刚由普通 `push` 开始的新 stream，并指出“被拒分片不刷新计时”没有测试。已增加“未计时”标记（`clear_reassembly` 清除，只有 `push_at` 开始或已计时的 stream 才设置），并补测试。
+- **变异**：严格大于比较、重复分片不刷新、无符号回绕计算空闲、驱逐时同时清 high-water、不记录时间戳、任何结果都刷新计时、`expire` 忽略未计时标记、`push_at` 接管未计时 stream、清理时不复位标记、从不置位标记、取代未计时 stream 时不计时十一项均判红。`pending_bytes` 去掉 stream 检查的变异不判红，因为清理后 `total_size` 本就为 0，二者等价，已改为更简单的实现。
+- **边界**：只提供原语；周期性调用 `expire` 的调度器、session/网络接线与按多个 delta 并发重组仍未实现。
+- **验证**：评审修正后的最终代码上，本地 Vulkan 全量 **462/462**（4 个既有条件 skip，不计为执行通过）；OpenGL、`ENGINE_USE_ASAN=ON`、`ENGINE_USE_TSAN=ON` 三棵树中 replication/fragment/online_aspect 相关 6 项均 6/6。修正前另跑过 OpenGL 全量 453/453。远端结果待推送后核验。

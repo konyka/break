@@ -59,6 +59,25 @@ void break_replication_reassembler_destroy(BreakReplicationReassembler *reassemb
 BreakReplicationReassemblyResult break_replication_reassembler_push(
     BreakReplicationReassembler *reassembler, const BreakReplicationFragment *fragment,
     uint8_t **payload, size_t *payload_size);
+/* push with the caller's monotonic time (any unit): an accepted fragment,
+ * including an identical duplicate, refreshes the pending stream's activity.
+ * Rejected fragments never do. Results match push. A stream started by plain
+ * push stays untimed (expire leaves it alone) until push_at starts a new one;
+ * plain push on a timed stream accepts fragments without refreshing it. */
+BreakReplicationReassemblyResult break_replication_reassembler_push_at(
+    BreakReplicationReassembler *reassembler, const BreakReplicationFragment *fragment,
+    uint64_t now, uint8_t **payload, size_t *payload_size);
+/* Drops a pending incomplete stream idle for at least max_idle (a time
+ * before the last activity counts as no idle time) and returns true. The
+ * high-water stays: older deltas remain CONFLICT, and a late fragment of the
+ * dropped delta starts it over as after a completion. False for NULL, when
+ * nothing is pending, or for an untimed stream. */
+bool break_replication_reassembler_expire(BreakReplicationReassembler *reassembler,
+                                          uint64_t now, uint64_t max_idle);
+/* Payload bytes held by the pending stream, excluding the per-fragment
+ * bookkeeping; 0 for NULL or none. */
+size_t break_replication_reassembler_pending_bytes(
+    const BreakReplicationReassembler *reassembler);
 void break_replication_reassembly_free(void *payload);
 void break_replication_reassembler_reset(BreakReplicationReassembler *reassembler);
 

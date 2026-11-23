@@ -32,6 +32,8 @@ struct BreakReplicationReassembler {
     uint8_t *received;
     uint64_t highest_delta_id;
     bool highest_valid;
+    uint64_t last_activity;
+    bool timed;
 };
 
 static uint32_t checksum_bytes(const uint8_t *data, size_t size)
@@ -158,6 +160,7 @@ static void clear_reassembly(BreakReplicationReassembler *reassembler)
     reassembler->fragment_count = 0u;
     reassembler->received_count = 0u;
     reassembler->total_size = 0u;
+    reassembler->timed = false;
 }
 
 void break_replication_reassembler_destroy(BreakReplicationReassembler *reassembler)
@@ -308,6 +311,41 @@ BreakReplicationReassemblyResult break_replication_reassembler_push(
     if (reassembler->received_count != reassembler->fragment_count)
         return BREAK_REPLICATION_REASSEMBLY_INCOMPLETE;
     return assemble_if_complete(reassembler, payload, payload_size);
+}
+
+BreakReplicationReassemblyResult break_replication_reassembler_push_at(
+    BreakReplicationReassembler *reassembler, const BreakReplicationFragment *fragment,
+    uint64_t now, uint8_t **payload, size_t *payload_size)
+{
+    const uint64_t delta_before = reassembler ? reassembler->delta_id : 0u;
+    const bool pending_before = reassembler && reassembler->fragments;
+    const BreakReplicationReassemblyResult result =
+        break_replication_reassembler_push(reassembler, fragment, payload, payload_size);
+    if (reassembler && reassembler->fragments &&
+        (!pending_before || reassembler->delta_id != delta_before || reassembler->timed) &&
+        (result == BREAK_REPLICATION_REASSEMBLY_INCOMPLETE ||
+         result == BREAK_REPLICATION_REASSEMBLY_DUPLICATE)) {
+        reassembler->last_activity = now;
+        reassembler->timed = true;
+    }
+    return result;
+}
+
+bool break_replication_reassembler_expire(BreakReplicationReassembler *reassembler,
+                                          uint64_t now, uint64_t max_idle)
+{
+    uint64_t idle;
+    if (!reassembler || !reassembler->fragments || !reassembler->timed) return false;
+    idle = now > reassembler->last_activity ? now - reassembler->last_activity : 0u;
+    if (idle < max_idle) return false;
+    clear_reassembly(reassembler);
+    return true;
+}
+
+size_t break_replication_reassembler_pending_bytes(
+    const BreakReplicationReassembler *reassembler)
+{
+    return reassembler ? reassembler->total_size : 0u;
 }
 
 void break_replication_reassembly_free(void *payload)

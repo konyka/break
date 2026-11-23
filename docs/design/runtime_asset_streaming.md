@@ -399,3 +399,8 @@ arm64 lane 新增 `test_vfs`（36 例）、`test_async_loader`（17 例）和 `t
 回归结果：Vulkan 452 项、OpenGL 450 项均零失败（各有 4 项平台条件跳过）；ASan+UBSan 非图形 437 项零失败，fuzz 14/14；资产相关 TSan 集成测试 4/4。独立静态审查覆盖全部 9 个 `async_finalize` 调用点，无剩余 Critical、Important 或 Minor 问题。
 
 远端提交 `461200d5dda66e36acfa068ea68addbbb5d1175b` 的 CI run 45006483635、windows-d3d12 run 45006483424 与 proton-d3d12 run 45007616337 均成功。CI 的 27 个矩阵作业无失败项；TSan 作业 137159388456 在移除 `test_async_loader` 排除后成功。
+
+
+## 补充（2026-11-23）：分片重组超时与驱逐
+
+`break_replication_reassembler` 新增调用者时钟驱动的超时原语：`break_replication_reassembler_push_at(r, fragment, now, …)` 在接受分片（含完全相同的重复分片）时记录未完成 stream 的最近活动时间，结果与 `push` 一致；`break_replication_reassembler_expire(r, now, max_idle)` 在空闲达到 `max_idle` 时丢弃未完成 stream 并返回 true（`now` 早于记录时间视为 0 空闲，`max_idle=0` 立即驱逐）；`break_replication_reassembler_pending_bytes` 报告其占用的负载字节（不含每分片元数据，后者另有至多 16 MiB 的预算）。被拒绝的分片（CONFLICT、CHECKSUM_MISMATCH、BASE_MISMATCH、失败的 supersession 等）不刷新活动时间，因此无效分片无法让 stream 长期存活；完全相同的重复分片会刷新，这是有意的取舍：FNV-1a 不是认证，能重放已接受分片的一方本来也能伪造新分片，内存上限不变。由普通 `push` 开始的 stream 为“未计时”，`expire` 不驱逐它，之后同一 stream 的 `push_at` 也不会开始计时；要使用驱逐，应始终用 `push_at` 喂入分片。high-water 保留：更旧 delta 仍为 CONFLICT，被驱逐 delta 的迟到分片与完成后一样重新开始。模块不读墙钟、不新增结果枚举值。上文“fragment timeout/eviction 未实现”中的**驱逐原语**由此交付；周期性调用 `expire` 的调度器以及与 session/网络的接线仍未实现。

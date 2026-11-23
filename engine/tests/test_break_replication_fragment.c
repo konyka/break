@@ -438,6 +438,199 @@ TEST(reassembler_failed_supersession_preserves_old_stream)
     break_replication_fragments_free(old_fragments, old_count);
 }
 
+TEST(reassembler_expires_an_idle_incomplete_stream)
+{
+    const uint8_t old_payload[] = {'a', 'b', 'c', 'd', 'e', 'f'};
+    const uint8_t new_payload[] = {'n', 'e', 'w', '!'};
+    BreakReplicationFragment *old_fragments = NULL;
+    BreakReplicationFragment *new_fragments = NULL;
+    size_t old_count = 0u;
+    size_t new_count = 0u;
+    BreakReplicationReassembler *reassembler = break_replication_reassembler_create(1u);
+    uint8_t *assembled = NULL;
+    size_t assembled_size = 0u;
+
+    ASSERT_NOT_NULL(reassembler);
+    ASSERT_EQ(break_replication_fragment_payload(20u, 1u, old_payload,
+        sizeof(old_payload), 2u, &old_fragments, &old_count), BREAK_REPLICATION_FRAGMENT_OK);
+    ASSERT_EQ(old_count, 3u);
+    ASSERT_EQ(break_replication_fragment_payload(21u, 1u, new_payload,
+        sizeof(new_payload), 2u, &new_fragments, &new_count), BREAK_REPLICATION_FRAGMENT_OK);
+    ASSERT_FALSE(break_replication_reassembler_expire(NULL, 100u, 10u));
+    ASSERT_EQ(break_replication_reassembler_pending_bytes(NULL), 0u);
+    ASSERT_FALSE(break_replication_reassembler_expire(reassembler, 1000u, 10u));
+    ASSERT_EQ(break_replication_reassembler_pending_bytes(reassembler), 0u);
+
+    ASSERT_EQ(break_replication_reassembler_push_at(reassembler, &old_fragments[0], 100u,
+                                                    &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_INCOMPLETE);
+    ASSERT_EQ(break_replication_reassembler_pending_bytes(reassembler), 2u);
+    ASSERT_EQ(break_replication_reassembler_push_at(reassembler, &old_fragments[1], 105u,
+                                                    &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_INCOMPLETE);
+    ASSERT_EQ(break_replication_reassembler_pending_bytes(reassembler), 4u);
+    /* idle is measured from the last accepted fragment, and a duplicate counts */
+    ASSERT_FALSE(break_replication_reassembler_expire(reassembler, 114u, 10u));
+    ASSERT_EQ(break_replication_reassembler_push_at(reassembler, &old_fragments[1], 112u,
+                                                    &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_DUPLICATE);
+    ASSERT_FALSE(break_replication_reassembler_expire(reassembler, 121u, 10u));
+    /* a clock that went backwards is no idle time */
+    ASSERT_FALSE(break_replication_reassembler_expire(reassembler, 50u, 10u));
+    ASSERT_EQ(break_replication_reassembler_pending_bytes(reassembler), 4u);
+    ASSERT_TRUE(break_replication_reassembler_expire(reassembler, 122u, 10u));
+    ASSERT_EQ(break_replication_reassembler_pending_bytes(reassembler), 0u);
+    ASSERT_FALSE(break_replication_reassembler_expire(reassembler, 500u, 10u));
+    {
+        BreakReplicationFragment older = old_fragments[0];
+        older.delta_id = 19u;
+        ASSERT_EQ(break_replication_reassembler_push_at(reassembler, &older, 125u,
+                                                        &assembled, &assembled_size),
+                  BREAK_REPLICATION_REASSEMBLY_CONFLICT);
+    }
+
+    /* a late fragment of the expired delta starts it over, as after a
+     * completion; an older delta stays behind the high-water */
+    ASSERT_EQ(break_replication_reassembler_push_at(reassembler, &old_fragments[2], 130u,
+                                                    &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_INCOMPLETE);
+    ASSERT_EQ(break_replication_reassembler_pending_bytes(reassembler), 2u);
+    ASSERT_EQ(break_replication_reassembler_push_at(reassembler, &new_fragments[1], 131u,
+                                                    &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_INCOMPLETE);
+    ASSERT_EQ(break_replication_reassembler_push_at(reassembler, &new_fragments[0], 132u,
+                                                    &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_COMPLETE);
+    ASSERT_EQ(assembled_size, sizeof(new_payload));
+    ASSERT_TRUE(memcmp(assembled, new_payload, sizeof(new_payload)) == 0);
+    break_replication_reassembly_free(assembled);
+    assembled = NULL;
+    /* nothing is pending after completion, so nothing expires */
+    ASSERT_EQ(break_replication_reassembler_pending_bytes(reassembler), 0u);
+    ASSERT_FALSE(break_replication_reassembler_expire(reassembler, 10000u, 1u));
+    /* a zero idle limit expires a pending stream at once */
+    break_replication_reassembler_reset(reassembler);
+    ASSERT_EQ(break_replication_reassembler_push_at(reassembler, &old_fragments[0], 200u,
+                                                    &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_INCOMPLETE);
+    ASSERT_TRUE(break_replication_reassembler_expire(reassembler, 200u, 0u));
+    break_replication_reassembler_destroy(reassembler);
+    break_replication_fragments_free(new_fragments, new_count);
+    break_replication_fragments_free(old_fragments, old_count);
+}
+
+TEST(timed_push_matches_untimed_push)
+{
+    const uint8_t payload[] = "the quick brown fox";
+    BreakReplicationFragment *fragments = NULL;
+    size_t count = 0u;
+    BreakReplicationReassembler *timed = break_replication_reassembler_create(4u);
+    BreakReplicationReassembler *untimed = break_replication_reassembler_create(4u);
+    ASSERT_NOT_NULL(timed);
+    ASSERT_NOT_NULL(untimed);
+    ASSERT_EQ(break_replication_fragment_payload(9u, 4u, payload, sizeof(payload) - 1u, 4u,
+                                                 &fragments, &count),
+              BREAK_REPLICATION_FRAGMENT_OK);
+    const size_t order[] = {3u, 0u, 3u, 4u, 1u, 2u};
+    for (size_t i = 0u; i < sizeof(order) / sizeof(order[0]); ++i) {
+        uint8_t *a = NULL, *b = NULL;
+        size_t a_size = 0u, b_size = 0u;
+        const BreakReplicationReassemblyResult ra =
+            break_replication_reassembler_push_at(timed, &fragments[order[i]], (uint64_t)i,
+                                                  &a, &a_size);
+        const BreakReplicationReassemblyResult rb =
+            break_replication_reassembler_push(untimed, &fragments[order[i]], &b, &b_size);
+        ASSERT_EQ(ra, rb);
+        ASSERT_EQ(a_size, b_size);
+        ASSERT_EQ(break_replication_reassembler_pending_bytes(timed),
+                  break_replication_reassembler_pending_bytes(untimed));
+        if (a || b) {
+            ASSERT_NOT_NULL(a);
+            ASSERT_NOT_NULL(b);
+            ASSERT_TRUE(memcmp(a, b, a_size) == 0);
+        }
+        break_replication_reassembly_free(a);
+        break_replication_reassembly_free(b);
+    }
+    break_replication_reassembler_destroy(timed);
+    break_replication_reassembler_destroy(untimed);
+    break_replication_fragments_free(fragments, count);
+}
+
+TEST(rejected_fragments_do_not_refresh_and_plain_push_stays_untimed)
+{
+    const uint8_t payload[] = {'r', 'e', 'j', 'e', 'c', 't'};
+    BreakReplicationFragment *fragments = NULL;
+    size_t count = 0u;
+    BreakReplicationReassembler *reassembler = break_replication_reassembler_create(2u);
+    uint8_t *assembled = NULL;
+    size_t assembled_size = 0u;
+    uint8_t other[2] = {'x', 'y'};
+
+    ASSERT_NOT_NULL(reassembler);
+    ASSERT_EQ(break_replication_fragment_payload(30u, 2u, payload, sizeof(payload), 2u,
+                                                 &fragments, &count),
+              BREAK_REPLICATION_FRAGMENT_OK);
+    ASSERT_EQ(break_replication_reassembler_push_at(reassembler, &fragments[0], 100u,
+                                                    &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_INCOMPLETE);
+    {
+        BreakReplicationFragment conflict = fragments[0];
+        conflict.data = other;
+        conflict.size = sizeof(other);
+        conflict.checksum = fragments[1].checksum;
+        ASSERT_EQ(break_replication_reassembler_push_at(reassembler, &conflict, 150u,
+                                                        &assembled, &assembled_size),
+                  BREAK_REPLICATION_REASSEMBLY_CHECKSUM_MISMATCH);
+        BreakReplicationFragment changed = fragments[0];
+        changed.data = other;
+        changed.size = sizeof(other);
+        changed.checksum = 0u;
+        {
+            uint32_t hash = 2166136261u;
+            for (size_t i = 0u; i < sizeof(other); ++i) {
+                hash ^= other[i];
+                hash *= 16777619u;
+            }
+            changed.checksum = hash;
+        }
+        ASSERT_EQ(break_replication_reassembler_push_at(reassembler, &changed, 160u,
+                                                        &assembled, &assembled_size),
+                  BREAK_REPLICATION_REASSEMBLY_CONFLICT);
+        BreakReplicationFragment wrong_base = fragments[1];
+        wrong_base.base_id = 3u;
+        ASSERT_EQ(break_replication_reassembler_push_at(reassembler, &wrong_base, 170u,
+                                                        &assembled, &assembled_size),
+                  BREAK_REPLICATION_REASSEMBLY_BASE_MISMATCH);
+    }
+    /* only the accepted fragment at 100 counts */
+    ASSERT_TRUE(break_replication_reassembler_expire(reassembler, 110u, 10u));
+
+    /* a stream started by plain push is untimed and is never expired */
+    ASSERT_EQ(break_replication_reassembler_push(reassembler, &fragments[0],
+                                                 &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_INCOMPLETE);
+    ASSERT_FALSE(break_replication_reassembler_expire(reassembler, 100000u, 1u));
+    /* nor does a timed push of the same stream start its clock */
+    ASSERT_EQ(break_replication_reassembler_push_at(reassembler, &fragments[0], 200u,
+                                                    &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_DUPLICATE);
+    ASSERT_FALSE(break_replication_reassembler_expire(reassembler, 100000u, 1u));
+    ASSERT_EQ(break_replication_reassembler_pending_bytes(reassembler), 2u);
+    /* a newer delta through push_at supersedes the untimed stream and is timed */
+    {
+        BreakReplicationFragment newer = fragments[0];
+        newer.delta_id = 31u;
+        ASSERT_EQ(break_replication_reassembler_push_at(reassembler, &newer, 300u,
+                                                        &assembled, &assembled_size),
+                  BREAK_REPLICATION_REASSEMBLY_INCOMPLETE);
+    }
+    ASSERT_FALSE(break_replication_reassembler_expire(reassembler, 309u, 10u));
+    ASSERT_TRUE(break_replication_reassembler_expire(reassembler, 310u, 10u));
+    break_replication_reassembler_destroy(reassembler);
+    break_replication_fragments_free(fragments, count);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(fragment_round_trip_reordered_and_checksum);
     RUN_TEST(fragment_rejects_duplicates_conflicts_loss_and_base_mismatch);
@@ -451,4 +644,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(reassembler_newer_delta_supersedes_incomplete_and_rejects_old);
     RUN_TEST(reassembler_completed_high_water_rejects_older_restart);
     RUN_TEST(reassembler_failed_supersession_preserves_old_stream);
+    RUN_TEST(reassembler_expires_an_idle_incomplete_stream);
+    RUN_TEST(timed_push_matches_untimed_push);
+    RUN_TEST(rejected_fragments_do_not_refresh_and_plain_push_stays_untimed);
 TEST_MAIN_END()

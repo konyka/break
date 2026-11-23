@@ -667,3 +667,7 @@ core_app 新增 `--voice-aligner-sinc` 与 `--voice-aligner-crossfade`，对齐�
 ## 第 10 节（音频）补充（2026-11-23）：语音处理链 bypass 命令行开关
 
 core_app 新增 `--voice-bypass`，可从命令行关闭语音处理链的任意阶段并写入 trace。语音处理链剩余：多声道与真实声学验证。
+
+## 第 17 节（大世界/流式）补充（2026-11-23）：分片重组超时与驱逐原语
+
+复制分片重组器可按调用者时钟驱逐空闲的未完成 stream。剩余：周期调度器、session/网络接线、多 delta 并发重组。

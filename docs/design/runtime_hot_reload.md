@@ -320,3 +320,8 @@ request handle 是 stream/reload instance 内唯一的 opaque `u64` token，实�
 arm64 lane 新增 `test_hotreload`（7 例），与 VFS、异步加载和 filewatch backend 共同纳入五十六项精选测试。原生与交叉 focused 均为 4/4、17/7/36/26；`test_(vfs|async_loader|filewatch_backend|hotreload)$` 使用局部结尾锚点，不纳入未来派生测试。
 
 这些用例验证有界资源读取和热加载校验，使用测试存根，不构成真实 GPU 纹理热替换或渲染效果证据。
+
+
+## 补充（2026-11-23）：分片重组超时与驱逐
+
+`break_replication_reassembler` 新增调用者时钟驱动的超时原语：`break_replication_reassembler_push_at(r, fragment, now, …)` 在接受分片（含完全相同的重复分片）时记录未完成 stream 的最近活动时间，结果与 `push` 一致；`break_replication_reassembler_expire(r, now, max_idle)` 在空闲达到 `max_idle` 时丢弃未完成 stream 并返回 true（`now` 早于记录时间视为 0 空闲，`max_idle=0` 立即驱逐）；`break_replication_reassembler_pending_bytes` 报告其占用的负载字节（不含每分片元数据，后者另有至多 16 MiB 的预算）。被拒绝的分片（CONFLICT、CHECKSUM_MISMATCH、BASE_MISMATCH、失败的 supersession 等）不刷新活动时间，因此无效分片无法让 stream 长期存活；完全相同的重复分片会刷新，这是有意的取舍：FNV-1a 不是认证，能重放已接受分片的一方本来也能伪造新分片，内存上限不变。由普通 `push` 开始的 stream 为“未计时”，`expire` 不驱逐它，之后同一 stream 的 `push_at` 也不会开始计时；要使用驱逐，应始终用 `push_at` 喂入分片。high-water 保留：更旧 delta 仍为 CONFLICT，被驱逐 delta 的迟到分片与完成后一样重新开始。模块不读墙钟、不新增结果枚举值。上文“fragment timeout/eviction 未实现”中的**驱逐原语**由此交付；周期性调用 `expire` 的调度器以及与 session/网络的接线仍未实现。
