@@ -13497,3 +13497,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **变异**：严格大于比较、重复分片不刷新、无符号回绕计算空闲、驱逐时同时清 high-water、不记录时间戳、任何结果都刷新计时、`expire` 忽略未计时标记、`push_at` 接管未计时 stream、清理时不复位标记、从不置位标记、取代未计时 stream 时不计时十一项均判红。`pending_bytes` 去掉 stream 检查的变异不判红，因为清理后 `total_size` 本就为 0，二者等价，已改为更简单的实现。
 - **边界**：只提供原语；周期性调用 `expire` 的调度器、session/网络接线与按多个 delta 并发重组仍未实现。
 - **验证**：评审修正后的最终代码上，本地 Vulkan 全量 **462/462**（4 个既有条件 skip，不计为执行通过）；OpenGL、`ENGINE_USE_ASAN=ON`、`ENGINE_USE_TSAN=ON` 三棵树中 replication/fragment/online_aspect 相关 6 项均 6/6。修正前另跑过 OpenGL 全量 453/453。远端结果待推送后核验。
+
+#### 语音 bypass 开关、macOS 超时与分片驱逐远端收据（2026-11-23）
+
+- `c16476a1`（`feat(core_app): expose voice processor bypass on the command line`）：CI run `45166223978` completed/success，27 个 job 中 24 个 success、3 个按条件 skip（Windows D3D12 GPU lane、Steam Deck 实机基准、Proton 参考 lane），skip 不计为执行通过；windows-d3d12 run `45166223756` success；Proton run `45168644953` success，artifact 上游 run-id=`45166223756`。
+- `299a3337`（`test(core_app): give the nested CTest config contract room on macOS`）：CI run `45167286694` 24 success、3 个同样的条件 skip；`macOS native Metal (Clang)` 中 `test_core_app_ctest_config_contract` 以 **552.63 s** 通过，仍在旧 600 s 上限附近，说明放宽上限是必要的。windows-d3d12 run `45167286084`、QUIC Weak Network run `45167286090` success；Proton run `45169821245` success，上游 run-id=`45167286084`。
+- `64d1c961`（`feat(replication): expire idle fragment reassembly`）：CI run `45171258607` 24 success、3 个同样的条件 skip；windows-d3d12 run `45171259132` success；Proton run `45173437232` success，上游 run-id=`45171259132`。
+- Proton 两项 contract 退出码均为 77，仅表示兼容通道，不是 GPU 或原生 D3D12 通过。
+- 同一提交更正 `docs/design/cell_handoff.md` 分区一节过时的“按负载拆分或合并 cell 尚未实现”：cell 网格不随负载拆分合并，按负载把 cell 分配给服务器已由「按负载分配」提供。本收据提交自身触发的工作流结果不在此预写。
