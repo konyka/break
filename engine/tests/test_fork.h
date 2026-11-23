@@ -10,6 +10,15 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+static inline void test_waitpid_kill_and_reap(pid_t pid, int *status) {
+    kill(pid, SIGKILL);
+    while (waitpid(pid, status, 0) < 0 && errno == EINTR) {
+    }
+    if (status != NULL) {
+        *status = 0;
+    }
+}
+
 /* Bounded waits for fork-based tests. A child stuck under an emulator
  * would otherwise block the parent forever and the whole run would die on
  * an outer timeout without naming the case. On glibc under strict C11,
@@ -21,13 +30,27 @@
  * test_waitpid_deadline returns pid with *status set, 0 when the deadline
  * passed (the child is SIGKILLed and reaped, and *status is zeroed so an
  * "expect a signal" check cannot pass on the kill), or -1 on a waitpid
- * error. Always check the return value before *status. */
+ * error. Errors clear *status; EINTR is retried, while other errors clean
+ * up a positive-PID child unless the error is ECHILD. Always check the
+ * return value before *status. */
 static inline pid_t test_waitpid_deadline(pid_t pid, int *status,
                                           unsigned timeout_ms) {
     const struct timespec step = {0, 10L * 1000L * 1000L};
     unsigned waited_ms = 0;
     for (;;) {
         pid_t r = waitpid(pid, status, WNOHANG);
+        if (r < 0 && errno == EINTR) {
+            continue;
+        }
+        if (r < 0) {
+            if (pid > 0 && errno != ECHILD) {
+                test_waitpid_kill_and_reap(pid, status);
+            }
+            if (status != NULL) {
+                *status = 0;
+            }
+            return -1;
+        }
         if (r != 0) {
             return r;
         }
@@ -37,12 +60,7 @@ static inline pid_t test_waitpid_deadline(pid_t pid, int *status,
         nanosleep(&step, NULL);
         waited_ms += 10u;
     }
-    kill(pid, SIGKILL);
-    while (waitpid(pid, status, 0) < 0 && errno == EINTR) {
-    }
-    if (status != NULL) {
-        *status = 0;
-    }
+    test_waitpid_kill_and_reap(pid, status);
     printf("CHILD TIMEOUT after %u ms (killed) ", timeout_ms);
     fflush(stdout);
     return 0;
