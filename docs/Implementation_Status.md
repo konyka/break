@@ -13322,4 +13322,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **接口与清理契约**：`test_waitpid_deadline(pid_t pid, int *status, unsigned timeout_ms)` 的签名及返回语义不变，正常状态返回 `pid`、超时返回 0、waitpid 错误返回 -1。EINTR 轮询错误现在重试；其他错误清零非 NULL 的 `*status`，仅在 `pid > 0` 且错误非 ECHILD 时 kill/reap。超时和符合条件的错误路径共用私有清理 helper，公开接口没有新增。
 - **确定性 RED/GREEN**：五个注入用例覆盖 EINTR 后正常退出、EINTR 后 50 ms 超时、EIO 后 kill/reap、ECHILD 清状态不发信号、PID 0 清状态不发信号。旧 helper 上实测五个旧用例通过、五个新用例失败；修改后 `test_fork_deadline` **10/10**，`test_fork_deadline`、`test_runtime_io`、`test_runtime_reload`、`test_core_app_diagnostics` 的 focused CTest **4/4**。
 - **回收与防护证据**：fallback 只在真实 `waitpid(..., WNOHANG)` 返回 0、确认子进程存活时发送真实信号；GREEN 的三个相关用例均为 `cleanup=0`，证明 helper 已自行完成回收。ECHILD/PID 0 防护路径的 kill spy 只计数，不转发真实信号，避免向进程组或可能复用的 PID 发信号。
-- **未关闭事项**：完整测试矩阵与远端结果仍在执行，不预写通过计数、跳过数量或运行标识。qemu-user 的 fork 后建线程挂起仍是独立未解决问题；Windows scene 独立问题也仍未解决，本次清理不表示其中任何一项已修复。
+- **未关闭事项**：本地完整矩阵结果见下节；远端待推送后核验，不预写任何远端结果。qemu-user 的 fork 后建线程挂起仍是独立未解决问题；Windows scene 独立问题也仍未解决，本次清理不表示其中任何一项已修复。
+
+
+### 本地完整验证补充（2026-11-23）
+
+- **原生完整套件**：Vulkan **455/455**、OpenGL **454/454**，均 **0 失败**；两套各有 **4 个既有平台条件 skip**，skip 不计为执行通过。
+- **sanitizer 范围**：ASan+UBSan focused **4/4**、TSan focused **4/4**。这些结果仅覆盖四项 focused 测试，不扩展为完整 sanitizer suite 结论。
+- **后续与独立问题**：远端待推送后核验，不预写任何远端结果。qemu-user 的 fork 后建线程挂起和 Windows scene 独立问题仍未解决。

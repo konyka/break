@@ -540,4 +540,11 @@
 
 五个确定性注入覆盖正常退出前的 EINTR、超时前的 EINTR、EIO、ECHILD 和 PID 0。实际 RED 为五个旧用例通过、五个新用例失败，GREEN 为 **10/10**，focused CTest 为 **4/4**。fallback 必须经真实 `waitpid(..., WNOHANG)` 返回 0 确认存活后才发送信号，GREEN 的三个子进程用例均为 `cleanup=0`，所以 fallback 不能替代被测 helper 获得通过。ECHILD/PID 0 用例的 kill spy 仅作记录，不真实发送信号。
 
-以下缺口保持打开：qemu-user 下 fork 后创建线程的挂起尚未解决；Windows scene 独立问题尚未解决；完整测试矩阵与远端结果仍在执行，不能据此预写完成、通过或跳过结论。
+以下缺口保持打开：qemu-user 下 fork 后创建线程的挂起尚未解决；Windows scene 独立问题尚未解决。本地完整矩阵结果见下节；远端待推送后核验，不预写任何远端结果。
+
+
+### 本地完整验证补充（2026-11-23）
+
+本地完整原生套件实测为 Vulkan **455/455**、OpenGL **454/454**，均 **0 失败**，且两套各有 **4 个既有平台条件 skip**；skip 不转换为执行通过。ASan+UBSan focused **4/4**、TSan focused **4/4**，仅表示四项 focused 测试在对应 sanitizer 下通过，不表示完整 sanitizer suite 已执行。
+
+上述本地结果不关闭远端核验、qemu-user 下 fork 后创建线程的挂起或 Windows scene 独立问题；三项仍待各自处理，其中远端待推送后核验。
