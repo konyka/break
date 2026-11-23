@@ -557,3 +557,15 @@
 [Proton 45112518778](https://github.com/konyka/break/actions/runs/45112518778) 成功，artifact 上游 run-id=`45111186576`，artifact ID `14789468602`；`device_contract=77`、`pipeline_contract=77`，仅表示兼容通道，不是 GPU 或原生 D3D12 通过。QUIC 未触发，不声称测试通过。
 
 这些结果不关闭 qemu-user 下 fork 后创建线程的挂起或 Windows scene 独立问题，两者仍未解决。本收据提交还会触发新的工作流，待实际核验，不预写其结果。
+
+
+## Scene 临时路径隔离后的剩余缺口（2026-11-23）
+
+本次仅关闭 `failed_load_keeps_previous_scene` 的局部路径碰撞：Windows 旧 fixture 的 `pa`、`pb` 都为 63 字节且相同，保存 B 覆盖 A，造成第一次加载 A 失败及 **121/122**。提交 `c4c0d966` 将两者改为 512 字节，并在第一次 save 前加入路径相异断言；最终 Windows 完整 `test_scene_serial` **122/122**、Linux focused **4/4**。共享 `test_tmp`、产品代码和场景文件格式没有改动。
+
+以下缺口保持打开：
+
+- 共享 `test_tmp` 的截断整改尚未完成，局部 512 字节缓冲区不构成共享 helper 修复。
+- qemu-user 下 fork 后创建线程的挂起尚未解决。
+- 无关 Windows 平台/GPU 问题尚未解决，不能由本场景用例通过推断其状态。
+- 完整 Vulkan/OpenGL 与 ASan+UBSan/TSan 矩阵、远端结果仍待执行和核验；此处不预写通过结论或运行编号。

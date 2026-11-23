@@ -13343,3 +13343,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **未触发与未解决事项**：QUIC 未触发，不声称测试通过；qemu-user 的 fork 后建线程挂起仍未解决。
 
 本收据提交还会触发新的工作流，待实际核验，不预写其结果。
+
+
+## Scene 临时路径隔离闭环（2026-11-23）
+
+- **RED 根因**：Windows 旧 fixture 的 `pa`、`pb` 在 64 字节缓冲区中均截断为 63 字节，且两者相同。保存 B 因而覆盖 A，第一次加载 A 失败，完整 `test_scene_serial` 当时为 **121/122**。
+- **最小修复与 GREEN**：提交 `c4c0d966` 把两个局部缓冲区改为 512 字节，并在第一次 save 前加入 `ASSERT_TRUE(strcmp(pa, pb) != 0);`，确保碰撞在任何文件 I/O 前被检出。最终提交的 Windows 完整 `test_scene_serial` 为 **122/122**，Linux focused 四项为 **4/4**。
+- **改动边界**：共享 `test_tmp`、产品代码和场景文件格式均未改动。此次只隔离该用例的两条临时路径，不把局部修复解释为共享截断问题已整改。
+- **仍未解决与待验证**：共享 `test_tmp` 截断整改、qemu-user 下 fork 后创建线程的挂起、无关 Windows 平台/GPU 问题仍未解决。完整 Vulkan/OpenGL 与 ASan+UBSan/TSan 矩阵及远端结果待实际执行和核验，不预写通过结论或运行编号。

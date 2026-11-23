@@ -1858,3 +1858,14 @@ Windows 的 `break_crash_install` 仍为 false stub，启用选项会 start 失�
 - QUIC 未触发，不声称测试通过。qemu-user 下 fork 后创建线程的挂起和 Windows scene 独立问题仍未解决。
 
 本收据提交还会触发新的工作流，须待实际核验，不预写其结果。
+
+
+## Scene 临时路径隔离验证补充（2026-11-23）
+
+`failed_load_keeps_previous_scene` 的 Windows 旧 fixture 中，`pa` 和 `pb` 经 64 字节缓冲区截断后的长度均为 63，且字符串相同。随后保存 B 覆盖了 A，导致第一次加载 A 失败；对应完整 `test_scene_serial` 为 **121/122**。
+
+提交 `c4c0d966` 仅将两个局部缓冲区扩至 512 字节，并在第一次 save 及所有后续 I/O 之前加入 `ASSERT_TRUE(strcmp(pa, pb) != 0);`，使路径碰撞在写文件前直接失败。最终提交实测 Windows 完整 `test_scene_serial` **122/122**，Linux focused **4/4**（`test_scene_serial`、`test_runtime_io`、`test_runtime_reload`、`test_core_app_diagnostics`）。
+
+本次未修改共享 `test_tmp`、产品代码或场景文件格式。共享 helper 的截断整改仍未完成；qemu-user 下 fork 后创建线程的挂起，以及无关 Windows 平台/GPU 问题，均不因该 fixture 修复而关闭。
+
+完整 Vulkan/OpenGL 与 ASan+UBSan/TSan 矩阵、远端工作流结果仍待执行和核验，不预先记录通过结论或运行编号。
