@@ -13505,3 +13505,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - `64d1c961`（`feat(replication): expire idle fragment reassembly`）：CI run `45171258607` 24 success、3 个同样的条件 skip；windows-d3d12 run `45171259132` success；Proton run `45173437232` success，上游 run-id=`45171259132`。
 - Proton 两项 contract 退出码均为 77，仅表示兼容通道，不是 GPU 或原生 D3D12 通过。
 - 同一提交更正 `docs/design/cell_handoff.md` 分区一节过时的“按负载拆分或合并 cell 尚未实现”：cell 网格不随负载拆分合并，按负载把 cell 分配给服务器已由「按负载分配」提供。本收据提交自身触发的工作流结果不在此预写。
+
+## 频谱降噪多声道接口（2026-11-23）
+
+- **交付**：`AudioNoiseSuppressorBank`（`engine/src/audio/audio_noise_suppressor.{h,c}`），交织 PCM 的每声道独立频谱降噪，1..8 声道，关闭「频谱降噪」未做项中的多声道。单声道对象与语音处理链不变。计划见 `docs/superpowers/plans/2026-11-23-noise-suppressor-multichannel.md`。
+- **TDD**：先加 3 个用例，编译因缺少类型失败（RED）；实现后 `test_audio_noise_suppressor` **11/11**。1、2、3 声道 bank 的每个声道都与单独处理该声道的单声道实例逐位一致（各声道噪声与音调不同，混淆声道状态或索引会失配）；1/7/128/255/600 帧循环分块与整块一致；3 声道 reset 与新建一致；0、9 声道、NULL 与非法 frame_size 均不写 `*out`；8 声道可创建。
+- **变异**：去交织读取漏加声道偏移、写回索引错误、所有声道共用一个实例、分块起点不乘声道数、reset 只复位首声道、声道上限差一六项均判红。
+- **验证**：本地 Vulkan 全量 **462/462**（4 个既有条件 skip，不计为执行通过）、OpenGL 全量 **453/453**，0 失败；`ENGINE_USE_ASAN=ON` 与 `ENGINE_USE_TSAN=ON` 下 `test_audio_noise_suppressor`、`test_audio_voice_processor` 均通过。评审无 Critical/Important；按其建议修正测试失败路径的泄漏与计划中暂存区的描述，之后在 ASan/TSan 下重跑 `test_audio_noise_suppressor` 11/11。远端结果待推送后核验。

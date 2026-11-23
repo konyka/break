@@ -679,3 +679,7 @@ core_app 新增 `--voice-bypass`，可从命令行关闭语音处理链的任意
 - `64d1c961`（`feat(replication): expire idle fragment reassembly`）：CI run `45171258607` 24 success、3 个同样的条件 skip；windows-d3d12 run `45171259132` success；Proton run `45173437232` success，上游 run-id=`45171259132`。
 - Proton 两项 contract 退出码均为 77，仅表示兼容通道，不是 GPU 或原生 D3D12 通过。
 - 同一提交更正 `docs/design/cell_handoff.md` 分区一节过时的“按负载拆分或合并 cell 尚未实现”：cell 网格不随负载拆分合并，按负载把 cell 分配给服务器已由「按负载分配」提供。本收据提交自身触发的工作流结果不在此预写。
+
+## 第 10 节（音频）补充（2026-11-23）：频谱降噪多声道
+
+`AudioNoiseSuppressorBank` 提供 1..8 声道交织 PCM 的每声道独立降噪。剩余：跨声道共享噪声估计、学习型降噪与真实听感验证。

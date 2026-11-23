@@ -185,3 +185,67 @@ void audio_noise_suppressor_process_i16(AudioNoiseSuppressor *suppressor,
         if (suppressor->filled == suppressor->frame_size) noise_process_block(suppressor);
     }
 }
+
+#define AUDIO_NOISE_SUPPRESSOR_BANK_CHUNK 256u
+
+struct AudioNoiseSuppressorBank {
+    u32 channels;
+    AudioNoiseSuppressor *channel[AUDIO_NOISE_SUPPRESSOR_BANK_MAX_CHANNELS];
+    i16 scratch[AUDIO_NOISE_SUPPRESSOR_BANK_CHUNK];
+};
+
+AudioResult audio_noise_suppressor_bank_create(const AudioNoiseSuppressorConfig *config,
+                                               u32 channels, AudioNoiseSuppressorBank **out) {
+    if (!out || !noise_config_valid(config) || channels == 0u ||
+        channels > AUDIO_NOISE_SUPPRESSOR_BANK_MAX_CHANNELS) {
+        return AUDIO_INVALID;
+    }
+    AudioNoiseSuppressorBank *bank = (AudioNoiseSuppressorBank *)calloc(1u, sizeof(*bank));
+    if (!bank) return AUDIO_OVERLOAD;
+    bank->channels = channels;
+    for (u32 c = 0u; c < channels; ++c) {
+        const AudioResult result = audio_noise_suppressor_create(config, &bank->channel[c]);
+        if (result != AUDIO_OK) {
+            audio_noise_suppressor_bank_destroy(bank);
+            return result;
+        }
+    }
+    *out = bank;
+    return AUDIO_OK;
+}
+
+void audio_noise_suppressor_bank_destroy(AudioNoiseSuppressorBank *bank) {
+    if (!bank) return;
+    for (u32 c = 0u; c < bank->channels; ++c) audio_noise_suppressor_destroy(bank->channel[c]);
+    free(bank);
+}
+
+void audio_noise_suppressor_bank_reset(AudioNoiseSuppressorBank *bank) {
+    if (!bank) return;
+    for (u32 c = 0u; c < bank->channels; ++c) audio_noise_suppressor_reset(bank->channel[c]);
+}
+
+void audio_noise_suppressor_bank_process_interleaved_i16(AudioNoiseSuppressorBank *bank,
+                                                         i16 *samples, u32 frames) {
+    if (!bank || (!samples && frames != 0u)) return;
+    const u32 channels = bank->channels;
+    for (u32 done = 0u; done < frames;) {
+        u32 count = frames - done;
+        if (count > AUDIO_NOISE_SUPPRESSOR_BANK_CHUNK) count = AUDIO_NOISE_SUPPRESSOR_BANK_CHUNK;
+        i16 *block = samples + (size_t)done * channels;
+        for (u32 c = 0u; c < channels; ++c) {
+            for (u32 n = 0u; n < count; ++n) bank->scratch[n] = block[(size_t)n * channels + c];
+            audio_noise_suppressor_process_i16(bank->channel[c], bank->scratch, count);
+            for (u32 n = 0u; n < count; ++n) block[(size_t)n * channels + c] = bank->scratch[n];
+        }
+        done += count;
+    }
+}
+
+u32 audio_noise_suppressor_bank_channels(const AudioNoiseSuppressorBank *bank) {
+    return bank ? bank->channels : 0u;
+}
+
+u32 audio_noise_suppressor_bank_latency_frames(const AudioNoiseSuppressorBank *bank) {
+    return bank ? audio_noise_suppressor_latency_frames(bank->channel[0]) : 0u;
+}

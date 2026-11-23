@@ -345,7 +345,8 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 - `audio_noise_suppressor_reset` 恢复初始底噪、平滑功率、输入历史、overlap、输出延迟与块相位；NULL 是空操作。
 - 单音保持只保证启动与底噪跟踪瞬态。持续单音或其他稳态声音最终会像现有噪声门一样被学习为噪声并衰减，不能把该模块当作持续音高保真器。
 - 输出取整使用 `nearbyint`，精确重建约定假定调用者保持默认的就近舍入模式。
-- 未做：多声道、学习型降噪、自动补偿语音传输的端到端延迟、真实麦克风与听感验证。
+- 2026-11-23 补充：多声道。`AudioNoiseSuppressorBank` 为交织 PCM 提供每声道独立的降噪：`audio_noise_suppressor_bank_create(config, channels, out)`（1..`AUDIO_NOISE_SUPPRESSOR_BANK_MAX_CHANNELS`=8，配置校验同单声道），`_process_interleaved_i16` 原地处理（`frames` 为每声道帧数），以及 `_channels`、`_latency_frames`（与单声道相同的 frame_size）、`_reset`、`_destroy`。内部每声道一个单声道实例，并用对象内 256 帧暂存区分块去交织，因此只有 create 分配；每个声道与单独运行该声道的单声道实例逐位一致，任意分块一致。选择独立状态而非跨声道共享噪声底与增益：前者可逐位验证，后者会改变声道间相对电平，需要真实素材评估。单声道接口与 `AudioVoiceProcessor` 不变。`test_audio_noise_suppressor` 增至 11 项。
+- 未做：跨声道共享噪声估计、学习型降噪、自动补偿语音传输的端到端延迟、真实麦克风与听感验证。
 
 ## 验证与限制
 

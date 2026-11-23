@@ -311,6 +311,123 @@ TEST(reset_matches_a_fresh_object_and_silence_stays_zero)
     audio_noise_suppressor_destroy(fresh);
 }
 
+#define BANK_FRAMES 3000u
+#define BANK_MAX_CHANNELS 3u
+
+static i16 g_interleaved[BANK_FRAMES * BANK_MAX_CHANNELS];
+static i16 g_chunked[BANK_FRAMES * BANK_MAX_CHANNELS];
+static i16 g_mono[BANK_MAX_CHANNELS][BANK_FRAMES];
+
+/* Each channel gets its own noise level and tone, so a bank that mixed up
+ * channel state or indices would not match the per-channel references. */
+static void fill_bank_input(u32 channels) {
+    g_seed = 0x2468ACE1u;
+    for (u32 n = 0u; n < BANK_FRAMES; ++n) {
+        for (u32 c = 0u; c < channels; ++c) {
+            const double tone = (0.1 + 0.05 * c) * sin(2.0 * kPi * (300.0 + 200.0 * c) * n / 16000.0);
+            const double noise = (0.02 + 0.03 * c) * rnd();
+            const i16 v = (i16)lrint((tone + noise) * 32767.0);
+            g_interleaved[n * channels + c] = v;
+            g_mono[c][n] = v;
+        }
+    }
+    memcpy(g_chunked, g_interleaved, sizeof(i16) * BANK_FRAMES * channels);
+}
+
+static bool bank_matches_mono(u32 channels) {
+    const AudioNoiseSuppressorConfig config = test_config();
+    AudioNoiseSuppressorBank *whole = NULL;
+    AudioNoiseSuppressorBank *chunked = NULL;
+    if (audio_noise_suppressor_bank_create(&config, channels, &whole) != AUDIO_OK) return false;
+    if (audio_noise_suppressor_bank_create(&config, channels, &chunked) != AUDIO_OK) {
+        audio_noise_suppressor_bank_destroy(whole);
+        return false;
+    }
+    fill_bank_input(channels);
+    bool ok = audio_noise_suppressor_bank_channels(whole) == channels &&
+              audio_noise_suppressor_bank_latency_frames(whole) == config.frame_size;
+    for (u32 c = 0u; c < channels; ++c) {
+        AudioNoiseSuppressor *mono = NULL;
+        if (audio_noise_suppressor_create(&config, &mono) != AUDIO_OK) {
+            audio_noise_suppressor_bank_destroy(whole);
+            audio_noise_suppressor_bank_destroy(chunked);
+            return false;
+        }
+        audio_noise_suppressor_process_i16(mono, g_mono[c], BANK_FRAMES);
+        audio_noise_suppressor_destroy(mono);
+    }
+    audio_noise_suppressor_bank_process_interleaved_i16(whole, g_interleaved, BANK_FRAMES);
+    const u32 steps[] = {1u, 7u, 128u, 255u, 600u};
+    for (u32 at = 0u, k = 0u; at < BANK_FRAMES; ++k) {
+        u32 n = steps[k % 5u];
+        if (n > BANK_FRAMES - at) n = BANK_FRAMES - at;
+        audio_noise_suppressor_bank_process_interleaved_i16(chunked, g_chunked + at * channels, n);
+        at += n;
+    }
+    for (u32 n = 0u; ok && n < BANK_FRAMES; ++n) {
+        for (u32 c = 0u; c < channels; ++c) {
+            if (g_interleaved[n * channels + c] != g_mono[c][n]) ok = false;
+        }
+    }
+    ok = ok && memcmp(g_interleaved, g_chunked, sizeof(i16) * BANK_FRAMES * channels) == 0;
+    audio_noise_suppressor_bank_destroy(whole);
+    audio_noise_suppressor_bank_destroy(chunked);
+    return ok;
+}
+
+TEST(a_bank_validates_channels_and_reports_its_shape)
+{
+    AudioNoiseSuppressorConfig config = test_config();
+    AudioNoiseSuppressorBank *sentinel = NULL;
+    ASSERT_EQ(audio_noise_suppressor_bank_create(&config, 2u, &sentinel), AUDIO_OK);
+    AudioNoiseSuppressorBank *bank = sentinel;
+    ASSERT_EQ(audio_noise_suppressor_bank_create(&config, 0u, &bank), AUDIO_INVALID);
+    ASSERT_EQ(audio_noise_suppressor_bank_create(&config, 9u, &bank), AUDIO_INVALID);
+    ASSERT_EQ(audio_noise_suppressor_bank_create(NULL, 2u, &bank), AUDIO_INVALID);
+    ASSERT_EQ(audio_noise_suppressor_bank_create(&config, 2u, NULL), AUDIO_INVALID);
+    config.frame_size = 100u;
+    ASSERT_EQ(audio_noise_suppressor_bank_create(&config, 2u, &bank), AUDIO_INVALID);
+    ASSERT_TRUE(bank == sentinel);
+    ASSERT_EQ(audio_noise_suppressor_bank_channels(sentinel), 2u);
+    ASSERT_EQ(audio_noise_suppressor_bank_channels(NULL), 0u);
+    ASSERT_EQ(audio_noise_suppressor_bank_latency_frames(NULL), 0u);
+    audio_noise_suppressor_bank_process_interleaved_i16(NULL, g_work, 4u);
+    audio_noise_suppressor_bank_process_interleaved_i16(sentinel, NULL, 0u);
+    audio_noise_suppressor_bank_process_interleaved_i16(sentinel, NULL, 4u);
+    audio_noise_suppressor_bank_reset(NULL);
+    audio_noise_suppressor_bank_destroy(NULL);
+    audio_noise_suppressor_bank_destroy(sentinel);
+    config = test_config();
+    ASSERT_EQ(audio_noise_suppressor_bank_create(&config, 8u, &bank), AUDIO_OK);
+    ASSERT_EQ(audio_noise_suppressor_bank_channels(bank), 8u);
+    audio_noise_suppressor_bank_destroy(bank);
+}
+
+TEST(each_bank_channel_matches_an_independent_mono_suppressor)
+{
+    ASSERT_TRUE(bank_matches_mono(1u));
+    ASSERT_TRUE(bank_matches_mono(2u));
+    ASSERT_TRUE(bank_matches_mono(3u));
+}
+
+TEST(a_reset_bank_matches_a_fresh_one)
+{
+    const AudioNoiseSuppressorConfig config = test_config();
+    AudioNoiseSuppressorBank *used = NULL;
+    AudioNoiseSuppressorBank *fresh = NULL;
+    ASSERT_EQ(audio_noise_suppressor_bank_create(&config, 3u, &used), AUDIO_OK);
+    ASSERT_EQ(audio_noise_suppressor_bank_create(&config, 3u, &fresh), AUDIO_OK);
+    fill_bank_input(3u);
+    audio_noise_suppressor_bank_process_interleaved_i16(used, g_interleaved, BANK_FRAMES);
+    audio_noise_suppressor_bank_reset(used);
+    fill_bank_input(3u);
+    audio_noise_suppressor_bank_process_interleaved_i16(used, g_interleaved, BANK_FRAMES);
+    audio_noise_suppressor_bank_process_interleaved_i16(fresh, g_chunked, BANK_FRAMES);
+    ASSERT_EQ(memcmp(g_interleaved, g_chunked, sizeof(i16) * BANK_FRAMES * 3u), 0);
+    audio_noise_suppressor_bank_destroy(used);
+    audio_noise_suppressor_bank_destroy(fresh);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(create_validates_the_configuration_and_reports_latency);
     RUN_TEST(zero_attenuation_is_the_input_delayed_by_one_frame_size);
@@ -320,4 +437,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(a_sustained_tone_is_eventually_learned_as_noise);
     RUN_TEST(chunking_does_not_change_the_output);
     RUN_TEST(reset_matches_a_fresh_object_and_silence_stays_zero);
+    RUN_TEST(a_bank_validates_channels_and_reports_its_shape);
+    RUN_TEST(each_bank_channel_matches_an_independent_mono_suppressor);
+    RUN_TEST(a_reset_bank_matches_a_fresh_one);
 TEST_MAIN_END()
