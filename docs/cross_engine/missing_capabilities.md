@@ -532,3 +532,12 @@
 [windows-d3d12 45101195116](https://github.com/konyka/break/actions/runs/45101195116) 成功，Headless+contract、WARP floor、push-constant gate、Agility deployment、artifact upload 均成功；托管 Windows Clang 也成功。本机 scene_serial 单例失败仍未定位，本机全套不称通过。[QUIC 45101195104](https://github.com/konyka/break/actions/runs/45101195104) conclusion=success，但 `SNOWFLAKE_READ_TOKEN` 未配置，UNAVAILABLE、No test ran，四个场景未执行，不是 QUIC 测试通过。[Proton 45102712864](https://github.com/konyka/break/actions/runs/45102712864) 成功，上游 run-id=`45101195116`、artifact ID `14785842612`，device/pipeline contract 均 77，仅兼容通道，不是 GPU 或原生 D3D12 通过。
 
 这些收据不属于本收据文档提交之后的工作流；新主 CI、windows-d3d12、Proton 待实际核验，不预写成功或 run-id。Windows install=false stub 与非 Linux 捕获边界不变。
+
+
+## 补充（2026-11-23）：fork 截止等待清理与剩余边界
+
+本次只关闭测试基础设施中的 waitpid 中断与错误所有权缺口。`test_waitpid_deadline(pid_t pid, int *status, unsigned timeout_ms)` 的签名和返回语义保持不变；EINTR 会重试，其他错误清零非 NULL 的 `*status`，并且只有 `pid > 0`、错误非 ECHILD 时才 kill/reap。原超时路径与符合条件的错误路径使用同一个私有清理 helper。
+
+五个确定性注入覆盖正常退出前的 EINTR、超时前的 EINTR、EIO、ECHILD 和 PID 0。实际 RED 为五个旧用例通过、五个新用例失败，GREEN 为 **10/10**，focused CTest 为 **4/4**。fallback 必须经真实 `waitpid(..., WNOHANG)` 返回 0 确认存活后才发送信号，GREEN 的三个子进程用例均为 `cleanup=0`，所以 fallback 不能替代被测 helper 获得通过。ECHILD/PID 0 用例的 kill spy 仅作记录，不真实发送信号。
+
+以下缺口保持打开：qemu-user 下 fork 后创建线程的挂起尚未解决；Windows scene 独立问题尚未解决；完整测试矩阵与远端结果仍在执行，不能据此预写完成、通过或跳过结论。

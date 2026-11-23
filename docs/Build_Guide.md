@@ -1827,3 +1827,14 @@ Windows 的 `break_crash_install` 仍为 false stub，启用选项会 start 失�
 - [Proton 45102712864](https://github.com/konyka/break/actions/runs/45102712864) 成功，上游 run-id=`45101195116`，下载 `windows-d3d12-artifact` ID `14785842612`；device/pipeline contract 均为 77，仅是兼容通道，不是 GPU 或原生 D3D12 通过。
 
 这些收据均属于 `7fdcdfe318f43ce4f8620f0e455be795bb66e87b`。本收据文档提交还会触发新的主 CI、windows-d3d12、Proton，须待实际核验，不预写成功或 run-id。
+
+
+## 补充（2026-11-23）：fork 截止等待的中断重试与错误清理
+
+`test_waitpid_deadline(pid_t pid, int *status, unsigned timeout_ms)` 的签名和返回语义不变：正常取得子进程状态时返回 `pid`，截止超时返回 0，其他 waitpid 错误返回 -1。轮询遇到 EINTR 会重试；非 EINTR 错误会将非 NULL 的 `*status` 清零，且只有 `pid > 0` 并且错误不是 ECHILD 时才执行 SIGKILL 与回收。私有共享清理 helper 同时服务超时路径和符合条件的错误路径，保留原有 10 ms 轮询、超时计数和诊断文本。
+
+`test_fork_deadline` 新增五个确定性注入用例，分别覆盖 EINTR 后正常退出、EINTR 后 50 ms 超时、EIO 后清理、已回收 PID 的 ECHILD，以及 PID 0 注入 EIO。严格 RED 记录为五个旧用例通过、五个新用例失败；最小 helper 修改后的 GREEN 为 **10/10**，相关 focused CTest 为 **4/4**。
+
+测试 fallback 使用真实 `waitpid(..., WNOHANG)`，只有返回 0、确认子进程仍存活时才发送真实 SIGKILL 并回收；GREEN 的三个子进程用例均为 `cleanup=0`，因此 fallback 没有代替 helper 清理或制造通过。ECHILD 与 PID 0 用例启用 observe-only kill spy，spy 只记录调用，不真实发送信号。
+
+完整测试矩阵与远端结果仍在执行，本节不预写其计数或通过结论。qemu-user 下 fork 后创建线程的挂起，以及 Windows scene 独立问题，均未由本次修改解决。

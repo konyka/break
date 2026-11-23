@@ -13315,3 +13315,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **QUIC**：[run 45101195104](https://github.com/konyka/break/actions/runs/45101195104) 的 conclusion=success，但未配置 `SNOWFLAKE_READ_TOKEN`，日志明确 **UNAVAILABLE、No test ran**，四个场景没有执行，不能写成 QUIC 测试通过。
 - **Proton**：[run 45102712864](https://github.com/konyka/break/actions/runs/45102712864) 成功，日志上游 run-id=`45101195116`，下载 `windows-d3d12-artifact` ID `14785842612`；`device_contract=77`、`pipeline_contract=77`，只证明兼容通道，不是 GPU 或原生 D3D12 通过。
 - **本收据之后的运行**：本收据文档提交本身还会触发新的主 CI、windows-d3d12 和 Proton，待实际核验后另行记录，不预写成功或 run-id。
+
+
+## fork 截止等待中断清理记录（2026-11-23）
+
+- **接口与清理契约**：`test_waitpid_deadline(pid_t pid, int *status, unsigned timeout_ms)` 的签名及返回语义不变，正常状态返回 `pid`、超时返回 0、waitpid 错误返回 -1。EINTR 轮询错误现在重试；其他错误清零非 NULL 的 `*status`，仅在 `pid > 0` 且错误非 ECHILD 时 kill/reap。超时和符合条件的错误路径共用私有清理 helper，公开接口没有新增。
+- **确定性 RED/GREEN**：五个注入用例覆盖 EINTR 后正常退出、EINTR 后 50 ms 超时、EIO 后 kill/reap、ECHILD 清状态不发信号、PID 0 清状态不发信号。旧 helper 上实测五个旧用例通过、五个新用例失败；修改后 `test_fork_deadline` **10/10**，`test_fork_deadline`、`test_runtime_io`、`test_runtime_reload`、`test_core_app_diagnostics` 的 focused CTest **4/4**。
+- **回收与防护证据**：fallback 只在真实 `waitpid(..., WNOHANG)` 返回 0、确认子进程存活时发送真实信号；GREEN 的三个相关用例均为 `cleanup=0`，证明 helper 已自行完成回收。ECHILD/PID 0 防护路径的 kill spy 只计数，不转发真实信号，避免向进程组或可能复用的 PID 发信号。
+- **未关闭事项**：完整测试矩阵与远端结果仍在执行，不预写通过计数、跳过数量或运行标识。qemu-user 的 fork 后建线程挂起仍是独立未解决问题；Windows scene 独立问题也仍未解决，本次清理不表示其中任何一项已修复。
