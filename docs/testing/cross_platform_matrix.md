@@ -320,3 +320,18 @@ MoltenVK 初轮 staging 因 Homebrew 顶层 include 符号链接失败，改用�
 `test_scene_serial` 为 **121/122**：`failed_load_keeps_previous_scene` 中 `scene_load_binary(wd,&dst,pa)` 失败。`engine/src/scene/scene_serial.c` 与 `tests/test_scene_serial.c` 从 `0ddd`、rebase base 到当前均无变化，因此不是本分支改动引入；根因尚未关闭，列为独立既有/平台问题，不声称环境原因已经证明。Windows CI 待运行并交叉核验。
 
 **仍待远端**：主 CI、windows-d3d12、QUIC（因 `engine/CMakeLists.txt` 变更会触发）和 Proton，不预写 run-id 或成功。Windows install=false stub 与非 Linux 捕获边界不变。
+
+#### 远端验收收据（提交 `7fdcdfe318f43ce4f8620f0e455be795bb66e87b`）
+
+| 工作流 / 作业 | 实际结果与证据边界 |
+|---|---|
+| [主 CI 45101195431](https://github.com/konyka/break/actions/runs/45101195431) | 27 个矩阵作业：**24 success、3 conditional skipped、0 failure** |
+| Linux arm64 job `137452184436` | QEMU 选择套件 **276/276**，含 `test_vfs`、`test_async_loader`、`test_runtime_io`、`test_core_app_runtime` |
+| Ubuntu 24.04 TSan job `137452533153` | Configure/Build/Test (headless suite) 全成功；CTest 输出重定向，无逐项 crash-context/BCR 日志，只称 **TSan headless suite 通过**，不伪造独立 SIGABRT/BCR artifact；Fedora longjmp 边界不变 |
+| [windows-d3d12 45101195116](https://github.com/konyka/break/actions/runs/45101195116) | 成功；Headless+contract、WARP floor、push-constant gate、Agility deployment、artifact upload 均成功；托管主 CI 的 Windows Clang 也成功 |
+| [QUIC 45101195104](https://github.com/konyka/break/actions/runs/45101195104) | conclusion=success，但 `SNOWFLAKE_READ_TOKEN` 未配置，日志 **UNAVAILABLE、No test ran**，四个场景没有执行，不能写成 QUIC 测试通过 |
+| [Proton 45102712864](https://github.com/konyka/break/actions/runs/45102712864) | 成功；上游 run-id=`45101195116`，下载 `windows-d3d12-artifact` ID `14785842612`；`device_contract=77`、`pipeline_contract=77`，仅兼容通道，不是 GPU 或原生 D3D12 通过 |
+
+托管 Windows 成功与本机 `test_scene_serial` 单例失败并存；本机根因仍未定位，本机全套不称通过。
+
+以上结果全部属于 `7fdcdfe318f43ce4f8620f0e455be795bb66e87b`。**本收据文档提交本身还会触发新的主 CI、windows-d3d12 和 Proton**，待实际核验后再记录，不预写成功或 run-id。

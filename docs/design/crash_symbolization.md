@@ -191,3 +191,11 @@ Windows 实机待办现已执行：Windows Clang 成功构建 D3D12 树，完整
 `test_scene_serial` 为 **121/122**，失败点是 `failed_load_keeps_previous_scene` 的 `scene_load_binary(wd,&dst,pa)`。scene 实现和测试从 `0ddd`、rebase base 到当前均未变化，因此不是本分支改动引入；根因未关闭，列为独立既有/平台问题，不声称环境原因已证明，待 Windows CI 交叉核验。
 
 主 CI、windows-d3d12、QUIC（`engine/CMakeLists.txt` 变更会触发）和 Proton 仍待，不预写 run-id 或成功。Windows/macOS 客户端捕获仍不能由格式化、符号读取或占位测试推断。
+
+#### 远端验收收据（`7fdcdfe318f43ce4f8620f0e455be795bb66e87b`）
+
+[主 CI 45101195431](https://github.com/konyka/break/actions/runs/45101195431) 共 27 个矩阵作业，24 success、3 conditional skipped、0 failure；arm64 job `137452184436` 的 QEMU 选择套件 276/276，含 VFS、async loader、Runtime IO、core_app runtime。Ubuntu 24.04 TSan job `137452533153` 的 Configure/Build/Test (headless suite) 全成功；由于没有逐项 crash-context/BCR 日志，只记录 TSan headless suite 通过，不声称独立 SIGABRT/BCR artifact，Fedora longjmp 边界不变。
+
+[windows-d3d12 45101195116](https://github.com/konyka/break/actions/runs/45101195116) 成功，Headless+contract、WARP floor、push-constant gate、Agility deployment、artifact upload 均成功；托管 Windows Clang 也成功。本机 scene_serial 单例失败仍未定位，本机全套不称通过。[QUIC 45101195104](https://github.com/konyka/break/actions/runs/45101195104) 虽 conclusion=success，但未配置 `SNOWFLAKE_READ_TOKEN`，UNAVAILABLE、No test ran，四个场景未执行，不能写成测试通过。[Proton 45102712864](https://github.com/konyka/break/actions/runs/45102712864) 成功，上游 run-id=`45101195116`、artifact ID `14785842612`，device/pipeline contract 均 77，仅兼容通道，不是 GPU 或原生 D3D12 通过。
+
+本收据文档提交后的主 CI、windows-d3d12、Proton 仍须实际核验，不预写成功或 run-id；上述 run 均只属于 `7fdcdfe318f43ce4f8620f0e455be795bb66e87b`。

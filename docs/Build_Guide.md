@@ -1817,3 +1817,13 @@ Windows 的 `break_crash_install` 仍为 false stub，启用选项会 start 失�
 - `test_platform_win32_runtime` 为 **20/26**，远程桌面下窗口样式、最大化、全屏恢复失败。`test_d3d12_uav_matrix` 的交换链创建返回 `0x887a0022`，设置 `ENGINE_D3D12_WARP=1` 仍失败，`test_d3d12_warp_runtime` 按条件 skip；这些结果不构成 GPU 或交互桌面验证。
 - `test_scene_serial` 为 **121/122**，`failed_load_keeps_previous_scene` 的 `scene_load_binary(wd,&dst,pa)` 失败。`engine/src/scene/scene_serial.c` 和 `tests/test_scene_serial.c` 从 `0ddd`、rebase base 到当前均无变化，故不是本分支改动引入；根因仍未关闭，作为独立既有/平台问题记录，未证明是环境原因。Windows CI 将用于交叉核验。
 - 主 CI、windows-d3d12、QUIC（`engine/CMakeLists.txt` 变更会触发）和 Proton 仍待，不预写 run-id 或成功。Windows install=false stub 与非 Linux 捕获边界不变。
+
+### 远端验证收据（提交 `7fdcdfe318f43ce4f8620f0e455be795bb66e87b`）
+
+- [主 CI 45101195431](https://github.com/konyka/break/actions/runs/45101195431)：27 个矩阵作业，24 success、3 conditional skipped、0 failure。Linux arm64 job `137452184436` 的 QEMU 选择套件 276/276，含 VFS、async loader、Runtime IO、core_app runtime。
+- Ubuntu 24.04 TSan job `137452533153` 的 Configure/Build/Test (headless suite) 全成功。由于 CTest 输出被重定向且没有逐项 crash-context/BCR 日志，此处仅是 TSan headless suite 证据，不声称独立 SIGABRT/BCR artifact；Fedora longjmp 边界不变。
+- [windows-d3d12 45101195116](https://github.com/konyka/break/actions/runs/45101195116) 成功，Headless+contract、WARP floor、push-constant gate、Agility deployment、artifact upload 均成功；托管主 CI 的 Windows Clang 也成功。本机 scene_serial 单例失败仍未定位，本机全套不称通过。
+- [QUIC 45101195104](https://github.com/konyka/break/actions/runs/45101195104) conclusion=success，但 `SNOWFLAKE_READ_TOKEN` 未配置，日志为 UNAVAILABLE、No test ran，四个场景未执行，不是 QUIC 测试通过。
+- [Proton 45102712864](https://github.com/konyka/break/actions/runs/45102712864) 成功，上游 run-id=`45101195116`，下载 `windows-d3d12-artifact` ID `14785842612`；device/pipeline contract 均为 77，仅是兼容通道，不是 GPU 或原生 D3D12 通过。
+
+这些收据均属于 `7fdcdfe318f43ce4f8620f0e455be795bb66e87b`。本收据文档提交还会触发新的主 CI、windows-d3d12、Proton，须待实际核验，不预写成功或 run-id。

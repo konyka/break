@@ -13304,3 +13304,14 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **平台与 D3D12 边界**：`test_platform_win32_runtime` 为 **20/26**，远程桌面下窗口样式、最大化和全屏恢复失败。`test_d3d12_uav_matrix` 的交换链创建以 `0x887a0022` 失败，`ENGINE_D3D12_WARP=1` 亦失败，`test_d3d12_warp_runtime` 按条件 skip；不声称 GPU 或交互桌面通过。
 - **独立 scene 问题**：`test_scene_serial` 为 **121/122**，`failed_load_keeps_previous_scene` 中 `scene_load_binary(wd,&dst,pa)` 失败。`engine/src/scene/scene_serial.c` 与 `tests/test_scene_serial.c` 从 `0ddd`、rebase base 到当前均无变化，因此不是本分支改动引入；但根因尚未关闭，记录为独立既有/平台问题，不谎称已经证明是环境原因。Windows CI 待运行，用于交叉核验。
 - **仍待远端**：主 CI、windows-d3d12、QUIC（因 `engine/CMakeLists.txt` 变更会触发）和 Proton 仍待，不预写 run-id 或成功。Windows install=false stub 与非 Linux 捕获边界不变。
+
+### 远端验收收据（提交 `7fdcdfe318f43ce4f8620f0e455be795bb66e87b`）
+
+以下结果均属于上述提交，不是本收据文档提交之后的工作流结果。
+
+- **主 CI**：[run 45101195431](https://github.com/konyka/break/actions/runs/45101195431) 共 27 个矩阵作业，**24 success、3 conditional skipped、0 failure**。Linux arm64 job `137452184436` 的 QEMU 选择套件 **276/276**，包含 `test_vfs`、`test_async_loader`、`test_runtime_io`、`test_core_app_runtime`。
+- **Ubuntu 24.04 TSan**：job `137452533153` 的 Configure、Build、Test (headless suite) 全成功。CI 重定向 CTest 输出，没有逐项 crash-context/BCR 日志，因此只记录 **TSan headless suite 通过**，不伪造独立 SIGABRT/BCR artifact；本机 Fedora longjmp 边界保持既有记录。
+- **Windows D3D12**：[run 45101195116](https://github.com/konyka/break/actions/runs/45101195116) 成功，Headless+contract、WARP floor、push-constant gate、Agility deployment 和 artifact upload 均成功；托管主 CI 的 Windows Clang 也成功。这与本机 `test_scene_serial` 单例失败并存，本机根因仍未定位，本机全套仍不称通过。
+- **QUIC**：[run 45101195104](https://github.com/konyka/break/actions/runs/45101195104) 的 conclusion=success，但未配置 `SNOWFLAKE_READ_TOKEN`，日志明确 **UNAVAILABLE、No test ran**，四个场景没有执行，不能写成 QUIC 测试通过。
+- **Proton**：[run 45102712864](https://github.com/konyka/break/actions/runs/45102712864) 成功，日志上游 run-id=`45101195116`，下载 `windows-d3d12-artifact` ID `14785842612`；`device_contract=77`、`pipeline_contract=77`，只证明兼容通道，不是 GPU 或原生 D3D12 通过。
+- **本收据之后的运行**：本收据文档提交本身还会触发新的主 CI、windows-d3d12 和 Proton，待实际核验后另行记录，不预写成功或 run-id。
