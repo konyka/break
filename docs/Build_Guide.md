@@ -1831,7 +1831,7 @@ Windows 的 `break_crash_install` 仍为 false stub，启用选项会 start 失�
 
 ## 补充（2026-11-23）：fork 截止等待的中断重试与错误清理
 
-`test_waitpid_deadline(pid_t pid, int *status, unsigned timeout_ms)` 的签名和返回语义不变：正常取得子进程状态时返回 `pid`，截止超时返回 0，其他 waitpid 错误返回 -1。轮询遇到 EINTR 会重试；非 EINTR 错误会将非 NULL 的 `*status` 清零，且只有 `pid > 0` 并且错误不是 ECHILD 时才执行 SIGKILL 与回收。私有共享清理 helper 同时服务超时路径和符合条件的错误路径，保留原有 10 ms 轮询、超时计数和诊断文本。
+`test_waitpid_deadline(pid_t pid, int *status, unsigned timeout_ms)` 的签名和返回语义不变：正常取得子进程状态时返回 `pid`，截止超时返回 0，其他 waitpid 错误返回 -1。轮询遇到 EINTR 会重试；非 EINTR 错误会将非 NULL 的 `*status` 清零，且只有 `pid > 0` 并且错误不是 ECHILD 时才执行 SIGKILL 与回收。私有共享清理 helper 同时服务超时路径和符合条件的错误路径。初版保留 10 ms 轮询、按间隔累加的超时计数和诊断文本；后续持续 EINTR 复审已将计时改为 `CLOCK_MONOTONIC` 绝对截止时间，详见本文末尾补充。
 
 `test_fork_deadline` 新增五个确定性注入用例，分别覆盖 EINTR 后正常退出、EINTR 后 50 ms 超时、EIO 后清理、已回收 PID 的 ECHILD，以及 PID 0 注入 EIO。严格 RED 记录为五个旧用例通过、五个新用例失败；最小 helper 修改后的 GREEN 为 **10/10**，相关 focused CTest 为 **4/4**。
 
@@ -1893,3 +1893,14 @@ Windows 在最终 `c4c0d966` 上的完整 `test_scene_serial` 为 **122/122**；
 共享 `test_tmp` 截断整改、qemu-user 下 fork 后创建线程的挂起，以及无关 Windows 平台/GPU 问题仍未解决。
 
 本收据提交还会触发新的工作流，待实际核验，不预写其结果或 run-id。
+
+
+## 补充（2026-11-23）：持续 EINTR 不延长 fork 截止等待
+
+同步到 `c24e4264` 后复审发现，初版 EINTR 重试直接 `continue`，会绕过按轮询间隔累加的超时计数。持续中断因此既延长期限又形成忙循环。当前 `test_waitpid_deadline` 在入口计算 `CLOCK_MONOTONIC` 绝对截止时间；每次 waitpid 后，EINTR 与子进程仍运行都先检查该期限，未到期才执行 10 ms 轮询睡眠。正常终态、非 EINTR 错误清理、ECHILD/PID 0 防护、签名和返回语义不变。
+
+`test_fork_deadline` 新增第六个故障注入用例：仅对 WNOHANG 轮询持续注入 200 ms EINTR，期限设为 50 ms，回收阶段保持真实 waitpid。旧实现实测 **10 passed / 1 failed / 11 total**，新用例约 275 ms 返回并进行了 7,221,272 次等待调用；修复后 **11/11**，Metal 上约 59 ms、7 次调用，MoltenVK 上约 58 ms、6 次调用。fallback 均为 `cleanup=0`，证明 helper 已自行 kill/reap。
+
+两套后端的 `test_fork_deadline`、`test_runtime_io`、`test_runtime_reload`、`test_core_app_diagnostics` focused CTest 均 **4/4**。直接编译的 ASan+UBSan `test_fork_deadline` **11/11**、无诊断；运行时显式设置 `ASAN_OPTIONS=detect_leaks=0`，因为本机不支持 leak detection，故不声称 LeakSanitizer 通过，也没有新增 TSan 结果。
+
+基线 Metal 全量为 **435/435**，另有 5 项既有平台条件 skip。修复后最终本地全量：Metal（`engine/build-macos-current`）**435/435**，MoltenVK（`engine/build-macos`）**438/438**，各 5 项既有条件 skip（skip 不计为执行通过）；直接 cc 编译的 ASan+UBSan `test_fork_deadline` 11/11 无诊断（本机不支持 LSan）。本轮没有 Windows/Linux 实机或远端 CI 结论，qemu-user 下 fork 后创建线程的独立挂起仍未解决。

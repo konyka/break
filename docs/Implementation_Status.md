@@ -13374,3 +13374,12 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 共享 `test_tmp` 截断整改、qemu-user 下 fork 后创建线程的挂起，以及无关 Windows 平台/GPU 问题仍未解决。
 
 本收据提交还会触发新的工作流，待实际核验，不预写其结果或 run-id。
+
+
+## fork 持续 EINTR 不得绕过截止等待（2026-11-23）
+
+- **同步与根因**：从 `33cc4be4` 快进到 `c24e4264`，远程新增 24 个提交，无冲突。审查上一波 EINTR 清理发现，`waitpid(..., WNOHANG)` 返回 `-1/EINTR` 时直接 `continue`，跳过超时计数和 `nanosleep`；持续中断会无限延长等待并形成忙循环，卡住的子进程不能及时 kill/reap。这是 POSIX 测试基础设施问题，不是产品运行时缺陷。
+- **修复**：`test_waitpid_deadline` 的签名和返回语义不变，进入循环前计算 `CLOCK_MONOTONIC` 绝对截止时间。正常子进程终态和既有错误清理保持原样；EINTR 与仍在运行两种结果都统一检查实际截止时间，之后才进行最多 10 ms 的轮询睡眠。零超时、被中断的睡眠和系统时间调整均不再依赖累加计数。
+- **RED/GREEN**：新增 `waitpid_deadline_sustained_eintr_does_not_extend_timeout`，只对 WNOHANG 轮询持续注入 200 ms EINTR，目标期限为 50 ms，清理阶段仍调用真实 waitpid。旧实现实测 **10 passed / 1 failed / 11 total**，新用例约 275 ms 才返回并进行了 7,221,272 次等待调用；fallback 为 `cleanup=0`，没有遗留子进程。修复后 Metal 为 **11/11**，新用例约 59 ms、7 次调用；MoltenVK 也为 **11/11**。
+- **联动与 sanitizer**：两套后端的 `test_fork_deadline`、`test_runtime_io`、`test_runtime_reload`、`test_core_app_diagnostics` focused CTest 均 **4/4**。直接编译的 ASan+UBSan `test_fork_deadline` **11/11**、无诊断；本机显式关闭不受支持的 leak detection，不声称 LeakSanitizer 通过，也未新增 TSan 证据。
+- **验证边界**：基线 Metal 全量 **435/435**，5 项既有平台条件 skip。修复后最终本地全量：Metal **435/435**、MoltenVK **438/438**，各 5 项既有条件 skip（skip 不计为执行通过）；ASan+UBSan 下 `test_fork_deadline` 11/11 无诊断，未运行 TSan/LSan。Windows/Linux 和远端 CI 未由本轮本地结果代替。qemu-user 下 fork 后建线程的独立挂起仍未解决。

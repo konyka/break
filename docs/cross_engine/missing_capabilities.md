@@ -593,3 +593,10 @@ Windows 在最终 `c4c0d966` 上取得完整 `test_scene_serial` **122/122**，�
 共享 `test_tmp` 截断整改、qemu-user 下 fork 后创建线程的挂起，以及无关 Windows 平台/GPU 问题仍未解决。
 
 本收据提交还会触发新的工作流，待实际核验，不预写其结果或 run-id。
+
+
+## fork 持续 EINTR 期限修复后的边界（2026-11-23）
+
+上一波 EINTR 重试在持续中断时绕过超时计数。本轮改用 `CLOCK_MONOTONIC` 绝对截止时间，EINTR 和子进程仍运行都经过同一个期限检查；签名、返回语义、非 EINTR 错误所有权和 ECHILD/PID 0 防护不变。新增持续 200 ms EINTR、50 ms 期限用例，旧实现 **10/11**，修复后 **11/11**，且 fallback 均为 `cleanup=0`。两套 macOS 后端 focused 均 **4/4**，直接 ASan+UBSan **11/11**、无诊断；本机没有 LeakSanitizer 或本轮 TSan 通过结论。
+
+仍保留以下边界：本修改只涉及 POSIX 测试 helper，不解决 qemu-user 下 fork 后创建线程的独立挂起，也不改变产品运行时；Windows/Linux 与远端矩阵须以各自实际结果为准。修复后最终本地完整矩阵：Metal 435/435、MoltenVK 438/438，各 5 项既有条件 skip（不计为执行通过）；未运行 TSan/LSan。

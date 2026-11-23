@@ -40,3 +40,11 @@
 ## 文档与交付
 
 追加 `docs/Build_Guide.md`、`docs/Implementation_Status.md` 和 `docs/cross_engine/missing_capabilities.md` 的测试基础设施记录。独立代码评审后同步最新 `origin/master`，直接推送 `master`，不创建 PR，并核验最终工作流。
+
+## 后续复审：持续 EINTR 的绝对截止时间
+
+初版实现用无条件 `continue` 重试 EINTR，因而跳过超时计数和轮询睡眠。一次中断的五个原用例无法覆盖持续中断：如果中断持续存在，期限实际被无限延长，并形成忙轮询。初版“保留超时计数”的实现约束由此被后续修正取代。
+
+当前实现仍在每次循环开头调用 `waitpid(..., WNOHANG)`，正常终态立即返回，非 EINTR 错误沿用既有清理策略；EINTR 与返回 0 都必须检查进入函数时由 `CLOCK_MONOTONIC` 计算的绝对截止时间，未到期才睡眠。10 ms 轮询间隔只是睡眠上限，不再充当期限计数。这样 timeout=0、nanosleep 自身被中断以及持续 waitpid EINTR 都不会重置或延长截止时间。
+
+新增第六个确定性故障注入用例：仅对 WNOHANG 轮询持续注入 200 ms EINTR，helper 期限为 50 ms，清理阶段不注入错误。旧实现实测约 275 ms 才 kill/reap，且进行约 722 万次等待调用；新实现约 50–60 ms 完成。用例在断言前以真实 waitpid fallback 验证回收，要求 `cleanup=0`，并检查返回 0、清零状态、至少两次等待以及实际用时小于注入窗口。测试总数由 10 增至 11。

@@ -17,14 +17,18 @@ static int test_kill_inject(pid_t pid, int signal_number);
 
 static unsigned waitpid_inject_calls;
 static int waitpid_inject_eintr;
+static long long waitpid_inject_eintr_until_ms;
 static int waitpid_inject_error;
 static unsigned kill_inject_calls;
 static int kill_inject_observe_only;
+
+static long long monotonic_ms(void);
 
 static void test_waitpid_reset_injection(void)
 {
     waitpid_inject_calls = 0u;
     waitpid_inject_eintr = 0;
+    waitpid_inject_eintr_until_ms = 0;
     waitpid_inject_error = 0;
     kill_inject_calls = 0u;
     kill_inject_observe_only = 0;
@@ -33,6 +37,13 @@ static void test_waitpid_reset_injection(void)
 static pid_t test_waitpid_inject(pid_t pid, int *status, int options)
 {
     waitpid_inject_calls++;
+    if (options == WNOHANG && waitpid_inject_eintr_until_ms > 0) {
+        if (monotonic_ms() < waitpid_inject_eintr_until_ms) {
+            errno = EINTR;
+            return (pid_t)-1;
+        }
+        waitpid_inject_eintr_until_ms = 0;
+    }
     if (waitpid_inject_eintr != 0) {
         waitpid_inject_eintr = 0;
         errno = EINTR;
@@ -205,6 +216,39 @@ TEST(waitpid_deadline_retries_eintr_before_timeout_cleanup)
     ASSERT_TRUE(elapsed < 5000);
 }
 
+TEST(waitpid_deadline_sustained_eintr_does_not_extend_timeout)
+{
+    int status = -1;
+    unsigned calls;
+    int fallback;
+    long long start;
+    long long elapsed;
+    pid_t result;
+    pid_t pid;
+    test_waitpid_reset_injection();
+    pid = fork();
+    if (pid == 0) {
+        for (;;) {
+            pause();
+        }
+    }
+    ASSERT_TRUE(pid > 0);
+    start = monotonic_ms();
+    waitpid_inject_eintr_until_ms = start + 200;
+    result = test_waitpid_deadline(pid, &status, 50u);
+    elapsed = monotonic_ms() - start;
+    calls = waitpid_inject_calls;
+    fallback = test_waitpid_fallback_reap(pid);
+    printf("INJECTION cleanup=%d result=%d status=%d calls=%u elapsed=%lld\n",
+           fallback, (int)result, status, calls, elapsed);
+    ASSERT_EQ(result, (pid_t)0);
+    ASSERT_EQ(status, 0);
+    ASSERT_TRUE(calls >= 2u);
+    ASSERT_EQ(fallback, 0);
+    ASSERT_TRUE(elapsed >= 50);
+    ASSERT_TRUE(elapsed < 200);
+}
+
 TEST(waitpid_deadline_other_error_kills_and_reaps_child)
 {
     int status = -1;
@@ -338,6 +382,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(waitpid_deadline_kills_and_reaps_stuck_child);
     RUN_TEST(waitpid_deadline_retries_eintr_before_normal_exit);
     RUN_TEST(waitpid_deadline_retries_eintr_before_timeout_cleanup);
+    RUN_TEST(waitpid_deadline_sustained_eintr_does_not_extend_timeout);
     RUN_TEST(waitpid_deadline_other_error_kills_and_reaps_child);
     RUN_TEST(waitpid_deadline_echild_clears_status_without_kill);
     RUN_TEST(waitpid_deadline_invalid_pid_clears_status_without_kill);

@@ -162,7 +162,7 @@ Document the unchanged signature, EINTR retry, ECHILD/invalid-PID signal guard, 
 
 - [ ] **Step 2: Run native and sanitizer validation**
 
-Run the full Vulkan and OpenGL suites, and the four focused tests in ASan+UBSan and TSan trees. Require zero failures. Keep platform-specific skips visible and never convert them into executed passes.
+Run the full Vulkan and OpenGL suites, and the four focused tests in ASan+UBSan and TSan trees. Require zero failures. Keep platform-specific skips visible and never convert them into executed passes. Do not claim sanitizer coverage that was not actually run; macOS leak detection is unsupported.
 
 - [ ] **Step 3: Independent review and fixes**
 
@@ -178,3 +178,9 @@ git push origin HEAD:master
 ```
 
 Re-run affected tests after any rebase. Verify final CI, windows-d3d12, arm64 selection and Proton ancestry. Record actual run IDs/outcomes without claiming QUIC execution when its credentials are unavailable. Leave `HEAD == origin/master`, a clean main checkout, and no temporary worktree.
+
+## Follow-up review: sustained EINTR deadline
+
+The original Task 3 unconditional `continue` and its instruction not to alter timeout accounting are superseded by this follow-up. They allowed sustained EINTR to bypass the deadline and busy-poll. The current implementation computes a `CLOCK_MONOTONIC` absolute deadline once, sends both EINTR and still-running results through the same deadline check, and retains the 10 ms sleep only as the polling interval. Normal exits and all error-cleanup ownership rules remain unchanged.
+
+Add `waitpid_deadline_sustained_eintr_does_not_extend_timeout`: inject EINTR only into WNOHANG polling for 200 ms while using a 50 ms helper deadline. Keep cleanup waits real, capture result/status/call count/elapsed before the real-wait fallback, require fallback `cleanup=0`, and require elapsed to be at least 50 ms but below the injection window. The old implementation produced 10 passes and one failure out of 11; the fixed test suite is 11/11. Update the earlier five-test/10-test references as historical initial-scope evidence, not the current total.
