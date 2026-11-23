@@ -569,3 +569,12 @@
 - qemu-user 下 fork 后创建线程的挂起尚未解决。
 - 无关 Windows 平台/GPU 问题尚未解决，不能由本场景用例通过推断其状态。
 - 完整 Vulkan/OpenGL 与 ASan+UBSan/TSan 矩阵、远端结果仍待执行和核验；此处不预写通过结论或运行编号。
+
+
+### Scene 临时路径完整验证后的缺口（2026-11-23）
+
+上一追加段的本地完整矩阵待验证状态已由实测更新：Vulkan **455/455**、OpenGL **454/454**，均 **0 失败**，各有 **4 个既有条件 skip**；ASan+UBSan focused **4/4**、TSan focused **4/4**。条件 skip 不计为执行通过，sanitizer 计数不表示完整 sanitizer suite。
+
+Windows 在最终 `c4c0d966` 上取得完整 `test_scene_serial` **122/122**，以及 `test_runtime_io`、`test_runtime_reload`、`test_core_app_diagnostics` 各 **1/1**。
+
+远端结果待推送后核验，不预写 run-id 或通过结论。以下事项仍未解决：共享 `test_tmp` 截断整改、qemu-user 下 fork 后创建线程的挂起，以及无关 Windows 平台/GPU 问题。

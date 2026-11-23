@@ -13351,3 +13351,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **最小修复与 GREEN**：提交 `c4c0d966` 把两个局部缓冲区改为 512 字节，并在第一次 save 前加入 `ASSERT_TRUE(strcmp(pa, pb) != 0);`，确保碰撞在任何文件 I/O 前被检出。最终提交的 Windows 完整 `test_scene_serial` 为 **122/122**，Linux focused 四项为 **4/4**。
 - **改动边界**：共享 `test_tmp`、产品代码和场景文件格式均未改动。此次只隔离该用例的两条临时路径，不把局部修复解释为共享截断问题已整改。
 - **仍未解决与待验证**：共享 `test_tmp` 截断整改、qemu-user 下 fork 后创建线程的挂起、无关 Windows 平台/GPU 问题仍未解决。完整 Vulkan/OpenGL 与 ASan+UBSan/TSan 矩阵及远端结果待实际执行和核验，不预写通过结论或运行编号。
+
+
+### Scene 临时路径完整验证闭环（2026-11-23）
+
+- **原生完整套件**：Vulkan **455/455**、OpenGL **454/454**，均 **0 失败**，各有 **4 个既有条件 skip**；skip 不计为执行通过。上一追加段中的本地完整矩阵待验证状态由此更新。
+- **sanitizer 范围**：ASan+UBSan focused **4/4**、TSan focused **4/4**。这些结果仅覆盖四项 focused 测试，不扩展为完整 sanitizer suite 结论。
+- **Windows 最终证据**：`c4c0d966` 上完整 `test_scene_serial` **122/122**，`test_runtime_io`、`test_runtime_reload`、`test_core_app_diagnostics` 各 **1/1**。
+- **剩余边界**：共享 `test_tmp` 截断整改、qemu-user 下 fork 后创建线程的挂起、无关 Windows 平台/GPU 问题仍未解决。远端结果待推送后核验，不预写 run-id 或通过结论。

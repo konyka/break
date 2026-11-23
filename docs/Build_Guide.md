@@ -1869,3 +1869,12 @@ Windows 的 `break_crash_install` 仍为 false stub，启用选项会 start 失�
 本次未修改共享 `test_tmp`、产品代码或场景文件格式。共享 helper 的截断整改仍未完成；qemu-user 下 fork 后创建线程的挂起，以及无关 Windows 平台/GPU 问题，均不因该 fixture 修复而关闭。
 
 完整 Vulkan/OpenGL 与 ASan+UBSan/TSan 矩阵、远端工作流结果仍待执行和核验，不预先记录通过结论或运行编号。
+
+
+### Scene 临时路径完整验证补充（2026-11-23）
+
+上一追加段的本地完整矩阵待执行状态由以下实测结果更新：Vulkan **455/455**、OpenGL **454/454**，均 **0 失败**，且各有 **4 个既有条件 skip**；skip 保持可见，不计为执行通过。ASan+UBSan focused **4/4**、TSan focused **4/4**，两项 sanitizer 结果仅覆盖四项 focused 测试，不表示完整 sanitizer suite 已执行。
+
+Windows 在最终 `c4c0d966` 上的完整 `test_scene_serial` 为 **122/122**；`test_runtime_io`、`test_runtime_reload`、`test_core_app_diagnostics` 各 **1/1**。
+
+远端结果待推送后核验，不预写 run-id 或通过结论。共享 `test_tmp` 截断整改、qemu-user 下 fork 后创建线程的挂起，以及无关 Windows 平台/GPU 问题仍未解决。
