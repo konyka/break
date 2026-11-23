@@ -1788,8 +1788,9 @@ TEST(duplicate_entities_chunk_rejected)
  * caller's Scene half-overwritten — scene_load_binary now stages and commits. */
 TEST(failed_load_keeps_previous_scene)
 {
-    char pa[64]; test_tmp(pa, sizeof pa, "test_bscn_keep_a.bscn"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
-    char pb[64]; test_tmp(pb, sizeof pb, "test_bscn_keep_b.bscn"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
+    char pa[512]; test_tmp(pa, sizeof pa, "test_bscn_keep_a.bscn"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
+    char pb[512]; test_tmp(pb, sizeof pb, "test_bscn_keep_b.bscn"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
+    ASSERT_TRUE(strcmp(pa, pb) != 0);
     SerializeOptions opts = { .include_resources = true, .pretty_json = false };
 
     /* A: 2 meshes + 2 materials → 4 resources. */
