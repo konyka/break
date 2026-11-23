@@ -1837,11 +1837,24 @@ Windows 的 `break_crash_install` 仍为 false stub，启用选项会 start 失�
 
 测试 fallback 使用真实 `waitpid(..., WNOHANG)`，只有返回 0、确认子进程仍存活时才发送真实 SIGKILL 并回收；GREEN 的三个子进程用例均为 `cleanup=0`，因此 fallback 没有代替 helper 清理或制造通过。ECHILD 与 PID 0 用例启用 observe-only kill spy，spy 只记录调用，不真实发送信号。
 
-本地完整矩阵结果见下节；远端待推送后核验，不预写任何远端结果。qemu-user 下 fork 后创建线程的挂起，以及 Windows scene 独立问题，均未由本次修改解决。
+本地完整矩阵结果见下节；远端验收结果见下文收据。qemu-user 下 fork 后创建线程的挂起，以及 Windows scene 独立问题，均未由本次修改解决。
 
 
 ### 本地完整验证补充（2026-11-23）
 
 本地实际结果为 Vulkan **455/455**、OpenGL **454/454**，均 **0 失败**；两套各有 **4 个既有平台条件 skip**，这些 skip 保持可见，不计为执行通过。ASan+UBSan focused **4/4**、TSan focused **4/4**，两项 sanitizer 证据仅覆盖四项 focused 测试，不表示完整 sanitizer suite 已执行。
 
-远端待推送后核验，不预写任何远端结果。qemu-user 下 fork 后创建线程的挂起和 Windows scene 独立问题仍未解决。
+远端验收结果见下文收据。qemu-user 下 fork 后创建线程的挂起和 Windows scene 独立问题仍未解决。
+
+
+### 远端验收收据（`3cbe982d`，2026-11-23）
+
+以下结果属于 `3cbe982d341e42f6bc93afb618c1193a2aa3ea86`，不是本收据提交之后新触发工作流的结果。
+
+- [主 CI 45111186620](https://github.com/konyka/break/actions/runs/45111186620)：27 个作业，**24 success、3 conditional skipped、0 failure**。
+- arm64 job `137483673104`：QEMU 选择套件 **276/276**；`test_fork_deadline` 实际编译并在 QEMU 中通过。
+- [windows-d3d12 45111186576](https://github.com/konyka/break/actions/runs/45111186576)：成功。
+- [Proton 45112518778](https://github.com/konyka/break/actions/runs/45112518778)：成功；artifact 上游 run-id=`45111186576`，artifact ID `14789468602`。`device_contract=77`、`pipeline_contract=77`，仅表示兼容通道，不是 GPU 或原生 D3D12 通过。
+- QUIC 未触发，不声称测试通过。qemu-user 下 fork 后创建线程的挂起和 Windows scene 独立问题仍未解决。
+
+本收据提交还会触发新的工作流，须待实际核验，不预写其结果。
