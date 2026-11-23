@@ -13258,3 +13258,12 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **Proton 归属与边界**：[proton-d3d12 run 45017384077](https://github.com/konyka/break/actions/runs/45017384077) 成功，日志明确下载上游 `45016241029` 的 artifact；页面所示触发时默认分支 SHA 不作为本批归属依据。无 GPU 环境下 device/pipeline 合同均按既有约定返回 77 跳过，本记录只表示兼容工作流成功，不冒充原生 D3D12 或通过 GPU 测试。
 - **macOS 实机**：同一首批提交上，Metal headless **422/422**、graphics/gpu **6/6**；MoltenVK headless **425/425**、graphics/gpu **6/6**。两者均实际构建并运行 `test_framework_runtime_bus`，根构建契约另为 **1/1**（四个子树）。headless 各有 4 项平台条件跳过；连接信息未写入文档或日志。
 - **同步后复核**：首批结果后远端新增至 `c8990472`，本批已对齐。增强默认 OFF 断言后的根契约在 Unix Makefiles 与 Ninja Multi-Config 各 1/1；网络边界与框架交集 `test_break_cell_link`、`test_network`、`test_framework_runtime_bus` 3/3。最终文档提交的新流水线另行核验。
+
+### 2026-11-23 整文件空资源边界审查
+
+- **同步与基线**：远程仅新增 `5a3b062f`（framework bus 验收文档），已快进合并且无冲突。基线 Metal **432/432**、MoltenVK **435/435** 均通过。
+- **问题与根因**：`vfs_open` 已能打开目录/PAK 中的空文件，但 `vfs_read_all` 直接用 `malloc(f->size)` 的返回值区分成败；C 允许 `malloc(0)` 返回 NULL，因此合法空文件在部分实现上被误判。Runtime IO 和兼容 raw async full-file 请求又显式要求 `size > 0`，所以即使本机 `malloc(0)` 返回非空指针，两条上层路径仍把空文件当作失败。
+- **修复**：VFS 对零长度成功读取提供可由 `free()` 释放的非空 owned buffer，失败仍返回 NULL 并清零 `out_size`；raw async full-file 交付一次 `(non-NULL, 0)` 成功回调，分发后槽位按既有契约回到 UNLOADED；Runtime IO 交付 `COMPLETED/OK`、`byte_size=0`、`bytes=NULL` 的 completion，统计 completed 增加、failed 和 bytes_published 不增加。未修改纹理解码、range、reload 对空内容的各自格式/保留旧版本策略。公共头、模块说明和 `docs/design/runtime_asset_streaming.md` 已同步，原先“兼容加载器未修改”的过期注释已更正。
+- **RED/GREEN**：新增 `vfs_read_all_empty_file`、`async_loader_load_empty`、`io_empty_file_completion`。旧实现上 raw async **17/18**、Runtime IO **20/21**，仅目标断言失败且请求、线程、临时文件均完成清理；修复后分别 **18/18**、**21/21**，VFS 目录/PAK 回归 **37/37**。旧 VFS 在本机 `malloc(0)` 非 NULL 时不失败，这是已记录的平台边界，不将其伪写为 RED；当实现返回 NULL 时，双来源用例会检出旧行为。模块文档原先的 33 项 VFS 计数已按实测更正为 37。
+- **最终验证**：macOS Metal **432/432**、graphics **6/6**，MoltenVK **435/435**、graphics **5/5**，根构建及契约 **1/1**；两套全量各 4 项既有平台条件跳过。focused 三目标在两套构建均 **3/3**。直接编译的 VFS ASan+UBSan **37/37**、零诊断；本机报告不支持 leak detection，故没有 LeakSanitizer 通过结论。构建和测试产生的非 `kc_*` 临时条目前后一致，红测遗留物已精确清理。
+- **边界**：本轮没有 Windows/Linux 实机结果，也没有在返回 NULL 的 `malloc(0)` 实现上执行；不得由 macOS 结果推断这些平台已验证。完整 Runtime IO/async 的 ASan/TSan 矩阵未在本轮新增执行；所述 sanitizer 仅指 VFS focused 检查。

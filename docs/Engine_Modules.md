@@ -830,8 +830,9 @@ void     vfs_close(VFSFile *f);
 - PAK 打包格式（自定义，含 FNV-1a 哈希索引）；挂载前必须同时匹配 magic 与 `VFS_PAK_VERSION`，避免将不同条目布局的归档按当前格式错误解析
 - PAK 名称表条目必须在声明的名称表范围内以 NUL 结束；未终止名称仅在挂载期跳过为查找 miss，不会借助内存分配的哨兵字节错误匹配路径。检查仅在构建索引时执行，不增加 `vfs_open()` 热路径开销或常驻分配
 - 统一接口，上层无需区分目录/PAK 来源
+- `vfs_read_all()` 对目录和 PAK 中的合法空文件返回可由 `free()` 释放的非空 owned buffer，并将 `out_size` 设为零；文件不存在或分配失败仍返回 NULL。返回值不依赖 `malloc(0)` 的平台差异
 
-**单元测试：** `tests/test_vfs.c` (33 测试用例，覆盖目录/PAK 挂载、文件读写、PAK 二进制格式、版本与未终止名称拒绝、挂载优先级、边界条件)
+**单元测试：** `tests/test_vfs.c` (37 测试用例，覆盖目录/PAK 挂载、文件读写（含空文件）、PAK 二进制格式、版本与未终止名称拒绝、挂载优先级、边界条件)
 
 ### 6.5 Packer 打包工具 (`engine/tools/packer.c`)
 
@@ -1818,7 +1819,9 @@ typedef struct {
 2. 主循环每帧 `tick()` 处理 I/O 完成回调 + `decode_pipeline_tick()` 处理解码完成回调
 3. 关闭时 `shutdown()` 等待 I/O/解码线程退出，并同步交付尚未由 `tick()` 分发的最终回调：普通 READY 请求和已完成纹理解码请求均保留数据所有权转交，未完成请求以 `(NULL, 0)` 通知；每个已接受请求至多回调一次
 
-**单元测试：** `tests/test_async_loader.c` (覆盖基本加载/取消/范围读至文件末尾/优先级出队顺序/解码管线端到端、关闭时 queued/READY/decode-ready completion 的一次性回调交付)
+普通整文件请求读取合法空文件时交付一次非 NULL、size 为 0 的 owned buffer，回调仍须释放该 buffer；不能将其与缺失文件的 `(NULL, 0)` 失败通知混淆。纹理解码和 range 请求仍执行各自的格式与边界校验。
+
+**单元测试：** `tests/test_async_loader.c` (18 个用例，覆盖基本加载、空文件成功回调、取消、范围读至文件末尾、优先级出队顺序、解码管线端到端，以及关闭时 queued/READY/decode-ready completion 的一次性回调交付)
 
 ---
 

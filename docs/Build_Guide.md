@@ -1745,3 +1745,10 @@ int RunRuntimeBusApplication() {
 后续本地验收补充：标准 Wayland Vulkan 453/453、OpenGL 451/451、ASan+UBSan 非图形 438/438、fuzz 14/14、相关 TSan 6/6 均已通过。增强根契约在 Unix Makefiles 与 Ninja Multi-Config 各 1/1 通过，显式 ON 子树实际构建并运行新测试 1/1；总评审指出的 shutdown 超时交接问题已复审关闭。arm64、Windows、macOS 与远端流水线仍以实际平台结果为准。
 
 远端验收补充：首批提交 `77878229` 的主 CI、Windows D3D12、QUIC 和 Proton 工作流均成功，arm64 QEMU 276/276；macOS 实机 Metal 与 MoltenVK 均通过 headless、graphics/gpu 和根构建契约。详细计数、run 标识及 Proton 跳过语义见 `docs/Implementation_Status.md` 的「framework 总线远端与实机验收」。
+
+### 2026-11-23 整文件空资源复核
+
+- 同步远程 `5a3b062f` 的 1 个文档提交，快进合并、无冲突；同步后的 Metal 432/432、MoltenVK 435/435 基线通过。
+- 修复整文件字节加载的空文件边界：目录/PAK 的 `vfs_read_all` 成功时统一返回可释放的非空 buffer 和零长度，不再由 `malloc(0)` 的平台实现决定结果；raw async full-file 请求交付一次非空、零字节成功回调；Runtime IO 交付 `COMPLETED/OK`、`byte_size=0`、`bytes=NULL`。纹理、range 和 reload 的格式/保留旧版本策略未放宽，接口与 `docs/design/runtime_asset_streaming.md` 已同步。
+- 新回归先检出旧实现：`test_async_loader` 17/18、`test_runtime_io` 20/21；修复后分别为 18/18、21/21，`test_vfs` 37/37（旧模块文档的 33 是过时计数）。本机旧 VFS 的 `malloc(0)` 返回非空指针，因此 VFS 的平台相关失败分支没有伪记为 macOS RED；目录/PAK 用例可在该函数返回 NULL 的实现上检出旧行为。
+- 最终 macOS Metal 432/432、graphics 6/6，MoltenVK 435/435、graphics 5/5，根构建契约 1/1；两套全量各 4 项既有平台条件跳过。VFS 的 ASan+UBSan 37/37 无诊断；本机不支持 LeakSanitizer，未声称完成泄漏检查。Windows、Linux 和返回 NULL 的 `malloc(0)` 实现未在本轮实机执行。
