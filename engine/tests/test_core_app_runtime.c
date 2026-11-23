@@ -485,28 +485,22 @@ static void capture_runtime_diagnostics(void *user,
     capture->snapshots[index].gpu_name = capture->gpu_names[index];
 }
 
-TEST(diagnostics_capture_runtime_tick_zero_and_completed_tick) {
-    const char *scenario_text =
-        "core-app-scenario 1\n"
-        "seed 12648430\n"
-        "fixed-dt-ns 16666667\n"
-        "1 key w 1\n"
-        "2 quit\n";
+static void run_diagnostics_capture(const char *scenario_text, u32 max_frames,
+                                    RuntimeDiagnosticsCapture *capture,
+                                    BreakRuntimeError *result, int *exit_code) {
     char scenario_path[512];
     char trace_path[512];
     FILE *scenario_file;
     int write_result = -1;
     int close_result = -1;
-    RuntimeDiagnosticsCapture capture;
     CoreAppDiagnosticsHooks hooks;
     CoreAppConfig config;
-    BreakRuntimeError result;
-    int exit_code = -1;
-    u32 index;
 
-    memset(&capture, 0, sizeof(capture));
+    memset(capture, 0, sizeof(*capture));
     memset(&hooks, 0, sizeof(hooks));
     memset(&config, 0, sizeof(config));
+    *result = BREAK_RUNTIME_FAILED;
+    *exit_code = -1;
     test_tmp(scenario_path, sizeof(scenario_path), "core_app_diagnostics_runtime");
     test_tmp(trace_path, sizeof(trace_path), "core_app_diagnostics_runtime_trace");
     (void)remove(scenario_path);
@@ -526,16 +520,31 @@ TEST(diagnostics_capture_runtime_tick_zero_and_completed_tick) {
     config.asset_root = ".";
     config.scenario_path = scenario_path;
     config.trace_path = trace_path;
-    hooks.user = &capture;
+    config.max_frames = max_frames;
+    hooks.user = capture;
     hooks.publish = capture_runtime_diagnostics;
     config.diagnostics = &hooks;
-    result = core_app_run(&config, &exit_code);
+    *result = core_app_run(&config, exit_code);
     (void)remove(scenario_path);
     (void)remove(trace_path);
+}
 
+TEST(diagnostics_capture_runtime_tick_zero_and_completed_tick) {
+    const char *scenario_text =
+        "core-app-scenario 1\n"
+        "seed 12648430\n"
+        "fixed-dt-ns 16666667\n"
+        "1 key w 1\n"
+        "2 quit\n";
+    RuntimeDiagnosticsCapture capture;
+    BreakRuntimeError result;
+    int exit_code;
+    u32 index;
+
+    run_diagnostics_capture(scenario_text, 0u, &capture, &result, &exit_code);
     ASSERT_EQ(result, BREAK_RUNTIME_OK);
     ASSERT_EQ(exit_code, 0);
-    ASSERT_TRUE(capture.count >= 2u);
+    ASSERT_EQ(capture.count, 2u);
     for (index = 0u; index < 2u; ++index) {
         ASSERT_STR_EQ(capture.snapshots[index].rhi_backend, "record");
         ASSERT_STR_EQ(capture.snapshots[index].gpu_name, "none");
@@ -550,6 +559,30 @@ TEST(diagnostics_capture_runtime_tick_zero_and_completed_tick) {
     ASSERT_EQ(capture.snapshots[0].key_down_count, 0u);
     ASSERT_EQ(capture.snapshots[1].tick, 1u);
     ASSERT_EQ(capture.snapshots[1].key_down_count, 1u);
+    ASSERT_EQ(capture.snapshots[capture.count - 1u].tick, 1u);
+}
+
+TEST(diagnostics_max_frames_excludes_unfinished_tick) {
+    const char *scenario_text =
+        "core-app-scenario 1\n"
+        "seed 12648430\n"
+        "fixed-dt-ns 16666667\n"
+        "1 key w 1\n"
+        "3 quit\n";
+    const u32 max_frames = 2u;
+    RuntimeDiagnosticsCapture capture;
+    BreakRuntimeError result;
+    int exit_code;
+
+    run_diagnostics_capture(scenario_text, max_frames, &capture, &result, &exit_code);
+    ASSERT_EQ(result, BREAK_RUNTIME_OK);
+    ASSERT_EQ(exit_code, 0);
+    ASSERT_EQ(capture.count, max_frames + 1u);
+    ASSERT_EQ(capture.snapshots[0].tick, 0u);
+    ASSERT_EQ(capture.snapshots[1].tick, 1u);
+    ASSERT_EQ(capture.snapshots[2].tick, 2u);
+    ASSERT_EQ(capture.snapshots[capture.count - 1u].tick, max_frames);
+    ASSERT_EQ(capture.snapshots[capture.count - 1u].key_down_count, 1u);
 }
 
 TEST(input_reuses_touch_id_with_new_generation) {
@@ -1944,6 +1977,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(invalid_diagnostics_hooks_fail_before_io);
     RUN_TEST(invalid_diagnostics_hooks_rejected_before_trace_creation);
     RUN_TEST(diagnostics_capture_runtime_tick_zero_and_completed_tick);
+    RUN_TEST(diagnostics_max_frames_excludes_unfinished_tick);
     RUN_TEST(input_reuses_touch_id_with_new_generation);
     RUN_TEST(input_cancel_emits_no_gesture_and_next_tick_is_idle);
     RUN_TEST(input_key_hold_survives_tick_and_release_clears_it);

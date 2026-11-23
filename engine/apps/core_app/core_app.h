@@ -76,6 +76,10 @@ typedef struct CoreAppNetworkHooks {
 /* Corrections above the net payload cap are never encoded. */
 #define CORE_APP_PHYSICS_CORRECTION_MAX_BYTES (64u * 1024u)
 
+/* Diagnostics hooks are borrowed for the whole run. Each snapshot and its
+ * rhi_backend/gpu_name strings are borrowed only for the publish callback,
+ * which runs synchronously on the CoreAppThread; copy them in the callback to
+ * retain them. */
 typedef struct CoreAppDiagnosticsSnapshot {
     u32 tick;
     const char *rhi_backend;

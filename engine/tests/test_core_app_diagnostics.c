@@ -191,7 +191,7 @@ done:
 #if !defined(_WIN32)
 static void crash_child(const char *root, const CoreAppDiagnosticsSnapshot *snapshot,
                         bool publish_null) {
-    if (!break_crash_is_installed() && !core_app_diagnostics_start(root)) _exit(41);
+    if (!core_app_diagnostics_start(root)) _exit(41);
     core_app_diagnostics_publish(NULL, snapshot);
     if (publish_null) core_app_diagnostics_publish(NULL, NULL);
     (void)raise(SIGSEGV);
@@ -500,15 +500,15 @@ TEST(restart_recovers_real_child_crash_after_stop) {
     first_started = core_app_diagnostics_start(root);
     core_app_diagnostics_stop();
     restarted = core_app_diagnostics_start(root);
-    if (restarted) {
+    core_app_diagnostics_stop();
+    stopped = !break_crash_is_installed();
+    if (restarted && stopped) {
         pid = spawn_crash(root, &snapshot, false);
         if (pid > 0) {
             signal_ok = wait_for_segv(pid);
             if (signal_ok) recovered = check_recovered_blob(root, EXPECTED_BLOB);
         }
     }
-    core_app_diagnostics_stop();
-    stopped = !break_crash_is_installed();
     remove_spool(root);
     ASSERT_TRUE(first_started);
     ASSERT_TRUE(restarted);
