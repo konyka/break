@@ -13383,3 +13383,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **RED/GREEN**：新增 `waitpid_deadline_sustained_eintr_does_not_extend_timeout`，只对 WNOHANG 轮询持续注入 200 ms EINTR，目标期限为 50 ms，清理阶段仍调用真实 waitpid。旧实现实测 **10 passed / 1 failed / 11 total**，新用例约 275 ms 才返回并进行了 7,221,272 次等待调用；fallback 为 `cleanup=0`，没有遗留子进程。修复后 Metal 为 **11/11**，新用例约 59 ms、7 次调用；MoltenVK 也为 **11/11**。
 - **联动与 sanitizer**：两套后端的 `test_fork_deadline`、`test_runtime_io`、`test_runtime_reload`、`test_core_app_diagnostics` focused CTest 均 **4/4**。直接编译的 ASan+UBSan `test_fork_deadline` **11/11**、无诊断；本机显式关闭不受支持的 leak detection，不声称 LeakSanitizer 通过，也未新增 TSan 证据。
 - **验证边界**：基线 Metal 全量 **435/435**，5 项既有平台条件 skip。修复后最终本地全量：Metal **435/435**、MoltenVK **438/438**，各 5 项既有条件 skip（skip 不计为执行通过）；ASan+UBSan 下 `test_fork_deadline` 11/11 无诊断，未运行 TSan/LSan。Windows/Linux 和远端 CI 未由本轮本地结果代替。qemu-user 下 fork 后建线程的独立挂起仍未解决。
+
+#### fork 持续 EINTR 修复远端收据（2026-11-23）
+
+- 提交 `1d1eea2f`（`test(fork): bound sustained EINTR by a monotonic deadline`）已推送 `master`。
+- CI run `45131673385`：completed/success，27 个 job 中 24 个 success，3 个按条件 skip（`lane-gpu-runtime-windows-d3d12`、Steam Deck 实机基准、Proton 参考 lane），skip 不计为执行通过。含 `Linux arm64 cross-build + QEMU tests (GCC)` 成功；本次未取得 job 日志（未认证 API 返回 403），因此不声称已从日志确认 arm64 选择套件包含 `test_fork_deadline`。
+- windows-d3d12 run `45131673312`：completed/success。
+- 本收据提交自身会触发新的工作流，其结果不在此预写。
