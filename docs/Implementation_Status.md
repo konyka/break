@@ -13407,3 +13407,14 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **sanitizer 范围**：ASan+UBSan focused **8/8**、TSan focused **8/8**，仅覆盖本次八项 focused 测试，不表示完整 sanitizer suite 已执行。
 - **Windows 复验**：scene **123/123**、async **19/19**，root/tmp 两个溢出探针均通过；mipmap、editor、runtime_io、runtime_reload、core_app_diagnostics 均通过。
 - **边界与待办**：共享截断场景仅说明 norm 溢出明确失败。qemu-user 下 fork 后创建线程的挂起和无关 Windows 平台/GPU 问题仍未解决。远端结果待推送后核验，不预写 run-id 或成功结论。
+
+
+#### 共享 test_tmp 紧凑路径远端收据（2026-11-23）
+
+- 变基到 `234c3bbe` 后，最终提交 `a45ebe8e`（含 `a96c9e88` `test(temp): add compact paths for long temporary names`）已直接推送 `master`。变基后本地默认 Vulkan 全量 **462/462**、0 失败、4 个既有条件 skip；`test_fork_deadline` 合入上游 EINTR 用例后 **15/15**。变基后未重跑 OpenGL 与 sanitizer 树，此前结果来自变基前代码。
+- CI run `45135178329`：completed/success，27 个 job 中 24 个 success，3 个按条件 skip（`lane-gpu-runtime-windows-d3d12`、Steam Deck 实机基准、Proton 参考 lane），skip 不计为执行通过。
+- arm64：`Linux arm64 cross-build + QEMU tests (GCC)` 日志确认选择套件 **276/276** 通过，其中包含 `test_async_loader` 与 `test_fork_deadline`。
+- windows-d3d12 run `45135178298`：completed/success。
+- QUIC Weak Network run `45135178436`：completed/success（4 个独立场景）。
+- Proton run `45137309048`：success，artifact 上游 run-id=`45135178298`（即本提交的 windows-d3d12），`device_contract=77`、`pipeline_contract=77`，仅表示兼容通道，不是 GPU 或原生 D3D12 通过。同 SHA 另一 Proton run `45135718032` 的上游为更早的 `45134413135`，不作为本提交证据。
+- qemu-user 下 fork 后创建线程的挂起和无关 Windows 平台/GPU 问题仍未解决。本收据提交自身触发的工作流结果不在此预写。
