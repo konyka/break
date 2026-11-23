@@ -617,3 +617,12 @@ Windows 在最终 `c4c0d966` 上取得完整 `test_scene_serial` **122/122**，�
 - 远端工作流结果仍待核验，不预写通过结论或运行编号。
 - qemu-user 下 fork 后创建线程的挂起尚未解决。
 - 无关 Windows 平台/GPU 问题尚未解决，不能由上述临时路径测试推断其状态。
+
+
+### 共享 test_tmp 完整验证后的剩余缺口（2026-11-23）
+
+上一追加段的本地验证待执行状态由实测结果更新：Vulkan **455/455**、OpenGL **454/454**，均 **0 失败**，各有 **4 个既有条件 skip**；skip 不计为执行通过。ASan+UBSan focused **8/8**、TSan focused **8/8**，两项计数仅覆盖本次 focused 范围，不表示完整 sanitizer suite 已执行。
+
+Windows scene **123/123**、async **19/19**，两个溢出探针通过；mipmap、editor、runtime_io、runtime_reload、core_app_diagnostics 均通过。共享截断场景仅说明 norm 溢出明确失败，不扩大其验证结论。
+
+以下事项保持打开：qemu-user 下 fork 后创建线程的挂起仍未解决；无关 Windows 平台/GPU 问题仍未解决。远端结果待推送后核验，不预写 run-id 或成功结论。

@@ -1938,3 +1938,16 @@ if (cap < 32u) cap = 32u;
 已执行的 GREEN 证据为：Linux `test_fork_deadline` **14/14**、`test_async_loader` **19/19**，包含 scene、async、fork、runtime I/O/reload 和 diagnostics 的 focused CTest **6/6**；mipmap 与 editor 额外回归 **2/2**。Windows `test_scene_serial` **123/123**、`test_async_loader` **19/19**，`test_tmp_root_overflow` 与 `test_tmp_path_overflow` **2/2**，mipmap、editor、runtime I/O/reload 和 diagnostics **5/5**。editor 的缺失父目录用例包含在上述完整目标中。
 
 这些结果不是完整矩阵收据。完整 Vulkan/OpenGL、ASan+UBSan 与 TSan 验证，以及远端工作流结果，仍待实际执行和核验，不预写通过计数或运行编号。qemu-user 下 fork 后创建线程的挂起和无关 Windows 平台/GPU 问题仍未解决；上述 focused 结果不关闭这些独立问题。
+
+
+### 共享 test_tmp 完整验证补充（2026-11-23）
+
+上一追加段的本地完整验证待执行状态由以下实测结果更新：
+
+- Vulkan **455/455**、OpenGL **454/454**，均 **0 失败**；两套各有 **4 个既有条件 skip**，skip 保持可见，不计为执行通过。
+- ASan+UBSan focused **8/8**、TSan focused **8/8**。这些计数仅覆盖本次八项 focused 测试，不扩展为完整 sanitizer suite 结论。
+- Windows `test_scene_serial` **123/123**、`test_async_loader` **19/19**，`test_tmp_root_overflow` 与 `test_tmp_path_overflow` 均通过；`test_mipmap_stream`、`test_editor_scene`、`test_runtime_io`、`test_runtime_reload`、`test_core_app_diagnostics` 也均通过。
+
+本次共享截断场景仅说明 Windows norm 溢出会明确失败，不据此扩展其他场景结论。qemu-user 下 fork 后创建线程的挂起和无关 Windows 平台/GPU 问题仍未解决。
+
+远端结果待推送后核验，不预写 run-id 或成功结论。

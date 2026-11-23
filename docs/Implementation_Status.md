@@ -13399,3 +13399,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **确定性 RED/GREEN**：旧实现上，四个 POSIX 用例分别暴露子进程未 abort 和长名称碰撞，合计 **10/14**；async 为 **18/19**。Windows scene 为 **122/123**、async 为 **18/19**；root/tmp 两个探针都因旧进程返回 0 而失败。修改后 Linux fork **14/14**、async **19/19**、focused CTest **6/6**，mipmap/editor **2/2**；Windows scene **123/123**、async **19/19**、两个溢出探针 **2/2**，mipmap、editor、runtime I/O/reload、diagnostics **5/5**。
 - **真实 I/O 与探针**：async 回归先断言独立推导的 `break_8073d8d7_<pid>`，再写入 `0x5a`，挂载真实临时根并通过 async loader/VFS 读取精确叶名，要求一次回调和相同字节。两个 Windows 探针分别覆盖 `test_tmp_root` 与 `test_tmp` 的规范化溢出，使用 600 字节 ASCII TEMP、30 秒进程超时，并同时要求非零结果与截断标记；旧实现的零退出和任意无标记崩溃均不能通过。
 - **复核与剩余边界**：路径字节、哈希类型与掩码、容量算术、根保持、父目录、abort 前无 I/O、子进程回收及真实 VFS 读取的已有复核未发现 Critical、Important 或 Minor。完整 Vulkan/OpenGL、ASan+UBSan、TSan 矩阵和远端结果仍待执行与核验，不预写结论。qemu-user 下 fork 后创建线程的挂起，以及无关 Windows 平台/GPU 问题，均未由本次测试基础设施整改解决。
+
+
+### 共享 test_tmp 完整验证收据（2026-11-23）
+
+- **原生完整套件**：Vulkan **455/455**、OpenGL **454/454**，均 **0 失败**，且各有 **4 个既有条件 skip**；条件 skip 不计为执行通过。上一追加段的本地完整矩阵待验证状态由此更新。
+- **sanitizer 范围**：ASan+UBSan focused **8/8**、TSan focused **8/8**，仅覆盖本次八项 focused 测试，不表示完整 sanitizer suite 已执行。
+- **Windows 复验**：scene **123/123**、async **19/19**，root/tmp 两个溢出探针均通过；mipmap、editor、runtime_io、runtime_reload、core_app_diagnostics 均通过。
+- **边界与待办**：共享截断场景仅说明 norm 溢出明确失败。qemu-user 下 fork 后创建线程的挂起和无关 Windows 平台/GPU 问题仍未解决。远端结果待推送后核验，不预写 run-id 或成功结论。
