@@ -90,6 +90,7 @@ int vfprintf(FILE *stream, const char *format, va_list args) {
 }
 
 int sigaction(int signal, const struct sigaction *action, struct sigaction *old_action) {
+    if (!real_sigaction) load_symbol(&real_sigaction, sizeof(real_sigaction), "sigaction");
     int result = real_sigaction(signal, action, old_action);
     if (trace_sigactions) ++sigaction_total;
     return result;

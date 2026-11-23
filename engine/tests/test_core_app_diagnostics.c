@@ -31,6 +31,7 @@ const char *__asan_default_options(void) {
 }
 #endif
 
+#if !defined(_WIN32)
 static const char EXPECTED_BLOB[] =
     "[rhi]\n"
     "backend=vulkan\n"
@@ -121,6 +122,7 @@ static CoreAppDiagnosticsSnapshot record_snapshot(void) {
     snapshot.key_down_count = 1u;
     return snapshot;
 }
+#endif
 
 static void join_path(char *out, usize cap, const char *a, const char *b) {
     int n = snprintf(out, cap, "%s/%s", a, b);
@@ -152,6 +154,7 @@ static void remove_spool(const char *root) {
     (void)TEST_RMDIR(root);
 }
 
+#if !defined(_WIN32)
 static int check_recovered_blob(const char *root, const char *expected_blob) {
     BreakCrashSpool *spool = NULL;
     BreakCrashRecord *record = NULL;
@@ -188,7 +191,6 @@ done:
     return result;
 }
 
-#if !defined(_WIN32)
 static void crash_child(const char *root, const CoreAppDiagnosticsSnapshot *snapshot,
                         bool publish_null) {
     if (!core_app_diagnostics_start(root)) _exit(41);
@@ -413,6 +415,7 @@ TEST(record_verifier_checks_real_record_and_error_codes) {
 #endif
 }
 
+#if !defined(_WIN32)
 static void set_zero_counter_nonzero(CoreAppDiagnosticsSnapshot *snapshot, u32 field) {
     switch (field) {
         case 0: snapshot->network_events_seen = 1u; break;
@@ -425,6 +428,7 @@ static void set_zero_counter_nonzero(CoreAppDiagnosticsSnapshot *snapshot, u32 f
         default: abort();
     }
 }
+#endif
 
 TEST(record_verifier_rejects_each_nonzero_record_counter) {
 #if defined(_WIN32)
