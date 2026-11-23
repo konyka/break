@@ -299,7 +299,7 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 `engine/src/audio/audio_voice_aligner.{h,c}` 将延迟 tracker 与延迟线组合为单声道、所有者线程的 `AudioVoiceAligner`：`create` 选择时域估计，`create_gcc` 显式选择 GCC-PHAT，`uses_gcc` 可核验实际后端。它消费原始播放参考和采集 PCM，输出用于后续 AEC 的对齐参考，不修改采集。
 
 - `update_period_frames` 为 1..192000；处理按精确周期边界切块，与调用者分块无关。每块先把原始参考/采集推入 tracker，并让原始参考经过延迟线；边界到达后更新一次，接受的分数延迟从下一帧生效。拒绝或历史不足保持旧延迟。
-- `updates` 统计实际调度次数（含拒绝），`rejections`、`locked` 转发 tracker 状态，`delay` 返回延迟线实际应用值。创建失败不改变 `*out`，只有 create 分配；零帧合法，非零 NULL 信号及 capture/output 别名在改状态前拒绝。reference/output 可原地复用。
+- `updates` 统计实际调度次数（含拒绝），`rejections`、`locked` 转发 tracker 状态，`delay` 返回输出总延迟（延迟线实际应用值加 sinc 模式的 8 帧固定延迟；线性模式下即延迟线应用值）。创建失败不改变 `*out`，只有 create 分配；零帧合法，非零 NULL 信号及 capture/output 别名在改状态前拒绝。reference/output 可原地复用。
 - `test_audio_voice_aligner` 6 项覆盖参数/调用契约、12.5 帧已知回声的精确更新边界、整块与 1/7/31/128 任意分块逐位一致、静音采集拒绝、GCC 构造及延迟设置失败后的周期恢复。普通、ASan+UBSan、TSan 均 6/6；原始路由、倒计时、延迟应用/提前应用、后端选择、别名、三个 NULL 检查与失败恢复十个变异均判红（删除倒计时恢复表现为超时）。
 - 2026-11-23 补充：`test_audio_voice_aligner` 由 6 项增至 7 项，新增 `reset_matches_a_fresh_aligner`；`test_audio_delay_estimator` 当前为 22 项，含新增 `the_delay_line_reset_matches_a_fresh_line`。
 - 复位：`audio_voice_aligner_reset` 回到刚创建的状态：tracker（含估计器或 GCC-PHAT）与延迟线复位，应用延迟、更新计数归零，距下次更新恢复完整周期；保留后端与配置，不分配，NULL 为空操作。设备重开或会话切换时无需销毁重建。

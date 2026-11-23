@@ -13438,3 +13438,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - `e38b633a`（`feat(audio): reset delay lines and voice aligners`）：CI run `45142486616` completed/success，27 个 job 中 24 个 success、3 个按条件 skip（Windows D3D12 GPU lane、Steam Deck 实机基准、Proton 参考 lane），skip 不计为执行通过；arm64 QEMU 选择套件 **276/276**，含 `test_audio_delay_estimator` 与 `test_audio_voice_aligner`。windows-d3d12 run `45142486473` success；Proton run `45144037463` success，artifact 上游 run-id=`45142486473`，`device_contract=77`、`pipeline_contract=77`，仅表示兼容通道。
 - `0e31707c`（`feat(audio): configure sinc and crossfade on voice aligners`）：CI run `45146038454` completed/success，24 success、3 个同样的条件 skip；arm64 **276/276**，含 `test_audio_voice_aligner`。windows-d3d12 run `45146038451` success；Proton run `45147666121` success，上游 run-id=`45146038451`，两项 contract 退出码均为 77，仅表示兼容通道。
 - 同一提交更正 `docs/design/audio_extended.md` 两处过时的“自动更新调度”未做项：固定周期调度已由 `AudioVoiceAligner` 提供。本收据提交自身触发的工作流结果不在此预写。
+
+## 远程同步复审：紧凑临时路径与语音对齐器配置（2026-11-23）
+
+- **范围**：从 `234c3bbe` 快进到 `0e31707c`（7 个提交），其后变基到远端收据 `2fa5f8f2`（仅文档）：共享 `test_tmp` 紧凑回退路径与 Windows 溢出探针、`audio_delay_line_reset`/`audio_voice_aligner_reset`、对齐器 sinc 与交叉淡化配置。
+- **审查结论**：未发现 Critical/Important 代码问题。复核点包括：sinc 补偿只在应用成功后保存测量值，淡化中 `AUDIO_REJECTED` 被跳过而其他错误仍返回；`set_sinc` 先由延迟线拒绝淡化中的切换，再以零淡化重新应用并恢复原淡化时长；`reset` 以零淡化归零延迟；唯一产品调用方 `core_app_voice.c` 的漂移观测使用 `audio_voice_aligner_delay`，默认线性模式下返回值不变。
+- **文档修正**：`docs/design/audio_extended.md`「语音参考自动对齐」中 `delay` 仍写为“延迟线实际应用值”，与新语义（线延迟加 sinc 的 8 帧）不一致，已改正。
+- **macOS 验证**：Metal 全量 **435/435**、MoltenVK 全量 **438/438**，各 5 项既有条件 skip（不计为执行通过）。直接 cc 编译的 ASan+UBSan（`detect_leaks=0`，本机不支持 LSan）：`test_audio_voice_aligner` 14/14、`test_audio_delay_estimator` 22/22、`test_fork_deadline` 15/15，无诊断。未运行 TSan；Windows/Linux 以远端 CI 为准。
