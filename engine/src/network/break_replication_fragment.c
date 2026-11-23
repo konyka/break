@@ -388,7 +388,10 @@ struct BreakReplicationReassemblyPool {
     BreakReplicationReassemblyPoolSlot *slots;
     size_t stream_capacity;
     size_t max_pending_bytes;
+    size_t pending_bytes;
     uint64_t expected_base_id;
+    uint64_t retired_delta_id;
+    bool retired_valid;
 };
 
 BreakReplicationReassemblyPool *break_replication_reassembly_pool_create(
@@ -434,6 +437,7 @@ BreakReplicationReassemblyResult break_replication_reassembly_pool_push_at(
     BreakReplicationReassemblyPoolSlot *empty = NULL;
     BreakReplicationReassemblyResult validation;
     BreakReplicationReassemblyResult result;
+    size_t slot_pending_before = 0u;
     size_t i;
     bool starting = false;
     if (completed_delta_id) *completed_delta_id = 0u;
@@ -450,17 +454,34 @@ BreakReplicationReassemblyResult break_replication_reassembly_pool_push_at(
         if (!pool->slots[i].active && !empty) empty = &pool->slots[i];
     }
     if (!slot) {
+        if (pool->retired_valid && fragment->delta_id < pool->retired_delta_id)
+            return BREAK_REPLICATION_REASSEMBLY_CONFLICT;
         if (!empty) return BREAK_REPLICATION_REASSEMBLY_OVER_LIMIT;
+        if (fragment->size > pool->max_pending_bytes - pool->pending_bytes)
+            return BREAK_REPLICATION_REASSEMBLY_OVER_LIMIT;
         slot = empty;
         break_replication_reassembler_reset(&slot->reassembler);
         slot->delta_id = fragment->delta_id;
         slot->active = true;
         starting = true;
+    } else {
+        slot_pending_before = slot->reassembler.total_size;
+        if (fragment->fragment_count == slot->reassembler.fragment_count &&
+            !slot->reassembler.received[fragment->fragment_index] &&
+            fragment->size > pool->max_pending_bytes - pool->pending_bytes) {
+            return BREAK_REPLICATION_REASSEMBLY_OVER_LIMIT;
+        }
     }
     result = break_replication_reassembler_push_at(
         &slot->reassembler, fragment, now, payload, payload_size);
+    pool->pending_bytes = pool->pending_bytes - slot_pending_before +
+                          break_replication_reassembler_pending_bytes(&slot->reassembler);
     if (result == BREAK_REPLICATION_REASSEMBLY_COMPLETE) {
         if (completed_delta_id) *completed_delta_id = slot->delta_id;
+        if (!pool->retired_valid || pool->retired_delta_id < slot->delta_id) {
+            pool->retired_delta_id = slot->delta_id;
+            pool->retired_valid = true;
+        }
         slot->active = false;
     } else if (starting && result != BREAK_REPLICATION_REASSEMBLY_INCOMPLETE) {
         slot->active = false;
@@ -483,12 +504,5 @@ size_t break_replication_reassembly_pool_pending_streams(
 size_t break_replication_reassembly_pool_pending_bytes(
     const BreakReplicationReassemblyPool *pool)
 {
-    size_t total = 0u;
-    size_t i;
-    if (!pool) return 0u;
-    for (i = 0u; i < pool->stream_capacity; ++i) {
-        if (pool->slots[i].active)
-            total += break_replication_reassembler_pending_bytes(&pool->slots[i].reassembler);
-    }
-    return total;
+    return pool ? pool->pending_bytes : 0u;
 }

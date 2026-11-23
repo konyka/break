@@ -83,6 +83,11 @@ void break_replication_reassembler_reset(BreakReplicationReassembler *reassemble
 
 #define BREAK_REPLICATION_REASSEMBLY_POOL_MAX_STREAMS 64u
 typedef struct BreakReplicationReassemblyPool BreakReplicationReassemblyPool;
+/* Owner-thread only. Active streams share max_pending_bytes; exhausting either
+ * stream slots or that byte budget rejects new payload with OVER_LIMIT without
+ * disturbing active streams. New deltas below the highest completed delta
+ * return CONFLICT, while an equal delta may restart and active older streams
+ * may still complete. */
 BreakReplicationReassemblyPool *break_replication_reassembly_pool_create(
     uint64_t expected_base_id, size_t stream_capacity, size_t max_pending_bytes);
 void break_replication_reassembly_pool_destroy(BreakReplicationReassemblyPool *pool);
