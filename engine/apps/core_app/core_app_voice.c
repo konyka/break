@@ -124,7 +124,15 @@ BreakRuntimeError core_app_voice_create(const CoreAppVoiceConfig *config,
     } else {
         result = audio_voice_aligner_create(&config->aligner, &voice->aligner);
     }
+    if (result == AUDIO_OK) {
+        result = audio_voice_aligner_set_sinc(voice->aligner, config->aligner_sinc);
+    }
+    if (result == AUDIO_OK) {
+        result = audio_voice_aligner_set_crossfade_frames(voice->aligner,
+                                                         config->aligner_crossfade_frames);
+    }
     if (result != AUDIO_OK) {
+        audio_voice_aligner_destroy(voice->aligner);
         audio_capture_destroy(voice->capture);
         free(voice);
         return voice_audio_error(result);

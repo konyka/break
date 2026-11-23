@@ -13445,3 +13445,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **审查结论**：未发现 Critical/Important 代码问题。复核点包括：sinc 补偿只在应用成功后保存测量值，淡化中 `AUDIO_REJECTED` 被跳过而其他错误仍返回；`set_sinc` 先由延迟线拒绝淡化中的切换，再以零淡化重新应用并恢复原淡化时长；`reset` 以零淡化归零延迟；唯一产品调用方 `core_app_voice.c` 的漂移观测使用 `audio_voice_aligner_delay`，默认线性模式下返回值不变。
 - **文档修正**：`docs/design/audio_extended.md`「语音参考自动对齐」中 `delay` 仍写为“延迟线实际应用值”，与新语义（线延迟加 sinc 的 8 帧）不一致，已改正。
 - **macOS 验证**：Metal 全量 **435/435**、MoltenVK 全量 **438/438**，各 5 项既有条件 skip（不计为执行通过）。直接 cc 编译的 ASan+UBSan（`detect_leaks=0`，本机不支持 LSan）：`test_audio_voice_aligner` 14/14、`test_audio_delay_estimator` 22/22、`test_fork_deadline` 15/15，无诊断。未运行 TSan；Windows/Linux 以远端 CI 为准。
+
+## core_app 语音泵对齐器模式配置（2026-11-23）
+
+- **交付**：`CoreAppVoiceConfig` 新增 `aligner_sinc`、`aligner_crossfade_frames`，在 create 时作用于泵私有的 `AudioVoiceAligner`；零初始化保持原行为，非法淡化时长返回 `BREAK_RUNTIME_INVALID` 并回滚已创建对象。计划见 `docs/superpowers/plans/2026-11-23-core-app-voice-aligner-mode.md`。
+- **TDD**：新用例先因缺少字段编译失败（RED）；实现后 `test_core_app_voice` **25/25**。用例先确认非法淡化被拒且 `*out` 不变，再在 sinc + 480 帧淡化下驱动 6 个包（20 帧回声），逐包与同配置的独立对齐器 + 处理器逐样本比较。漂移观测在 sinc 下的两种退化情况记录在 `core_app_integration.md`。
+- **变异**：不应用 sinc、不应用淡化均判红；失败路径不销毁对齐器在功能测试中不可见，由 LeakSanitizer 判定：该变异下 ASan 构建报告 7 次分配共 2994 字节泄漏。
+- **验证**：本地 Vulkan 全量 **462/462**（4 个既有条件 skip，不计为执行通过）、OpenGL 全量 **453/453**，0 失败；ASan+UBSan 与 TSan 下 `test_core_app_voice` 均 25/25、无诊断。评审后把末尾断言加强为“独立对齐器已锁定、延迟 20±1 帧”并补充头文件注释与 `core_app_integration.md`，之后重跑 `test_core_app_voice` 25/25。远端结果待推送后核验。
+- **边界**：core_app CLI 与 `app_voice_config` 仍使用默认线性、立即切换模式，未新增命令行开关。

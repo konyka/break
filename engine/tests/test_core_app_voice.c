@@ -197,6 +197,75 @@ TEST(manual_packet_matches_independent_pipeline)
     audio_system_destroy(playback);
 }
 
+TEST(aligner_modes_match_an_independent_pipeline)
+{
+    AudioSystem *playback = audio_system_create_ex(AUDIO_BACKEND_FAKE);
+    ASSERT_NOT_NULL(playback);
+    CoreAppVoiceConfig config = test_config(playback);
+    config.aligner_crossfade_frames = 48001u;
+    CoreAppVoice *voice = NULL;
+    ASSERT_EQ(core_app_voice_create(&config, &voice), BREAK_RUNTIME_INVALID);
+    ASSERT_TRUE(voice == NULL);
+    config.aligner_sinc = true;
+    config.aligner_crossfade_frames = 480u;
+    voice = create_voice(&config);
+    ASSERT_NOT_NULL(voice);
+    AudioPcmStreamHandle stream = open_reference_stream(playback);
+    ASSERT_NEQ(stream, 0u);
+    ASSERT_EQ(core_app_voice_start(voice), BREAK_RUNTIME_OK);
+
+    AudioVoiceAligner *aligner = NULL;
+    AudioVoiceProcessor *processor = NULL;
+    ASSERT_EQ(audio_voice_aligner_create(&config.aligner, &aligner), AUDIO_OK);
+    ASSERT_EQ(audio_voice_aligner_set_sinc(aligner, true), AUDIO_OK);
+    ASSERT_EQ(audio_voice_aligner_set_crossfade_frames(aligner, 480u), AUDIO_OK);
+    ASSERT_EQ(audio_voice_processor_create(&config.processor, &processor), AUDIO_OK);
+    for (u32 packet = 0u; packet < 6u; ++packet) {
+        f32 capture_f32[VOICE_TEST_FRAMES];
+        i16 capture_i16[VOICE_TEST_FRAMES];
+        i16 stereo_i16[VOICE_TEST_FRAMES * 2u];
+        for (u32 i = 0u; i < VOICE_TEST_FRAMES; ++i) {
+            const u32 t = packet * VOICE_TEST_FRAMES + i;
+            const i16 played = (i16)(6000.0 * sin(2.0 * kPi * 700.0 * t / 48000.0) +
+                                     (i32)((t * 2654435761u) >> 22) - 512);
+            stereo_i16[2u * i] = played;
+            stereo_i16[2u * i + 1u] = played;
+            const u32 echo = t >= 20u ? t - 20u : 0u;
+            capture_f32[i] = t >= 20u
+                ? (f32)(0.1 * sin(2.0 * kPi * 700.0 * echo / 48000.0))
+                : 0.0f;
+            capture_i16[i] = (i16)lrintf(capture_f32[i] * 32767.0f);
+        }
+        f32 rendered[VOICE_TEST_FRAMES * 2u];
+        drive_fake(voice, playback, stream, capture_f32, stereo_i16, rendered);
+        ASSERT_EQ(core_app_voice_pump(voice, 1u), BREAK_RUNTIME_OK);
+        i16 raw_reference[VOICE_TEST_FRAMES];
+        for (u32 i = 0u; i < VOICE_TEST_FRAMES; ++i) {
+            f32 mono = 0.5f * (rendered[2u * i] + rendered[2u * i + 1u]);
+            if (!isfinite(mono)) mono = 0.0f;
+            if (mono > 1.0f) mono = 1.0f;
+            if (mono < -1.0f) mono = -1.0f;
+            raw_reference[i] = (i16)lrintf(mono * 32767.0f);
+        }
+        i16 aligned[VOICE_TEST_FRAMES];
+        ASSERT_EQ(audio_voice_aligner_process_i16(aligner, raw_reference, capture_i16, aligned,
+                                                   VOICE_TEST_FRAMES), AUDIO_OK);
+        audio_voice_processor_process_i16(processor, aligned, capture_i16, VOICE_TEST_FRAMES);
+        BreakVoiceFrame frame = {0};
+        bool ready = false;
+        ASSERT_EQ(core_app_voice_pop(voice, &frame, &ready), BREAK_RUNTIME_OK);
+        ASSERT_TRUE(ready);
+        ASSERT_TRUE(memcmp(frame.samples, capture_i16, sizeof(capture_i16)) == 0);
+    }
+    ASSERT_TRUE(audio_voice_aligner_locked(aligner));
+    ASSERT_TRUE(fabs(audio_voice_aligner_delay(aligner) - 20.0) < 1.0);
+    audio_voice_aligner_destroy(aligner);
+    audio_voice_processor_destroy(processor);
+    ASSERT_EQ(core_app_voice_stop(voice), BREAK_RUNTIME_OK);
+    core_app_voice_destroy(voice);
+    audio_system_destroy(playback);
+}
+
 TEST(queue_is_bounded_and_drains_after_stop)
 {
     AudioSystem *playback = audio_system_create_ex(AUDIO_BACKEND_FAKE);
@@ -1311,4 +1380,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(device_events_are_published_on_the_bus);
     RUN_TEST(device_events_never_block_the_pumping_thread);
     RUN_TEST(event_payloads_decode_strictly_and_kinds_must_match);
+    RUN_TEST(aligner_modes_match_an_independent_pipeline);
 TEST_MAIN_END()

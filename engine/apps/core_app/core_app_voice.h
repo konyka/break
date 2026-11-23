@@ -22,6 +22,12 @@ typedef struct {
     AudioVoiceAlignerConfig aligner;
     AudioVoiceProcessorConfig processor;
     bool use_gcc;
+    /* Aligner delay line modes (audio_voice_aligner_set_sinc and
+     * _set_crossfade_frames); zero keeps linear, immediate changes. The
+     * crossfade applies to later delay updates. create returns INVALID for a
+     * crossfade the aligner refuses (above 48000). */
+    bool aligner_sinc;
+    u32 aligner_crossfade_frames;
     /* Capture recovery. 0 max_reopen_failures: a lost capture device makes
      * pump return UNAVAILABLE at once. Otherwise pump reopens the selected
      * input, at most once per call and reopen_interval_ms apart (monotonic

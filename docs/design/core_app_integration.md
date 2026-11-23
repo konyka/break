@@ -1783,3 +1783,9 @@ loopback 测试：对端 A、A2、F（late_auth 模式下为 G）各自恰好收
 arm64 lane 新增 `test_core_app_network`（25/25）和 `test_core_app_network_offline`，统一选择达到三十三项。离线 driver 通过可选 `CORE_APP_RUNNER` 启动真实 core_app；原生为空直接执行，交叉使用既有 QEMU emulator。`NETWORK_TRANSPORT=OFF` 时目标 `aarch64-linux-gnu-nm` 的无网络符号扫描和两次确定性 trace 契约均实际通过，没有 skip 77。
 
 选择使用 `test_core_app_network($|_offline)`，只包含单元和 offline，不包含 Snowflake 依赖的 loopback、single-session、late-auth、voice、start-failure 或 net-transport。NM、NET_CLIENT、trace 工具与宿主 CMake 不使用 core_app runner；这些后续传输场景仍需独立 Snowflake 依赖项目。
+
+## 补充（2026-11-23）：语音对齐器模式
+
+- **配置**：`CoreAppVoiceConfig` 新增 `aligner_sinc` 与 `aligner_crossfade_frames`（0..48000）。create 在创建对齐器后依次调用 `audio_voice_aligner_set_sinc` 和 `audio_voice_aligner_set_crossfade_frames`；对齐器拒绝的淡化时长让 create 返回 INVALID，并按创建逆序销毁对齐器与采集。零初始化（`app_voice_config` 与测试均先 `memset`）保持线性、立即切换，CLI 未新增开关。泵内不重建对齐器，采集恢复、设备切换与播放重开都不影响这两项设置。
+- **与漂移补偿的关系**：漂移观测读取 `audio_voice_aligner_delay`，sinc 模式下该值包含固定 8 帧延迟，常数偏移不影响斜率。两种情况会削弱测量：sinc 下测得延迟小于 8 帧时线延迟被截到 0，报告值停在 8 帧；淡化时长大于 `update_period_frames`（core_app 为 480）时，淡化中到达的更新被跳过但更新计数仍增加，观测会读到未变化的延迟。默认两项都关闭。
+- **测试**：`test_core_app_voice` 新增 `aligner_modes_match_an_independent_pipeline`，共 25 项。先确认 48001 帧淡化被拒且 `*out` 不变；再启用 sinc 与 480 帧淡化，驱动 6 个带 20 帧回声的包，逐包与同配置独立对齐器 + 处理器逐样本比较，并断言独立对齐器已锁定且延迟在 20±1 帧。线性/sinc、淡化 0/480 都会改变输出，任一设置未应用即判红。
