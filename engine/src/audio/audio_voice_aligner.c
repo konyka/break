@@ -12,8 +12,23 @@ struct AudioVoiceAligner {
     u32 update_period_frames;
     u32 frames_until_update;
     u64 updates;
+    double measured_delay;
     bool use_gcc;
 };
+
+static double aligner_line_delay(const AudioVoiceAligner *aligner, double measured) {
+    const double line = measured - (double)audio_delay_line_sinc_extra_delay(aligner->line);
+    return line > 0.0 ? line : 0.0;
+}
+
+static AudioResult aligner_apply(AudioVoiceAligner *aligner, double measured) {
+#ifdef AUDIO_VOICE_ALIGNER_DELAY_HOOK
+    return AUDIO_VOICE_ALIGNER_DELAY_HOOK(aligner->line, aligner_line_delay(aligner, measured));
+#else
+    return audio_delay_line_set_subframe_delay(aligner->line,
+                                               aligner_line_delay(aligner, measured));
+#endif
+}
 
 static AudioResult aligner_create(const AudioVoiceAlignerConfig *config,
                                   AudioVoiceAligner **out, bool use_gcc) {
@@ -65,7 +80,11 @@ void audio_voice_aligner_reset(AudioVoiceAligner *aligner) {
     if (!aligner) return;
     audio_delay_tracker_reset(aligner->tracker);
     audio_delay_line_reset(aligner->line);
+    const u32 crossfade = audio_delay_line_crossfade_frames(aligner->line);
+    (void)audio_delay_line_set_crossfade_frames(aligner->line, 0u);
     (void)audio_delay_line_set_subframe_delay(aligner->line, 0.0);
+    (void)audio_delay_line_set_crossfade_frames(aligner->line, crossfade);
+    aligner->measured_delay = 0.0;
     aligner->frames_until_update = aligner->update_period_frames;
     aligner->updates = 0u;
 }
@@ -89,14 +108,13 @@ AudioResult audio_voice_aligner_process_i16(AudioVoiceAligner *aligner,
             ++aligner->updates;
             aligner->frames_until_update = aligner->update_period_frames;
             if (audio_delay_tracker_update(aligner->tracker)) {
-#ifdef AUDIO_VOICE_ALIGNER_DELAY_HOOK
-                const AudioResult result = AUDIO_VOICE_ALIGNER_DELAY_HOOK(
-                    aligner->line, audio_delay_tracker_delay(aligner->tracker));
-#else
-                const AudioResult result = audio_delay_line_set_subframe_delay(
-                    aligner->line, audio_delay_tracker_delay(aligner->tracker));
-#endif
-                if (result != AUDIO_OK) return result;
+                const double measured = audio_delay_tracker_delay(aligner->tracker);
+                const AudioResult result = aligner_apply(aligner, measured);
+                if (result == AUDIO_OK) {
+                    aligner->measured_delay = measured;
+                } else if (result != AUDIO_REJECTED) {
+                    return result;
+                }
             }
         }
         reference += chunk;
@@ -107,8 +125,35 @@ AudioResult audio_voice_aligner_process_i16(AudioVoiceAligner *aligner,
     return AUDIO_OK;
 }
 
+AudioResult audio_voice_aligner_set_sinc(AudioVoiceAligner *aligner, bool enabled) {
+    if (!aligner) return AUDIO_INVALID;
+    if (audio_delay_line_sinc(aligner->line) == enabled) return AUDIO_OK;
+    const u32 crossfade = audio_delay_line_crossfade_frames(aligner->line);
+    const AudioResult result = audio_delay_line_set_sinc(aligner->line, enabled);
+    if (result != AUDIO_OK) return result;
+    (void)audio_delay_line_set_crossfade_frames(aligner->line, 0u);
+    const AudioResult applied = aligner_apply(aligner, aligner->measured_delay);
+    (void)audio_delay_line_set_crossfade_frames(aligner->line, crossfade);
+    return applied;
+}
+
+bool audio_voice_aligner_sinc(const AudioVoiceAligner *aligner) {
+    return aligner && audio_delay_line_sinc(aligner->line);
+}
+
+AudioResult audio_voice_aligner_set_crossfade_frames(AudioVoiceAligner *aligner, u32 frames) {
+    return aligner ? audio_delay_line_set_crossfade_frames(aligner->line, frames)
+                   : AUDIO_INVALID;
+}
+
+u32 audio_voice_aligner_crossfade_frames(const AudioVoiceAligner *aligner) {
+    return aligner ? audio_delay_line_crossfade_frames(aligner->line) : 0u;
+}
+
 double audio_voice_aligner_delay(const AudioVoiceAligner *aligner) {
-    return aligner ? audio_delay_line_subframe_delay(aligner->line) : 0.0;
+    if (!aligner) return 0.0;
+    return audio_delay_line_subframe_delay(aligner->line) +
+           (double)audio_delay_line_sinc_extra_delay(aligner->line);
 }
 
 u64 audio_voice_aligner_updates(const AudioVoiceAligner *aligner) {

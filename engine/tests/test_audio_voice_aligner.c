@@ -327,6 +327,189 @@ TEST(reset_matches_a_fresh_aligner)
     ASSERT_TRUE(reset_matches_fresh(true));
 }
 
+static double zero_lag_correlation(const i16 *a, const i16 *b, u32 begin, u32 end)
+{
+    double ab = 0.0, aa = 0.0, bb = 0.0;
+    for (u32 n = begin; n < end; ++n) {
+        ab += (double)a[n] * b[n];
+        aa += (double)a[n] * a[n];
+        bb += (double)b[n] * b[n];
+    }
+    return aa > 0.0 && bb > 0.0 ? ab / sqrt(aa * bb) : 0.0;
+}
+
+static double aligned_correlation(bool sinc, double *delay)
+{
+    const AudioVoiceAlignerConfig config = test_config();
+    AudioVoiceAligner *aligner = create_aligner(&config);
+    if (!aligner) return -2.0;
+    if (audio_voice_aligner_set_sinc(aligner, sinc) != AUDIO_OK) return -2.0;
+    make_fractional_echo(12.5);
+    const u32 total = 2u * ALIGNER_TEST_PERIOD;
+    if (audio_voice_aligner_process_i16(aligner, g_reference, g_capture, g_whole,
+                                        total) != AUDIO_OK) {
+        return -2.0;
+    }
+    *delay = audio_voice_aligner_delay(aligner);
+    audio_voice_aligner_destroy(aligner);
+    return zero_lag_correlation(g_whole, g_capture, ALIGNER_TEST_PERIOD + 64u, total);
+}
+
+TEST(sinc_and_crossfade_settings_validate_and_default_off)
+{
+    const AudioVoiceAlignerConfig config = test_config();
+    AudioVoiceAligner *aligner = create_aligner(&config);
+    ASSERT_NOT_NULL(aligner);
+    ASSERT_FALSE(audio_voice_aligner_sinc(aligner));
+    ASSERT_EQ(audio_voice_aligner_crossfade_frames(aligner), 0u);
+    ASSERT_EQ(audio_voice_aligner_set_sinc(NULL, true), AUDIO_INVALID);
+    ASSERT_EQ(audio_voice_aligner_set_crossfade_frames(NULL, 4u), AUDIO_INVALID);
+    ASSERT_EQ(audio_voice_aligner_set_crossfade_frames(aligner, 48001u), AUDIO_INVALID);
+    ASSERT_FALSE(audio_voice_aligner_sinc(NULL));
+    ASSERT_EQ(audio_voice_aligner_crossfade_frames(NULL), 0u);
+    ASSERT_EQ(audio_voice_aligner_set_sinc(aligner, true), AUDIO_OK);
+    ASSERT_TRUE(audio_voice_aligner_sinc(aligner));
+    ASSERT_EQ(audio_voice_aligner_set_crossfade_frames(aligner, 480u), AUDIO_OK);
+    ASSERT_EQ(audio_voice_aligner_crossfade_frames(aligner), 480u);
+    /* below the sinc latency the output is late by the fixed 8 frames */
+    ASSERT_FINITE_NEAR(audio_voice_aligner_delay(aligner), 8.0, 0.0);
+    ASSERT_EQ(audio_voice_aligner_set_sinc(aligner, false), AUDIO_OK);
+    ASSERT_FINITE_NEAR(audio_voice_aligner_delay(aligner), 0.0, 0.0);
+    audio_voice_aligner_destroy(aligner);
+}
+
+TEST(sinc_mode_compensates_its_latency)
+{
+    double linear_delay = 0.0, sinc_delay = 0.0;
+    const double linear = aligned_correlation(false, &linear_delay);
+    const double sinc = aligned_correlation(true, &sinc_delay);
+    ASSERT_FINITE_NEAR(linear_delay, 12.5, 0.25);
+    ASSERT_FINITE_NEAR(sinc_delay, 12.5, 0.25);
+    /* an uncompensated 8-frame lag correlates near zero */
+    ASSERT_TRUE(sinc > 0.95);
+    ASSERT_TRUE(sinc > linear + 0.03);
+}
+
+TEST(updates_during_a_fade_are_skipped_not_failed)
+{
+    const AudioVoiceAlignerConfig config = test_config();
+    AudioVoiceAligner *aligner = create_aligner(&config);
+    ASSERT_NOT_NULL(aligner);
+    ASSERT_EQ(audio_voice_aligner_set_crossfade_frames(aligner, 6000u), AUDIO_OK);
+    make_fractional_echo(12.5);
+    ASSERT_EQ(audio_voice_aligner_process_i16(aligner, g_reference, g_capture, g_whole,
+                                               ALIGNER_TEST_PERIOD + 1u), AUDIO_OK);
+    ASSERT_FINITE_NEAR(audio_voice_aligner_delay(aligner), 12.5, 0.25);
+    ASSERT_EQ(audio_voice_aligner_set_sinc(aligner, true), AUDIO_REJECTED);
+    ASSERT_FALSE(audio_voice_aligner_sinc(aligner));
+    ASSERT_EQ(audio_voice_aligner_set_crossfade_frames(aligner, 0u), AUDIO_REJECTED);
+    /* the second update lands 4096 frames into the 6000-frame fade */
+    ASSERT_EQ(audio_voice_aligner_process_i16(aligner, g_reference + ALIGNER_TEST_PERIOD + 1u,
+                                               g_capture + ALIGNER_TEST_PERIOD + 1u,
+                                               g_whole + ALIGNER_TEST_PERIOD + 1u,
+                                               3u * ALIGNER_TEST_PERIOD - 1u), AUDIO_OK);
+    ASSERT_EQ(audio_voice_aligner_updates(aligner), 4u);
+    ASSERT_FINITE_NEAR(audio_voice_aligner_delay(aligner), 12.5, 0.25);
+    audio_voice_aligner_destroy(aligner);
+}
+
+static bool configured_reset_matches_fresh(void)
+{
+    const AudioVoiceAlignerConfig config = test_config();
+    AudioVoiceAligner *used = create_aligner(&config);
+    AudioVoiceAligner *fresh = create_aligner(&config);
+    if (!used || !fresh) return false;
+    bool ok = audio_voice_aligner_set_sinc(used, true) == AUDIO_OK &&
+              audio_voice_aligner_set_crossfade_frames(used, 1000u) == AUDIO_OK &&
+              audio_voice_aligner_set_sinc(fresh, true) == AUDIO_OK &&
+              audio_voice_aligner_set_crossfade_frames(fresh, 1000u) == AUDIO_OK;
+    make_fractional_echo(12.5);
+    ok = ok && audio_voice_aligner_process_i16(used, g_reference, g_capture, g_whole,
+                                               ALIGNER_TEST_PERIOD + 300u) == AUDIO_OK;
+    audio_voice_aligner_reset(used);
+    ok = ok && audio_voice_aligner_sinc(used) &&
+         audio_voice_aligner_crossfade_frames(used) == 1000u &&
+         audio_voice_aligner_delay(used) == audio_voice_aligner_delay(fresh) &&
+         audio_voice_aligner_set_crossfade_frames(used, 1000u) == AUDIO_OK;
+    make_fractional_echo(20.25);
+    const u32 total = 3u * ALIGNER_TEST_PERIOD;
+    ok = ok && audio_voice_aligner_process_i16(used, g_reference, g_capture, g_whole,
+                                               total) == AUDIO_OK &&
+         audio_voice_aligner_process_i16(fresh, g_reference, g_capture, g_chunked,
+                                         total) == AUDIO_OK &&
+         memcmp(g_whole, g_chunked, total * sizeof(i16)) == 0 &&
+         audio_voice_aligner_delay(used) == audio_voice_aligner_delay(fresh);
+    audio_voice_aligner_destroy(used);
+    audio_voice_aligner_destroy(fresh);
+    return ok;
+}
+
+TEST(configured_reset_matches_a_fresh_configured_aligner)
+{
+    ASSERT_TRUE(configured_reset_matches_fresh());
+}
+
+TEST(switching_sinc_after_a_measurement_keeps_the_total_delay)
+{
+    const AudioVoiceAlignerConfig config = test_config();
+    AudioVoiceAligner *aligner = create_aligner(&config);
+    ASSERT_NOT_NULL(aligner);
+    make_fractional_echo(12.5);
+    ASSERT_EQ(audio_voice_aligner_process_i16(aligner, g_reference, g_capture, g_whole,
+                                               ALIGNER_TEST_PERIOD), AUDIO_OK);
+    const double measured = audio_voice_aligner_delay(aligner);
+    ASSERT_FINITE_NEAR(measured, 12.5, 0.25);
+    ASSERT_EQ(audio_voice_aligner_set_sinc(aligner, true), AUDIO_OK);
+    ASSERT_FINITE_NEAR(audio_voice_aligner_delay(aligner), measured, 1e-12);
+    ASSERT_EQ(audio_voice_aligner_set_sinc(aligner, false), AUDIO_OK);
+    ASSERT_FINITE_NEAR(audio_voice_aligner_delay(aligner), measured, 1e-12);
+    audio_voice_aligner_reset(aligner);
+    ASSERT_EQ(audio_voice_aligner_set_sinc(aligner, true), AUDIO_OK);
+    ASSERT_FINITE_NEAR(audio_voice_aligner_delay(aligner), 8.0, 0.0);
+    audio_voice_aligner_destroy(aligner);
+}
+
+TEST(switching_sinc_is_immediate_and_keeps_the_crossfade)
+{
+    const AudioVoiceAlignerConfig config = test_config();
+    AudioVoiceAligner *aligner = create_aligner(&config);
+    ASSERT_NOT_NULL(aligner);
+    make_fractional_echo(12.5);
+    ASSERT_EQ(audio_voice_aligner_process_i16(aligner, g_reference, g_capture, g_whole,
+                                               ALIGNER_TEST_PERIOD), AUDIO_OK);
+    const double measured = audio_voice_aligner_delay(aligner);
+    ASSERT_EQ(audio_voice_aligner_set_crossfade_frames(aligner, 480u), AUDIO_OK);
+    ASSERT_EQ(audio_voice_aligner_set_sinc(aligner, true), AUDIO_OK);
+    ASSERT_EQ(audio_voice_aligner_crossfade_frames(aligner), 480u);
+    /* accepted only when the switch started no fade */
+    ASSERT_EQ(audio_voice_aligner_set_crossfade_frames(aligner, 480u), AUDIO_OK);
+    ASSERT_FINITE_NEAR(audio_voice_aligner_delay(aligner), measured, 1e-12);
+    audio_voice_aligner_destroy(aligner);
+}
+
+TEST(a_skipped_update_is_not_reapplied_by_a_mode_switch)
+{
+    const AudioVoiceAlignerConfig config = test_config();
+    AudioVoiceAligner *aligner = create_aligner(&config);
+    ASSERT_NOT_NULL(aligner);
+    ASSERT_EQ(audio_voice_aligner_set_crossfade_frames(aligner, 6000u), AUDIO_OK);
+    make_fractional_echo(12.5);
+    ASSERT_EQ(audio_voice_aligner_process_i16(aligner, g_reference, g_capture, g_whole,
+                                               ALIGNER_TEST_PERIOD), AUDIO_OK);
+    const double applied = audio_voice_aligner_delay(aligner);
+    /* a new echo: the second update measures a different delay mid-fade */
+    make_fractional_echo(30.0);
+    ASSERT_EQ(audio_voice_aligner_process_i16(aligner, g_reference + ALIGNER_TEST_PERIOD,
+                                               g_capture + ALIGNER_TEST_PERIOD,
+                                               g_whole + ALIGNER_TEST_PERIOD,
+                                               ALIGNER_TEST_PERIOD + 2000u), AUDIO_OK);
+    ASSERT_EQ(audio_voice_aligner_updates(aligner), 2u);
+    ASSERT_FINITE_NEAR(audio_voice_aligner_delay(aligner), applied, 0.0);
+    ASSERT_EQ(audio_voice_aligner_set_sinc(aligner, true), AUDIO_OK);
+    ASSERT_FINITE_NEAR(audio_voice_aligner_delay(aligner), applied, 1e-12);
+    audio_voice_aligner_destroy(aligner);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(create_validates_configuration_and_calls);
     RUN_TEST(known_fractional_echo_updates_at_exact_period);
@@ -335,4 +518,11 @@ TEST_MAIN_BEGIN()
     RUN_TEST(gcc_constructor_applies_known_delay);
     RUN_TEST(delay_failure_restores_update_schedule);
     RUN_TEST(reset_matches_a_fresh_aligner);
+    RUN_TEST(sinc_and_crossfade_settings_validate_and_default_off);
+    RUN_TEST(sinc_mode_compensates_its_latency);
+    RUN_TEST(updates_during_a_fade_are_skipped_not_failed);
+    RUN_TEST(configured_reset_matches_a_fresh_configured_aligner);
+    RUN_TEST(switching_sinc_after_a_measurement_keeps_the_total_delay);
+    RUN_TEST(switching_sinc_is_immediate_and_keeps_the_crossfade);
+    RUN_TEST(a_skipped_update_is_not_reapplied_by_a_mode_switch);
 TEST_MAIN_END()
