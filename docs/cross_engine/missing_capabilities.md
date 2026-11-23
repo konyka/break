@@ -496,3 +496,12 @@
 验证补充（2026-11-22）：本项在 rebase 后源码上完成标准 Wayland Vulkan 453/453、OpenGL 451/451、ASan+UBSan 非图形 438/438、fuzz 14/14 与相关 TSan 6/6，未改变默认依赖边界。arm64、Windows、macOS 和远端流水线结果不由 Linux 本地证据推断，须以实际平台收据关闭对应验证缺口。
 
 平台验证补充（2026-11-22）：本项的 arm64 QEMU 276/276、Windows MSVC/D3D12 远端作业、macOS Metal/MoltenVK 实机及两种根构建生成器均已取得实际通过证据；主 CI 为 24 成功、3 条件跳过、0 失败。Proton 仅按兼容通道记录，两个合同在无 GPU 时返回 77 跳过，不将其写成 GPU 通过。详见 `docs/Implementation_Status.md` 的 framework 总线远端与实机验收。
+
+## 补充交付记录（2026-11-22）：第 14 节的 core_app 本地崩溃上下文
+
+- **自动摘要缺口的部分关闭**：正式 `core_app` 现在可通过显式 `--crash-context DIR` 安装既有 `break_crash` 处理器，并把 RHI/GPU、网络计数和输入计数发布到 context-blob。它关闭的是上文“各子系统自动填写摘要”在这一应用内的缺口，不代表所有 engine、演示或编辑器已经接入，也不代表崩溃上传已成为产品能力。
+- **默认与生命周期**：运行时默认 OFF；未传选项时不安装、不建 spool、不发布。start 在参数与网络配置校验后、`core_app_run` 前执行；随后先发布请求的 backend、`gpu=pending`、其余值归零的初始快照，`runtime_running` 后发布真实 tick 0，之后只在完整 tick 末尾发布。运行返回后 stop 恰好一次，先清 blob 再卸载，成功与失败都保留原运行结果。`BREAK_ENABLE_CRASH=OFF` 时选项明确 unavailable 并退出 2。
+- **privacy allowlist**：只允许 `backend/gpu`、`live/seen/dropped`、`tick/keys/pads/touches/gestures/touch_status/haptic_status`。不包含原始按键码、文本、坐标、输入设备名、触摸来源 ID、网络地址、连接 key、session id、PSK 或数据包内容。快照仅在 `CoreAppThread` 上生成，字符串仅回调期间借用，无堆分配、跨线程采集或信号内发布。
+- **无上传边界**：`core_app` 不链接 `break_crash_upload_http`，该选项只写本地捕获/spool，不上传记录。生产收集服务、上传者认证与运营保留策略仍是缺口。
+- **真实证据**：原生 Linux 已验证第 2 帧 SIGABRT 的严格 `record/none/tick=1/keys=1` 和全部零计数、`runtime_running` 前 SIGABRT 的 `pending/tick=0/keys=0`，以及成功/失败退出时的 stop 与零 pending。focused CTest **7/7**、diagnostics **7/7**；compat/NM/config 为 **3 pass + 3 expected skip + 0 fail**。ASan/TSan 无 runtime 和 native preload 不可用均明确 77，UBSan 无额外 runtime 的强制路径完整执行并返回 0。
+- **仍未交付/未验证**：Windows 仍是 start=false stub，非 Linux full-process 不声称捕获；ASan/TSan 插桩后的真实崩溃序列未运行。完整 Vulkan/OpenGL、ASan/UBSan 非图形与 fuzz、相关 TSan、root/default 契约、Windows/macOS/arm64 及远端 CI 尚待 Task 4 后续验收，本记录不预写成功或 run-id。

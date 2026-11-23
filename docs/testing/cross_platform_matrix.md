@@ -232,3 +232,34 @@ ShiningLight 的 `Win64ARMOpenSSL` 安装器（winget id `ShiningLight.OpenSSL.D
 - M1 实机 Metal headless **422/422**、graphics/gpu **6/6**；M2 实机 MoltenVK headless **425/425**、graphics/gpu **6/6**，各 4 项条件跳过。新测试在两个构建中均实际运行，macOS 根构建契约 **1/1**（四个子树）。
 - Proton run `45017384077` 成功，日志中的上游 artifact run-id 为 `45016241029`。device/pipeline 均按无 GPU 约定返回 77 跳过，只记录兼容通道成功，不写成 GPU 或原生 D3D12 通过。
 - 后续同步 `c8990472`：根契约在 Makefiles 与 Ninja Multi-Config 各 1/1，网络与框架交集 3/3。最终收据文档提交的工作流结果继续追加。
+
+### 2026-11-22 core_app crash-context：focused 证据与待执行矩阵
+
+本节只汇总 Task 1–3 已执行证据，不表示 Task 4 的全量或远端验收已经完成。`core_app` 捕获运行时默认 OFF，只有显式 `--crash-context DIR` 才安装处理器并写本地 spool；`BREAK_ENABLE_CRASH=OFF` 时选项明确 unavailable。没有上传接线，Windows install stub 与非 Linux full-process 均不声称捕获成功。
+
+| 验证组 | 当前实际结果 | 范围/限制 |
+|---|---|---|
+| focused CTest | **7/7 PASS，0 FAIL** | diagnostics、target、nested、crash_context、独立 crash build OFF、lifecycle_load_unload、runtime |
+| diagnostics 可执行测试 | **7/7 PASS** | 严格 blob schema、逐字段零值负例、真实记录验证器与错误码 |
+| compat/NM/config | **3 PASS + 3 expected SKIP + 0 FAIL** | compat、`nm_symbol_missing`、ctest config 通过；`nm_missing`、`nm_unsupported`、`nm_symbol_missing_unsupported` 按 NM 能力合同跳过 |
+
+原生 Linux/LD_PRELOAD full-process 的真实进程结果：
+
+| 场景 | 严格断言 |
+|---|---|
+| 第 2 帧 SIGABRT | 唯一 `CORE_APP_TEST_ABORT_ON_FRAME=2` 标记、真实 `Subprocess aborted`、BCR `signo: 00000006`；最后完整快照为 `backend=record`, `gpu=none`, `live=false`, `tick=1`, `seen=0`, `dropped=0`, `keys=1`, `pads=0`, `touches=0`, `gestures=0`, `touch_status=0`, `haptic_status=0` |
+| `runtime_running` 前 initial SIGABRT | `backend=record`, `gpu=pending`, `live=false`, `tick=0`, `keys=0`，其余计数全部 0；没有已转发的 `runtime_running` |
+| 正常成功 / 运行时失败 stop | 原退出码保持 0 / 2；sigaction 总计均为 10；pending 均为 0；失败仍报告 `runtime returned FAILED` |
+
+七个零计数字段都逐一以真实非零记录验证 contract exit 5。初始 `gpu=pending keys=0` 合法，错误 gpu/keys 返回 5。上述 GPU 字段是 record 快照，不是 Vulkan/OpenGL 设备或画面证据。
+
+| 强制 sanitizer/preload 场景 | 直接脚本结果 | 证据解释 |
+|---|---:|---|
+| ASan=TRUE，runtime preload 为空 | 77 | 工作目录和进程创建前明确 UNVERIFIED/skip |
+| TSan=TRUE，runtime preload 为空 | 77 | 同上 |
+| UBSan=TRUE，runtime preload 为空 | 0 | 实际执行 SIGABRT、initial、成功 stop、运行时失败 stop 四类用例 |
+| `FAULT_SUPPORTED=FALSE` / 非 Linux 无原生 preload | 77 | 明确 native LD_PRELOAD unavailable，不记作捕获通过 |
+
+当前完整执行的是非 sanitizer 原生 Linux 构建；没有运行 ASan/TSan 插桩后的 full-process 序列。Windows 的 `break_crash_install` 仍返回 false，macOS 及其他非 Linux 平台没有真实 `core_app` 崩溃记录证据。
+
+**尚待主线程执行**：完整默认 Wayland+Vulkan 套件、OpenGL 最终降级/画面对照套件、ASan/UBSan 非图形与 fuzz、相关 TSan、root/default 构建契约、可用 Windows/macOS/arm64 通道及远端 CI。此处没有这些项目的预写成功计数或 run-id。

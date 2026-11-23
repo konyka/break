@@ -1752,3 +1752,42 @@ int RunRuntimeBusApplication() {
 - 修复整文件字节加载的空文件边界：目录/PAK 的 `vfs_read_all` 成功时统一返回可释放的非空 buffer 和零长度，不再由 `malloc(0)` 的平台实现决定结果；raw async full-file 请求交付一次非空、零字节成功回调；Runtime IO 交付 `COMPLETED/OK`、`byte_size=0`、`bytes=NULL`。纹理、range 和 reload 的格式/保留旧版本策略未放宽，接口与 `docs/design/runtime_asset_streaming.md` 已同步。
 - 新回归先检出旧实现：`test_async_loader` 17/18、`test_runtime_io` 20/21；修复后分别为 18/18、21/21，`test_vfs` 37/37（旧模块文档的 33 是过时计数）。本机旧 VFS 的 `malloc(0)` 返回非空指针，因此 VFS 的平台相关失败分支没有伪记为 macOS RED；目录/PAK 用例可在该函数返回 NULL 的实现上检出旧行为。
 - 最终 macOS Metal 432/432、graphics 6/6，MoltenVK 435/435、graphics 5/5，根构建契约 1/1；两套全量各 4 项既有平台条件跳过。VFS 的 ASan+UBSan 37/37 无诊断；本机不支持 LeakSanitizer，未声称完成泄漏检查。Windows、Linux 和返回 NULL 的 `malloc(0)` 实现未在本轮实机执行。
+
+## 补充（2026-11-22）：core_app 本地崩溃上下文
+
+`BREAK_ENABLE_CRASH` 默认 ON，决定 `break_crash`、`core_app_diagnostics` 和 `core_app` 的 crash-context CLI 是否构建；**捕获行为本身运行时默认 OFF**。未传 `--crash-context` 的 `core_app` 不安装处理器、不创建 spool、不发布摘要。`core_app_runtime` 不链接 `break_crash`，默认 engine、演示和编辑器依赖不变。
+
+默认 Vulkan 构建一个带测试工具的可执行目标：
+
+```bash
+cd engine
+cmake -S . -B ../build-core-app-diagnostics \
+  -DENGINE_RHI_BACKEND=vulkan -DMYUI_PAL=dummy -DENGINE_BUILD_TESTS=ON
+cmake --build ../build-core-app-diagnostics --target core_app core_app_crash_record -j2
+```
+
+以下 record/headless 示例限定三帧，并把本地 spool 放在调用方选择的绝对目录；它不使用显示服务器，也不改变 Linux 仅 Wayland 的平台窗口边界：
+
+```bash
+../build-core-app-diagnostics/core_app \
+  --render=record --audio=record --fixed-step --frames 3 \
+  --crash-context /absolute/path/to/crash-spool
+```
+
+也可写 `--crash-context=/absolute/path/to/crash-spool`。空 DIR、start 失败均在运行前退出 2。启用的顺序为 start → 初始 `gpu=pending` 快照 → `runtime_running` 后 tick 0 → 每个完整 tick 末尾发布 → stop 清 blob 并卸载。正常退出不会生成 pending 崩溃记录；默认未启用时连 spool 布局也不会创建。
+
+`BREAK_ENABLE_CRASH=OFF` 只移除构建能力，不改变其他 `core_app` 参数：
+
+```bash
+cmake -S . -B ../build-core-app-no-crash \
+  -DENGINE_RHI_BACKEND=vulkan -DMYUI_PAL=dummy -DBREAK_ENABLE_CRASH=OFF
+cmake --build ../build-core-app-no-crash --target core_app -j2
+../build-core-app-no-crash/core_app --crash-context /absolute/path/to/crash-spool
+# exit 2: core_app: --crash-context is unavailable in this build
+```
+
+blob 的 privacy allowlist 仅为：`backend/gpu`、`live/seen/dropped`、`tick/keys/pads/touches/gestures/touch_status/haptic_status`。它不包含原始输入文本/按键码/坐标、输入设备名、网络地址、连接身份、凭据或数据包内容。此功能只进行本地捕获和 spool；`core_app` 不链接 `break_crash_upload_http`，不会因此上传记录。
+
+Windows 的 `break_crash_install` 仍为 false stub，启用选项会 start 失败；非 Linux full-process 不得声称已捕获。真实 full-process SIGABRT/initial/stop 证据目前仅来自原生 Linux。ASan/TSan 缺少有效 runtime preload 时 full-process 脚本返回 77；native preload 不可用时也返回 77；UBSan 不要求额外 runtime。skip 不是捕获通过。
+
+当前仅记录 Task 1–3 已执行的 focused 7/7、diagnostics 7/7、compat/NM/config 3 pass + 3 expected skip。完整 Vulkan/OpenGL、sanitizer/fuzz、平台和远端 CI 验证仍待后续执行。OpenGL 仅用于最终降级和画面对照，不将本 record 示例写成 GPU runtime 证据。

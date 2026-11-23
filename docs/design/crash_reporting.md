@@ -247,3 +247,62 @@ build-id + 模块表 + siginfo。Windows 记录格式不在本阶段（§9）。
 - 计划与台账：`docs/superpowers/plans/2026-10-24-stage5-crash-reporting.md`；
   `.superpowers/sdd/2026-10-24-stage5-crash-reporting/progress.md` 与
   task-{1..4}-report.md。
+
+## 11. core_app 自动 context-blob 接入（2026-11-22）
+
+### 11.1 默认关闭、构建边界与生命周期
+
+`core_app` 现在可以把运行时的 RHI/GPU、网络和输入摘要发布到现有 context-blob。该行为**运行时默认 OFF**：不传 `--crash-context DIR` 时，`CoreAppConfig.diagnostics` 为 NULL，不安装处理器、不创建 spool、不发布摘要，也不增加输入帧复制或 512 槽扫描。CMake 的 `BREAK_ENABLE_CRASH` 默认 ON 只表示构建捕获能力，不改变这个运行时默认。
+
+- `core_app_diagnostics` 是独立 C11 静态库，只有 `core_app` 在 `TARGET break_crash` 存在时链接它；`core_app_runtime` 的源列表和依赖不增加 `break_crash`。既有 engine、演示和编辑器链接边界不变。
+- CLI 同时接受 `--crash-context DIR` 与 `--crash-context=DIR`，空 DIR 以退出码 2 拒绝。其他参数和网络配置校验完成后才执行 start；start 失败在 `core_app_run` 前返回 2。
+- `BREAK_ENABLE_CRASH=OFF` 仍构建 `core_app`，但选项明确报错 `core_app: --crash-context is unavailable in this build`、退出 2 且不创建 spool。它与“构建包含能力但未传选项”是两种不同状态。
+- 正常顺序为：`core_app_diagnostics_start(DIR)` → 初始快照 → `core_app_run` → `core_app_diagnostics_stop()` 恰好一次 → 保留原运行结果。stop 先清空 context-blob，再 `break_crash_uninstall`。
+- 初始快照使用请求的 `record`/`auto`/`vulkan`/`opengl` 后端、固定 `gpu=pending`、`live=false`、`tick=0`，其余计数全部为 0。这里的 `pending` 是 GPU 初始化状态字符串，**不是** `pending/*.bcr` 文件。
+- `runtime_running` 成功写入后发布 tick 0，以实际后端和设备名替换初始值；之后在每个完整 tick 末尾发布一次。quit/max_frames 导致的未完成 tick 不发布。
+- 默认真实 record 运行没有 `pending`、`sent`、`discarded` 或 `crash.inbox`。显式启用后的正常成功和运行时失败路径都执行 stop，实测均没有 pending 记录。
+
+Windows 的 `break_crash_install` 仍是返回 false 的编译期 stub，因此启用该选项会 start 失败，不能记录为 Windows 捕获能力。非 Linux 的 full-process 测试只保留明确 skip 边界，不声称生成过真实崩溃记录。
+
+### 11.2 privacy 字段 allowlist
+
+`core_app_diagnostics_publish` 只生成以下三个 section；未列出的输入、网络或设备事实不得加入 blob。
+
+| section | 允许的 key | 含义 |
+|---|---|---|
+| `[rhi]` | `backend`, `gpu` | record 路径固定为 `record`/`none`；live GPU 使用现有 backend/device 名称 |
+| `[net]` | `live`, `seen`, `dropped` | 网络是否 live、总线事件总数、reactor 丢弃计数 |
+| `[input]` | `tick`, `keys`, `pads`, `touches`, `gestures`, `touch_status`, `haptic_status` | 当前 tick、held/pressed key 数、已连接 pad 数、touch/gesture 数及状态枚举数值 |
+
+禁止采集原始按键码、输入文本、坐标、输入设备名、触摸来源 ID，以及 IP、端口、连接 key、session id、PSK 和数据包内容。GPU 名称沿用 `BreakCrashSummary` 的截断与字符清理；hooks 和字符串只在回调期间借用。发布只在 `CoreAppThread` 上同步执行，不在 worker、网络回调或信号处理器内执行；使用栈上 POD 和固定容量缓冲，无堆分配或跨线程状态读取。
+
+这是**本地捕获边界，不是上传功能**。`core_app` 不链接或调用 `break_crash_upload_http`，diagnostics 不读取网络地址、不建立上传连接；真实进程验收也没有上传或网络访问。独立上传适配器与参考服务的既有能力不改变这一边界。
+
+### 11.3 已执行的 RED/GREEN 与真实 Linux 证据
+
+Task 3 在生产 CLI 前运行 target contract 与 full-process 两项，得到预期 **0/2 通过**。严格记录验证器补强时，旧实现分别为 **3 passed / 2 failed / 5 total**，放松 seen 零断言的受控变异为 **6 passed / 1 failed / 7 total**；恢复严格实现后，独立 `test_core_app_diagnostics` 为 **7/7 通过**。
+
+最终七项 focused CTest 为 **7/7 通过、0 失败**：`test_core_app_diagnostics`、`test_core_app_target_contract`、`test_core_app_nested_contract`、`test_core_app_crash_context`、`test_core_app_crash_build_contract`、`test_core_app_lifecycle_load_unload`、`test_core_app_runtime`。
+
+compat/NM/config 的当前六项记录为 **3 pass + 3 expected skip + 0 fail**：`test_core_app_contract_compat`、`test_core_app_nm_symbol_missing`、`test_core_app_ctest_config_contract` 通过；`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported` 按 NM 能力合同预期跳过。另有 `test_core_app_nested_contract` 包含在上述 focused 7/7 中。
+
+原生 Linux/LD_PRELOAD 的 full-process 验收直接启动真实 `core_app`，不是格式化工件模拟：
+
+| 场景 | 严格结果 |
+|---|---|
+| 第 2 帧真实 `vfprintf` 后 `abort()` | 唯一帧标记、`Subprocess aborted`、BCR `signo: 00000006`；最后完整快照为 `backend=record`, `gpu=none`, `live=false`, `tick=1`, `seen=0`, `dropped=0`, `keys=1`, `pads=0`, `touches=0`, `gestures=0`, `touch_status=0`, `haptic_status=0` |
+| `runtime_running` 转发前 `abort()` | 真实 SIGABRT；初始快照保持 `backend=record`, `gpu=pending`, `live=false`, `tick=0`，其余计数全部为 0，且没有已转发的 `runtime_running` |
+| 正常成功 / 运行时失败 | 退出码分别保持 0 / 2；两条路径 sigaction 总计均为 10，pending 记录均为 0；失败路径保留 `runtime returned FAILED` |
+
+七个零计数字段 `seen/dropped/pads/touches/gestures/touch_status/haptic_status` 都有独立非零真实记录负例，验证器必须逐项以 contract exit 5 拒绝；`gpu=pending keys=0` 的初始组合合法，错误 gpu/keys 返回 5。
+
+当前 sanitizer/preload 强制矩阵如下，skip 不得写成真实崩溃通过：
+
+| 强制场景 | 直接脚本退出码 | 实际含义 |
+|---|---:|---|
+| ASan=TRUE，runtime preload 为空 | 77 | 在创建工作目录或启动进程前明确 UNVERIFIED/skip |
+| TSan=TRUE，runtime preload 为空 | 77 | 同上 |
+| UBSan=TRUE，runtime preload 为空 | 0 | 完整执行 SIGABRT、initial、成功 stop、运行时失败 stop 四类用例 |
+| `FAULT_SUPPORTED=FALSE` | 77 | native LD_PRELOAD 不可用，明确 UNVERIFIED/skip |
+
+当前实际完整执行的是非 sanitizer 原生 Linux 构建；ASan/TSan 只验证了缺 runtime 的 skip 分支，未运行插桩后的 full-process 序列。完整 Vulkan/OpenGL 套件、ASan/UBSan 非图形套件与 fuzz、相关 TSan、root/default 构建契约、Windows/macOS/arm64 可用通道及远端 CI 均留待 Task 4 后续步骤执行；本节不预写其结果或 run-id。

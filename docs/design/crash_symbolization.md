@@ -142,3 +142,33 @@ e2e 的不可写统计文件场景依赖权限：root 容器明确报告跳过�
 - GPU/RHI/网络/输入摘要的自动采集（仍由应用经 context-blob 接缝接入）。
 - 引擎、演示、编辑器均未链接上传适配器；没有哪个发布二进制会真的上传崩溃记录。
 - 本机没有验证 IPv6 回环、真实公网证书链、长时间运行与高并发。服务一次只处理一个连接。
+
+## 8. core_app context-blob 接入的符号化边界（2026-11-22）
+
+`core_app --crash-context DIR` 已把应用摘要接入客户端 context-blob，但没有改变本节前述记录格式、ELF/Mach-O 读取、帧恢复或聚类算法。blob 仍由 `[rhi]`、`[net]`、`[input]` 三个 section 组成，严格 allowlist 为：
+
+```text
+[rhi]
+backend=<record|auto|vulkan|opengl 或实际后端>
+gpu=<pending|none|经过 BreakCrashSummary 清理的设备名>
+[net]
+live=<true|false>
+seen=<u64>
+dropped=<u64>
+[input]
+tick=<u32>
+keys=<u32>
+pads=<u32>
+touches=<u32>
+gestures=<u32>
+touch_status=<u32>
+haptic_status=<u32>
+```
+
+这些字段只提供本地诊断上下文，不参与 PC/bias 换算、RBP 链恢复或签名计算，也不能被解释为新的符号表、minidump 或 DWARF CFI 能力。原始按键码、文本、坐标、输入设备名、触摸来源 ID、网络地址、连接 key、session id、PSK 和数据包内容仍不在允许范围内。
+
+运行时默认 OFF；未传选项时不安装处理器、不建 spool、不发布。启用后的顺序是 start → `gpu=pending` 的初始快照 → `runtime_running` 后 tick 0 → 每个完整 tick 末尾发布 → stop 清 blob 并卸载。详细隐私、CLI 和生命周期契约见 `crash_reporting.md` §11。
+
+当前真实 full-process 证据仅为原生 Linux SIGABRT：第 2 帧 abort 后验证 `tick=1 backend=record gpu=none keys=1` 及所有规定零字段；`runtime_running` 前 abort 验证 `gpu=pending tick=0 keys=0`；正常成功和运行时失败均验证 stop 与零 pending 记录。Windows 仍是 start=false stub，非 Linux full-process 不具备原生 preload 时返回 77；不得从格式化工件、Mach-O 符号读取或服务端测试推断 Windows/macOS 客户端捕获成功。
+
+`core_app` 不链接 `break_crash_upload_http`，本子项目没有上传接线，也没有新增生产收集服务。当前已执行为 focused 7/7、diagnostics 7/7，以及 compat/NM/config 3 pass + 3 expected skip；完整图形、平台、sanitizer/fuzz 和远端 CI 验收仍待后续执行，没有可提前登记的 run-id。
