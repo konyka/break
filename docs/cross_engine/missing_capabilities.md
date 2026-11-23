@@ -659,3 +659,7 @@ Windows scene **123/123**、async **19/19**，两个溢出探针通过；mipmap�
 ## 第 10 节（音频）补充（2026-11-23）：语音对齐器模式命令行开关
 
 core_app 新增 `--voice-aligner-sinc` 与 `--voice-aligner-crossfade`，对齐器模式可从命令行开启并写入 trace。剩余：多声道与真实声学验证。
+
+## 第 10 节（音频）补充（2026-11-23）：语音处理链可配置 bypass
+
+`AudioVoiceProcessor` 可在创建时关闭 AEC/残余、频谱降噪、噪声门、AGC 中任意阶段，用于对照与排查。剩余：多声道、运行中切换（受频谱延迟约束未提供）、真实声学验证；core_app 语音泵尚未暴露该选项。

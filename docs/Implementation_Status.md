@@ -13467,3 +13467,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD**：单元测试先因缺少查询函数编译失败；CLI 契约先在旧可执行文件上因不认识新开关退出 2 失败（RED）。实现后 `test_core_app_voice` **25/25**，`test_core_app_voice_lane` 通过。
 - **变异**：不把 sinc 或淡化写入配置、两个查询返回常量、去掉 `--voice` 依赖校验、去掉 48000 上限、无开关时也写 trace 七项均判红；去掉上限时失败点正是 48001 用例。
 - **验证**：本地 Vulkan 全量 **462/462**（4 个既有条件 skip，不计为执行通过）、OpenGL 全量 **453/453**，0 失败；ASan+UBSan 下 `test_core_app_voice` 与 `test_core_app_voice_lane` 2/2。TSan 下 `test_core_app_voice` 通过；`test_core_app_voice_lane` 在本机 TSan 构建中因 `ThreadSanitizer: can't find longjmp buf` 在第一次（不带新开关的）运行即中止，未修改的 `origin/master` 以 `ENGINE_USE_TSAN=ON` 构建同样失败，属本机 TSan 运行时环境问题而非本改动；CI 的 TSan job 运行该测试，以远端结果为准。评审后修正头文件线程说明、依赖错误文本与计划/设计文档措辞，之后重跑 `test_core_app_voice` 与 lane 测试通过。
+
+## 语音处理链可配置 bypass（2026-11-23）
+
+- **交付**：`AudioVoiceProcessorConfig.bypass_stages` 与 `AUDIO_VOICE_PROCESSOR_STAGE_*` 位，关闭「集成语音处理链」未做项中的可配置 bypass；在 create 时固定，未知位为 `AUDIO_INVALID`，频谱降噪被 bypass 时延迟为 0。计划见 `docs/superpowers/plans/2026-11-23-voice-processor-bypass.md`。
+- **TDD**：先加 2 个用例，编译因缺少常量失败（RED）；实现后 `test_audio_voice_processor` **5/5**。四个单阶段与 ECHO+AGC 组合在 97 帧分块下与去掉相应阶段的手工链逐位一致，且与完整链不同；全部 bypass 为恒等；未知位不写 `*out`；带 bypass 的 reset 与新建一致。
+- **变异**：任一阶段忽略 bypass、只识别 ECHO 位、去掉未知位校验、延迟不看 bypass 七项均判红。
+- **验证**：本地 Vulkan 全量 **462/462**（4 个既有条件 skip，不计为执行通过）、OpenGL 全量 **453/453**，0 失败；ASan+UBSan 与 TSan（`ENGINE_USE_TSAN=ON`）下 `test_audio_voice_processor`、`test_core_app_voice` 均 2/2。评审后常量改名为 `AUDIO_VOICE_PROCESSOR_STAGE_*` 以免与播放 voice 的 `AUDIO_VOICE_*` 混淆，删去重复的测试 helper 并修正设计文档未做项；改名后在最终代码上重跑 Vulkan 全量 462/462 与上述三套目标测试。远端结果待推送后核验。

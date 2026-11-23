@@ -17,7 +17,8 @@ AudioResult audio_voice_processor_create(const AudioVoiceProcessorConfig *config
         config->echo.sample_rate != config->noise.sample_rate ||
         config->echo.sample_rate != config->gate.sample_rate ||
         config->echo.sample_rate != config->agc.sample_rate ||
-        config->gate.channels != 1u || config->agc.channels != 1u) {
+        config->gate.channels != 1u || config->agc.channels != 1u ||
+        (config->bypass_stages & ~AUDIO_VOICE_PROCESSOR_STAGE_ALL) != 0u) {
         return AUDIO_INVALID;
     }
     AudioVoiceProcessor *processor = (AudioVoiceProcessor *)calloc(1u, sizeof(*processor));
@@ -59,13 +60,21 @@ void audio_voice_processor_reset(AudioVoiceProcessor *processor) {
 void audio_voice_processor_process_i16(AudioVoiceProcessor *processor,
                                        const i16 *reference, i16 *capture, u32 frames) {
     if (!processor || frames == 0u || !reference || !capture) return;
-    audio_residual_echo_suppressor_process_with_aec(&processor->residual, processor->echo,
-                                                    reference, capture, frames);
-    audio_noise_suppressor_process_i16(processor->noise, capture, frames);
-    audio_noise_gate_process_i16(&processor->gate, capture, frames);
-    audio_agc_process_i16(&processor->agc, capture, frames);
+    const u32 bypass = processor->config.bypass_stages;
+    if (!(bypass & AUDIO_VOICE_PROCESSOR_STAGE_ECHO)) {
+        audio_residual_echo_suppressor_process_with_aec(&processor->residual, processor->echo,
+                                                        reference, capture, frames);
+    }
+    if (!(bypass & AUDIO_VOICE_PROCESSOR_STAGE_NOISE)) {
+        audio_noise_suppressor_process_i16(processor->noise, capture, frames);
+    }
+    if (!(bypass & AUDIO_VOICE_PROCESSOR_STAGE_GATE)) {
+        audio_noise_gate_process_i16(&processor->gate, capture, frames);
+    }
+    if (!(bypass & AUDIO_VOICE_PROCESSOR_STAGE_AGC)) audio_agc_process_i16(&processor->agc, capture, frames);
 }
 
 u32 audio_voice_processor_latency_frames(const AudioVoiceProcessor *processor) {
-    return processor ? audio_noise_suppressor_latency_frames(processor->noise) : 0u;
+    if (!processor || (processor->config.bypass_stages & AUDIO_VOICE_PROCESSOR_STAGE_NOISE)) return 0u;
+    return audio_noise_suppressor_latency_frames(processor->noise);
 }

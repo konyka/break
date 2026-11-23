@@ -1,5 +1,5 @@
 /* audio_voice_processor: nested validation, manual-chain equivalence,
- * arbitrary chunks, reset and spectral-latency drain. */
+ * arbitrary chunks, reset, spectral-latency drain and stage bypass. */
 #include "test_framework.h"
 
 #include <audio/audio_voice_processor.h>
@@ -40,8 +40,8 @@ static void fill_stream(u32 count) {
     }
 }
 
-static void manual_chain_process(const AudioVoiceProcessorConfig *config, i16 *samples,
-                                 u32 frames) {
+static void manual_chain_process_skipping(const AudioVoiceProcessorConfig *config,
+                                          i16 *samples, u32 frames, u32 skip) {
     AudioEchoCanceller *aec = NULL;
     AudioNoiseSuppressor *noise = NULL;
     AudioResidualEchoSuppressor residual;
@@ -52,12 +52,19 @@ static void manual_chain_process(const AudioVoiceProcessorConfig *config, i16 *s
     ASSERT_EQ(audio_noise_suppressor_create(&config->noise, &noise), AUDIO_OK);
     ASSERT_EQ(audio_noise_gate_init(&gate, &config->gate), AUDIO_OK);
     ASSERT_EQ(audio_agc_init(&agc, &config->agc), AUDIO_OK);
-    audio_residual_echo_suppressor_process_with_aec(&residual, aec, g_ref, samples, frames);
-    audio_noise_suppressor_process_i16(noise, samples, frames);
-    audio_noise_gate_process_i16(&gate, samples, frames);
-    audio_agc_process_i16(&agc, samples, frames);
+    if (!(skip & AUDIO_VOICE_PROCESSOR_STAGE_ECHO)) {
+        audio_residual_echo_suppressor_process_with_aec(&residual, aec, g_ref, samples, frames);
+    }
+    if (!(skip & AUDIO_VOICE_PROCESSOR_STAGE_NOISE)) audio_noise_suppressor_process_i16(noise, samples, frames);
+    if (!(skip & AUDIO_VOICE_PROCESSOR_STAGE_GATE)) audio_noise_gate_process_i16(&gate, samples, frames);
+    if (!(skip & AUDIO_VOICE_PROCESSOR_STAGE_AGC)) audio_agc_process_i16(&agc, samples, frames);
     audio_noise_suppressor_destroy(noise);
     audio_echo_canceller_destroy(aec);
+}
+
+static void manual_chain_process(const AudioVoiceProcessorConfig *config, i16 *samples,
+                                 u32 frames) {
+    manual_chain_process_skipping(config, samples, frames, 0u);
 }
 
 TEST(validation_noop_and_latency)
@@ -149,8 +156,90 @@ TEST(reset_matches_fresh_and_zero_padding_drains)
     audio_voice_processor_destroy(fresh);
 }
 
+static bool bypass_matches_manual_chain(u32 skip)
+{
+    AudioVoiceProcessorConfig config = test_config();
+    config.bypass_stages = skip;
+    fill_stream(N);
+    static i16 full[N];
+    memcpy(full, g_expected, sizeof(full));
+    memcpy(g_whole, g_expected, sizeof(g_whole));
+    memcpy(g_chunked, g_expected, sizeof(g_chunked));
+    manual_chain_process(&config, full, N);
+    manual_chain_process_skipping(&config, g_chunked, N, skip);
+    AudioVoiceProcessor *processor = make_processor(&config);
+    if (!processor) return false;
+    for (u32 at = 0u; at < N; at += 97u) {
+        const u32 n = N - at < 97u ? N - at : 97u;
+        audio_voice_processor_process_i16(processor, g_ref + at, g_whole + at, n);
+    }
+    const bool ok = memcmp(g_whole, g_chunked, sizeof(g_whole)) == 0 &&
+                    memcmp(g_whole, full, sizeof(g_whole)) != 0;
+    audio_voice_processor_destroy(processor);
+    return ok;
+}
+
+TEST(each_bypassed_stage_matches_a_chain_without_it)
+{
+    ASSERT_TRUE(bypass_matches_manual_chain(AUDIO_VOICE_PROCESSOR_STAGE_ECHO));
+    ASSERT_TRUE(bypass_matches_manual_chain(AUDIO_VOICE_PROCESSOR_STAGE_NOISE));
+    ASSERT_TRUE(bypass_matches_manual_chain(AUDIO_VOICE_PROCESSOR_STAGE_GATE));
+    ASSERT_TRUE(bypass_matches_manual_chain(AUDIO_VOICE_PROCESSOR_STAGE_AGC));
+    ASSERT_TRUE(bypass_matches_manual_chain(AUDIO_VOICE_PROCESSOR_STAGE_ECHO | AUDIO_VOICE_PROCESSOR_STAGE_AGC));
+}
+
+TEST(bypass_validation_latency_identity_and_reset)
+{
+    AudioVoiceProcessorConfig config = test_config();
+    AudioVoiceProcessor *sentinel = make_processor(&config);
+    ASSERT_TRUE(sentinel != NULL);
+    AudioVoiceProcessor *processor = sentinel;
+    config.bypass_stages = AUDIO_VOICE_PROCESSOR_STAGE_ALL + 1u;
+    ASSERT_EQ(audio_voice_processor_create(&config, &processor), AUDIO_INVALID);
+    config.bypass_stages = 0x80000000u;
+    ASSERT_EQ(audio_voice_processor_create(&config, &processor), AUDIO_INVALID);
+    ASSERT_TRUE(processor == sentinel);
+    audio_voice_processor_destroy(sentinel);
+
+    config.bypass_stages = AUDIO_VOICE_PROCESSOR_STAGE_ALL;
+    processor = make_processor(&config);
+    ASSERT_TRUE(processor != NULL);
+    ASSERT_EQ(audio_voice_processor_latency_frames(processor), 0u);
+    fill_stream(N);
+    memcpy(g_whole, g_expected, sizeof(g_whole));
+    audio_voice_processor_process_i16(processor, g_ref, g_whole, N);
+    ASSERT_EQ(memcmp(g_whole, g_expected, sizeof(g_whole)), 0);
+    audio_voice_processor_destroy(processor);
+
+    config.bypass_stages = AUDIO_VOICE_PROCESSOR_STAGE_ECHO;
+    processor = make_processor(&config);
+    ASSERT_TRUE(processor != NULL);
+    ASSERT_EQ(audio_voice_processor_latency_frames(processor), 64u);
+    audio_voice_processor_destroy(processor);
+
+    config.bypass_stages = AUDIO_VOICE_PROCESSOR_STAGE_GATE | AUDIO_VOICE_PROCESSOR_STAGE_NOISE;
+    AudioVoiceProcessor *used = make_processor(&config);
+    AudioVoiceProcessor *fresh = make_processor(&config);
+    ASSERT_TRUE(used != NULL && fresh != NULL);
+    ASSERT_EQ(audio_voice_processor_latency_frames(used), 0u);
+    const u32 count = 2048u;
+    fill_stream(count);
+    memcpy(g_whole, g_expected, sizeof(i16) * count);
+    audio_voice_processor_process_i16(used, g_ref, g_whole, count);
+    audio_voice_processor_reset(used);
+    memcpy(g_whole, g_expected, sizeof(i16) * count);
+    memcpy(g_chunked, g_expected, sizeof(i16) * count);
+    audio_voice_processor_process_i16(used, g_ref, g_whole, count);
+    audio_voice_processor_process_i16(fresh, g_ref, g_chunked, count);
+    ASSERT_EQ(memcmp(g_whole, g_chunked, sizeof(i16) * count), 0);
+    audio_voice_processor_destroy(used);
+    audio_voice_processor_destroy(fresh);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(validation_noop_and_latency);
     RUN_TEST(manual_chain_and_arbitrary_chunks_match);
     RUN_TEST(reset_matches_fresh_and_zero_padding_drains);
+    RUN_TEST(each_bypassed_stage_matches_a_chain_without_it);
+    RUN_TEST(bypass_validation_latency_identity_and_reset);
 TEST_MAIN_END()
