@@ -1798,3 +1798,22 @@ blob 的 privacy allowlist 仅为：`backend/gpu`、`live/seen/dropped`、`tick/
 Windows 的 `break_crash_install` 仍为 false stub，启用选项会 start 失败；非 Linux full-process 不得声称已捕获。真实 full-process SIGABRT/initial/stop 证据目前仅来自原生 Linux。ASan/TSan 缺少有效 runtime preload 时 full-process 脚本返回 77；native preload 不可用时也返回 77；UBSan 不要求额外 runtime。skip 不是捕获通过。
 
 当前仅记录 Task 1–3 已执行的 focused 7/7、diagnostics 7/7、compat/NM/config 3 pass + 3 expected skip。完整 Vulkan/OpenGL、sanitizer/fuzz、平台和远端 CI 验证仍待后续执行。OpenGL 仅用于最终降级和画面对照，不将本 record 示例写成 GPU runtime 证据。
+
+## 补充（2026-11-23）：crash-context 最终验证运行说明
+
+本节补充上一节之后的验证结果与运行注意事项；此前“非 sanitizer/待执行”文字仍表示当时状态。
+
+- rebase 前 `acc3c5d2` 已完成 Vulkan 470/470、OpenGL 468/468（各 4 项条件 skip）、ASan+UBSan 非图形 443/443（4 项条件 skip）+ fuzz 14/14、TSan 相关 8/8，以及 Makefiles/Ninja Multi-Config 根契约各 1/1。rebase 到 `33cc4be4` 后的 `321cf4f9` 已完成 Vulkan/OpenGL 资源交集各 3/3、core_app focused 7/7、ASan 资源/崩溃交集 7/7 + fuzz 14/14、TSan 资源与并发交集 9/9 和两种根契约各 1/1；无冲突标记，双方文档内容均保留。
+- ASan full-process 使用真实 `libasan.so.8` 已通过；真实 TSan runtime 为 `libtsan.so.2`。ASCII linker-script runtime 在创建工作目录/进程前返回 77，空 ASan/TSan runtime 也返回 77；UBSan 不需要额外 runtime。ASan 早期 sigaction 懒解析和 TSan helper 去插桩仅为测试基础设施修复，`core_app` 保持插桩。TSan full-process 在本机 Fedora GCC 16/glibc 2.44 仍因 Lua longjmp CHECK 退出 66，未验证通过，不记为 skip 或成功，等待 Ubuntu CI。
+- macOS ARM64 在中间 `0ddd` 的全量为 Metal 435/435、MoltenVK 438/438，各 5 项条件 skip（含 crash_context）；最终两套资源/diagnostics/lifecycle 交集各 7/7（crash_context 明确 skip）、graphics/gpu 各 6/6。MoltenVK 初轮 staging 失败来自 Homebrew 顶层 include 符号链接，构建时应使用实际 `vulkan-headers` 与 `shaderc` 前缀；修正后才取得上述结果，不写成首轮全绿。
+- Windows 实机、主 CI、windows-d3d12、由 `engine/CMakeLists.txt` 触发的 QUIC 和 Proton 仍待结果，不预写 run-id 或成功。Windows install=false stub 与非 Linux 捕获边界不变。
+
+### Windows 实机验证补充（`321cf4f9`，2026-11-23）
+
+前述 Windows 实机待办已有结果，但完整非图形套件不是绿色。
+
+- Windows Clang 成功构建 D3D12 树；完整非图形 CTest 共 **425 项，4 失败、5 项条件 skip**。`test_core_app_diagnostics` **7/7**（POSIX 用例只是占位，install=false stub 不是捕获证据），`test_core_app_runtime` **65/65**；crash_build OFF、nested 契约通过，target、crash_context 按平台 skip。`test_vfs`、`test_async_loader`、`test_runtime_io` 分别通过。
+- `test_locked_dependencies` 首轮缺少 `ENGINE_LOCKED_DEPS_ALLOW_ABSENT=1` 而失败；按 CI 环境显式设置后通过。复现该契约时应保留这一环境要求，不把首轮失败写成直接通过。
+- `test_platform_win32_runtime` 为 **20/26**，远程桌面下窗口样式、最大化、全屏恢复失败。`test_d3d12_uav_matrix` 的交换链创建返回 `0x887a0022`，设置 `ENGINE_D3D12_WARP=1` 仍失败，`test_d3d12_warp_runtime` 按条件 skip；这些结果不构成 GPU 或交互桌面验证。
+- `test_scene_serial` 为 **121/122**，`failed_load_keeps_previous_scene` 的 `scene_load_binary(wd,&dst,pa)` 失败。`engine/src/scene/scene_serial.c` 和 `tests/test_scene_serial.c` 从 `0ddd`、rebase base 到当前均无变化，故不是本分支改动引入；根因仍未关闭，作为独立既有/平台问题记录，未证明是环境原因。Windows CI 将用于交叉核验。
+- 主 CI、windows-d3d12、QUIC（`engine/CMakeLists.txt` 变更会触发）和 Proton 仍待，不预写 run-id 或成功。Windows install=false stub 与非 Linux 捕获边界不变。

@@ -172,3 +172,22 @@ haptic_status=<u32>
 当前真实 full-process 证据仅为原生 Linux SIGABRT：第 2 帧 abort 后验证 `tick=1 backend=record gpu=none keys=1` 及所有规定零字段；`runtime_running` 前 abort 验证 `gpu=pending tick=0 keys=0`；正常成功和运行时失败均验证 stop 与零 pending 记录。Windows 仍是 start=false stub，非 Linux full-process 不具备原生 preload 时返回 77；不得从格式化工件、Mach-O 符号读取或服务端测试推断 Windows/macOS 客户端捕获成功。
 
 `core_app` 不链接 `break_crash_upload_http`，本子项目没有上传接线，也没有新增生产收集服务。当前已执行为 focused 7/7、diagnostics 7/7，以及 compat/NM/config 3 pass + 3 expected skip；完整图形、平台、sanitizer/fuzz 和远端 CI 验收仍待后续执行，没有可提前登记的 run-id。
+
+### 8.1 最终验收与捕获边界补充（2026-11-23）
+
+本节追加于前述“完整验证待执行”的时点记录之后，不改变记录格式或符号化算法。
+
+- `acc3c5d2` 已完成 Vulkan 470/470、OpenGL 468/468（各 4 项条件 skip）、ASan+UBSan 非图形 443/443（4 项条件 skip）、fuzz 14/14、TSan 相关 8/8 和两种根契约各 1/1。rebase 到 `33cc4be4` 后的 `321cf4f9` 已完成 Vulkan/OpenGL 资源交集各 3/3、core_app focused 7/7、ASan 资源/崩溃交集 7/7 + fuzz 14/14、TSan 资源与并发交集 9/9 及两种根契约各 1/1；追加文档冲突保留双方内容且无冲突标记。
+- ASan 真实 full-process 使用 `libasan.so.8` 已通过；`libtsan.so.2` 是真实 TSan runtime。ASCII 或空 ASan/TSan runtime 均在创建工作目录/进程前返回 77，UBSan 不需要额外 runtime。sigaction 懒解析与 helper 去插桩只修复测试基础设施，`core_app` 保持插桩。TSan full-process 在本机 Fedora GCC 16/glibc 2.44 仍因 Lua longjmp CHECK 退出 66，等待 Ubuntu CI，未记为 skip 或通过。
+- macOS ARM64 在中间 `0ddd` 的全量为 Metal 435/435、MoltenVK 438/438，各 5 项条件 skip（含 crash_context）；MoltenVK 是在修正 Homebrew 顶层 include 符号链接导致的 staging 失败后取得，不能抹成首轮全绿。最终两套资源/diagnostics/lifecycle 交集各 7/7（crash_context 明确 skip）、graphics/gpu 各 6/6。Mach-O 符号读取和这些测试仍不证明 Windows/macOS 客户端捕获。
+- Windows 实机、主 CI、windows-d3d12、QUIC（本次由 `engine/CMakeLists.txt` 触发）和 Proton 仍待后续结果，无 run-id 或成功预记；Windows install=false stub 不变。
+
+#### Windows 实机补充（`321cf4f9`）
+
+Windows 实机待办现已执行：Windows Clang 成功构建 D3D12 树，完整非图形 CTest 为 **425 项、4 失败、5 项条件 skip**，不是全套通过。diagnostics **7/7**（POSIX 用例只是占位，install=false stub 不是捕获证据）、runtime **65/65**；crash_build OFF、nested 契约通过，target、crash_context 按平台 skip；VFS、async loader、Runtime IO 分别通过。
+
+`test_locked_dependencies` 在补齐与 CI 一致的 `ENGINE_LOCKED_DEPS_ALLOW_ABSENT=1` 后通过，首轮缺环境失败保留。平台 runtime 为 **20/26**，远程桌面窗口样式、最大化、全屏恢复失败；D3D12 UAV 交换链创建返回 `0x887a0022`，WARP 亦失败，warp_runtime 条件 skip，不声称 GPU 或交互桌面通过。
+
+`test_scene_serial` 为 **121/122**，失败点是 `failed_load_keeps_previous_scene` 的 `scene_load_binary(wd,&dst,pa)`。scene 实现和测试从 `0ddd`、rebase base 到当前均未变化，因此不是本分支改动引入；根因未关闭，列为独立既有/平台问题，不声称环境原因已证明，待 Windows CI 交叉核验。
+
+主 CI、windows-d3d12、QUIC（`engine/CMakeLists.txt` 变更会触发）和 Proton 仍待，不预写 run-id 或成功。Windows/macOS 客户端捕获仍不能由格式化、符号读取或占位测试推断。

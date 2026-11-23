@@ -263,3 +263,60 @@ ShiningLight 的 `Win64ARMOpenSSL` 安装器（winget id `ShiningLight.OpenSSL.D
 当前完整执行的是非 sanitizer 原生 Linux 构建；没有运行 ASan/TSan 插桩后的 full-process 序列。Windows 的 `break_crash_install` 仍返回 false，macOS 及其他非 Linux 平台没有真实 `core_app` 崩溃记录证据。
 
 **尚待 Task 4 Step 3/4 执行**：完整默认 Wayland+Vulkan 套件、OpenGL 最终降级/画面对照套件、ASan/UBSan 非图形与 fuzz、相关 TSan、root/default 构建契约、可用 Windows/macOS/arm64 通道及远端 CI。此处没有这些项目的预写成功计数或 run-id。
+
+### 2026-11-23 core_app crash-context：最终本地验收补充
+
+本节追加于上一节“待执行/非 sanitizer”时点之后，只记录已经确定的结果，不把 rebase 后交集写成全套。
+
+| rebase 前 `acc3c5d2` 全套 | 结果 |
+|---|---|
+| Vulkan / OpenGL | **470/470** / **468/468**，各另有 4 项条件 skip |
+| ASan+UBSan 非图形 / fuzz | **443/443**（4 项条件 skip）/ **14/14** |
+| TSan 相关 | **8/8** |
+| 根 Makefiles / Ninja Multi-Config 契约 | 各 **1/1** |
+
+rebase 到 `33cc4be4` 后的实现 HEAD 为 `321cf4f9`。两处追加文档冲突均保留双方内容，无冲突标记。
+
+| `321cf4f9` 受影响交集 | 结果 |
+|---|---|
+| Vulkan / OpenGL 资源交集 | 各 **3/3** |
+| core_app focused | **7/7** |
+| ASan 资源/崩溃交集 / fuzz | **7/7** / **14/14** |
+| TSan 资源与并发交集 | **9/9** |
+| 两种根契约 | 各 **1/1** |
+
+| sanitizer / runtime 场景 | 当前证据 |
+|---|---|
+| ASan 真实 full-process | 使用真实 `libasan.so.8`，现已通过 |
+| TSan 真实 full-process | 使用真实 `libtsan.so.2`；本机 Fedora GCC 16/glibc 2.44 仍在 Lua longjmp CHECK 退出 **66**，未验证通过，等待 Ubuntu CI |
+| ASCII ASan/TSan runtime | 在创建工作目录/进程前返回 **77** |
+| 空 ASan/TSan runtime | 返回 **77** |
+| UBSan | 不需要额外 runtime |
+
+ASan 早期 sigaction 懒解析与 TSan helper 去插桩只修复测试基础设施，`core_app` 本身保持插桩。TSan 的退出 66 不记为 skip 或成功。
+
+| macOS ARM64 | 中间全量（含各 5 项条件 skip，含 crash_context） | 最终 `321cf4f9` 交集 |
+|---|---|---|
+| Metal | `0ddd`：**435/435** | 资源/diagnostics/lifecycle **7/7**（crash_context 明确 skip）；graphics/gpu **6/6** |
+| MoltenVK | 修正 SDK 前缀后：**438/438** | 资源/diagnostics/lifecycle **7/7**（crash_context 明确 skip）；graphics/gpu **6/6** |
+
+MoltenVK 初轮 staging 因 Homebrew 顶层 include 符号链接失败，改用实际 `vulkan-headers`/`shaderc` 前缀后才通过，不能抹成一次全绿。macOS 的 crash_context skip 与其他非 Linux 结果仍不构成捕获证据。
+
+**仍待后续结果**：Windows 实机、主 CI、windows-d3d12、由 `engine/CMakeLists.txt` 变更触发的 QUIC，以及 Proton。此处不预写 run-id 或成功；Windows install=false stub 不变。
+
+#### Windows 实机（`321cf4f9`）
+
+上述 Windows 实机待办现已执行；结果明确不是全套通过。
+
+| 项目 | Windows Clang / D3D12 树实际结果 |
+|---|---|
+| 构建与完整非图形 CTest | D3D12 树构建成功；共 **425 项，4 失败、5 项条件 skip** |
+| core_app | diagnostics **7/7**（POSIX 用例只是占位，install=false stub 不是捕获证据）；runtime **65/65**；crash_build OFF、nested 契约通过；target、crash_context 按平台 skip |
+| 资源与 IO | `test_vfs`、`test_async_loader`、`test_runtime_io` 分别通过 |
+| `test_locked_dependencies` | 首轮缺 `ENGINE_LOCKED_DEPS_ALLOW_ABSENT=1` 失败；使用与 CI 一致的环境后通过 |
+| `test_platform_win32_runtime` | **20/26**；远程桌面下窗口样式、最大化、全屏恢复失败 |
+| D3D12 runtime | `test_d3d12_uav_matrix` 交换链创建 `0x887a0022` 失败；`ENGINE_D3D12_WARP=1` 亦失败；`test_d3d12_warp_runtime` 按条件 skip。不声称 GPU 或交互桌面通过 |
+
+`test_scene_serial` 为 **121/122**：`failed_load_keeps_previous_scene` 中 `scene_load_binary(wd,&dst,pa)` 失败。`engine/src/scene/scene_serial.c` 与 `tests/test_scene_serial.c` 从 `0ddd`、rebase base 到当前均无变化，因此不是本分支改动引入；根因尚未关闭，列为独立既有/平台问题，不声称环境原因已经证明。Windows CI 待运行并交叉核验。
+
+**仍待远端**：主 CI、windows-d3d12、QUIC（因 `engine/CMakeLists.txt` 变更会触发）和 Proton，不预写 run-id 或成功。Windows install=false stub 与非 Linux 捕获边界不变。

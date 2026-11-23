@@ -13282,3 +13282,25 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **真实 Linux SIGABRT**：第 2 帧真实日志转发后 abort，要求唯一帧标记、真实 `Subprocess aborted` 和 BCR `signo: 00000006`。最后完整快照严格为 `backend=record gpu=none live=false tick=1 seen=0 dropped=0 keys=1 pads=0 touches=0 gestures=0 touch_status=0 haptic_status=0`。在 `runtime_running` 前 abort 则严格验证 `gpu=pending tick=0 keys=0` 和其他零字段。正常成功/运行时失败保持退出码 0/2，sigaction 总计均 10/10 且无 pending。七个零字段各自有非零负例，验证器返回 contract exit 5。
 - **sanitizer/preload 边界**：ASan 或 TSan 标识为 TRUE 但 runtime preload 为空时直接退出 77；native preload 不可用同样退出 77，均在创建工作目录或启动进程前发生。UBSan=TRUE 且 runtime preload 为空完整执行四类真实进程用例并返回 0。当前完整执行的是非 sanitizer 原生 Linux 构建，不能把这些强制分支写成 ASan/TSan 插桩后的崩溃通过。
 - **尚待 Task 4 后续验收**：完整默认 Wayland+Vulkan 套件、OpenGL 最终降级/画面对照套件、ASan/UBSan 非图形与 fuzz、相关 TSan、root/default 构建契约、可用 Windows/macOS/arm64 通道及远端 CI。以上项目当前不预写通过计数或 run-id；Linux 不引入 X11 路径。
+
+## core_app crash-context 最终本地验收补充（2026-11-23）
+
+本节记录上一节“非 sanitizer/尚待验收”之后的确定证据，不改写该历史时点。
+
+- **rebase 前全套（`acc3c5d2`）**：Vulkan **470/470**、OpenGL **468/468**，各另有 4 项条件 skip；ASan+UBSan 非图形 **443/443**（4 项条件 skip）与 fuzz **14/14**；TSan 相关 **8/8**；根 Makefiles、Ninja Multi-Config 契约各 **1/1**。
+- **rebase 后受影响交集（`321cf4f9`）**：rebase 基线为 `33cc4be4`，两处追加文档冲突均保留双方内容且无冲突标记。Vulkan/OpenGL 资源交集各 **3/3**；core_app focused **7/7**；ASan 资源/崩溃交集 **7/7** + fuzz **14/14**；TSan 资源与并发交集 **9/9**；两种根契约各 **1/1**。这些是交集复验，不冒充当前 HEAD 的图形全套。
+- **ASan full-process 现已通过**：真实 sanitizer soname 为 `libasan.so.8` 与 `libtsan.so.2`。ASCII linker-script runtime 在任何工作目录或进程创建前返回 **77**；空 ASan/TSan runtime 也返回 **77**；UBSan 不要求额外 runtime。ASan 早期 sigaction 懒解析和 TSan helper 去插桩只修复测试基础设施，`core_app` 保持插桩。
+- **TSan full-process 未通过**：本机 Fedora GCC 16/glibc 2.44 仍在 Lua longjmp CHECK 处退出 **66**，保持未验证，既不写成 skip 也不写成成功，等待 Ubuntu CI 独立结果。
+- **macOS ARM64 分阶段记录**：中间 `0ddd` 的 Metal 全量 **435/435**；MoltenVK 初轮 staging 因 Homebrew 顶层 include 符号链接失败，改用实际 `vulkan-headers`/`shaderc` 前缀后全量 **438/438**。两套各另有 5 项条件 skip（含 crash_context），不把初轮失败抹成一次全绿。最终 `321cf4f9` 上，两套资源/diagnostics/lifecycle 交集各 **7/7**（其中 crash_context 明确 skip），graphics/gpu 各 **6/6**。
+- **待外部收据**：Windows 实机、主 CI、windows-d3d12、QUIC（由 `engine/CMakeLists.txt` 变更触发）及 Proton 仍待后续结果，不预写 run-id 或成功。Windows install=false stub 与非 Linux 捕获边界不变；macOS 的 crash_context skip 不转换为捕获证据。
+
+### Windows 实机补充（`321cf4f9`，2026-11-23）
+
+上述 Windows 实机待办现已取得真实结果；它不是全套通过收据。
+
+- **构建与总览**：Windows Clang 的 D3D12 树构建成功。完整非图形 CTest 共 **425 项，4 失败、5 项条件 skip**，不得写成全套通过。
+- **core_app 与资源测试**：`test_core_app_diagnostics` **7/7**，其中 POSIX 用例仅为占位，install=false stub 仍不是捕获证据；`test_core_app_runtime` **65/65**。crash_build OFF 与 nested 契约通过，target 与 crash_context 按平台 skip。`test_vfs`、`test_async_loader`、`test_runtime_io` 分别通过。
+- **依赖契约**：`test_locked_dependencies` 首轮因缺少 `ENGINE_LOCKED_DEPS_ALLOW_ABSENT=1` 失败；使用与 CI 一致的环境后通过，首轮失败不抹除。
+- **平台与 D3D12 边界**：`test_platform_win32_runtime` 为 **20/26**，远程桌面下窗口样式、最大化和全屏恢复失败。`test_d3d12_uav_matrix` 的交换链创建以 `0x887a0022` 失败，`ENGINE_D3D12_WARP=1` 亦失败，`test_d3d12_warp_runtime` 按条件 skip；不声称 GPU 或交互桌面通过。
+- **独立 scene 问题**：`test_scene_serial` 为 **121/122**，`failed_load_keeps_previous_scene` 中 `scene_load_binary(wd,&dst,pa)` 失败。`engine/src/scene/scene_serial.c` 与 `tests/test_scene_serial.c` 从 `0ddd`、rebase base 到当前均无变化，因此不是本分支改动引入；但根因尚未关闭，记录为独立既有/平台问题，不谎称已经证明是环境原因。Windows CI 待运行，用于交叉核验。
+- **仍待远端**：主 CI、windows-d3d12、QUIC（因 `engine/CMakeLists.txt` 变更会触发）和 Proton 仍待，不预写 run-id 或成功。Windows install=false stub 与非 Linux 捕获边界不变。
