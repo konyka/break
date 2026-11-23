@@ -296,6 +296,43 @@ TEST(vfs_read_all_helper)
     vfs_destroy(vfs);
 }
 
+TEST(vfs_read_all_empty_file)
+{
+    ensure_dir(TMP_DIR);
+    char empty_path[160];
+    snprintf(empty_path, sizeof(empty_path), "%s/empty.bin", TMP_DIR);
+    FILE *fp = fopen(empty_path, "wb");
+    ASSERT_NOT_NULL(fp);
+    ASSERT_EQ(fclose(fp), 0);
+
+    VFS *vfs = vfs_create();
+    ASSERT_NOT_NULL(vfs);
+    ASSERT_TRUE(vfs_mount_dir(vfs, TMP_DIR));
+    usize size = 99;
+    u8 *data = vfs_read_all(vfs, "empty.bin", &size);
+    bool dir_ok = data != NULL && size == 0u;
+    free(data);
+    vfs_destroy(vfs);
+
+    char pak_path[160];
+    test_tmp(pak_path, sizeof(pak_path), "test_vfs_empty.pak");
+    const VFSPakSource source = {"empty.bin", NULL, 0};
+    ASSERT_TRUE(vfs_pak_write(pak_path, &source, 1));
+    vfs = vfs_create();
+    ASSERT_NOT_NULL(vfs);
+    ASSERT_TRUE(vfs_mount_pak(vfs, pak_path));
+    size = 99;
+    data = vfs_read_all(vfs, "empty.bin", &size);
+    bool pak_ok = data != NULL && size == 0u;
+    free(data);
+    vfs_destroy(vfs);
+
+    ASSERT_EQ(remove(empty_path), 0);
+    ASSERT_EQ(remove(pak_path), 0);
+    ASSERT_TRUE(dir_ok);
+    ASSERT_TRUE(pak_ok);
+}
+
 TEST(vfs_read_all_nonexistent)
 {
     ensure_dir(TMP_DIR);
@@ -905,6 +942,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(vfs_open_null_vfs);
     RUN_TEST(vfs_getc_eof);
     RUN_TEST(vfs_read_all_helper);
+    RUN_TEST(vfs_read_all_empty_file);
     RUN_TEST(vfs_read_all_nonexistent);
     RUN_TEST(vfs_read_null_file);
     RUN_TEST(vfs_mount_priority);

@@ -6677,7 +6677,7 @@ endif()
     # compiled beside the test: the facade reads through a borrowed VFS whose
     # symbols resolve at this final link (same pattern as the task facade
     # resolving the legacy TaskSystem). The compatibility async loader is not
-    # involved and stays unchanged.
+    # involved in this facade test.
     add_executable(test_runtime_io tests/test_runtime_io.c
         src/asset/vfs.c src/core/log.c src/core/profiler.c src/platform/time.c)
     target_include_directories(test_runtime_io PRIVATE

@@ -15,7 +15,9 @@ typedef enum {
     ASSET_CANCELLED
 } AssetState;
 
-/* Callback invoked on the main thread when data is ready (or NULL on failure) */
+/* Callback invoked on the main thread when data is ready (or NULL on failure).
+ * A successful raw full-file load of an empty file reports an owned non-NULL
+ * buffer with size 0, which the callback still releases with free(). */
 typedef void (*AsyncLoadCallback)(void *user_data, void *data, u32 size);
 
 /* Priority bands (lower value = processed sooner). */

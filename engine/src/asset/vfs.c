@@ -349,9 +349,9 @@ u8 *vfs_read_all(VFS *vfs, const char *path, usize *out_size) {
         return NULL;
     }
     /* Copy data out: in single-alloc layout, data is freed with vfs_close */
-    u8 *data = (u8 *)malloc(f->size);
+    u8 *data = (u8 *)malloc(f->size != 0u ? f->size : 1u);
     if (data) {
-        memcpy(data, f->data, f->size);
+        if (f->size != 0u) memcpy(data, f->data, f->size);
         if (out_size) *out_size = f->size;
     } else {
         /* R353: malloc fail must not leave a stale non-zero *out_size. */

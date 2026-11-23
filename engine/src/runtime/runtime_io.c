@@ -19,8 +19,8 @@
 
 /* Formal IO/VFS facade: a module-level singleton whose IO worker threads are
  * formal BreakRuntimeThread objects reading through a BORROWED VFS. The
- * compatibility async loader (engine/src/asset/async_loader.c) is not used
- * and not modified; this is the formal completion bridge beside it.
+ * compatibility async loader (engine/src/asset/async_loader.c) is not used;
+ * this is the formal completion bridge beside its separate API and lifecycle.
  *
  * Concurrency layout:
  *  - g_io_lock (lazy-initialized, process-stable) guards publication of the
@@ -594,7 +594,7 @@ static void io_worker_main(void *arg)
         } else {
             usize size = 0u;
             u8 *data = vfs_read_all(facade->vfs, request->path, &size);
-            if (!data || size == 0u) {
+            if (!data) {
                 free(data);
                 io_worker_finalize(facade, request, generation_at_start,
                                    BREAK_RUNTIME_IO_FAILED,

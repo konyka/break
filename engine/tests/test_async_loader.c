@@ -115,6 +115,51 @@ TEST(async_loader_load_nonexistent) {
     vfs_destroy(vfs);
 }
 
+static _Atomic int g_empty_callback_called;
+static _Atomic int g_empty_callback_size = -1;
+
+static void empty_load_callback(void *user_data, void *data, u32 size) {
+    (void)user_data;
+    if (data) atomic_store(&g_empty_callback_size, (int)size);
+    atomic_fetch_add(&g_empty_callback_called, 1);
+    free(data);
+}
+
+TEST(async_loader_load_empty) {
+    char path[128];
+    test_tmp(path, sizeof(path), "async_empty.bin");
+    FILE *fp = fopen(path, "wb");
+    ASSERT_NOT_NULL(fp);
+    ASSERT_EQ(fclose(fp), 0);
+
+    VFS *vfs = vfs_create();
+    ASSERT_NOT_NULL(vfs);
+    ASSERT_TRUE(vfs_mount_dir(vfs, test_tmp_root()));
+    bool initialized = async_loader_init(1, vfs);
+    atomic_store(&g_empty_callback_called, 0);
+    atomic_store(&g_empty_callback_size, -1);
+    u64 id = async_loader_request(strrchr(path, '/') + 1,
+                                  empty_load_callback, NULL);
+
+    u64 deadline = test_wait_deadline();
+    for (;;) {
+        async_loader_tick();
+        if (atomic_load(&g_empty_callback_called) != 0) break;
+        if (test_now_us() >= deadline) break;
+        for (volatile int j = 0; j < 100000; j++) { (void)j; }
+    }
+
+    AssetState status = async_loader_status(id);
+    async_loader_shutdown();
+    vfs_destroy(vfs);
+    ASSERT_EQ(remove(path), 0);
+    ASSERT_TRUE(initialized);
+    ASSERT_NEQ(id, (u64)0);
+    ASSERT_EQ(atomic_load(&g_empty_callback_called), 1);
+    ASSERT_EQ(atomic_load(&g_empty_callback_size), 0);
+    ASSERT_EQ(status, ASSET_UNLOADED);
+}
+
 /* ---- Status query ---- */
 
 TEST(async_loader_status_loading) {
@@ -756,6 +801,7 @@ TEST(async_loader_shutdown_drains_decoded_completion)
 TEST_MAIN_BEGIN()
     RUN_TEST(async_loader_init_shutdown);    RUN_TEST(async_loader_pending_zero);
     RUN_TEST(async_loader_load_nonexistent);
+    RUN_TEST(async_loader_load_empty);
     RUN_TEST(async_loader_status_loading);
     RUN_TEST(async_loader_cancel_request);
     /* Edge cases */

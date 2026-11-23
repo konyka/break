@@ -70,6 +70,9 @@ i32      vfs_getc(VFSFile *f);
 bool     vfs_eof(VFSFile *f);
 void     vfs_close(VFSFile *f);
 usize    vfs_size(VFSFile *f);
+/* Returns an owned copy for the caller to free(). Success returns non-NULL,
+ * including an empty file (*out_size == 0). Failure returns NULL and sets
+ * *out_size to zero when out_size is provided. */
 u8      *vfs_read_all(VFS *vfs, const char *path, usize *out_size);
 
 /* Visits every entry of every PAK mount that vfs_open can serve (entries

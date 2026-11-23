@@ -321,7 +321,7 @@ static void io_worker_run(void) {
             usize file_size = 0;
             u8 *data = vfs_read_all(g_loader.vfs, req->path, &file_size);
 
-            if (data && file_size > 0) {
+            if (data) {
                 if (file_size > (usize)UINT32_MAX) {
                     /* R140: File too large for u32 size field — reject to prevent truncation */
                     free(data);

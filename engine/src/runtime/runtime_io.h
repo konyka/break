@@ -12,10 +12,10 @@
  * Part of the formal OPTIONAL `runtime_core` static library: not linked into
  * `engine`, `engine_demo`, or `dxx_break`; consumers opt in.
  *
- * This is the formal completion bridge beside the legacy async loader: the
- * compatibility loader (`engine/src/asset/async_loader.c`, including its
- * completion-queue wait behaviour) is byte-for-byte UNCHANGED. The facade
- * reads through a borrowed VFS on its own formal worker threads
+ * This is the formal completion bridge beside the legacy async loader. The
+ * compatibility loader has its own lifecycle and completion-queue wait
+ * behaviour; this facade does not call it. The facade reads through a
+ * borrowed VFS on its own formal worker threads
  * (runtime_thread.h) and delivers exactly one OWNED completion per request
  * as a BreakRuntimeOwnedMessage. There are NO callbacks anywhere in this
  * API, so no logic thread callback can ever fire on an IO worker.
@@ -47,6 +47,8 @@
  *    supported; its completion is then abandoned with the request) frees
  *    a live-request slot immediately but its ring slot only at
  *    claim/drain.
+ *  - A valid empty file completes successfully with byte_size == 0 and
+ *    bytes == NULL; it is not a VFS read failure.
  *  - `deadline_ns` is an absolute timespec_get(TIME_UTC) nanosecond deadline;
  *    0 disables it. A request whose deadline has expired before its read
  *    starts finalizes as TIMED_OUT without touching the VFS.

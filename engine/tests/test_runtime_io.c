@@ -490,6 +490,56 @@ TEST(io_missing_file_failed_completion)
     vfs_destroy(vfs);
 }
 
+TEST(io_empty_file_completion)
+{
+    VFS *vfs = fixture_setup();
+    BreakRuntimeIoConfig cfg;
+    BreakRuntimeIoRequest *req = NULL;
+    BreakRuntimeOwnedMessage *msg = NULL;
+    BreakRuntimeIoCompletion completion;
+    BreakRuntimeIoStats stats;
+    char file_path[640];
+
+    ASSERT_NOT_NULL(vfs);
+    snprintf(file_path, sizeof(file_path), "%s/empty.bin", g_io_dir);
+    FILE *fp = fopen(file_path, "wb");
+    ASSERT_NOT_NULL(fp);
+    ASSERT_EQ(fclose(fp), 0);
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.vfs = vfs;
+    cfg.worker_count = 1u;
+    cfg.request_capacity = 4u;
+    BreakRuntimeError init_result = break_runtime_io_init(&cfg);
+    BreakRuntimeError submit_result =
+        break_runtime_io_submit(&req, "empty.bin", 0u, 0u);
+    BreakRuntimeError wait_result =
+        break_runtime_io_wait_completion(req, 5000u, &msg);
+    memset(&completion, 0, sizeof(completion));
+    memset(&stats, 0, sizeof(stats));
+    BreakRuntimeError parse_result = parse_completion(msg, &completion);
+    break_runtime_message_release(msg);
+    break_runtime_io_request_release(req);
+    BreakRuntimeError stats_result = break_runtime_io_stats(&stats);
+    BreakRuntimeError shutdown_result = break_runtime_io_shutdown(2000u);
+    int remove_result = remove(file_path);
+    vfs_destroy(vfs);
+
+    ASSERT_EQ(init_result, BREAK_RUNTIME_OK);
+    ASSERT_EQ(submit_result, BREAK_RUNTIME_OK);
+    ASSERT_EQ(wait_result, BREAK_RUNTIME_OK);
+    ASSERT_EQ(parse_result, BREAK_RUNTIME_OK);
+    ASSERT_EQ(completion.state, BREAK_RUNTIME_IO_COMPLETED);
+    ASSERT_EQ(completion.error, BREAK_RUNTIME_OK);
+    ASSERT_EQ(completion.byte_size, (u64)0);
+    ASSERT_EQ(completion.bytes, NULL);
+    ASSERT_EQ(stats_result, BREAK_RUNTIME_OK);
+    ASSERT_EQ(stats.completed, 1u);
+    ASSERT_EQ(stats.failed, 0u);
+    ASSERT_EQ(stats.bytes_published, (u64)0);
+    ASSERT_EQ(shutdown_result, BREAK_RUNTIME_OK);
+    ASSERT_EQ(remove_result, 0);
+}
+
 TEST(io_deadline_timeout_completion)
 {
     VFS *vfs = fixture_setup();
@@ -1438,6 +1488,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(io_submit_validation);
     RUN_TEST(io_read_completion_owned_bytes);
     RUN_TEST(io_missing_file_failed_completion);
+    RUN_TEST(io_empty_file_completion);
     RUN_TEST(io_deadline_timeout_completion);
     RUN_TEST(io_cancel_before_start);
     RUN_TEST(io_stale_generation_dropped);
