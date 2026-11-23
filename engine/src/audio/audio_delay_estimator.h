@@ -50,6 +50,10 @@ typedef struct AudioDelayLine AudioDelayLine;
  * a silent history. INVALID or OVERLOAD as above. */
 AudioResult audio_delay_line_create(u32 max_delay_frames, AudioDelayLine **out);
 void audio_delay_line_destroy(AudioDelayLine *line); /* NULL is a no-op */
+/* Clears the history to silence and cancels an active fade. Keeps the maximum,
+ * current delay, sinc mode and crossfade duration; later output matches a new
+ * line with the same settings. No allocation; NULL is a no-op. */
+void audio_delay_line_reset(AudioDelayLine *line);
 /* INVALID for NULL or a delay above the maximum. Takes effect on the next
  * frame. Immediate by default; uses the configured crossfade when nonzero. */
 AudioResult audio_delay_line_set_delay(AudioDelayLine *line, u32 delay_frames);

@@ -277,6 +277,56 @@ TEST(delay_failure_restores_update_schedule)
     audio_voice_aligner_destroy(aligner);
 }
 
+static bool reset_matches_fresh(bool use_gcc)
+{
+    const AudioVoiceAlignerConfig config = test_config();
+    AudioVoiceAligner *used = NULL;
+    AudioVoiceAligner *fresh = NULL;
+    const AudioResult a = use_gcc ? audio_voice_aligner_create_gcc(&config, &used)
+                                  : audio_voice_aligner_create(&config, &used);
+    const AudioResult b = use_gcc ? audio_voice_aligner_create_gcc(&config, &fresh)
+                                  : audio_voice_aligner_create(&config, &fresh);
+    if (a != AUDIO_OK || b != AUDIO_OK) return false;
+    make_fractional_echo(12.5);
+    const u32 primed = ALIGNER_TEST_PERIOD + 1000u;
+    bool ok = audio_voice_aligner_process_i16(used, g_reference, g_capture, g_whole,
+                                              primed) == AUDIO_OK &&
+              audio_voice_aligner_updates(used) == 1u &&
+              audio_voice_aligner_locked(used) &&
+              audio_voice_aligner_delay(used) > 12.0;
+    audio_voice_aligner_reset(used);
+    ok = ok && audio_voice_aligner_updates(used) == 0u &&
+         audio_voice_aligner_delay(used) == 0.0 &&
+         !audio_voice_aligner_locked(used) &&
+         audio_voice_aligner_rejections(used) == 0u &&
+         audio_voice_aligner_correlation(used) == 0.0 &&
+         audio_voice_aligner_uses_gcc(used) == use_gcc;
+    make_fractional_echo(20.25);
+    const u32 total = 3u * ALIGNER_TEST_PERIOD;
+    for (u32 n = 0u; ok && n < total; n += 1531u) {
+        const u32 count = total - n < 1531u ? total - n : 1531u;
+        ok = audio_voice_aligner_process_i16(used, g_reference + n, g_capture + n,
+                                             g_whole + n, count) == AUDIO_OK &&
+             audio_voice_aligner_process_i16(fresh, g_reference + n, g_capture + n,
+                                             g_chunked + n, count) == AUDIO_OK &&
+             audio_voice_aligner_updates(used) == audio_voice_aligner_updates(fresh) &&
+             audio_voice_aligner_delay(used) == audio_voice_aligner_delay(fresh);
+    }
+    ok = ok && memcmp(g_whole, g_chunked, total * sizeof(i16)) == 0 &&
+         audio_voice_aligner_updates(used) == 3u &&
+         fabs(audio_voice_aligner_delay(used) - 20.25) <= 0.25;
+    audio_voice_aligner_destroy(used);
+    audio_voice_aligner_destroy(fresh);
+    return ok;
+}
+
+TEST(reset_matches_a_fresh_aligner)
+{
+    audio_voice_aligner_reset(NULL);
+    ASSERT_TRUE(reset_matches_fresh(false));
+    ASSERT_TRUE(reset_matches_fresh(true));
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(create_validates_configuration_and_calls);
     RUN_TEST(known_fractional_echo_updates_at_exact_period);
@@ -284,4 +334,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(silent_capture_rejects_without_moving_delay);
     RUN_TEST(gcc_constructor_applies_known_delay);
     RUN_TEST(delay_failure_restores_update_schedule);
+    RUN_TEST(reset_matches_a_fresh_aligner);
 TEST_MAIN_END()

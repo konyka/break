@@ -174,6 +174,15 @@ void audio_delay_line_destroy(AudioDelayLine *line) {
     free(line);
 }
 
+void audio_delay_line_reset(AudioDelayLine *line) {
+    if (!line) return;
+    memset(line->buffer, 0, (size_t)line->size * sizeof(i16));
+    line->write = 0u;
+    line->fade_from = 0.0;
+    line->fade_total = 0u;
+    line->fade_remaining = 0u;
+}
+
 static AudioResult delay_line_change(AudioDelayLine *line, double delay) {
     if (line->fade_remaining > 0u) return AUDIO_REJECTED;
     if (line->delay == delay) return AUDIO_OK;

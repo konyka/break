@@ -237,6 +237,7 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 - 自动跟踪：`engine/src/audio/audio_delay_tracker.{h,c}` 内部持有所选估计器。`AudioDelayTrackerConfig` 增加采样率、最小 |S|、最大双向漂移帧/秒、锁定所需连续接受数与拒绝保持数。默认 `audio_delay_tracker_create` 使用时域估计器，`audio_delay_tracker_create_gcc` 使用 GCC-PHAT 与归一化置信度，配置结构不变且只分配选定后端。锁定前直接采用测量；锁定后按两次 update 之间推送的帧数计算经过时间并限制变化，零时间不动。拒绝保持延迟；超过保持数才解锁，恢复良好测量会清空拒绝游程。`reset` 同时重置所选估计器与跟踪状态。
 - 频域估计：`engine/src/audio/audio_gcc_phat.{h,c}` 提供独立的 GCC-PHAT 对象。FFT 大小为至少两倍 `window + max_delay` 的下一个 2 的幂，最大 65536；计算 `conj(FFT(reference))·FFT(capture)`，逐 bin 归一化相位后逆变换，在 0..max_delay 取最大绝对峰，返回其带符号 raw peak。内部峰可做 ±0.5 抛物线细化；边界和无效曲线回退整数。只有 create 分配，raw peak 不是归一化相关系数。
 - 归一化置信度：`audio_gcc_phat_estimate_with_confidence` 返回相同的细化延迟，并在选中的整数 lag 上直接计算 `cr/sqrt(cc*rr)`，与 tracker 的相关性门控同义。该分数描述整数对齐，反相为负；所选参考窗口零能量时返回 false 且两个输出不变。旧 raw-peak 接口与行为不变。
+- 复位：`audio_delay_line_reset` 把历史清为静音并取消进行中的淡化，保留最大延迟、当前延迟、sinc 模式和淡化时长；之后的输出与同配置新建的延迟线逐样本一致，不分配，NULL 为空操作。
 - 用法：把参考与采集推入估计器、tracker 或 GCC-PHAT 对象，得到延迟 D 后把参考延迟线设为 D 减去几帧余量（滤波器从因果的前几个 tap 开始），延迟后的参考与采集送入 `audio_echo_canceller_process_i16`。启用 sinc 时还需减去其 8 帧额外延迟。tracker 由调用者主动 update，没有隐藏后台线程；GCC 后端在创建时选择，不能运行中切换。
 - 未做：自动更新调度与多声道；时钟漂移补偿见后续小节。
 
@@ -300,7 +301,9 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 - `update_period_frames` 为 1..192000；处理按精确周期边界切块，与调用者分块无关。每块先把原始参考/采集推入 tracker，并让原始参考经过延迟线；边界到达后更新一次，接受的分数延迟从下一帧生效。拒绝或历史不足保持旧延迟。
 - `updates` 统计实际调度次数（含拒绝），`rejections`、`locked` 转发 tracker 状态，`delay` 返回延迟线实际应用值。创建失败不改变 `*out`，只有 create 分配；零帧合法，非零 NULL 信号及 capture/output 别名在改状态前拒绝。reference/output 可原地复用。
 - `test_audio_voice_aligner` 6 项覆盖参数/调用契约、12.5 帧已知回声的精确更新边界、整块与 1/7/31/128 任意分块逐位一致、静音采集拒绝、GCC 构造及延迟设置失败后的周期恢复。普通、ASan+UBSan、TSan 均 6/6；原始路由、倒计时、延迟应用/提前应用、后端选择、别名、三个 NULL 检查与失败恢复十个变异均判红（删除倒计时恢复表现为超时）。
-- 未做：reset（底层 delay line 尚无 reset）、sinc/交叉淡化配置、时钟漂移补偿、多声道、设备/VoiceProcessor/core_app/网络接线与真实声学验证。
+- 2026-11-23 补充：`test_audio_voice_aligner` 由 6 项增至 7 项，新增 `reset_matches_a_fresh_aligner`；`test_audio_delay_estimator` 当前为 22 项，含新增 `the_delay_line_reset_matches_a_fresh_line`。
+- 复位：`audio_voice_aligner_reset` 回到刚创建的状态：tracker（含估计器或 GCC-PHAT）与延迟线复位，应用延迟、更新计数归零，距下次更新恢复完整周期；保留后端与配置，不分配，NULL 为空操作。设备重开或会话切换时无需销毁重建。
+- 未做：sinc/交叉淡化配置、时钟漂移补偿、多声道、设备/VoiceProcessor/core_app/网络接线与真实声学验证。
 
 ## Core App 语音 PCM 泵
 

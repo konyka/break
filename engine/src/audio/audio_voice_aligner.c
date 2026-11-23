@@ -61,6 +61,15 @@ void audio_voice_aligner_destroy(AudioVoiceAligner *aligner) {
     free(aligner);
 }
 
+void audio_voice_aligner_reset(AudioVoiceAligner *aligner) {
+    if (!aligner) return;
+    audio_delay_tracker_reset(aligner->tracker);
+    audio_delay_line_reset(aligner->line);
+    (void)audio_delay_line_set_subframe_delay(aligner->line, 0.0);
+    aligner->frames_until_update = aligner->update_period_frames;
+    aligner->updates = 0u;
+}
+
 AudioResult audio_voice_aligner_process_i16(AudioVoiceAligner *aligner,
                                             const i16 *reference, const i16 *capture,
                                             i16 *aligned_reference, u32 frames) {

@@ -13418,3 +13418,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - QUIC Weak Network run `45135178436`：completed/success（4 个独立场景）。
 - Proton run `45137309048`：success，artifact 上游 run-id=`45135178298`（即本提交的 windows-d3d12），`device_contract=77`、`pipeline_contract=77`，仅表示兼容通道，不是 GPU 或原生 D3D12 通过。同 SHA 另一 Proton run `45135718032` 的上游为更早的 `45134413135`，不作为本提交证据。
 - qemu-user 下 fork 后创建线程的挂起和无关 Windows 平台/GPU 问题仍未解决。本收据提交自身触发的工作流结果不在此预写。
+
+## 延迟线与语音对齐器复位（2026-11-23）
+
+- **交付**：新增 `audio_delay_line_reset` 与 `audio_voice_aligner_reset`，关闭 `docs/design/audio_extended.md`「语音参考自动对齐」中“reset（底层 delay line 尚无 reset）”一项。延迟线复位清空历史与写位置并取消进行中的淡化，保留最大延迟、当前延迟、sinc 模式与淡化时长；对齐器复位 tracker（时域或 GCC-PHAT）与延迟线，延迟和更新计数归零，更新倒计时回到完整周期，保留后端与配置。两者都不分配，NULL 为空操作。计划见 `docs/superpowers/plans/2026-11-23-audio-delay-reset.md`。
+- **TDD**：先加用例，编译因缺少符号失败（RED）。`the_delay_line_reset_matches_a_fresh_line` 在线性与 sinc 模式下，带分数延迟和进行中的 40 帧淡化复位，随后以 13 帧分块与同配置新建线逐样本一致，并确认淡化已取消；`reset_matches_a_fresh_aligner` 在时域与 GCC 后端锁定 12.5 帧回声后复位，查询值回到初值，再对 20.25 帧回声处理三个周期（1531 帧分块）与新建对齐器逐位一致。实现后 `test_audio_delay_estimator` **22/22**、`test_audio_voice_aligner` **7/7**。
+- **变异**：删除历史清零、取消淡化、tracker 复位、延迟归零、倒计时恢复或计数归零之一均判红。删除 `write = 0` 和对齐器中的延迟线复位不判红：前者在历史全为静音时与写位置无关，可观察行为等价；后者因对齐器复位后延迟为 0，输出直接是当前输入，而延迟线缓冲只有最大延迟加 33 帧（测试中 97 帧），在下一次更新设置非零延迟前早已被新输入完全覆盖。保留这两步以使内部状态与新建对象一致。
+- **验证**：本地 Vulkan 全量 **462/462**、OpenGL **453/453**，0 失败（Vulkan 4 个既有条件 skip，不计为执行通过）；ASan+UBSan 与 TSan 下两个目标均 22/22、7/7，无诊断。远端结果待推送后核验，不预写。

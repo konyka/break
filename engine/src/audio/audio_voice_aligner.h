@@ -17,6 +17,10 @@ AudioResult audio_voice_aligner_create(const AudioVoiceAlignerConfig *config,
 AudioResult audio_voice_aligner_create_gcc(const AudioVoiceAlignerConfig *config,
                                            AudioVoiceAligner **out);
 void audio_voice_aligner_destroy(AudioVoiceAligner *aligner); /* NULL is a no-op */
+/* Returns to the just-created state: tracker and delay line reset, delay 0,
+ * update count 0 and a full period until the next update. Keeps the backend
+ * and configuration. No allocation; NULL is a no-op. */
+void audio_voice_aligner_reset(AudioVoiceAligner *aligner);
 /* Raw reference/capture inputs; aligned reference output. Reference/output may
  * alias, capture/output may not. Updates take effect after each exact period. */
 AudioResult audio_voice_aligner_process_i16(AudioVoiceAligner *aligner,

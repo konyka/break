@@ -630,6 +630,60 @@ TEST(the_estimated_delay_aligns_the_reference_for_the_canceller)
     ASSERT_TRUE(erle_with_delay(delay - 4u) > 30.0);
 }
 
+static void reset_line_fill(i16 *buf, u32 count, u32 seed)
+{
+    for (u32 i = 0; i < count; ++i) {
+        seed = seed * 1664525u + 1013904223u;
+        buf[i] = (i16)((int)(seed >> 16) - 32768);
+    }
+}
+
+static bool reset_line_matches_fresh(bool sinc)
+{
+    AudioDelayLine *used = NULL;
+    AudioDelayLine *fresh = NULL;
+    if (audio_delay_line_create(32u, &used) != AUDIO_OK) return false;
+    if (audio_delay_line_create(32u, &fresh) != AUDIO_OK) {
+        audio_delay_line_destroy(used);
+        return false;
+    }
+    i16 noise[96], a[96], b[96];
+    reset_line_fill(noise, 96u, 0x1234u);
+    bool ok = audio_delay_line_set_sinc(used, sinc) == AUDIO_OK &&
+              audio_delay_line_set_sinc(fresh, sinc) == AUDIO_OK &&
+              audio_delay_line_set_subframe_delay(used, 6.25) == AUDIO_OK &&
+              audio_delay_line_set_subframe_delay(fresh, 11.5) == AUDIO_OK &&
+              audio_delay_line_set_crossfade_frames(used, 40u) == AUDIO_OK &&
+              audio_delay_line_set_crossfade_frames(fresh, 40u) == AUDIO_OK;
+    audio_delay_line_process_i16(used, noise, a, 96u);
+    ok = ok && audio_delay_line_set_subframe_delay(used, 11.5) == AUDIO_OK;
+    audio_delay_line_process_i16(used, noise, a, 7u);
+    audio_delay_line_reset(used);
+    ok = ok && audio_delay_line_subframe_delay(used) == 11.5 &&
+         audio_delay_line_sinc(used) == sinc &&
+         audio_delay_line_crossfade_frames(used) == 40u;
+    reset_line_fill(noise, 96u, 0x9e37u);
+    for (u32 n = 0; n < 96u; n += 13u) {
+        const u32 count = 96u - n < 13u ? 96u - n : 13u;
+        audio_delay_line_process_i16(used, noise + n, a + n, count);
+        audio_delay_line_process_i16(fresh, noise + n, b + n, count);
+    }
+    ok = ok && memcmp(a, b, sizeof(a)) == 0;
+    /* the reset cancelled the fade, so a retarget is accepted at once */
+    ok = ok && audio_delay_line_set_subframe_delay(used, 3.0) == AUDIO_OK &&
+         audio_delay_line_set_subframe_delay(used, 4.0) == AUDIO_REJECTED;
+    audio_delay_line_destroy(used);
+    audio_delay_line_destroy(fresh);
+    return ok;
+}
+
+TEST(the_delay_line_reset_matches_a_fresh_line)
+{
+    audio_delay_line_reset(NULL);
+    ASSERT_TRUE(reset_line_matches_fresh(false));
+    ASSERT_TRUE(reset_line_matches_fresh(true));
+}
+
 TEST(crossfade_config_and_active_fade_rejections)
 {
     AudioDelayLine *line = NULL;
@@ -780,4 +834,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(crossfade_config_and_active_fade_rejections);
     RUN_TEST(linear_crossfade_matches_hand_values_and_chunks);
     RUN_TEST(sinc_crossfade_matches_dual_reader_reference_and_saturates);
+    RUN_TEST(the_delay_line_reset_matches_a_fresh_line);
 TEST_MAIN_END()

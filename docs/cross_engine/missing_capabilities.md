@@ -637,3 +637,7 @@ Windows scene **123/123**、async **19/19**，两个溢出探针通过；mipmap�
 - QUIC Weak Network run `45135178436`：completed/success（4 个独立场景）。
 - Proton run `45137309048`：success，artifact 上游 run-id=`45135178298`（即本提交的 windows-d3d12），`device_contract=77`、`pipeline_contract=77`，仅表示兼容通道，不是 GPU 或原生 D3D12 通过。同 SHA 另一 Proton run `45135718032` 的上游为更早的 `45134413135`，不作为本提交证据。
 - qemu-user 下 fork 后创建线程的挂起和无关 Windows 平台/GPU 问题仍未解决。本收据提交自身触发的工作流结果不在此预写。
+
+## 第 10 节（音频）补充（2026-11-23）：延迟线与对齐器复位
+
+`audio_delay_line_reset` 与 `audio_voice_aligner_reset` 已交付，设备重开或会话切换后无需销毁重建，复位后的行为与新建对象逐位一致。语音对齐器剩余缺口：sinc/交叉淡化配置、多声道，以及设备/VoiceProcessor/core_app/网络接线与真实声学验证。
