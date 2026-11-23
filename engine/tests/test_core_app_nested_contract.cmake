@@ -1,4 +1,4 @@
-foreach(var ENGINE_CMAKE CORE_APP NETWORK_ENABLED CONTRACT_BUILD_ROOT
+foreach(var ENGINE_CMAKE CORE_APP NETWORK_ENABLED CRASH_ENABLED CONTRACT_BUILD_ROOT
         TARGET_CONTRACT NM_SYMBOL_MISSING_CONTRACT NM_WRAPPER NM_CAPABLE
         NESTED_ENGINE_RHI_BACKEND NESTED_CMAKE_GENERATOR NESTED_CMAKE_C_COMPILER)
     if(NOT DEFINED ${var} OR "${${var}}" STREQUAL "")
@@ -130,6 +130,7 @@ function(expect_nested_cache name contract_root)
     endif()
     expect_cache_value(${name} "${build_root}" ENGINE_RHI_BACKEND
         "${NESTED_ENGINE_RHI_BACKEND}")
+    expect_cache_value(${name} "${build_root}" BREAK_ENABLE_CRASH "${CRASH_ENABLED}")
     if(NOT NESTED_ENGINE_RHI_BACKEND STREQUAL "auto")
         expect_cache_value(${name} "${build_root}" ENGINE_RHI_BACKEND_EFFECTIVE
             "${NESTED_ENGINE_RHI_BACKEND}")
@@ -148,6 +149,7 @@ function(run_target_contract name engine_cmake network_enabled contract_root)
             "-DENGINE_CMAKE=${engine_cmake}"
             "-DCORE_APP=${CORE_APP}"
             "-DNETWORK_ENABLED=${network_enabled}"
+            "-DCRASH_ENABLED=${CRASH_ENABLED}"
             "-DNETWORK_TRANSPORT=${NETWORK_TRANSPORT}"
             "-DCONTRACT_BUILD_ROOT=${contract_root}"
             "-DNM=${NM}"
@@ -169,6 +171,7 @@ function(run_nm_negative name engine_cmake network_enabled contract_root)
             "-DENGINE_CMAKE=${engine_cmake}"
             "-DCORE_APP=${CORE_APP}"
             "-DNETWORK_ENABLED=${network_enabled}"
+            "-DCRASH_ENABLED=${CRASH_ENABLED}"
             "-DNETWORK_TRANSPORT=${NETWORK_TRANSPORT}"
             "-DCONTRACT_BUILD_ROOT=${contract_root}"
             "-DNM=${NM}"

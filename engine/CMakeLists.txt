@@ -5140,6 +5140,7 @@ endif()
             -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
             -DCORE_APP=$<TARGET_FILE:core_app>
             -DNETWORK_ENABLED=${CORE_APP_ENABLE_NETWORK}
+            -DCRASH_ENABLED=${BREAK_ENABLE_CRASH}
             -DNETWORK_TRANSPORT=${_core_app_net_transport}
             -DCONTRACT_BUILD_ROOT=${CMAKE_CURRENT_BINARY_DIR}/core_app_contract_main
             -DNM=${CMAKE_NM}
@@ -5151,6 +5152,7 @@ endif()
             -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
             -DCORE_APP=$<TARGET_FILE:core_app>
             -DNETWORK_ENABLED=${CORE_APP_ENABLE_NETWORK}
+            -DCRASH_ENABLED=${BREAK_ENABLE_CRASH}
             -DNETWORK_TRANSPORT=${_core_app_net_transport}
             -DCONTRACT_BUILD_ROOT=${CMAKE_CURRENT_BINARY_DIR}/core_app_contract_nm_missing
             -DNM= -DNM_CAPABLE=FALSE
@@ -5161,6 +5163,7 @@ endif()
             -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
             -DCORE_APP=$<TARGET_FILE:core_app>
             -DNETWORK_ENABLED=${CORE_APP_ENABLE_NETWORK}
+            -DCRASH_ENABLED=${BREAK_ENABLE_CRASH}
             -DNETWORK_TRANSPORT=${_core_app_net_transport}
             -DCONTRACT_BUILD_ROOT=${CMAKE_CURRENT_BINARY_DIR}/core_app_contract_nm_unsupported
             -DNM=${CMAKE_COMMAND} -DNM_CAPABLE=TRUE
@@ -5169,11 +5172,21 @@ endif()
     set_tests_properties(test_core_app_target_contract test_core_app_nm_missing
         test_core_app_nm_unsupported PROPERTIES
         LABELS "headless;core_app;platform_contract" SKIP_RETURN_CODE 77)
+    add_test(NAME test_core_app_crash_build_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+            -DNETWORK_ENABLED=${CORE_APP_ENABLE_NETWORK}
+            -DCONTRACT_BUILD_ROOT=${CMAKE_CURRENT_BINARY_DIR}/core_app_crash_build_off
+            ${_core_app_nested_toolchain_defs}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_crash_build_contract.cmake)
+    set_tests_properties(test_core_app_crash_build_contract PROPERTIES
+        LABELS "headless;core_app;crash;platform_contract" TIMEOUT 600)
     add_test(NAME test_core_app_nested_contract
         COMMAND ${CMAKE_COMMAND}
             -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
             -DCORE_APP=$<TARGET_FILE:core_app>
             -DNETWORK_ENABLED=${CORE_APP_ENABLE_NETWORK}
+            -DCRASH_ENABLED=${BREAK_ENABLE_CRASH}
             -DNETWORK_TRANSPORT=${_core_app_net_transport}
             -DCONTRACT_BUILD_ROOT=${CMAKE_CURRENT_BINARY_DIR}/core_app_contract_nested
             -DNM=${CMAKE_NM}
@@ -5191,6 +5204,7 @@ endif()
                 -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
                 -DCORE_APP=$<TARGET_FILE:core_app>
                 -DNETWORK_ENABLED=${CORE_APP_ENABLE_NETWORK}
+                -DCRASH_ENABLED=${BREAK_ENABLE_CRASH}
                 -DNETWORK_TRANSPORT=${_core_app_net_transport}
                 -DCONTRACT_BUILD_ROOT=${CMAKE_CURRENT_BINARY_DIR}/core_app_contract_nm_symbol_missing
                 -DNM=${CMAKE_NM}
@@ -5203,6 +5217,7 @@ endif()
                 -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
                 -DCORE_APP=$<TARGET_FILE:core_app>
                 -DNETWORK_ENABLED=${CORE_APP_ENABLE_NETWORK}
+                -DCRASH_ENABLED=${BREAK_ENABLE_CRASH}
                 -DNETWORK_TRANSPORT=${_core_app_net_transport}
                 -DCONTRACT_BUILD_ROOT=${CMAKE_CURRENT_BINARY_DIR}/core_app_contract_nm_symbol_missing_unsupported
                 -DNM=${CMAKE_COMMAND}
@@ -5321,6 +5336,7 @@ endif()
                 -DGIT_EXECUTABLE=${BREAK_GIT_EXECUTABLE}
                 -DCORE_APP=$<TARGET_FILE:core_app>
                 -DNETWORK_ENABLED=${CORE_APP_ENABLE_NETWORK}
+                -DCRASH_ENABLED=${BREAK_ENABLE_CRASH}
                 -DNETWORK_TRANSPORT=${_core_app_net_transport}
                 -DCTEST_EXECUTABLE=${CMAKE_CTEST_COMMAND}
                 -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_contract_compat
@@ -5340,6 +5356,7 @@ endif()
                 -DGIT_EXECUTABLE=${BREAK_GIT_EXECUTABLE}
                 -DCORE_APP=$<TARGET_FILE:core_app>
                 -DNETWORK_ENABLED=${CORE_APP_ENABLE_NETWORK}
+                -DCRASH_ENABLED=${BREAK_ENABLE_CRASH}
                 -DNETWORK_TRANSPORT=${_core_app_net_transport}
                 -DCTEST_EXECUTABLE=${CMAKE_CTEST_COMMAND}
                 -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_ctest_config_contract
@@ -5355,6 +5372,7 @@ endif()
     set(_core_app_lifecycle_fault_library "")
     set(_core_app_lifecycle_fault_supported FALSE)
     set(_core_app_lifecycle_sanitizer_preload "")
+    set(_core_app_crash_sanitizer_preload "")
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         add_library(core_app_lifecycle_preload SHARED
             tests/test_core_app_lifecycle_preload.c)
@@ -5369,6 +5387,20 @@ endif()
                 OUTPUT_STRIP_TRAILING_WHITESPACE)
             if(NOT EXISTS "${_core_app_lifecycle_sanitizer_preload}")
                 set(_core_app_lifecycle_sanitizer_preload "")
+            endif()
+        endif()
+        if((ENGINE_USE_ASAN OR ENGINE_USE_TSAN) AND NOT (ENGINE_USE_ASAN AND ENGINE_USE_TSAN))
+            if(ENGINE_USE_ASAN)
+                set(_core_app_crash_sanitizer_library libasan.so)
+            else()
+                set(_core_app_crash_sanitizer_library libtsan.so)
+            endif()
+            execute_process(COMMAND ${CMAKE_C_COMPILER}
+                -print-file-name=${_core_app_crash_sanitizer_library}
+                OUTPUT_VARIABLE _core_app_crash_sanitizer_preload
+                OUTPUT_STRIP_TRAILING_WHITESPACE)
+            if(NOT EXISTS "${_core_app_crash_sanitizer_preload}")
+                set(_core_app_crash_sanitizer_preload "")
             endif()
         endif()
     endif()
@@ -7526,7 +7558,10 @@ endif()
                 -DWORK=${CMAKE_CURRENT_BINARY_DIR}/core_app_crash_context
                 -DFAULT_LIBRARY=${_core_app_lifecycle_fault_library}
                 -DFAULT_SUPPORTED=${_core_app_lifecycle_fault_supported}
-                -DSANITIZER_PRELOAD=${_core_app_lifecycle_sanitizer_preload}
+                -DSANITIZER_PRELOAD=${_core_app_crash_sanitizer_preload}
+                -DSANITIZER_ASAN=${ENGINE_USE_ASAN}
+                -DSANITIZER_TSAN=${ENGINE_USE_TSAN}
+                -DSANITIZER_UBSAN=${ENGINE_USE_UBSAN}
                 -DCROSSCOMPILING=${CMAKE_CROSSCOMPILING}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_crash_context.cmake)
         set_tests_properties(test_core_app_crash_context PROPERTIES

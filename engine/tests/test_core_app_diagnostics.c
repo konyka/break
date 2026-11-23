@@ -48,6 +48,30 @@ static const char EXPECTED_BLOB[] =
     "touch_status=5\n"
     "haptic_status=6\n";
 
+static const char LONG_GPU_NAME[] =
+    "GPU/\\\n"
+    "1234567890"
+    "abcdefghijklmnopqrstuvwxyz"
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "_TAIL";
+
+static const char LONG_GPU_EXPECTED_BLOB[] =
+    "[rhi]\n"
+    "backend=vulkan\n"
+    "gpu=GPU___1234567890abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTU\n"
+    "[net]\n"
+    "live=true\n"
+    "seen=7\n"
+    "dropped=2\n"
+    "[input]\n"
+    "tick=4\n"
+    "keys=1\n"
+    "pads=2\n"
+    "touches=3\n"
+    "gestures=4\n"
+    "touch_status=5\n"
+    "haptic_status=6\n";
+
 #define RECORD_BLOB_TEXT \
     "[rhi]\n" \
     "backend=record\n" \
@@ -128,7 +152,7 @@ static void remove_spool(const char *root) {
     (void)TEST_RMDIR(root);
 }
 
-static int check_recovered_blob(const char *root) {
+static int check_recovered_blob(const char *root, const char *expected_blob) {
     BreakCrashSpool *spool = NULL;
     BreakCrashRecord *record = NULL;
     u8 *bytes = NULL;
@@ -152,9 +176,9 @@ static int check_recovered_blob(const char *root) {
     result = 5;
     if (break_crash_record_signo(record) != SIGSEGV) goto done;
     blob_size = break_crash_record_context_blob(record, &blob);
-    if (blob_size != strlen(EXPECTED_BLOB) || !blob) goto done;
+    if (blob_size != strlen(expected_blob) || !blob) goto done;
     result = 6;
-    if (memcmp(blob, EXPECTED_BLOB, blob_size) != 0) goto done;
+    if (memcmp(blob, expected_blob, blob_size) != 0) goto done;
     result = 0;
 
 done:
@@ -167,7 +191,7 @@ done:
 #if !defined(_WIN32)
 static void crash_child(const char *root, const CoreAppDiagnosticsSnapshot *snapshot,
                         bool publish_null) {
-    if (!core_app_diagnostics_start(root)) _exit(41);
+    if (!break_crash_is_installed() && !core_app_diagnostics_start(root)) _exit(41);
     core_app_diagnostics_publish(NULL, snapshot);
     if (publish_null) core_app_diagnostics_publish(NULL, NULL);
     (void)raise(SIGSEGV);
@@ -199,11 +223,15 @@ static int wait_for_segv(pid_t pid) {
     return WIFSIGNALED(status) && WTERMSIG(status) == SIGSEGV;
 }
 
-static int run_record_verifier(const char *root, const char *tick) {
+static int run_record_verifier_ex(const char *root, const char *tick,
+                                  const char *gpu, const char *keys) {
     pid_t pid = fork();
     int status = 0;
     if (pid == 0) {
-        if (tick) {
+        if (tick && gpu && keys) {
+            execl(CORE_APP_CRASH_RECORD_PATH, CORE_APP_CRASH_RECORD_PATH,
+                  root, tick, gpu, keys, (char *)NULL);
+        } else if (tick) {
             execl(CORE_APP_CRASH_RECORD_PATH, CORE_APP_CRASH_RECORD_PATH,
                   root, tick, (char *)NULL);
         } else {
@@ -216,6 +244,10 @@ static int run_record_verifier(const char *root, const char *tick) {
     if (test_waitpid_deadline(pid, &status, 30000u) != pid) return -1;
     if (!WIFEXITED(status)) return -1;
     return WEXITSTATUS(status);
+}
+
+static int run_record_verifier(const char *root, const char *tick) {
+    return run_record_verifier_ex(root, tick, NULL, NULL);
 }
 
 static int write_invalid_pending(const char *root) {
@@ -279,7 +311,30 @@ TEST(real_child_crash_recovers_exact_sanitized_blob) {
     pid = spawn_crash(root, &snapshot, true);
     if (pid > 0) {
         signal_ok = wait_for_segv(pid);
-        if (signal_ok) recovered = check_recovered_blob(root);
+        if (signal_ok) recovered = check_recovered_blob(root, EXPECTED_BLOB);
+    }
+    remove_spool(root);
+    ASSERT_TRUE(pid > 0);
+    ASSERT_TRUE(signal_ok);
+    ASSERT_EQ(recovered, 0);
+#endif
+}
+
+TEST(real_child_crash_recovers_truncated_sanitized_gpu_blob) {
+#if defined(_WIN32)
+    ASSERT_TRUE(1);
+#else
+    char root[512];
+    CoreAppDiagnosticsSnapshot snapshot = sample_snapshot();
+    pid_t pid;
+    int signal_ok = 0;
+    int recovered = -1;
+    snapshot.gpu_name = LONG_GPU_NAME;
+    test_tmp(root, sizeof(root), "core_app_diag_long_gpu");
+    pid = spawn_crash(root, &snapshot, false);
+    if (pid > 0) {
+        signal_ok = wait_for_segv(pid);
+        if (signal_ok) recovered = check_recovered_blob(root, LONG_GPU_EXPECTED_BLOB);
     }
     remove_spool(root);
     ASSERT_TRUE(pid > 0);
@@ -358,8 +413,118 @@ TEST(record_verifier_checks_real_record_and_error_codes) {
 #endif
 }
 
+static void set_zero_counter_nonzero(CoreAppDiagnosticsSnapshot *snapshot, u32 field) {
+    switch (field) {
+        case 0: snapshot->network_events_seen = 1u; break;
+        case 1: snapshot->network_events_dropped = 1u; break;
+        case 2: snapshot->pad_connected_count = 1u; break;
+        case 3: snapshot->touch_count = 1u; break;
+        case 4: snapshot->gesture_count = 1u; break;
+        case 5: snapshot->touch_status = 1u; break;
+        case 6: snapshot->haptic_status = 1u; break;
+        default: abort();
+    }
+}
+
+TEST(record_verifier_rejects_each_nonzero_record_counter) {
+#if defined(_WIN32)
+    ASSERT_TRUE(1);
+#else
+    for (u32 field = 0u; field < 7u; ++field) {
+        char root[512];
+        CoreAppDiagnosticsSnapshot snapshot = record_snapshot();
+        pid_t pid;
+        int signal_ok = 0;
+        int contract = -1;
+        set_zero_counter_nonzero(&snapshot, field);
+        test_tmp(root, sizeof(root), "core_app_diag_verify_counter");
+        pid = spawn_crash(root, &snapshot, false);
+        if (pid > 0) signal_ok = wait_for_segv(pid);
+        if (signal_ok) contract = run_record_verifier(root, "4");
+        remove_spool(root);
+        if (contract != 5) printf("  nonzero zero-counter field=%u exit=%d\n", field, contract);
+        ASSERT_TRUE(pid > 0);
+        ASSERT_TRUE(signal_ok);
+        ASSERT_EQ(contract, 5);
+    }
+#endif
+}
+
+TEST(record_verifier_accepts_explicit_initial_snapshot_contract) {
+#if defined(_WIN32)
+    ASSERT_TRUE(1);
+#else
+    char root[512];
+    CoreAppDiagnosticsSnapshot snapshot = record_snapshot();
+    pid_t pid;
+    int signal_ok = 0;
+    int valid = -1;
+    int default_mismatch = -1;
+    int wrong_gpu = -1;
+    int wrong_keys = -1;
+    snapshot.tick = 0u;
+    snapshot.gpu_name = "pending";
+    snapshot.key_down_count = 0u;
+    test_tmp(root, sizeof(root), "core_app_diag_verify_initial");
+    pid = spawn_crash(root, &snapshot, false);
+    if (pid > 0) signal_ok = wait_for_segv(pid);
+    if (signal_ok) {
+        valid = run_record_verifier_ex(root, "0", "pending", "0");
+        default_mismatch = run_record_verifier(root, "0");
+        wrong_gpu = run_record_verifier_ex(root, "0", "none", "0");
+        wrong_keys = run_record_verifier_ex(root, "0", "pending", "1");
+    }
+    remove_spool(root);
+    ASSERT_TRUE(pid > 0);
+    ASSERT_TRUE(signal_ok);
+    ASSERT_EQ(valid, 0);
+    ASSERT_EQ(default_mismatch, 5);
+    ASSERT_EQ(wrong_gpu, 5);
+    ASSERT_EQ(wrong_keys, 5);
+#endif
+}
+
+TEST(restart_recovers_real_child_crash_after_stop) {
+#if defined(_WIN32)
+    ASSERT_TRUE(1);
+#else
+    char root[512];
+    CoreAppDiagnosticsSnapshot snapshot = sample_snapshot();
+    pid_t pid = -1;
+    bool first_started;
+    bool restarted;
+    bool stopped;
+    int signal_ok = 0;
+    int recovered = -1;
+    test_tmp(root, sizeof(root), "core_app_diag_restart");
+    first_started = core_app_diagnostics_start(root);
+    core_app_diagnostics_stop();
+    restarted = core_app_diagnostics_start(root);
+    if (restarted) {
+        pid = spawn_crash(root, &snapshot, false);
+        if (pid > 0) {
+            signal_ok = wait_for_segv(pid);
+            if (signal_ok) recovered = check_recovered_blob(root, EXPECTED_BLOB);
+        }
+    }
+    core_app_diagnostics_stop();
+    stopped = !break_crash_is_installed();
+    remove_spool(root);
+    ASSERT_TRUE(first_started);
+    ASSERT_TRUE(restarted);
+    ASSERT_TRUE(pid > 0);
+    ASSERT_TRUE(signal_ok);
+    ASSERT_EQ(recovered, 0);
+    ASSERT_TRUE(stopped);
+#endif
+}
+
 TEST_MAIN_BEGIN()
+    RUN_TEST(restart_recovers_real_child_crash_after_stop);
     RUN_TEST(start_validates_root_and_stop_uninstalls);
     RUN_TEST(real_child_crash_recovers_exact_sanitized_blob);
+    RUN_TEST(real_child_crash_recovers_truncated_sanitized_gpu_blob);
     RUN_TEST(record_verifier_checks_real_record_and_error_codes);
+    RUN_TEST(record_verifier_rejects_each_nonzero_record_counter);
+    RUN_TEST(record_verifier_accepts_explicit_initial_snapshot_contract);
 TEST_MAIN_END()

@@ -1,5 +1,5 @@
-foreach(var ENGINE_CMAKE CORE_APP NETWORK_ENABLED CONTRACT_BUILD_ROOT NESTED_ENGINE_RHI_BACKEND
-        NESTED_CMAKE_GENERATOR NESTED_CMAKE_C_COMPILER)
+foreach(var ENGINE_CMAKE CORE_APP NETWORK_ENABLED CRASH_ENABLED CONTRACT_BUILD_ROOT
+        NESTED_ENGINE_RHI_BACKEND NESTED_CMAKE_GENERATOR NESTED_CMAKE_C_COMPILER)
     if(NOT DEFINED ${var})
         message(FATAL_ERROR "${var} is required")
     endif()
@@ -73,7 +73,7 @@ execute_process(
         -S "${engine_source_dir}" -B "${CONTRACT_BUILD_ROOT}"
         -DENGINE_BUILD_TESTS=OFF -DENGINE_ENABLE_IPO=OFF
         -DENGINE_RHI_BACKEND=${NESTED_ENGINE_RHI_BACKEND} -DBREAK_ENABLE_SNOWFLAKE=OFF
-        -DCORE_APP_ENABLE_NETWORK=${NETWORK_ENABLED}
+        -DBREAK_ENABLE_CRASH=${CRASH_ENABLED} -DCORE_APP_ENABLE_NETWORK=${NETWORK_ENABLED}
         ${nested_toolchain_defs}
     RESULT_VARIABLE configure_rc
     OUTPUT_VARIABLE configure_out
@@ -126,22 +126,30 @@ expect_last_error(crash_context_missing_value "--crash-context requires a nonemp
 expect_exit(crash_context_empty_value 2 --crash-context=)
 expect_last_error(crash_context_empty_value "--crash-context requires a nonempty directory")
 set(crash_validation_root "${crash_cli_work}/validation-spool")
-expect_exit(crash_context_after_other_validation 2
-    --crash-context "${crash_validation_root}" --frames 0)
-expect_last_error(crash_context_after_other_validation "--frames requires a positive 32-bit integer")
-if(EXISTS "${crash_validation_root}")
-    record_error("argument validation created a crash spool before rejecting --frames")
-endif()
-set(crash_invalid_root "${crash_cli_work}/not-a-directory")
-file(WRITE "${crash_invalid_root}" "not a directory\n")
-set(crash_invalid_trace "${crash_cli_work}/invalid.trace")
-expect_exit(crash_context_invalid_root 2
-    --render=record --audio=record --fixed-step
-    --assets "${engine_source_dir}/assets/core_app" --scenario "${crash_scenario}"
-    --trace "${crash_invalid_trace}" --crash-context "${crash_invalid_root}")
-expect_last_error(crash_context_invalid_root "could not start --crash-context")
-if(EXISTS "${crash_invalid_trace}")
-    record_error("an invalid crash root reached core_app_run and created a trace")
+if(CRASH_ENABLED)
+    expect_exit(crash_context_after_other_validation 2
+        --crash-context "${crash_validation_root}" --frames 0)
+    expect_last_error(crash_context_after_other_validation "--frames requires a positive 32-bit integer")
+    if(EXISTS "${crash_validation_root}")
+        record_error("argument validation created a crash spool before rejecting --frames")
+    endif()
+    set(crash_invalid_root "${crash_cli_work}/not-a-directory")
+    file(WRITE "${crash_invalid_root}" "not a directory\n")
+    set(crash_invalid_trace "${crash_cli_work}/invalid.trace")
+    expect_exit(crash_context_invalid_root 2
+        --render=record --audio=record --fixed-step
+        --assets "${engine_source_dir}/assets/core_app" --scenario "${crash_scenario}"
+        --trace "${crash_invalid_trace}" --crash-context "${crash_invalid_root}")
+    expect_last_error(crash_context_invalid_root "could not start --crash-context")
+    if(EXISTS "${crash_invalid_trace}")
+        record_error("an invalid crash root reached core_app_run and created a trace")
+    endif()
+else()
+    expect_exit(crash_context_unavailable 2 --crash-context "${crash_cli_work}/off-spool")
+    expect_last_error(crash_context_unavailable "--crash-context is unavailable in this build")
+    if(EXISTS "${crash_cli_work}/off-spool")
+        record_error("CRASH_ENABLED=OFF created a crash spool")
+    endif()
 endif()
 
 set(crash_default_work "${crash_cli_work}/default")
@@ -314,55 +322,6 @@ if(NOT DEFINED NM_WRAPPER OR "${NM_WRAPPER}" STREQUAL "")
 endif()
 if(all_symbols MATCHES "break_crash_upload_http")
     record_error("production core_app contains a break_crash_upload_http symbol")
-endif()
-
-set(crash_off_root "${CONTRACT_BUILD_ROOT}/crash-off")
-execute_process(
-    COMMAND "${CMAKE_COMMAND}" -G "${NESTED_CMAKE_GENERATOR}"
-        -S "${engine_source_dir}" -B "${crash_off_root}"
-        -DENGINE_BUILD_TESTS=OFF -DENGINE_ENABLE_IPO=OFF
-        -DENGINE_RHI_BACKEND=${NESTED_ENGINE_RHI_BACKEND} -DBREAK_ENABLE_SNOWFLAKE=OFF
-        -DBREAK_ENABLE_CRASH=OFF -DCORE_APP_ENABLE_NETWORK=${NETWORK_ENABLED}
-        ${nested_toolchain_defs}
-    RESULT_VARIABLE crash_off_configure_rc
-    OUTPUT_VARIABLE crash_off_configure_out
-    ERROR_VARIABLE crash_off_configure_err
-    TIMEOUT 120)
-if(NOT crash_off_configure_rc EQUAL 0)
-    record_error("BREAK_ENABLE_CRASH=OFF configure failed: ${crash_off_configure_out}${crash_off_configure_err}")
-else()
-    execute_process(
-        COMMAND "${CMAKE_COMMAND}" --build "${crash_off_root}" --target core_app --parallel 2
-        RESULT_VARIABLE crash_off_build_rc
-        OUTPUT_VARIABLE crash_off_build_out
-        ERROR_VARIABLE crash_off_build_err
-        TIMEOUT 300)
-    if(NOT crash_off_build_rc EQUAL 0)
-        record_error("BREAK_ENABLE_CRASH=OFF core_app build failed: ${crash_off_build_out}${crash_off_build_err}")
-    else()
-        file(GLOB_RECURSE crash_off_candidates LIST_DIRECTORIES FALSE
-            "${crash_off_root}/core_app" "${crash_off_root}/core_app.exe")
-        list(LENGTH crash_off_candidates crash_off_count)
-        if(NOT crash_off_count EQUAL 1)
-            record_error("BREAK_ENABLE_CRASH=OFF core_app executable count=${crash_off_count}, want=1")
-        else()
-            list(GET crash_off_candidates 0 crash_off_core_app)
-            set(saved_core_app "${CORE_APP}")
-            set(CORE_APP "${crash_off_core_app}")
-            expect_exit(crash_off_help 0 --help)
-            get_property(crash_off_help_out GLOBAL PROPERTY CORE_APP_LAST_OUT)
-            if(NOT crash_off_help_out MATCHES "--crash-context DIR")
-                record_error("BREAK_ENABLE_CRASH=OFF help does not list --crash-context DIR")
-            endif()
-            expect_exit(crash_off_unavailable 2
-                --crash-context "${crash_cli_work}/off-spool")
-            expect_last_error(crash_off_unavailable "--crash-context is unavailable in this build")
-            if(EXISTS "${crash_cli_work}/off-spool")
-                record_error("BREAK_ENABLE_CRASH=OFF created a crash spool")
-            endif()
-            set(CORE_APP "${saved_core_app}")
-        endif()
-    endif()
 endif()
 
 file(REMOVE_RECURSE "${crash_validation_root}" "${crash_cli_work}/off-spool"

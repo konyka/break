@@ -461,6 +461,97 @@ TEST(invalid_diagnostics_hooks_rejected_before_trace_creation) {
     ASSERT_EQ(remove_result, 0);
 }
 
+#define RUNTIME_DIAGNOSTICS_CAPTURE_MAX 8u
+
+typedef struct RuntimeDiagnosticsCapture {
+    CoreAppDiagnosticsSnapshot snapshots[RUNTIME_DIAGNOSTICS_CAPTURE_MAX];
+    char backends[RUNTIME_DIAGNOSTICS_CAPTURE_MAX][16];
+    char gpu_names[RUNTIME_DIAGNOSTICS_CAPTURE_MAX][16];
+    u32 count;
+} RuntimeDiagnosticsCapture;
+
+static void capture_runtime_diagnostics(void *user,
+                                        const CoreAppDiagnosticsSnapshot *snapshot) {
+    RuntimeDiagnosticsCapture *capture = (RuntimeDiagnosticsCapture *)user;
+    u32 index;
+    if (!capture || !snapshot || capture->count >= RUNTIME_DIAGNOSTICS_CAPTURE_MAX) return;
+    index = capture->count++;
+    capture->snapshots[index] = *snapshot;
+    (void)snprintf(capture->backends[index], sizeof(capture->backends[index]), "%s",
+                   snapshot->rhi_backend ? snapshot->rhi_backend : "");
+    (void)snprintf(capture->gpu_names[index], sizeof(capture->gpu_names[index]), "%s",
+                   snapshot->gpu_name ? snapshot->gpu_name : "");
+    capture->snapshots[index].rhi_backend = capture->backends[index];
+    capture->snapshots[index].gpu_name = capture->gpu_names[index];
+}
+
+TEST(diagnostics_capture_runtime_tick_zero_and_completed_tick) {
+    const char *scenario_text =
+        "core-app-scenario 1\n"
+        "seed 12648430\n"
+        "fixed-dt-ns 16666667\n"
+        "1 key w 1\n"
+        "2 quit\n";
+    char scenario_path[512];
+    char trace_path[512];
+    FILE *scenario_file;
+    int write_result = -1;
+    int close_result = -1;
+    RuntimeDiagnosticsCapture capture;
+    CoreAppDiagnosticsHooks hooks;
+    CoreAppConfig config;
+    BreakRuntimeError result;
+    int exit_code = -1;
+    u32 index;
+
+    memset(&capture, 0, sizeof(capture));
+    memset(&hooks, 0, sizeof(hooks));
+    memset(&config, 0, sizeof(config));
+    test_tmp(scenario_path, sizeof(scenario_path), "core_app_diagnostics_runtime");
+    test_tmp(trace_path, sizeof(trace_path), "core_app_diagnostics_runtime_trace");
+    (void)remove(scenario_path);
+    (void)remove(trace_path);
+    scenario_file = fopen(scenario_path, "wb");
+    if (scenario_file) {
+        write_result = fputs(scenario_text, scenario_file);
+        close_result = fclose(scenario_file);
+    }
+    ASSERT_NOT_NULL(scenario_file);
+    ASSERT_TRUE(write_result >= 0);
+    ASSERT_EQ(close_result, 0);
+
+    config.render_mode = CORE_APP_RENDER_RECORD;
+    config.audio_mode = CORE_APP_AUDIO_RECORD;
+    config.fixed_step = true;
+    config.asset_root = ".";
+    config.scenario_path = scenario_path;
+    config.trace_path = trace_path;
+    hooks.user = &capture;
+    hooks.publish = capture_runtime_diagnostics;
+    config.diagnostics = &hooks;
+    result = core_app_run(&config, &exit_code);
+    (void)remove(scenario_path);
+    (void)remove(trace_path);
+
+    ASSERT_EQ(result, BREAK_RUNTIME_OK);
+    ASSERT_EQ(exit_code, 0);
+    ASSERT_TRUE(capture.count >= 2u);
+    for (index = 0u; index < 2u; ++index) {
+        ASSERT_STR_EQ(capture.snapshots[index].rhi_backend, "record");
+        ASSERT_STR_EQ(capture.snapshots[index].gpu_name, "none");
+        ASSERT_FALSE(capture.snapshots[index].network_live);
+        ASSERT_EQ(capture.snapshots[index].network_events_seen, 0u);
+        ASSERT_EQ(capture.snapshots[index].network_events_dropped, 0u);
+        ASSERT_EQ(capture.snapshots[index].pad_connected_count, 0u);
+        ASSERT_EQ(capture.snapshots[index].touch_count, 0u);
+        ASSERT_EQ(capture.snapshots[index].gesture_count, 0u);
+    }
+    ASSERT_EQ(capture.snapshots[0].tick, 0u);
+    ASSERT_EQ(capture.snapshots[0].key_down_count, 0u);
+    ASSERT_EQ(capture.snapshots[1].tick, 1u);
+    ASSERT_EQ(capture.snapshots[1].key_down_count, 1u);
+}
+
 TEST(input_reuses_touch_id_with_new_generation) {
     CoreAppInput *input = core_app_input_create();
     CoreAppInputFrame frame;
@@ -1852,6 +1943,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(input_diagnostics_reduces_real_frame_to_counts_and_status);
     RUN_TEST(invalid_diagnostics_hooks_fail_before_io);
     RUN_TEST(invalid_diagnostics_hooks_rejected_before_trace_creation);
+    RUN_TEST(diagnostics_capture_runtime_tick_zero_and_completed_tick);
     RUN_TEST(input_reuses_touch_id_with_new_generation);
     RUN_TEST(input_cancel_emits_no_gesture_and_next_tick_is_idle);
     RUN_TEST(input_key_hold_survives_tick_and_release_clears_it);

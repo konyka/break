@@ -1,5 +1,5 @@
 foreach(var ENGINE_SOURCE_DIR REPOSITORY_ROOT PLAN_FILE DESIGN_FILE GIT_EXECUTABLE
-        CORE_APP NETWORK_ENABLED CTEST_EXECUTABLE WORK NESTED_ENGINE_RHI_BACKEND
+        CORE_APP NETWORK_ENABLED CRASH_ENABLED CTEST_EXECUTABLE WORK NESTED_ENGINE_RHI_BACKEND
         NESTED_CMAKE_GENERATOR NM_CAPABLE NESTED_CMAKE_C_COMPILER)
     if(NOT DEFINED ${var} OR "${${var}}" STREQUAL "")
         message(FATAL_ERROR "${var} is required")
@@ -176,6 +176,7 @@ set(archive_engine "${archive_root}/engine")
 foreach(relative_path IN ITEMS
         CMakeLists.txt
         tests/test_core_app_target_contract.cmake
+        tests/test_core_app_crash_build_contract.cmake
         tests/test_core_app_nested_contract.cmake
         tests/test_core_app_nm_symbol_missing.cmake
         tests/test_core_app_nm_filter.cmake
@@ -544,6 +545,15 @@ if(EXISTS "${archive_build}/CTestTestfile.cmake")
             message(STATUS "${no_nm_log}")
         endif()
     endif()
+    run_case(archive_crash_build_off PASS "${CMAKE_COMMAND}" -E env
+        "GIT_CEILING_DIRECTORIES=${REPOSITORY_ROOT}" "${CTEST_EXECUTABLE}"
+        --test-dir "${archive_build}" ${nested_ctest_config_args}
+        -R "^test_core_app_crash_build_contract$" -V)
+    expect_nested_success_summary(archive_crash_build_off)
+    expect_log_contains(archive_crash_build_off
+        "BREAK_ENABLE_CRASH=OFF configure/build and unavailable CLI contract passed")
+    expect_log_lacks(archive_crash_build_off "Not Run")
+    expect_log_lacks(archive_crash_build_off "No tests were found")
     foreach(test_name IN ITEMS test_core_app_nm_missing test_core_app_nm_unsupported
             test_core_app_formal_asset_tracking test_core_app_naming_contract)
         string(REGEX MATCH
@@ -621,7 +631,7 @@ foreach(test_name IN ITEMS test_core_app_nm_missing test_core_app_nm_unsupported
     file(APPEND "${nm_ctest_source}"
         "  \"-DENGINE_CMAKE=${archive_engine}/CMakeLists.txt\" \"-DCORE_APP=${CORE_APP}\"\n")
     file(APPEND "${nm_ctest_source}"
-        "  \"-DNETWORK_ENABLED=${NETWORK_ENABLED}\" \"-DNETWORK_TRANSPORT=${NETWORK_TRANSPORT}\" \"-DCONTRACT_BUILD_ROOT=${WORK}/${test_name}\"\n")
+        "  \"-DNETWORK_ENABLED=${NETWORK_ENABLED}\" \"-DCRASH_ENABLED=${CRASH_ENABLED}\" \"-DNETWORK_TRANSPORT=${NETWORK_TRANSPORT}\" \"-DCONTRACT_BUILD_ROOT=${WORK}/${test_name}\"\n")
     file(APPEND "${nm_ctest_source}"
         "  ${nm_arguments} -P \"${target_contract}\")\n")
 endforeach()
@@ -642,7 +652,7 @@ foreach(test_name IN ITEMS test_core_app_nested_error test_core_app_cli_error)
     file(APPEND "${nm_ctest_source}"
         "  \"-DENGINE_CMAKE=${case_engine}\" \"-DCORE_APP=${case_executable}\"\n")
     file(APPEND "${nm_ctest_source}"
-        "  \"-DNETWORK_ENABLED=${NETWORK_ENABLED}\" \"-DNETWORK_TRANSPORT=${NETWORK_TRANSPORT}\" \"-DCONTRACT_BUILD_ROOT=${WORK}/${test_name}\"\n")
+        "  \"-DNETWORK_ENABLED=${NETWORK_ENABLED}\" \"-DCRASH_ENABLED=${CRASH_ENABLED}\" \"-DNETWORK_TRANSPORT=${NETWORK_TRANSPORT}\" \"-DCONTRACT_BUILD_ROOT=${WORK}/${test_name}\"\n")
     file(APPEND "${nm_ctest_source}"
         "  \"-DNM=\" \"-DNM_CAPABLE=FALSE\" ${nested_ctest_defs} -P \"${target_contract}\")\n")
 endforeach()

@@ -55,7 +55,8 @@ static int take_section(char **cursor, const char *section) {
     return take_line(cursor, &line) && strcmp(line, section) == 0;
 }
 
-static int check_contract(const BreakCrashRecord *record, u32 expected_tick) {
+static int check_contract(const BreakCrashRecord *record, u32 expected_tick,
+                          const char *expected_gpu, u64 expected_keys) {
     static const char *const keys[] = {
         "backend", "gpu", "live", "seen", "dropped", "tick", "keys",
         "pads", "touches", "gestures", "touch_status", "haptic_status"
@@ -78,13 +79,14 @@ static int check_contract(const BreakCrashRecord *record, u32 expected_tick) {
         if (!take_field(&cursor, keys[i], &values[i])) return 0;
     }
     if ((usize)(cursor - blob) != size) return 0;
-    if (strcmp(values[0], "record") != 0 || strcmp(values[1], "none") != 0 ||
+    if (strcmp(values[0], "record") != 0 || strcmp(values[1], expected_gpu) != 0 ||
         strcmp(values[2], "false") != 0) return 0;
-    if (!parse_u64(values[3], &number) || !parse_u64(values[4], &number) ||
+    if (!parse_u64(values[3], &number) || number != 0u ||
+        !parse_u64(values[4], &number) || number != 0u ||
         !parse_u64(values[5], &number) || number != expected_tick) return 0;
-    if (!parse_u64(values[6], &number) || number != 1u) return 0;
+    if (!parse_u64(values[6], &number) || number != expected_keys) return 0;
     for (i = 7; i < sizeof(keys) / sizeof(keys[0]); ++i) {
-        if (!parse_u64(values[i], &number) || number > UINT32_MAX) return 0;
+        if (!parse_u64(values[i], &number) || number != 0u) return 0;
     }
     return 1;
 }
@@ -95,13 +97,20 @@ int main(int argc, char **argv) {
     u8 *bytes = NULL;
     u64 byte_count = 0;
     u64 expected_tick = 0;
+    u64 expected_keys = 1u;
+    const char *expected_gpu = "none";
     int result = EXIT_RECOVERY;
 
-    if (argc != 3 || !parse_u64(argc == 3 ? argv[2] : NULL, &expected_tick) ||
-        expected_tick > UINT32_MAX) {
-        fprintf(stderr, "usage: core_app_crash_record <spool-root> <expected-tick>\n");
+    if ((argc != 3 && argc != 5) ||
+        !parse_u64(argc >= 3 ? argv[2] : NULL, &expected_tick) ||
+        expected_tick > UINT32_MAX ||
+        (argc == 5 && (!argv[3][0] || !parse_u64(argv[4], &expected_keys) ||
+                       expected_keys > UINT32_MAX))) {
+        fprintf(stderr,
+                "usage: core_app_crash_record <spool-root> <expected-tick> [gpu] [keys]\n");
         return EXIT_USAGE;
     }
+    if (argc == 5) expected_gpu = argv[3];
     spool = break_crash_spool_open(argv[1]);
     if (!spool) goto done;
     if (break_crash_spool_count(spool, 0) != 1u ||
@@ -114,7 +123,7 @@ int main(int argc, char **argv) {
         result = EXIT_PARSE;
         goto done;
     }
-    if (!check_contract(record, (u32)expected_tick)) {
+    if (!check_contract(record, (u32)expected_tick, expected_gpu, expected_keys)) {
         result = EXIT_CONTRACT;
         goto done;
     }
