@@ -13512,3 +13512,13 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD**：先加 3 个用例，编译因缺少类型失败（RED）；实现后 `test_audio_noise_suppressor` **11/11**。1、2、3 声道 bank 的每个声道都与单独处理该声道的单声道实例逐位一致（各声道噪声与音调不同，混淆声道状态或索引会失配）；1/7/128/255/600 帧循环分块与整块一致；3 声道 reset 与新建一致；0、9 声道、NULL 与非法 frame_size 均不写 `*out`；8 声道可创建。
 - **变异**：去交织读取漏加声道偏移、写回索引错误、所有声道共用一个实例、分块起点不乘声道数、reset 只复位首声道、声道上限差一六项均判红。
 - **验证**：本地 Vulkan 全量 **462/462**（4 个既有条件 skip，不计为执行通过）、OpenGL 全量 **453/453**，0 失败；`ENGINE_USE_ASAN=ON` 与 `ENGINE_USE_TSAN=ON` 下 `test_audio_noise_suppressor`、`test_audio_voice_processor` 均通过。评审无 Critical/Important；按其建议修正测试失败路径的泄漏与计划中暂存区的描述，之后在 ASan/TSan 下重跑 `test_audio_noise_suppressor` 11/11。远端结果待推送后核验。
+
+
+## 复制分片多 delta 并发重组池（2026-11-23）
+
+- **交付**：`BreakReplicationReassemblyPool` 在 `break_replication_core` 中提供固定槽位、多 delta 交织重组、共享负载预算、完成/过期高水位、逐流 `break_replication_reassembly_pool_expire` 和保留配置的 `break_replication_reassembly_pool_reset`。旧单流 API 与语义不变；新 API 为所有者线程语义，不读墙钟，不新增锁、线程或网络依赖。计划与设计见 `docs/superpowers/plans/2026-11-23-replication-reassembly-pool.md` 和对应 design spec。
+- **契约**：满槽或新增负载超预算返回 `OVER_LIMIT`，不覆盖活跃流且失败原子；完全相同重复不重复计预算。已完成或已过期 delta 的最大值构成已退出高水位，较旧新流为 `CONFLICT`，等于高水位可重开，活跃较旧流仍可完成。expire 每槽独立计时并返回实际驱逐数，reset 清空全部流、pending 和高水位而保留容量、预算与 expected base。
+- **TDD 与 minor 关闭**：先新增 expire/reset 测试并取得缺失定义的链接 RED，实现后 `test_break_replication_fragment` **22/22**。Task 1/2 的三个 deferred minor 已关闭：三流交织每一步都有 pending 字节序列断言（含交织中的非零值）；新增带两个 pending 流的 destroy 用例并由 ASan/LSan 验证；delta 11 完成后、再次完成 delta 12 前，重试已不活跃的 11 明确返回 `CONFLICT`，防止高水位回退。
+- **变异**：错误路由（16 通过/6 失败）、满槽覆盖（21/1）、漏写 completed id（17/5）、共享预算不累计（16/6）、重复重复计预算（21/1）、expire 只处理首个到期槽（21/1）、过期不推进高水位（21/1）、reset 漏清 pending（21/1）均先成功构建再由行为断言判红；每次变异后均恢复，最终 focused 22/22。
+- **本地验证**：完整构建后 Vulkan CTest 462 项注册，**458 通过、4 条件 skip、0 失败**；OpenGL CTest 453 项注册，**449 通过、4 条件 skip、0 失败**。两者 skip 均为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计为执行通过。`ENGINE_USE_ASAN=ON + ENGINE_USE_UBSAN=ON` focused 22/22，显式 `detect_leaks=1` 复跑 22/22，无 sanitizer/leak 诊断；`ENGINE_USE_TSAN=ON` focused 22/22、无诊断。sanitizer 只运行 focused 目标，不是完整 sanitizer suite。
+- **边界**：多 delta 并发重组不再列为未实现项；周期性 expire 调度器、session/网络接线、真实网络与生产服务验收仍未完成。本记录不包含远端 CI、Windows 或 Proton 新收据，不预写推送或远端通过结论。

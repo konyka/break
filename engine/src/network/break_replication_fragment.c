@@ -489,6 +489,29 @@ BreakReplicationReassemblyResult break_replication_reassembly_pool_push_at(
     return result;
 }
 
+size_t break_replication_reassembly_pool_expire(
+    BreakReplicationReassemblyPool *pool, uint64_t now, uint64_t max_idle)
+{
+    size_t expired = 0u;
+    size_t i;
+    if (!pool) return 0u;
+    for (i = 0u; i < pool->stream_capacity; ++i) {
+        BreakReplicationReassemblyPoolSlot *slot = &pool->slots[i];
+        const size_t slot_pending =
+            break_replication_reassembler_pending_bytes(&slot->reassembler);
+        if (!break_replication_reassembler_expire(&slot->reassembler, now, max_idle))
+            continue;
+        pool->pending_bytes -= slot_pending;
+        slot->active = false;
+        if (!pool->retired_valid || pool->retired_delta_id < slot->delta_id) {
+            pool->retired_delta_id = slot->delta_id;
+            pool->retired_valid = true;
+        }
+        expired++;
+    }
+    return expired;
+}
+
 size_t break_replication_reassembly_pool_pending_streams(
     const BreakReplicationReassemblyPool *pool)
 {
@@ -505,4 +528,18 @@ size_t break_replication_reassembly_pool_pending_bytes(
     const BreakReplicationReassemblyPool *pool)
 {
     return pool ? pool->pending_bytes : 0u;
+}
+
+void break_replication_reassembly_pool_reset(BreakReplicationReassemblyPool *pool)
+{
+    size_t i;
+    if (!pool) return;
+    for (i = 0u; i < pool->stream_capacity; ++i) {
+        break_replication_reassembler_reset(&pool->slots[i].reassembler);
+        pool->slots[i].delta_id = 0u;
+        pool->slots[i].active = false;
+    }
+    pool->pending_bytes = 0u;
+    pool->retired_delta_id = 0u;
+    pool->retired_valid = false;
 }

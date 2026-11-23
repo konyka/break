@@ -95,10 +95,16 @@ BreakReplicationReassemblyResult break_replication_reassembly_pool_push_at(
     BreakReplicationReassemblyPool *pool, const BreakReplicationFragment *fragment,
     uint64_t now, uint64_t *completed_delta_id,
     uint8_t **payload, size_t *payload_size);
+/* Expire every timed idle stream independently and advance the retired
+ * high-water; active older streams remain usable. */
+size_t break_replication_reassembly_pool_expire(
+    BreakReplicationReassemblyPool *pool, uint64_t now, uint64_t max_idle);
 size_t break_replication_reassembly_pool_pending_streams(
     const BreakReplicationReassemblyPool *pool);
 size_t break_replication_reassembly_pool_pending_bytes(
     const BreakReplicationReassemblyPool *pool);
+/* Restore fresh-pool behavior while preserving the creation configuration. */
+void break_replication_reassembly_pool_reset(BreakReplicationReassemblyPool *pool);
 
 #ifdef __cplusplus
 }

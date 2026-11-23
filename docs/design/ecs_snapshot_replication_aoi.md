@@ -174,3 +174,22 @@ arm64 lane 新增 `test_ecs`（45 例）、`test_ecs_system`（6 例）、`test_
 ## 补充（2026-11-23）：分片重组超时与驱逐
 
 `break_replication_reassembler` 新增调用者时钟驱动的超时原语：`break_replication_reassembler_push_at(r, fragment, now, …)` 在接受分片（含完全相同的重复分片）时记录未完成 stream 的最近活动时间，结果与 `push` 一致；`break_replication_reassembler_expire(r, now, max_idle)` 在空闲达到 `max_idle` 时丢弃未完成 stream 并返回 true（`now` 早于记录时间视为 0 空闲，`max_idle=0` 立即驱逐）；`break_replication_reassembler_pending_bytes` 报告其占用的负载字节（不含每分片元数据，后者另有至多 16 MiB 的预算）。被拒绝的分片（CONFLICT、CHECKSUM_MISMATCH、BASE_MISMATCH、失败的 supersession 等）不刷新活动时间，因此无效分片无法让 stream 长期存活；完全相同的重复分片会刷新，这是有意的取舍：FNV-1a 不是认证，能重放已接受分片的一方本来也能伪造新分片，内存上限不变。由普通 `push` 开始的 stream 为“未计时”，`expire` 不驱逐它，之后同一 stream 的 `push_at` 也不会开始计时；要使用驱逐，应始终用 `push_at` 喂入分片。high-water 保留：更旧 delta 仍为 CONFLICT，被驱逐 delta 的迟到分片与完成后一样重新开始。模块不读墙钟、不新增结果枚举值。上文“fragment timeout/eviction 未实现”中的**驱逐原语**由此交付；周期性调用 `expire` 的调度器以及与 session/网络的接线仍未实现。
+
+
+## 补充（2026-11-23）：多 delta 并发重组池
+
+`BreakReplicationReassemblyPool` 在既有单流重组器之上提供固定槽位的多 delta 并发重组，不改变旧单流 API 或“较新 delta 取代旧流”的语义。本切片新增：
+
+```c
+size_t break_replication_reassembly_pool_expire(
+    BreakReplicationReassemblyPool *pool, uint64_t now, uint64_t max_idle);
+void break_replication_reassembly_pool_reset(BreakReplicationReassemblyPool *pool);
+```
+
+池按 `delta_id` 路由，槽位数为 1..64，所有活跃流共享创建时的 `max_pending_bytes` 负载预算。满槽或新增负载超预算返回 `OVER_LIMIT`，不覆盖活跃流且拒绝前后状态不变；完全相同的重复分片不重复计预算。完成或过期推进“已退出高水位”的最大值：严格小于它的新流返回 `CONFLICT`，等于它的迟到分片可重新开始，已经活跃的较旧流仍可完成。`completed_delta_id` 标识实际完成的 delta，payload 仍由 `break_replication_reassembly_free()` 释放。
+
+`expire` 逐槽复用单流计时契约，只驱逐达到阈值的计时未完成流并返回数量；重复分片只刷新自己的槽，校验失败或冲突不刷新，时钟回退按 0 空闲，`max_idle=0` 驱逐全部计时流。`reset` 清空所有流、pending 计数和高水位，与同配置新池行为一致，同时保留槽位容量、负载预算和 expected base。所有池 API 均为所有者线程语义，不读墙钟，不引入锁、线程或网络调用。
+
+`test_break_replication_fragment` 现为 **22/22**。测试覆盖三流独立过期、复位对照、高水位单调性、交织时非零 pending 字节，以及带 pending 数据销毁。八项定向变异（错误路由、满槽覆盖、漏 completed id、共享预算不累计、重复计预算、expire 漏槽、过期不推进高水位、reset 漏清 pending）均成功构建并被行为断言判红。完整 Vulkan 为 462 项注册、458 通过、4 条件 skip、0 失败；OpenGL 为 453 项注册、449 通过、4 条件 skip、0 失败；ASan+UBSan（含显式 leak 检测）与 TSan focused 均为 22/22、无诊断。
+
+本项只交付传输无关的池原语。周期性调用 `expire` 的调度器、session/网络接线、真实网络与生产服务验收仍未完成；FNV-1a 仍不是安全认证。

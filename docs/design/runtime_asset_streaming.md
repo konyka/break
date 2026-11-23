@@ -404,3 +404,12 @@ arm64 lane 新增 `test_vfs`（36 例）、`test_async_loader`（17 例）和 `t
 ## 补充（2026-11-23）：分片重组超时与驱逐
 
 `break_replication_reassembler` 新增调用者时钟驱动的超时原语：`break_replication_reassembler_push_at(r, fragment, now, …)` 在接受分片（含完全相同的重复分片）时记录未完成 stream 的最近活动时间，结果与 `push` 一致；`break_replication_reassembler_expire(r, now, max_idle)` 在空闲达到 `max_idle` 时丢弃未完成 stream 并返回 true（`now` 早于记录时间视为 0 空闲，`max_idle=0` 立即驱逐）；`break_replication_reassembler_pending_bytes` 报告其占用的负载字节（不含每分片元数据，后者另有至多 16 MiB 的预算）。被拒绝的分片（CONFLICT、CHECKSUM_MISMATCH、BASE_MISMATCH、失败的 supersession 等）不刷新活动时间，因此无效分片无法让 stream 长期存活；完全相同的重复分片会刷新，这是有意的取舍：FNV-1a 不是认证，能重放已接受分片的一方本来也能伪造新分片，内存上限不变。由普通 `push` 开始的 stream 为“未计时”，`expire` 不驱逐它，之后同一 stream 的 `push_at` 也不会开始计时；要使用驱逐，应始终用 `push_at` 喂入分片。high-water 保留：更旧 delta 仍为 CONFLICT，被驱逐 delta 的迟到分片与完成后一样重新开始。模块不读墙钟、不新增结果枚举值。上文“fragment timeout/eviction 未实现”中的**驱逐原语**由此交付；周期性调用 `expire` 的调度器以及与 session/网络的接线仍未实现。
+
+
+## 补充（2026-11-23）：多 delta 分片重组池
+
+资产或 ECS delta 的分片现在可由 `BreakReplicationReassemblyPool` 按 `delta_id` 交织重组。固定槽位和共享 `max_pending_bytes` 限制驻留负载；满槽/超预算失败原子，不覆盖其他流。完成与过期共同推进已退出高水位，较旧新流被拒绝，等于高水位的迟到分片可重开，活跃较旧流不受较新流退出影响。
+
+新增 `break_replication_reassembly_pool_expire(pool, now, max_idle)` 逐流过期并返回驱逐数，新增 `break_replication_reassembly_pool_reset(pool)` 恢复同配置新池状态。计时来自调用者，重复只刷新本槽，拒绝不刷新，时钟回退不产生巨额空闲，`max_idle=0` 清理全部计时流；reset 保留容量、预算和 expected base。API 仅限所有者线程，不自行读时钟或创建线程、锁、网络任务。
+
+focused 测试 **22/22**，包含三流过期/复位、交织 pending 字节、destroy-with-pending 和完成高水位单调性；八项定向变异均被测试判红。Vulkan 完整套件 462 项中 458 通过、4 条件 skip、0 失败，OpenGL 453 项中 449 通过、4 条件 skip、0 失败；ASan+UBSan（含 leak 检测）和 TSan focused 均 22/22、无诊断。这些结果不包括真实网络、生产资产服务、session 接线或周期调度器，后者仍是后续工作。

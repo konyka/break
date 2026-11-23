@@ -683,3 +683,10 @@ core_app 新增 `--voice-bypass`，可从命令行关闭语音处理链的任意
 ## 第 10 节（音频）补充（2026-11-23）：频谱降噪多声道
 
 `AudioNoiseSuppressorBank` 提供 1..8 声道交织 PCM 的每声道独立降噪。剩余：跨声道共享噪声估计、学习型降噪与真实听感验证。
+
+
+## 第 17 节（大世界/流式）补充（2026-11-23）：多 delta 并发重组池缺口关闭
+
+上一追加段所列“多 delta 并发重组”由 `BreakReplicationReassemblyPool` 关闭；历史段落保留不改。池提供固定槽位按 `delta_id` 路由、共享负载预算、失败原子拒绝、完成/过期高水位、逐流 expire 和保留配置的 reset。旧单流语义不变，池 API 不读墙钟、不加锁，仍属所有者线程的传输无关原语。
+
+剩余缺口仅为本项明确边界：**周期性调用 expire 的调度器、session/网络接线、真实网络与生产服务验收仍未完成**；FNV-1a 仍不是认证。focused 22/22、八项定向变异全部判红；Vulkan 458/462、OpenGL 449/453 实际通过且各 4 条件 skip、0 失败；ASan+UBSan（含 leak 检测）和 TSan focused 均 22/22、无诊断。上述结果不构成 session、真实网络、生产服务或完整 sanitizer suite 的验收。

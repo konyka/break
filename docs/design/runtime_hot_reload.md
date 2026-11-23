@@ -325,3 +325,12 @@ arm64 lane 新增 `test_hotreload`（7 例），与 VFS、异步加载和 filewa
 ## 补充（2026-11-23）：分片重组超时与驱逐
 
 `break_replication_reassembler` 新增调用者时钟驱动的超时原语：`break_replication_reassembler_push_at(r, fragment, now, …)` 在接受分片（含完全相同的重复分片）时记录未完成 stream 的最近活动时间，结果与 `push` 一致；`break_replication_reassembler_expire(r, now, max_idle)` 在空闲达到 `max_idle` 时丢弃未完成 stream 并返回 true（`now` 早于记录时间视为 0 空闲，`max_idle=0` 立即驱逐）；`break_replication_reassembler_pending_bytes` 报告其占用的负载字节（不含每分片元数据，后者另有至多 16 MiB 的预算）。被拒绝的分片（CONFLICT、CHECKSUM_MISMATCH、BASE_MISMATCH、失败的 supersession 等）不刷新活动时间，因此无效分片无法让 stream 长期存活；完全相同的重复分片会刷新，这是有意的取舍：FNV-1a 不是认证，能重放已接受分片的一方本来也能伪造新分片，内存上限不变。由普通 `push` 开始的 stream 为“未计时”，`expire` 不驱逐它，之后同一 stream 的 `push_at` 也不会开始计时；要使用驱逐，应始终用 `push_at` 喂入分片。high-water 保留：更旧 delta 仍为 CONFLICT，被驱逐 delta 的迟到分片与完成后一样重新开始。模块不读墙钟、不新增结果枚举值。上文“fragment timeout/eviction 未实现”中的**驱逐原语**由此交付；周期性调用 `expire` 的调度器以及与 session/网络的接线仍未实现。
+
+
+## 补充（2026-11-23）：多 delta 重组池的过期与复位
+
+`BreakReplicationReassemblyPool` 为热重载可能使用的分片 delta 提供传输无关的多流重组原语，但尚未接入 reload/session。池按 `delta_id` 独立路由，以固定槽位和共享负载预算限制内存；容量拒绝不覆盖活跃流，重复分片不重复计预算。完成或过期只推进已退出高水位，不回退；活跃较旧流仍能完成。
+
+`break_replication_reassembly_pool_expire(pool, now, max_idle)` 对每个计时槽独立判断，支持时钟回退按 0 空闲及 `max_idle=0` 全部驱逐；`break_replication_reassembly_pool_reset(pool)` 清空流、pending 与高水位，保留创建配置。两者均由所有者线程调用，不读墙钟、不加锁，也不提供周期调度。
+
+`test_break_replication_fragment` **22/22**，三个 deferred minor 已补为交织非零 pending 字节、带 pending 数据销毁的 sanitizer 覆盖、完成高水位单调性断言。错误路由、满槽覆盖、completed id、共享预算、重复计数、expire 漏槽/高水位、reset pending 八项变异均判红。完整 Vulkan/OpenGL 分别 458/462、449/453 实际通过，各 4 条件 skip、0 失败；ASan+UBSan（含 leak 检测）与 TSan focused 均 22/22。周期调度器、session/网络接线和真实热重载资产链路仍未实现或验收。
