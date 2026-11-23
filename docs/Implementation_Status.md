@@ -13474,3 +13474,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD**：先加 2 个用例，编译因缺少常量失败（RED）；实现后 `test_audio_voice_processor` **5/5**。四个单阶段与 ECHO+AGC 组合在 97 帧分块下与去掉相应阶段的手工链逐位一致，且与完整链不同；全部 bypass 为恒等；未知位不写 `*out`；带 bypass 的 reset 与新建一致。
 - **变异**：任一阶段忽略 bypass、只识别 ECHO 位、去掉未知位校验、延迟不看 bypass 七项均判红。
 - **验证**：本地 Vulkan 全量 **462/462**（4 个既有条件 skip，不计为执行通过）、OpenGL 全量 **453/453**，0 失败；ASan+UBSan 与 TSan（`ENGINE_USE_TSAN=ON`）下 `test_audio_voice_processor`、`test_core_app_voice` 均 2/2。评审后常量改名为 `AUDIO_VOICE_PROCESSOR_STAGE_*` 以免与播放 voice 的 `AUDIO_VOICE_*` 混淆，删去重复的测试 helper 并修正设计文档未做项；改名后在最终代码上重跑 Vulkan 全量 462/462 与上述三套目标测试。远端结果待推送后核验。
+
+## core_app 语音处理链 bypass 命令行开关（2026-11-23）
+
+- **交付**：`--voice-bypass echo,noise,gate,agc`（要求 `--voice=fake|device`），`audio_voice_processor_bypass_stages` 与 `core_app_voice_bypass_stages` 查询，启用时 ready 行（及 aligner 行）后写 `event=voice_bypass`。计划见 `docs/superpowers/plans/2026-11-23-core-app-voice-bypass-cli.md`，行为见 `docs/design/core_app_integration.md`。
+- **TDD**：两个单元测试先因缺少查询函数编译失败，lane 契约先在旧可执行文件上因不认识开关退出 2 失败（RED）。实现后 `test_audio_voice_processor` **5/5**、`test_core_app_voice` **26/26**、`test_core_app_voice_lane` 通过。首版泵测试选 gate+agc，因测试配置下两者近似直通而与完整链无差异，改为 echo+noise。
+- **变异**：解析表漏掉 gate 或 echo、未知名被忽略、不写入配置、两个查询返回常量、去掉 `--voice` 依赖、无开关也写 trace 八项均判红。
+- **验证**：本地 Vulkan 全量 **462/462**（4 个既有条件 skip，不计为执行通过）、OpenGL 全量 **453/453**，0 失败；`ENGINE_USE_ASAN=ON` 下 `test_audio_voice_processor`、`test_core_app_voice`、`test_core_app_voice_lane` 3/3。`ENGINE_USE_TSAN=ON` 下前两项通过，lane 测试因本机 `ThreadSanitizer: can't find longjmp buf` 在第一次（不带新开关的）运行即中止，与此前在未修改的 `origin/master` 上复现的情况相同；以 CI 的 TSan job 为准。远端结果待推送后核验。

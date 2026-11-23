@@ -118,6 +118,9 @@ struct CoreAppConfig {
      * aligner_crossfade_frames); both off by default. */
     bool voice_aligner_sinc;
     u32 voice_aligner_crossfade_frames;
+    /* Voice processor stages to skip (AUDIO_VOICE_PROCESSOR_STAGE_*); 0 runs
+     * all of them. */
+    u32 voice_bypass_stages;
     /* Device names as the audio device lists report them; NULL or "" opens
      * the default. A name no device has ends the run with REJECTED (exit 2),
      * never with the "no device" result, even without require_device. */

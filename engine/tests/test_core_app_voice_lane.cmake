@@ -14,7 +14,8 @@
 #   5. scenario voice-capture-device switches are traced and counted (see
 #      the section below),
 #   6. --voice-aligner-sinc and --voice-aligner-crossfade reach the lane's
-#      aligner, and misuse of either is a CLI error.
+#      aligner, and misuse of either is a CLI error,
+#   7. --voice-bypass reaches the lane's processor, and misuse is a CLI error.
 
 foreach(var CORE_APP WORK ASSET_ROOT)
     if(NOT DEFINED ${var} OR "${${var}}" STREQUAL "")
@@ -192,12 +193,41 @@ if(fake_a MATCHES "event=voice_aligner")
     message(FATAL_ERROR "a run without aligner flags traced aligner modes\n${fake_a}")
 endif()
 
+# 7. Processor bypass from the command line: the lane traces the stages its
+#    processor skips, in a fixed order after the aligner line, still delivers
+#    every frame and stays deterministic; misuse is a CLI error.
+run_app(bypass_a bypass_a --voice=fake --voice-bypass=gate,agc)
+run_app(bypass_b bypass_b --voice=fake --voice-bypass=gate,agc)
+run_app(bypass_all bypass_all --voice=fake --voice-bypass agc,echo,noise,gate,echo
+        --voice-aligner-sinc)
+if(NOT bypass_a MATCHES "event=voice mode=fake result=ready frames=480 capture=fake\nCOREAPPTRACE version=1 event=voice_bypass echo=0 noise=0 gate=1 agc=1\n")
+    message(FATAL_ERROR "the bypassed stages were not traced after ready\n${bypass_a}")
+endif()
+if(NOT bypass_all MATCHES "event=voice_aligner sinc=1 crossfade=0\nCOREAPPTRACE version=1 event=voice_bypass echo=1 noise=1 gate=1 agc=1\n")
+    message(FATAL_ERROR "the aligner and bypass lines are out of order\n${bypass_all}")
+endif()
+if(NOT bypass_a MATCHES "result=stopped produced=([0-9]+) consumed=([0-9]+) dropped=0 sequence_gaps=0 ")
+    message(FATAL_ERROR "the bypass run lost voice frames\n${bypass_a}")
+endif()
+if(CMAKE_MATCH_1 LESS 160 OR NOT CMAKE_MATCH_1 EQUAL CMAKE_MATCH_2)
+    message(FATAL_ERROR "the bypass run produced ${CMAKE_MATCH_1}, consumed ${CMAKE_MATCH_2}")
+endif()
+if(NOT bypass_a STREQUAL bypass_b)
+    message(FATAL_ERROR "two identical bypass runs wrote different traces")
+endif()
+if(fake_a MATCHES "event=voice_bypass" OR modes_a MATCHES "event=voice_bypass")
+    message(FATAL_ERROR "a run without --voice-bypass traced bypassed stages")
+endif()
+
 foreach(bad_args "--voice=bogus" "--voice=device" "--voice-null-capture"
                  "--voice=fake;--voice-null-capture"
                  "--voice-aligner-sinc" "--voice-aligner-crossfade;480"
                  "--voice=fake;--voice-aligner-crossfade;0"
                  "--voice=fake;--voice-aligner-crossfade;48001"
-                 "--voice=fake;--voice-aligner-crossfade;12x")
+                 "--voice=fake;--voice-aligner-crossfade;12x"
+                 "--voice-bypass=gate" "--voice=fake;--voice-bypass=gate,,agc"
+                 "--voice=fake;--voice-bypass=reverb" "--voice=fake;--voice-bypass=,"
+                 "--voice=fake;--voice-bypass=gate,")
     execute_process(
         COMMAND ${CORE_APP_RUNNER} "${CORE_APP}" --render=record --audio=record --fixed-step
             --assets "${ASSET_ROOT}" --scenario "${scenario}" ${bad_args}

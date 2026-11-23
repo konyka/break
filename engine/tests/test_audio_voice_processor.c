@@ -201,9 +201,11 @@ TEST(bypass_validation_latency_identity_and_reset)
     ASSERT_TRUE(processor == sentinel);
     audio_voice_processor_destroy(sentinel);
 
+    ASSERT_EQ(audio_voice_processor_bypass_stages(NULL), 0u);
     config.bypass_stages = AUDIO_VOICE_PROCESSOR_STAGE_ALL;
     processor = make_processor(&config);
     ASSERT_TRUE(processor != NULL);
+    ASSERT_EQ(audio_voice_processor_bypass_stages(processor), AUDIO_VOICE_PROCESSOR_STAGE_ALL);
     ASSERT_EQ(audio_voice_processor_latency_frames(processor), 0u);
     fill_stream(N);
     memcpy(g_whole, g_expected, sizeof(g_whole));

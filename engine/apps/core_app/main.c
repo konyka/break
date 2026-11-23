@@ -4,6 +4,7 @@
 #include "core_app_diagnostics.h"
 #endif
 
+#include <audio/audio_voice_processor.h>
 #include <core/trace_core_app.h>
 #include <platform/time.h>
 
@@ -32,6 +33,7 @@ static void print_help(void) {
          "  --voice-null-capture\n"
          "  --voice-aligner-sinc\n"
          "  --voice-aligner-crossfade FRAMES (1..48000)\n"
+         "  --voice-bypass LIST (comma-separated echo,noise,gate,agc)\n"
          "  --assets DIR\n"
          "  --scenario PATH\n"
          "  --checkpoint DIR\n"
@@ -112,6 +114,38 @@ static bool parse_voice(const char *value, CoreAppVoiceMode *out) {
     else if (strcmp(value, "fake") == 0) *out = CORE_APP_VOICE_FAKE;
     else if (strcmp(value, "device") == 0) *out = CORE_APP_VOICE_DEVICE;
     else return false;
+    return true;
+}
+
+/* Comma-separated stage names; every item must be one of the four names. */
+static bool parse_voice_bypass(const char *value, u32 *out) {
+    static const struct {
+        const char *name;
+        u32 bit;
+    } kStages[] = {
+        {"echo", AUDIO_VOICE_PROCESSOR_STAGE_ECHO},
+        {"noise", AUDIO_VOICE_PROCESSOR_STAGE_NOISE},
+        {"gate", AUDIO_VOICE_PROCESSOR_STAGE_GATE},
+        {"agc", AUDIO_VOICE_PROCESSOR_STAGE_AGC},
+    };
+    u32 stages = 0u;
+    const char *item = value;
+    for (;;) {
+        const char *comma = strchr(item, ',');
+        const usize length = comma ? (usize)(comma - item) : strlen(item);
+        u32 bit = 0u;
+        for (usize i = 0u; i < sizeof(kStages) / sizeof(kStages[0]); ++i) {
+            if (strlen(kStages[i].name) == length &&
+                strncmp(item, kStages[i].name, length) == 0) {
+                bit = kStages[i].bit;
+            }
+        }
+        if (bit == 0u) return false;
+        stages |= bit;
+        if (!comma) break;
+        item = comma + 1;
+    }
+    *out = stages;
     return true;
 }
 
@@ -226,6 +260,9 @@ static int core_app_main(int argc, char **argv) {
             if (matched < 0 || !parse_frames(value, &config.voice_aligner_crossfade_frames) ||
                 config.voice_aligner_crossfade_frames > 48000u)
                 return cli_error("invalid --voice-aligner-crossfade value");
+        } else if ((matched = take_value(argc, argv, &i, "--voice-bypass", &value)) != 0) {
+            if (matched < 0 || !parse_voice_bypass(value, &config.voice_bypass_stages))
+                return cli_error("invalid --voice-bypass value");
         } else if ((matched = take_value(argc, argv, &i, "--voice", &value)) != 0) {
             if (matched < 0 || !parse_voice(value, &config.voice_mode))
                 return cli_error("invalid --voice value");
@@ -306,9 +343,10 @@ static int core_app_main(int argc, char **argv) {
     }
     if (config.voice_mode == CORE_APP_VOICE_DEVICE && config.audio_mode != CORE_APP_AUDIO_DEVICE)
         return cli_error("--voice=device requires --audio=device");
-    if ((config.voice_aligner_sinc || config.voice_aligner_crossfade_frames > 0u) &&
+    if ((config.voice_aligner_sinc || config.voice_aligner_crossfade_frames > 0u ||
+         config.voice_bypass_stages != 0u) &&
         config.voice_mode == CORE_APP_VOICE_OFF)
-        return cli_error("--voice-aligner-sinc/--voice-aligner-crossfade require --voice=fake|device");
+        return cli_error("--voice-aligner-sinc/--voice-aligner-crossfade/--voice-bypass require --voice=fake|device");
     if (config.voice_null_capture && config.voice_mode != CORE_APP_VOICE_DEVICE)
         return cli_error("--voice-null-capture requires --voice=device");
     if (config.audio_device_name && config.audio_mode != CORE_APP_AUDIO_DEVICE)

@@ -74,6 +74,10 @@ void audio_voice_processor_process_i16(AudioVoiceProcessor *processor,
     if (!(bypass & AUDIO_VOICE_PROCESSOR_STAGE_AGC)) audio_agc_process_i16(&processor->agc, capture, frames);
 }
 
+u32 audio_voice_processor_bypass_stages(const AudioVoiceProcessor *processor) {
+    return processor ? processor->config.bypass_stages : 0u;
+}
+
 u32 audio_voice_processor_latency_frames(const AudioVoiceProcessor *processor) {
     if (!processor || (processor->config.bypass_stages & AUDIO_VOICE_PROCESSOR_STAGE_NOISE)) return 0u;
     return audio_noise_suppressor_latency_frames(processor->noise);

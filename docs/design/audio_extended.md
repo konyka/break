@@ -282,8 +282,8 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 - `AudioVoiceProcessorConfig` 嵌套五个现有配置；采样率必须一致，噪声门与 AGC 必须为单声道，各模块原有范围不变。创建失败不写 `*out`，部分构造会逆序释放。
 - `process_i16` 原地处理，任意分块与手工五级链逐位一致。非法调用为空操作；只有 create 分配。reset 重置 AEC/残余/频谱状态，并用保存的配置重新初始化噪声门和 AGC。
 - `audio_voice_processor_latency_frames` 返回频谱降噪的固定 frame_size；有限流尾部需为参考与采集都补该数量的零帧。测试用手工五级链独立校验正文和排空尾部。
-- 2026-11-23 补充：可配置 bypass。`AudioVoiceProcessorConfig.bypass_stages` 取 `AUDIO_VOICE_PROCESSOR_STAGE_ECHO`（AEC 与残余抑制一起）、`AUDIO_VOICE_PROCESSOR_STAGE_NOISE`、`_GATE`、`_AGC` 的按位或（`_ALL` 为四者），在 create 时固定，未知位返回 `AUDIO_INVALID`。被 bypass 的阶段仍校验并创建，`reset` 照常重置，只是不处理；频谱降噪被 bypass 时 `latency_frames` 返回 0。不提供运行中切换：频谱降噪的固定帧延迟会让中途切换的输出错位。输出与去掉相应阶段的手工链逐位一致，全部 bypass 时采集不变。`test_audio_voice_processor` 增至 5 项。core_app 语音泵未暴露该字段，零初始化即全部阶段运行。
-- 未做：多声道、core_app 语音泵暴露 bypass 选项与真实声学验证。自动延迟跟踪由 `AudioVoiceAligner` 提供，core_app 语音泵已接入本处理链与对齐器，见「Core App 语音 PCM 泵」。
+- 2026-11-23 补充：可配置 bypass。`AudioVoiceProcessorConfig.bypass_stages` 取 `AUDIO_VOICE_PROCESSOR_STAGE_ECHO`（AEC 与残余抑制一起）、`AUDIO_VOICE_PROCESSOR_STAGE_NOISE`、`_GATE`、`_AGC` 的按位或（`_ALL` 为四者），在 create 时固定，未知位返回 `AUDIO_INVALID`。被 bypass 的阶段仍校验并创建，`reset` 照常重置，只是不处理；频谱降噪被 bypass 时 `latency_frames` 返回 0。不提供运行中切换：频谱降噪的固定帧延迟会让中途切换的输出错位。输出与去掉相应阶段的手工链逐位一致，全部 bypass 时采集不变。`test_audio_voice_processor` 增至 5 项。core_app 语音泵未暴露该字段，零初始化即全部阶段运行（2026-11-23 更新：已新增 `--voice-bypass` 与 `audio_voice_processor_bypass_stages` 查询，见 `core_app_integration.md`）。
+- 未做：多声道与真实声学验证。自动延迟跟踪由 `AudioVoiceAligner` 提供，core_app 语音泵已接入本处理链与对齐器，见「Core App 语音 PCM 泵」。
 
 ## 播放参考捕获
 

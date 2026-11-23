@@ -563,6 +563,10 @@ u32 core_app_voice_aligner_crossfade_frames(const CoreAppVoice *voice) {
     return voice ? audio_voice_aligner_crossfade_frames(voice->aligner) : 0u;
 }
 
+u32 core_app_voice_bypass_stages(const CoreAppVoice *voice) {
+    return voice ? audio_voice_processor_bypass_stages(voice->processor) : 0u;
+}
+
 BreakRuntimeError core_app_voice_stats(CoreAppVoice *voice, CoreAppVoiceStats *out) {
     if (!voice || !out) return BREAK_RUNTIME_INVALID;
     CoreAppVoiceStats stats = {

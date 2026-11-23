@@ -40,5 +40,7 @@ void audio_voice_processor_reset(AudioVoiceProcessor *processor);
  * only for zero frames; other invalid calls are no-ops. */
 void audio_voice_processor_process_i16(AudioVoiceProcessor *processor,
                                        const i16 *reference, i16 *capture, u32 frames);
+/* The bypass_stages fixed at create; 0 for NULL. */
+u32 audio_voice_processor_bypass_stages(const AudioVoiceProcessor *processor);
 /* Fixed spectral-processing delay; 0 for NULL or a bypassed noise stage. */
 u32 audio_voice_processor_latency_frames(const AudioVoiceProcessor *processor);

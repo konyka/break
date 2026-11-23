@@ -662,4 +662,8 @@ core_app 新增 `--voice-aligner-sinc` 与 `--voice-aligner-crossfade`，对齐�
 
 ## 第 10 节（音频）补充（2026-11-23）：语音处理链可配置 bypass
 
-`AudioVoiceProcessor` 可在创建时关闭 AEC/残余、频谱降噪、噪声门、AGC 中任意阶段，用于对照与排查。剩余：多声道、运行中切换（受频谱延迟约束未提供）、真实声学验证；core_app 语音泵尚未暴露该选项。
+`AudioVoiceProcessor` 可在创建时关闭 AEC/残余、频谱降噪、噪声门、AGC 中任意阶段，用于对照与排查。剩余：多声道、运行中切换（受频谱延迟约束未提供）、真实声学验证；core_app 语音泵尚未暴露该选项（2026-11-23 更新：已由 `--voice-bypass` 暴露，见下文）。
+
+## 第 10 节（音频）补充（2026-11-23）：语音处理链 bypass 命令行开关
+
+core_app 新增 `--voice-bypass`，可从命令行关闭语音处理链的任意阶段并写入 trace。语音处理链剩余：多声道与真实声学验证。

@@ -2226,6 +2226,7 @@ static BreakRuntimeError app_voice_start(CoreApp *app) {
     CoreAppVoiceConfig config = app_voice_config(playback, capture_backend);
     config.aligner_sinc = app->config.voice_aligner_sinc;
     config.aligner_crossfade_frames = app->config.voice_aligner_crossfade_frames;
+    config.processor.bypass_stages = app->config.voice_bypass_stages;
     if (mode == CORE_APP_VOICE_DEVICE) {
         config.reopen_interval_ms = CORE_APP_VOICE_REOPEN_INTERVAL_MS;
         config.max_reopen_failures = CORE_APP_VOICE_MAX_REOPEN_FAILURES;
@@ -2284,6 +2285,15 @@ static BreakRuntimeError app_voice_start(CoreApp *app) {
         traced = app_trace(app, "COREAPPTRACE version=1 event=voice_aligner sinc=%d crossfade=%u\n",
                            core_app_voice_aligner_sinc(lane->voice) ? 1 : 0,
                            core_app_voice_aligner_crossfade_frames(lane->voice));
+    }
+    if (traced == BREAK_RUNTIME_OK && app->config.voice_bypass_stages != 0u) {
+        const u32 bypass = core_app_voice_bypass_stages(lane->voice);
+        traced = app_trace(app,
+            "COREAPPTRACE version=1 event=voice_bypass echo=%d noise=%d gate=%d agc=%d\n",
+            (bypass & AUDIO_VOICE_PROCESSOR_STAGE_ECHO) ? 1 : 0,
+            (bypass & AUDIO_VOICE_PROCESSOR_STAGE_NOISE) ? 1 : 0,
+            (bypass & AUDIO_VOICE_PROCESSOR_STAGE_GATE) ? 1 : 0,
+            (bypass & AUDIO_VOICE_PROCESSOR_STAGE_AGC) ? 1 : 0);
     }
     return traced;
 }

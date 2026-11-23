@@ -1217,6 +1217,7 @@ core_app [--render record|auto|vulkan|opengl]
          [--audio record|null|device]
          [--voice off|fake|device] [--voice-null-capture]
          [--voice-aligner-sinc] [--voice-aligner-crossfade FRAMES]
+         [--voice-bypass LIST]
          [--assets DIR] [--scenario PATH] [--checkpoint DIR]
          [--trace PATH] [--screenshot PATH]
          [--fixed-step] [--frames N] [--require-device] [--network]
@@ -1797,3 +1798,10 @@ arm64 lane 新增 `test_core_app_network`（25/25）和 `test_core_app_network_o
 - **查询**：`core_app_voice_aligner_sinc`、`core_app_voice_aligner_crossfade_frames` 报告私有对齐器的实际设置，NULL 返回 false/0。
 - **trace**：只有给出任一开关时，在 ready 行之后追加 `COREAPPTRACE version=1 event=voice_aligner sinc=0|1 crossfade=N`，数值取自上述查询而不是命令行；不给开关时 trace 逐字节不变。
 - **测试**：`test_core_app_voice` 增加查询的 NULL、默认与启用值断言；`test_core_app_voice_lane.cmake` 第 6 部分在 `--voice=fake` 下验证 sinc + 480 帧淡化写出 trace 行且紧跟 ready、仍消费全部包、两次运行逐字节一致，仅 sinc 时 `crossfade=0`，无开关时无该行；新增五个错误组合。
+
+## 补充（2026-11-23）：语音处理链 bypass 命令行开关
+
+- **CLI**：`--voice-bypass LIST`（也接受 `=` 形式）。LIST 为逗号分隔的 `echo`、`noise`、`gate`、`agc`，可重复、顺序无关，映射为 `AUDIO_VOICE_PROCESSOR_STAGE_*` 后写入 `CoreAppConfig.voice_bypass_stages`，语音通道启动时写入 `CoreAppVoiceConfig.processor.bypass_stages`。未知名、空项（`gate,,agc`、`gate,`、`,`）和不带 `--voice=fake|device` 均为 CLI 错误（退出 2）。名称区分大小写；重复给出该开关时以最后一次为准，与 `--voice-aligner-crossfade` 相同。
+- **查询**：`audio_voice_processor_bypass_stages` 返回处理链创建时固定的位，`core_app_voice_bypass_stages` 转发它，NULL 返回 0。
+- **trace**：给出开关时，在 ready 行与可选的 `event=voice_aligner` 行之后写 `COREAPPTRACE version=1 event=voice_bypass echo=0|1 noise=0|1 gate=0|1 agc=0|1`，数值取自查询；不给开关时 trace 不变。
+- **测试**：`test_core_app_voice` 新增 `processor_bypass_matches_an_independent_pipeline`（共 26 项）：非法位让 create 返回 INVALID；bypass echo+noise 时泵出的 4 个包与同配置独立对齐器 + 处理链逐样本一致，且至少一个包与完整链不同。测试配置的噪声门与 AGC 近似直通，因此选 echo 与 noise 才能观察到差异。`test_core_app_voice_lane.cmake` 第 7 部分验证 `gate,agc` 的 trace 行紧跟 ready、与 aligner 开关同时给出时顺序固定且重复名合并、仍消费全部包、两次运行一致，并新增五个错误组合。

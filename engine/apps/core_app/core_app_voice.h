@@ -85,6 +85,9 @@ BreakRuntimeError core_app_voice_stats(CoreAppVoice *voice, CoreAppVoiceStats *o
  * them while the worker runs. */
 bool core_app_voice_aligner_sinc(const CoreAppVoice *voice);
 u32 core_app_voice_aligner_crossfade_frames(const CoreAppVoice *voice);
+/* The processor stages left out (AUDIO_VOICE_PROCESSOR_STAGE_*), fixed at
+ * create like the aligner modes; 0 for NULL. */
+u32 core_app_voice_bypass_stages(const CoreAppVoice *voice);
 /* The error that ended the worker, readable from any thread while it runs:
  * OK while it pumps, e.g. UNAVAILABLE after the capture device was lost. */
 BreakRuntimeError core_app_voice_worker_error(CoreAppVoice *voice);
