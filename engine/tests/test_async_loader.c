@@ -798,8 +798,66 @@ TEST(async_loader_shutdown_drains_decoded_completion)
     remove(path);
 }
 
+static _Atomic int g_compact_callback_called;
+static _Atomic int g_compact_callback_byte;
+
+static void compact_load_callback(void *user_data, void *data, u32 size) {
+    (void)user_data;
+    if (data && size == 1u) {
+        atomic_store(&g_compact_callback_byte, (int)((unsigned char *)data)[0]);
+    }
+    atomic_fetch_add(&g_compact_callback_called, 1);
+    free(data);
+}
+
+TEST(async_loader_compact_path_roundtrip) {
+    char path[1024];
+    char expected[64];
+    char pid_text[16];
+    unsigned char byte = 0x5au;
+    int pid_digits = snprintf(pid_text, sizeof(pid_text), "%d", (int)TEST_GETPID());
+    size_t cap = strlen(test_tmp_root()) + 17u + (unsigned)pid_digits;
+    const char *base;
+    if (cap < 32u) cap = 32u;
+    ASSERT_TRUE(cap <= sizeof(path));
+    (void)test_tmp(path, cap, "same_prefix_with_a_very_long_suffix_a");
+    snprintf(expected, sizeof(expected), "break_8073d8d7_%d", (int)TEST_GETPID());
+    base = strrchr(path, '/');
+    ASSERT_NOT_NULL(base);
+    base++;
+    ASSERT_TRUE(strcmp(base, expected) == 0);
+
+    FILE *fp = fopen(path, "wb");
+    ASSERT_NOT_NULL(fp);
+    ASSERT_EQ(fwrite(&byte, 1u, 1u, fp), 1u);
+    ASSERT_EQ(fclose(fp), 0);
+
+    VFS *vfs = vfs_create();
+    ASSERT_NOT_NULL(vfs);
+    ASSERT_TRUE(vfs_mount_dir(vfs, test_tmp_root()));
+    bool initialized = async_loader_init(1, vfs);
+    atomic_store(&g_compact_callback_called, 0);
+    atomic_store(&g_compact_callback_byte, -1);
+    u64 id = async_loader_request(base, compact_load_callback, NULL);
+    u64 deadline = test_wait_deadline();
+    for (;;) {
+        async_loader_tick();
+        if (atomic_load(&g_compact_callback_called) != 0) break;
+        if (test_now_us() >= deadline) break;
+        for (volatile int j = 0; j < 100000; j++) { (void)j; }
+    }
+    async_loader_shutdown();
+    vfs_destroy(vfs);
+    ASSERT_EQ(remove(path), 0);
+    ASSERT_TRUE(initialized);
+    ASSERT_NEQ(id, (u64)0);
+    ASSERT_EQ(atomic_load(&g_compact_callback_called), 1);
+    ASSERT_EQ(atomic_load(&g_compact_callback_byte), (int)byte);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(async_loader_init_shutdown);    RUN_TEST(async_loader_pending_zero);
+    RUN_TEST(async_loader_compact_path_roundtrip);
     RUN_TEST(async_loader_load_nonexistent);
     RUN_TEST(async_loader_load_empty);
     RUN_TEST(async_loader_status_loading);

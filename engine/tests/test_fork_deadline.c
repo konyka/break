@@ -373,6 +373,70 @@ TEST(read_deadline_times_out_when_writer_stalls)
     close(fds[0]);
     ASSERT_EQ(test_waitpid_deadline(pid, &status, 0u), (pid_t)0);
 }
+
+TEST(tmp_rejects_truncated_path) {
+    int status = 0;
+    pid_t pid = fork();
+    if (pid == 0) {
+        char path[31];
+        (void)test_tmp(path, sizeof(path),
+                       "same_prefix_with_a_very_long_suffix_a");
+        _exit(0);
+    }
+    ASSERT_TRUE(pid > 0);
+    ASSERT_EQ(test_waitpid_deadline(pid, &status, 5000u), pid);
+    ASSERT_TRUE(WIFSIGNALED(status));
+    ASSERT_EQ(WTERMSIG(status), SIGABRT);
+}
+
+TEST(tmp_truncation_uses_distinct_compact_fallbacks) {
+    char first[32];
+    char second[32];
+    char expected[64];
+    (void)test_tmp(first, sizeof(first),
+                   "same_prefix_with_a_very_long_suffix_a");
+    (void)test_tmp(second, sizeof(second),
+                   "same_prefix_with_a_very_long_suffix_b");
+    ASSERT_TRUE(strcmp(first, second) != 0);
+    snprintf(expected, sizeof(expected), "/tmp/break_8073d8d7_%d",
+             (int)TEST_GETPID());
+    ASSERT_TRUE(strcmp(first, expected) == 0);
+    snprintf(expected, sizeof(expected), "/tmp/break_8173da6a_%d",
+             (int)TEST_GETPID());
+    ASSERT_TRUE(strcmp(second, expected) == 0);
+    snprintf(expected, sizeof(expected), "/tmp/break_x_%d",
+             (int)TEST_GETPID());
+    (void)test_tmp(first, sizeof(first), "x");
+    ASSERT_TRUE(strcmp(first, expected) == 0);
+}
+
+TEST(tmp_rejects_truncated_parent_path) {
+    int status = 0;
+    pid_t pid = fork();
+    if (pid == 0) {
+        char path[32];
+        (void)test_tmp(path, sizeof(path), "parent_with_a_long_suffix/file");
+        _exit(0);
+    }
+    ASSERT_TRUE(pid > 0);
+    ASSERT_EQ(test_waitpid_deadline(pid, &status, 5000u), pid);
+    ASSERT_TRUE(WIFSIGNALED(status));
+    ASSERT_EQ(WTERMSIG(status), SIGABRT);
+}
+
+TEST(tmp_rejects_truncated_backslash_parent_path) {
+    int status = 0;
+    pid_t pid = fork();
+    if (pid == 0) {
+        char path[32];
+        (void)test_tmp(path, sizeof(path), "parent_with_a_long_suffix\\file");
+        _exit(0);
+    }
+    ASSERT_TRUE(pid > 0);
+    ASSERT_EQ(test_waitpid_deadline(pid, &status, 5000u), pid);
+    ASSERT_TRUE(WIFSIGNALED(status));
+    ASSERT_EQ(WTERMSIG(status), SIGABRT);
+}
 #endif
 
 TEST_MAIN_BEGIN()
@@ -388,5 +452,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(waitpid_deadline_invalid_pid_clears_status_without_kill);
     RUN_TEST(read_deadline_returns_byte_from_child);
     RUN_TEST(read_deadline_times_out_when_writer_stalls);
+    RUN_TEST(tmp_rejects_truncated_path);
+    RUN_TEST(tmp_truncation_uses_distinct_compact_fallbacks);
+    RUN_TEST(tmp_rejects_truncated_parent_path);
+    RUN_TEST(tmp_rejects_truncated_backslash_parent_path);
 #endif
 TEST_MAIN_END()

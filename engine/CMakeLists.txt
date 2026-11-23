@@ -6759,6 +6759,19 @@ endif()
         add_test(NAME test_fork_deadline COMMAND test_fork_deadline)
         set_tests_properties(test_fork_deadline PROPERTIES
             LABELS "headless" TIMEOUT 30)
+    else()
+        add_executable(test_tmp_abort tests/test_tmp_abort.c)
+        target_compile_definitions(test_tmp_abort PRIVATE _CRT_SECURE_NO_WARNINGS)
+        add_test(NAME test_tmp_root_overflow
+            COMMAND ${CMAKE_COMMAND}
+                "-DPROBE=$<TARGET_FILE:test_tmp_abort>" -DMODE=root
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_tmp_abort.cmake")
+        add_test(NAME test_tmp_path_overflow
+            COMMAND ${CMAKE_COMMAND}
+                "-DPROBE=$<TARGET_FILE:test_tmp_abort>" -DMODE=tmp
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_tmp_abort.cmake")
+        set_tests_properties(test_tmp_root_overflow test_tmp_path_overflow
+            PROPERTIES LABELS "headless" TIMEOUT 40)
     endif()
 
     # Reload coordinator + profiler bridge focused tests (Task 6). vfs.c,

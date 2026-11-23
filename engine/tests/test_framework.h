@@ -33,7 +33,14 @@ extern int unsetenv(const char *);
 #define TEST_UNSETENV(name) unsetenv(name)
 #endif
 
+static inline void test_tmp_path_truncated(void) {
+    fputs("TEST PATH TRUNCATED\n", stderr);
+    fflush(stderr);
+    abort();
+}
+
 static inline const char *test_tmp(char *buf, size_t cap, const char *name) {
+    int written;
 #if defined(_WIN32)
     const char *tmp = getenv("TEMP");
     if (!tmp || !*tmp) {
@@ -48,10 +55,33 @@ static inline const char *test_tmp(char *buf, size_t cap, const char *name) {
         norm[i] = (tmp[i] == '\\') ? '/' : tmp[i];
     }
     norm[i] = '\0';
-    snprintf(buf, cap, "%s/break_%s_%d", norm, name, (int)TEST_GETPID());
+    if (tmp[i] != '\0') test_tmp_path_truncated();
+    written = snprintf(buf, cap, "%s/break_%s_%d", norm, name, (int)TEST_GETPID());
 #else
-    snprintf(buf, cap, "/tmp/break_%s_%d", name, (int)TEST_GETPID());
+    written = snprintf(buf, cap, "/tmp/break_%s_%d", name, (int)TEST_GETPID());
 #endif
+    if (written < 0) test_tmp_path_truncated();
+    if ((size_t)written < cap) return buf;
+
+    if (strchr(name, '/') || strchr(name, '\\') || cap < 32u)
+        test_tmp_path_truncated();
+    {
+        const unsigned char *p = (const unsigned char *)name;
+        unsigned long hash = 2166136261UL;
+        while (*p) {
+            hash ^= (unsigned long)*p++;
+            hash *= 16777619UL;
+            hash &= 0xffffffffUL;
+        }
+#if defined(_WIN32)
+        written = snprintf(buf, cap, "%s/break_%08lx_%d", norm, hash,
+                           (int)TEST_GETPID());
+#else
+        written = snprintf(buf, cap, "/tmp/break_%08lx_%d", hash,
+                           (int)TEST_GETPID());
+#endif
+    }
+    if (written < 0 || (size_t)written >= cap) test_tmp_path_truncated();
     return buf;
 }
 
@@ -64,6 +94,7 @@ static inline const char *test_tmp_root(void) {
     for (; tmp[i] && i + 1 < sizeof(root); i++)
         root[i] = (tmp[i] == '\\') ? '/' : tmp[i];
     root[i] = '\0';
+    if (tmp[i] != '\0') test_tmp_path_truncated();
     return root;
 #else
     return "/tmp";

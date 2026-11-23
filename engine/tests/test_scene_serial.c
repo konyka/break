@@ -4164,7 +4164,34 @@ TEST(load_json_rejects_oversized_u32_literal)
     remove(path);
 }
 
+TEST(temp_long_names_use_distinct_fallbacks)
+{
+#if defined(_WIN32)
+    char first[1024];
+    char second[1024];
+    char pid_text[16];
+    int pid_digits = snprintf(pid_text, sizeof(pid_text), "%d", (int)TEST_GETPID());
+    size_t cap = strlen(test_tmp_root()) + 17u + (unsigned)pid_digits;
+    const char *first_leaf;
+    const char *second_leaf;
+    if (cap < 32u) cap = 32u;
+    ASSERT_TRUE(cap <= sizeof(first));
+    (void)test_tmp(first, cap, "same_prefix_with_a_very_long_suffix_a");
+    (void)test_tmp(second, cap, "same_prefix_with_a_very_long_suffix_b");
+    first_leaf = strrchr(first, '/');
+    second_leaf = strrchr(second, '/');
+    ASSERT_NOT_NULL(first_leaf);
+    ASSERT_NOT_NULL(second_leaf);
+    ASSERT_TRUE(strncmp(first_leaf + 1, "break_", 6u) == 0);
+    ASSERT_TRUE(strncmp(second_leaf + 1, "break_", 6u) == 0);
+    ASSERT_TRUE(strcmp(first, second) != 0);
+    ASSERT_TRUE(strlen(first) < cap);
+    ASSERT_TRUE(strlen(second) < cap);
+#endif
+}
+
 TEST_MAIN_BEGIN()
+    RUN_TEST(temp_long_names_use_distinct_fallbacks);
     RUN_TEST(bscn_magic_value);
     RUN_TEST(bscn_version);
     RUN_TEST(bscn_header_size);
