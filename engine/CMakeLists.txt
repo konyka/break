@@ -5365,8 +5365,10 @@ endif()
                 "-DNESTED_CTEST_CONFIG=$<CONFIG>"
                 ${_core_app_nested_toolchain_defs}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_ctest_config_contract.cmake)
+        # Five nested configure+build+CTest runs; macOS CI takes 340-570 s
+        # under --parallel 4, so 600 s timed out on two runs.
         set_tests_properties(test_core_app_ctest_config_contract PROPERTIES
-            LABELS "headless;core_app;platform_contract" TIMEOUT 600)
+            LABELS "headless;core_app;platform_contract" TIMEOUT 1200)
     endif()
 
     set(_core_app_lifecycle_fault_library "")

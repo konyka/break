@@ -13481,3 +13481,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD**：两个单元测试先因缺少查询函数编译失败，lane 契约先在旧可执行文件上因不认识开关退出 2 失败（RED）。实现后 `test_audio_voice_processor` **5/5**、`test_core_app_voice` **26/26**、`test_core_app_voice_lane` 通过。首版泵测试选 gate+agc，因测试配置下两者近似直通而与完整链无差异，改为 echo+noise。
 - **变异**：解析表漏掉 gate 或 echo、未知名被忽略、不写入配置、两个查询返回常量、去掉 `--voice` 依赖、无开关也写 trace 八项均判红。
 - **验证**：本地 Vulkan 全量 **462/462**（4 个既有条件 skip，不计为执行通过）、OpenGL 全量 **453/453**，0 失败；`ENGINE_USE_ASAN=ON` 下 `test_audio_voice_processor`、`test_core_app_voice`、`test_core_app_voice_lane` 3/3。`ENGINE_USE_TSAN=ON` 下前两项通过，lane 测试因本机 `ThreadSanitizer: can't find longjmp buf` 在第一次（不带新开关的）运行即中止，与此前在未修改的 `origin/master` 上复现的情况相同；以 CI 的 TSan job 为准。远端结果待推送后核验。
+
+## macOS `test_core_app_ctest_config_contract` 超时上限（2026-11-23）
+
+- **现象**：`macOS native Metal (Clang)` job 中该契约测试两次以 `***Timeout 600.0x sec` 失败（`67379fba` 的 run `45151405061`、`ed6271b3` 的 run `45161464551`），其他 job 与同一提交的 windows-d3d12/Proton 均 success。`ed6271b3` 的日志显示五个嵌套 compat 运行都已通过，失败只是时间耗尽。
+- **根因**：该测试串行执行五次嵌套 configure + build + CTest，且与 `test_core_app_contract_compat` 在 `--parallel 4` 下并行。最近 11 次 CI 的 macOS 耗时为 342–600 s，其中 533–570 s 的运行占多数，600 s 上限没有余量；不是代码回归，本地 Linux 单独运行 148 s。
+- **修改**：只把该测试的 CTest `TIMEOUT` 由 600 改为 1200，并在 `engine/CMakeLists.txt` 注释耗时依据；测试内容、嵌套超时（compat 内 180 s）与 job 的 `timeout-minutes: 45` 不变。之前把 `67379fba` 的失败记为“非复现”，现在有了 job 日志，应归为同一超时原因。
+- **验证**：本地配置后 `CTestTestfile.cmake` 中该测试为 `TIMEOUT "1200"`，单独运行通过（147.91 s）。远端 macOS 耗时与结果待推送后核验。
