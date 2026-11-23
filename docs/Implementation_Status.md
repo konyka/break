@@ -13453,3 +13453,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **变异**：不应用 sinc、不应用淡化均判红；失败路径不销毁对齐器在功能测试中不可见，由 LeakSanitizer 判定：该变异下 ASan 构建报告 7 次分配共 2994 字节泄漏。
 - **验证**：本地 Vulkan 全量 **462/462**（4 个既有条件 skip，不计为执行通过）、OpenGL 全量 **453/453**，0 失败；ASan+UBSan 与 TSan 下 `test_core_app_voice` 均 25/25、无诊断。评审后把末尾断言加强为“独立对齐器已锁定、延迟 20±1 帧”并补充头文件注释与 `core_app_integration.md`，之后重跑 `test_core_app_voice` 25/25。远端结果待推送后核验。
 - **边界**：core_app CLI 与 `app_voice_config` 仍使用默认线性、立即切换模式，未新增命令行开关。
+
+#### 远程同步复审远端收据与一次 macOS Metal 非复现失败（2026-11-23）
+
+- `67379fba`（仅文档：对齐器 `delay` 描述更正与复审记录）：CI run `45151405061` 结论 failure，唯一失败 job 为 `macOS native Metal (Clang)` 的 “Headless + contract tests” 步骤，注释报告 `202:test_core_app_ctest_config_contract` 失败（未认证 API 无法读取 job 日志，具体失败点未知）。windows-d3d12 `45151405157` 与 proton-d3d12 `45151881842` 均 success。
+- 判断为非复现：该提交只改两份 Markdown，而该契约测试不读取这两份文档；前一提交 `2fa5f8f2`（run `45149438128`）与后一提交 `ac3612bb`（run `45152841237`）在同一 job 上均 success；本地 Metal 构建单独连跑两次均通过（各约 310 s，测试 TIMEOUT 600 s）。未定位根因，不声称该测试在 CI 上稳定；若再次出现，需要取得 job 日志后再分析。
+- 合入 `ac3612bb`（core_app 语音配置 `aligner_sinc`/`aligner_crossfade_frames`）后复审：所有 `CoreAppVoiceConfig` 构造点均 memset 清零，默认行为不变；设置失败路径销毁对齐器，无泄漏。本地 Metal 全量 **435/435**、MoltenVK 全量 **438/438**，各 5 项既有条件 skip（不计为执行通过）。
+- 本收据提交自身触发的工作流结果不在此预写。
