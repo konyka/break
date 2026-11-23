@@ -1766,13 +1766,20 @@ cmake -S . -B ../build-core-app-diagnostics \
 cmake --build ../build-core-app-diagnostics --target core_app core_app_crash_record -j2
 ```
 
-以下 record/headless 示例限定三帧，并把本地 spool 放在调用方选择的绝对目录；它不使用显示服务器，也不改变 Linux 仅 Wayland 的平台窗口边界：
+以下 record/headless 示例限定三帧，使用仓库已有的有效场景，并把 trace 与本地 spool 放在构建树内；它不使用显示服务器，也不改变 Linux 仅 Wayland 的平台窗口边界。在上一构建命令后的 `engine/` 目录执行：
 
 ```bash
+work_dir="$(cd .. && pwd)/build-core-app-diagnostics/crash-context-example"
+mkdir -p "$work_dir"
 ../build-core-app-diagnostics/core_app \
   --render=record --audio=record --fixed-step --frames 3 \
-  --crash-context /absolute/path/to/crash-spool
+  --assets assets/core_app \
+  --scenario assets/core_app/deterministic.scenario \
+  --trace "$work_dir/three-frames.trace" \
+  --crash-context "$work_dir/spool"
 ```
+
+正常退出后，trace 包含 `event=runtime_running`、完整 frame 1/2/3 和 `event=runtime_stopped`。
 
 也可写 `--crash-context=/absolute/path/to/crash-spool`。空 DIR、start 失败均在运行前退出 2。启用的顺序为 start → 初始 `gpu=pending` 快照 → `runtime_running` 后 tick 0 → 每个完整 tick 末尾发布 → stop 清 blob 并卸载。正常退出不会生成 pending 崩溃记录；默认未启用时连 spool 布局也不会创建。
 

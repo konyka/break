@@ -262,4 +262,4 @@ ShiningLight 的 `Win64ARMOpenSSL` 安装器（winget id `ShiningLight.OpenSSL.D
 
 当前完整执行的是非 sanitizer 原生 Linux 构建；没有运行 ASan/TSan 插桩后的 full-process 序列。Windows 的 `break_crash_install` 仍返回 false，macOS 及其他非 Linux 平台没有真实 `core_app` 崩溃记录证据。
 
-**尚待主线程执行**：完整默认 Wayland+Vulkan 套件、OpenGL 最终降级/画面对照套件、ASan/UBSan 非图形与 fuzz、相关 TSan、root/default 构建契约、可用 Windows/macOS/arm64 通道及远端 CI。此处没有这些项目的预写成功计数或 run-id。
+**尚待 Task 4 Step 3/4 执行**：完整默认 Wayland+Vulkan 套件、OpenGL 最终降级/画面对照套件、ASan/UBSan 非图形与 fuzz、相关 TSan、root/default 构建契约、可用 Windows/macOS/arm64 通道及远端 CI。此处没有这些项目的预写成功计数或 run-id。
