@@ -807,3 +807,7 @@ BRWD/v1 现在为 ECS World full snapshot 和 delta 提供传输无关的 canoni
 本补充只关闭独立 codec 与 staging 重建缺口，不把既有 BRFG Session bridge 或 AOI drain 宣称为 BRWD 集成。
 
 最终完整 CTest：Vulkan **471 注册、467 执行通过、4 条件 skip、0 失败**；OpenGL **462 注册、458 执行通过、4 条件 skip、0 失败**。五项 focused ASan+UBSan（`detect_leaks=1`）与 TSan 均为 **5/5 CTest、146/146 直接测试**，无诊断；条件 skip 不计执行通过，也不关闭上述集成缺口。
+
+#### World delta wire 远端收据（2026-11-24）
+
+`fc26e099` 的 CI `45382035753`、windows-d3d12 `45382035415`、Proton `45384575836` 均 success，contract 77。此前 `546fc25e` 的 CI 失败是 fuzz 目标未构建的环境配置问题，已由该提交修复。session/ACK/生产启用仍未实现。

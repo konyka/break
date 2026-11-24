@@ -13667,3 +13667,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **覆盖**：`test_world_delta_wire` **21/21**，含真实 4 实体×3 组件 full/delta、单 delta 混合五类记录、宽 u64、空 full、稀疏 full、精确 64 MiB 最大消息与重复 canonical round-trip。deterministic fuzz **2000** 次（accepted 534、rejected 1324、over_limit 142）；Clang libFuzzer **20000 runs**，均无发现。
 - **边界**：本项仅交付 codec、目标重建与验证。Session/bridge/core_app 接线、消息注册、ACK/NACK、重试/恢复、level rebaseline、权威 simulation 应用和生产启用仍未完成；没有新增线程或后台维护。
 - **最终验证**：Vulkan **471 注册、467 执行通过、4 条件 skip、0 失败**；OpenGL **462 注册、458 执行通过、4 条件 skip、0 失败**。五项 focused ASan+UBSan（`detect_leaks=1`）与 TSan 均为 **5/5 CTest、146/146 直接测试**，无 sanitizer/leak/race 诊断；条件 skip 不计执行通过。
+
+### World delta wire codec 验证收据（2026-11-24）
+
+- 最终代码 `546fc25e`，另有 CI 修复 `fc26e099`（把新 fuzz 目标加入显式构建列表）。
+- 本地证据：编解码 **23/23**；fuzz 在 normal、ASan、TSan 下各 2000 次迭代计数一致（534 accepted、1324 rejected、142 over-limit），libFuzzer 20000 次无发现；focused ASan+UBSan 与 TSan 各 5/5、146 个内部测试全过。完整 Vulkan **471** 项注册 **467 通过、4 条件 skip、0 失败**；OpenGL **462** 项注册 **458 通过、4 条件 skip、0 失败**。
+- 评审历史：稀疏实体全量重建、CREATE 乱序、枚举校验、REMOVE 载荷、排序复杂度（改 qsort 并先拒绝超上限 CREATE）均经独立评审提出并修复，复审 approve。
+- 远端：`546fc25e` 首轮 CI `45377890030` 有 4 个 job 失败，均为 fuzz 目标未随显式列表构建导致的 Not Run/libFuzzer 步骤失败，不是代码测试失败；`fc26e099` 修复后 CI `45382035753` success，windows-d3d12 `45382035415` success，Proton `45384575836` success，上游 run-id `45382035415`，device/pipeline contract 均为 77。`546fc25e` 的 windows `45377889620` 与 Proton `45379643109` 亦 success，QUIC `45377889646` success。
+- 边界：session 接线、ACK/恢复和生产启用仍未完成；world session 在后续子项目实现。
