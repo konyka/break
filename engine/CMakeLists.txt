@@ -801,6 +801,7 @@ add_library(break_ecs_replication STATIC
     src/ecs/replication_schema.c
     src/ecs/world_snapshot.c
     src/ecs/world_delta.c
+    src/ecs/world_delta_wire.c
     src/core/log.c)
 set_property(TARGET break_ecs_replication PROPERTY C_STANDARD 11)
 target_include_directories(break_ecs_replication PUBLIC
@@ -6075,6 +6076,7 @@ endif()
         src/ecs/replication_schema.c
         src/ecs/world_snapshot.c
         src/ecs/world_delta.c
+        src/ecs/world_delta_wire.c
         src/network/break_aoi.c
         src/core/log.c
         tests/break_world_delta_test_hooks.c)
@@ -6094,6 +6096,14 @@ endif()
     endif()
     target_link_libraries(test_ecs_replication PRIVATE break_ecs_replication_test)
     add_test(NAME test_ecs_replication COMMAND test_ecs_replication)
+
+    add_executable(test_world_delta_wire tests/test_world_delta_wire.c)
+    target_include_directories(test_world_delta_wire PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_world_delta_wire PRIVATE break_ecs_replication_test)
+    add_test(NAME test_world_delta_wire COMMAND test_world_delta_wire)
+    set_tests_properties(test_world_delta_wire PROPERTIES
+        TIMEOUT 20 LABELS "ecs;replication;wire")
+
     add_test(NAME test_replication_target_contract
         COMMAND ${CMAKE_COMMAND}
             -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
