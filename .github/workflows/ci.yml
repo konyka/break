@@ -191,7 +191,7 @@ jobs:
             fuzz_decode_image fuzz_vfs_pak \
             fuzz_mycompose_tree fuzz_mycompose_intent \
             fuzz_core_app_checkpoint fuzz_core_app_scenario fuzz_core_app_network \
-            fuzz_break_online_voice
+            fuzz_break_online_voice fuzz_world_delta_wire
           ctest --test-dir build -L fuzz --output-on-failure
 
       - name: Emit evidence receipt
@@ -309,7 +309,7 @@ jobs:
       # checked-in samples, so the run is reproducible from the commit alone.
       - name: libFuzzer (ASan/UBSan)
         run: |
-          cmake --build build --parallel --target libfuzz_core_app_network libfuzz_core_app_scenario libfuzz_core_app_checkpoint
+          cmake --build build --parallel --target libfuzz_core_app_network libfuzz_core_app_scenario libfuzz_core_app_checkpoint libfuzz_world_delta_wire
           ctest --test-dir build -L libfuzzer --output-on-failure
 
       - uses: actions/upload-artifact@v6
@@ -594,7 +594,7 @@ jobs:
       # The fuzz targets are EXCLUDE_FROM_ALL; without building them the
       # *_smoke tests report Not Run.
       - name: Build fuzz targets
-        run: cmake --build build --target fuzz_scene_serial fuzz_net_packet fuzz_decode_image fuzz_vfs_pak fuzz_asset_gltf fuzz_mycompose_tree fuzz_mycompose_intent fuzz_core_app_checkpoint fuzz_core_app_scenario fuzz_core_app_network fuzz_break_online_voice --parallel
+        run: cmake --build build --target fuzz_scene_serial fuzz_net_packet fuzz_decode_image fuzz_vfs_pak fuzz_asset_gltf fuzz_mycompose_tree fuzz_mycompose_intent fuzz_core_app_checkpoint fuzz_core_app_scenario fuzz_core_app_network fuzz_break_online_voice fuzz_world_delta_wire --parallel
 
       - name: Test (headless suite)
         env:
@@ -672,7 +672,7 @@ jobs:
         run: cmake --build build --parallel
 
       - name: Build fuzz targets
-        run: cmake --build build --target fuzz_scene_serial fuzz_net_packet fuzz_decode_image fuzz_vfs_pak fuzz_asset_gltf fuzz_mycompose_tree fuzz_mycompose_intent fuzz_core_app_checkpoint fuzz_core_app_scenario fuzz_core_app_network fuzz_break_online_voice --parallel
+        run: cmake --build build --target fuzz_scene_serial fuzz_net_packet fuzz_decode_image fuzz_vfs_pak fuzz_asset_gltf fuzz_mycompose_tree fuzz_mycompose_intent fuzz_core_app_checkpoint fuzz_core_app_scenario fuzz_core_app_network fuzz_break_online_voice fuzz_world_delta_wire --parallel
 
       - name: Test (headless suite)
         env:
