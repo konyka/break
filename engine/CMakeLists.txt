@@ -1005,6 +1005,15 @@ if(BREAK_ENABLE_SNOWFLAKE)
             target_link_libraries(break_net_test PUBLIC break_crypto)
         endif()
     endif()
+
+    # Optional Runtime -> World Session control bridge. Runtime Core remains
+    # transport-neutral; only this opt-in target owns the ECS/network edge.
+    add_library(runtime_world_session STATIC
+        src/runtime/runtime_world_session.c)
+    set_property(TARGET runtime_world_session PROPERTY C_STANDARD 11)
+    target_include_directories(runtime_world_session PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(runtime_world_session PUBLIC runtime_core break_net)
 endif()
 
 # Product build identity: short git hash baked into break_version.c (engine)
@@ -7183,6 +7192,38 @@ endif()
         add_test(NAME test_world_session_loopback COMMAND test_world_session_loopback)
         set_tests_properties(test_world_session_loopback PROPERTIES
             TIMEOUT 60 LABELS "ecs;replication;session;wire;recovery;loopback")
+
+        add_library(runtime_world_session_test STATIC EXCLUDE_FROM_ALL
+            src/runtime/runtime_world_session.c)
+        set_property(TARGET runtime_world_session_test PROPERTY C_STANDARD 11)
+        target_include_directories(runtime_world_session_test PUBLIC
+            ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_link_libraries(runtime_world_session_test PUBLIC
+            runtime_core_test break_net_test break_ecs_replication_test)
+        add_executable(test_runtime_world_session tests/test_runtime_world_session.c
+            src/core/log.c src/core/profiler.c src/platform/time.c)
+        target_include_directories(test_runtime_world_session PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+        if(ENGINE_PLATFORM STREQUAL "linux")
+            target_compile_definitions(test_runtime_world_session PRIVATE
+                ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+            target_link_libraries(test_runtime_world_session PRIVATE pthread m)
+        elseif(ENGINE_PLATFORM STREQUAL "windows")
+            target_compile_definitions(test_runtime_world_session PRIVATE
+                ENGINE_PLATFORM_WINDOWS=1)
+            target_link_libraries(test_runtime_world_session PRIVATE kernel32)
+        endif()
+        target_link_libraries(test_runtime_world_session PRIVATE runtime_world_session_test)
+        add_test(NAME test_runtime_world_session COMMAND test_runtime_world_session)
+        set_tests_properties(test_runtime_world_session PROPERTIES
+            TIMEOUT 60 LABELS "headless;runtime_core;ecs;replication;session")
+        add_test(NAME test_runtime_world_session_target_contract
+            COMMAND ${CMAKE_COMMAND}
+                -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+                -DADAPTER_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/runtime/runtime_world_session.c
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_runtime_world_session_target_contract.cmake)
+        set_tests_properties(test_runtime_world_session_target_contract PROPERTIES
+            LABELS "headless;runtime_core;platform_contract")
 
         add_executable(test_break_online_aspect_session_link
             tests/test_break_online_aspect_session_link.c)
