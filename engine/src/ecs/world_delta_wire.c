@@ -66,8 +66,17 @@ static BreakWorldDeltaWireResult validate_header(const BreakWorldDeltaWire *mess
 
 static BreakWorldDeltaWireResult validate_record(const BreakWorldDeltaWire *message,
                                                   const BreakWorldDeltaRecord *record) {
-    if (!record || entity_handle(record->entity) == 0u ||
-        record->kind > BREAK_DELTA_COMPONENT_UPDATE) {
+    if (!record || entity_handle(record->entity) == 0u) {
+        return BREAK_WORLD_DELTA_WIRE_INVALID;
+    }
+    switch (record->kind) {
+    case BREAK_DELTA_ENTITY_CREATE:
+    case BREAK_DELTA_ENTITY_DESTROY:
+    case BREAK_DELTA_COMPONENT_ADD:
+    case BREAK_DELTA_COMPONENT_REMOVE:
+    case BREAK_DELTA_COMPONENT_UPDATE:
+        break;
+    default:
         return BREAK_WORLD_DELTA_WIRE_INVALID;
     }
     if (message->kind == BREAK_WORLD_DELTA_WIRE_FULL &&
@@ -253,11 +262,30 @@ static bool register_schema_components(World *world,
     return true;
 }
 
-static Entity create_full_entity(World *world, Entity expected) {
+static bool push_placeholder(Entity **items, u32 *count, u32 *capacity, Entity entity) {
+    Entity *grown;
+    if (*count == *capacity) {
+        u32 next = *capacity == 0u ? 8u : *capacity * 2u;
+        grown = (Entity *)realloc(*items, next * sizeof(*grown));
+        if (!grown) return false;
+        *items = grown;
+        *capacity = next;
+    }
+    (*items)[(*count)++] = entity;
+    return true;
+}
+
+static Entity create_full_entity(World *world, Entity expected,
+                                 Entity **placeholders, u32 *count, u32 *capacity) {
     Entity created;
     if (expected.index == 0u || expected.generation == 0u) return ENTITY_NULL;
-    created = world_create_entity(world);
-    if (created.index != expected.index) return ENTITY_NULL;
+    for (;;) {
+        created = world_create_entity(world);
+        if (created.index == 0u && created.generation == 0u) return created;
+        if (created.index > expected.index) return ENTITY_NULL;
+        if (created.index == expected.index) break;
+        if (!push_placeholder(placeholders, count, capacity, created)) return ENTITY_NULL;
+    }
     if (created.generation != expected.generation) {
         world_destroy_entity(world, created);
         world->entities[created.index].generation = expected.generation - 1u;
@@ -267,6 +295,34 @@ static Entity create_full_entity(World *world, Entity expected) {
         return ENTITY_NULL;
     }
     return created;
+}
+
+static bool create_entities(World *world, const BreakWorldDeltaWire *message, bool full) {
+    Entity *placeholders = NULL;
+    u32 count = 0u;
+    u32 capacity = 0u;
+    bool ok = true;
+    for (u32 i = 0u; i < message->record_count && ok; ++i) {
+        const BreakWorldDeltaRecord *record = &message->records[i];
+        Entity created;
+        if (record->kind != BREAK_DELTA_ENTITY_CREATE) continue;
+        if (record->entity.index == 0u || record->entity.generation == 0u) {
+            ok = false;
+            break;
+        }
+        created = full ? create_full_entity(world, record->entity, &placeholders,
+                                            &count, &capacity)
+                       : world_create_entity(world);
+        if (created.index != record->entity.index ||
+            created.generation != record->entity.generation) {
+            ok = false;
+        }
+    }
+    for (u32 i = 0u; i < count; ++i) {
+        world_destroy_entity(world, placeholders[i]);
+    }
+    free(placeholders);
+    return ok;
 }
 
 static bool apply_records(World *world, const BreakWorldDeltaWire *message, bool full) {
@@ -279,17 +335,7 @@ static bool apply_records(World *world, const BreakWorldDeltaWire *message, bool
         }
         world_destroy_entity(world, record->entity);
     }
-    for (u32 i = 0u; i < message->record_count; ++i) {
-        const BreakWorldDeltaRecord *record = &message->records[i];
-        Entity created;
-        if (record->kind != BREAK_DELTA_ENTITY_CREATE) continue;
-        if (record->entity.index == 0u || record->entity.generation == 0u) return false;
-        created = full ? create_full_entity(world, record->entity) : world_create_entity(world);
-        if (created.index != record->entity.index ||
-            created.generation != record->entity.generation) {
-            return false;
-        }
-    }
+    if (!create_entities(world, message, full)) return false;
     for (u32 i = 0u; i < message->record_count; ++i) {
         const BreakWorldDeltaRecord *record = &message->records[i];
         void *component;
@@ -312,8 +358,10 @@ static bool apply_records(World *world, const BreakWorldDeltaWire *message, bool
         if (record->kind == BREAK_DELTA_COMPONENT_ADD) {
             if (world_get_component(world, record->entity, record->component)) return false;
             component = world_add_component(world, record->entity, record->component);
-        } else {
+        } else if (record->kind == BREAK_DELTA_COMPONENT_UPDATE) {
             component = world_get_component(world, record->entity, record->component);
+        } else {
+            return false;
         }
         if (!component) return false;
         memcpy(component, record->bytes, record->size);

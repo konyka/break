@@ -110,3 +110,23 @@ TSAN_OPTIONS=halt_on_error=1
 ```
 
 Result: the same 4/4 CTest entries and 86 inner tests passed with no TSan report.
+
+## Independent review (agent-428) fixes
+
+Verdict was needs changes: full rebuild rejected valid sparse snapshots.
+
+- create_full_entity now fills index gaps with temporary placeholder entities,
+  then destroys them after all creates, so live indices like {1,1} and {3,1}
+  rebuild correctly. Regression test
+  world_delta_wire_full_rebuilds_sparse_entity_indices builds live indices 1,3
+  and asserts the rebuilt snapshot id matches. A mutation that rejects any
+  placeholder turns it red (16/17), restored to 17/17.
+- Record kind validation is now a switch with a default rejection, and the apply
+  branch only accepts COMPONENT_UPDATE explicitly, so negative enum values are
+  rejected on signed-enum targets (world_delta_wire_rejects_negative_record_kind).
+- Added world_delta_wire_rejects_remove_record_with_payload covering a REMOVE
+  record with nonzero byte_size on both decode and encode paths.
+- Final: new suite 17/17; ECS 35/35, bridge 19/19, aspect session 12/12,
+  session 43/43, wire 9/9, fragment 28/28. Focused ASan+UBSan (detect_leaks=1)
+  and TSan each pass 4/4: world_delta_wire, ecs_replication,
+  break_replication_session, break_replication_fragment, no diagnostics.
