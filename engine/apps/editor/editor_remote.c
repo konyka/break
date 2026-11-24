@@ -1064,7 +1064,7 @@ BreakEditorRemote *break_editor_remote_create(
     BreakEditorRemote *r;
     const char *host;
     BreakSessionConfig session_config;
-    BreakNetReactorConfig reactor_config;
+    BreakNetReactorConfig reactor_config = {0};
     static const u16 k_handler_ids[] = {
         BREAK_EDITOR_MSG_DESCRIBE, BREAK_EDITOR_MSG_LIST,
         BREAK_EDITOR_MSG_SPAWN,    BREAK_EDITOR_MSG_REMOVE,

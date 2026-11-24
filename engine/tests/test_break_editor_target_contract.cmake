@@ -354,3 +354,11 @@ endif()
 if(NOT cmake_text MATCHES "target_link_libraries\\(test_editor_shell PRIVATE runtime_core_test\\)")
     message(FATAL_ERROR "test_editor_shell must link runtime_core_test for the hot-reload coordinator")
 endif()
+
+
+get_filename_component(editor_engine_source_dir "${ENGINE_CMAKE}" DIRECTORY)
+file(READ "${editor_engine_source_dir}/apps/editor/editor_remote.c" editor_remote_source)
+if(NOT editor_remote_source MATCHES "BreakNetReactorConfig reactor_config = \\{0\\};")
+    message(FATAL_ERROR
+        "editor_remote must zero-initialize BreakNetReactorConfig before field writes (fair_outbound_admission must be false)")
+endif()
