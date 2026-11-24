@@ -786,3 +786,7 @@ fix 后 normal、ASan+UBSan/LSan、TSan focused 均为 wire **9/9**、旧 fragme
 - **level rebaseline** 与跨 level 代际策略未实现。
 - **可靠恢复**（丢包重试、断线恢复、持久高水位）未实现。
 - editor 接线、完整资产链、远端和其他平台验收不在本项；core_app TSan 的 Lua 环境限制也未在本项修复。
+
+#### core_app aspect 复制远端收据（2026-11-24）
+
+`146b9dcb` 的 CI `45353129203`、windows-d3d12 `45353129052`、QUIC `45353129051`、Proton `45355543355` 均 success，Proton device/pipeline contract 均为 77，上游 run-id `45353129052`。inbound 仍为诊断专用，World delta wire、inbound 到 simulation 与可靠恢复未实现。

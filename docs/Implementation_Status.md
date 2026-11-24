@@ -13648,3 +13648,12 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 ### core_app aspect 完整后端验证（2026-11-24）
 
 最终完整 CTest 均在文档恢复后从头执行：Vulkan 注册 **481** 项，**477 执行通过、4 条件 skip、0 失败**（582.98 s）；OpenGL 注册 **472** 项，**468 执行通过、4 条件 skip、0 失败**（547.97 s）。两套 skip 均为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计为执行通过。初次命名门禁与文档追加方式造成的中间失败均已单独记录并重跑，不以单次局部复测冒充完整通过。
+
+### core_app aspect 复制接入验证收据（2026-11-24）
+
+- 最终推送 `146b9dcb`（含 spec、transport、重复 sync 测试加固、loopback 与文档、重复抑制强化）。
+- 本地证据：core_app network **12/12**、lifecycle **12/12**、transport **11/11**、bridge **19/19**、aspect session **12/12**、link **1/1**、session **43/43**、wire **9/9**、fragment **28/28**。完整 Vulkan **481** 项注册 **477 通过、4 条件 skip、0 失败**；OpenGL **472** 项注册 **468 通过、4 条件 skip、0 失败**。ASan+UBSan focused **9/9**；TSan 直接相关 **7/7** 加 TSan 客户端 loopback **1/1**，另两个场景命中既有 Lua `longjmp buf` 环境问题，已单独标注，未算作通过。
+- loopback：有效分片 3、重复 1、schema 不匹配 3；服务端 `applied=1 rejected=1 drained=2 queue_depth=0 dropped=0 duplicates=1 pending_bytes=0`，重复片在完成前发送以命中重复抑制。移除 0x4009 handler 后 0/1，恢复后 1/1。非 aspect 模式不出现 `network_aspect_stats`。
+- 整分支独立评审 approve，仅重复覆盖一处测试强化，随后已补测通过。
+- 远端：CI run `45353129203` success，windows-d3d12 run `45353129052` success，QUIC run `45353129051` success，Proton run `45355543355` success，上游 run-id `45353129052`，device/pipeline contract 均为 77。
+- 边界：World delta 编解码与恢复、inbound 回写 simulation、level rebaseline 仍未完成；World delta wire 在后续子项目实现。
