@@ -13747,3 +13747,12 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **真实验收**：两个认证 socket 交错接收共享 S1/S2/S3，A OVERLOAD 不妨碍 B，A 延迟 ACK/NEED_FULL 不改变 B 的 delta，B 未 ACK S2 时 S3 仍以 S2 为 base，drain 前 World 不变。7→8 后旧 lease 可读但不能发布，新代两连接都 full。level 校验变异的 RED 为 3/4，恢复后的 loopback 为 4/4，`engine/src` 无残留 diff。
 - **本地验证**：普通 library 13/13、core_app 26/26，14 个直接二进制合计 300/300；ASan+UBSan（显式 `detect_leaks=1`）同样 13/13、26/26。TSan library 13/13，真实 loopback 4/4；core_app 进程组 3/26，其余 23 项均走既有 Lua longjmp 环境失败，未记为通过。normal server + TSan client 的 World hybrid 通过，但不覆盖 TSan server，也不构成完整 sanitizer suite。
 - **仍然开放**：跨连接共享 live World、权威 simulation 合并、Runtime Core 映射、自动换级和完整资产链未实现；共享 publication_epoch 不进入 wire，也不是持久身份。本节不预写推送、CI、Windows、Proton 或其他远端结果，历史收据保持不变。
+
+
+## Legacy 发布兼容与 opt-in admission 修正（2026-11-25）
+
+- **中间结果澄清**：上一节所述 loopback **4/4** 和直接测试 **300/300** 是 adapter 公平修复之前的中间轮次计数，不是当前或最终 HEAD 的验收收据；后续 fix round 的 RED/GREEN、变异和 sanitizer 记录以 `task-3-report.md` 的追加日志为准。最终全量结果须在最终全量实际完成后另行记录，本节不预写。
+- **legacy 兼容**：旧 `break_world_session_publish` 在首 full 未 ACK 和 NEED_FULL 后恢复同 tick fresh full，delta 仍要求严格递增 tick；新 snapshot API 对非递增 full 继续拒绝。新增两个 recovery 回归覆盖这些差异。
+- **admission 兼容**：`fair_outbound_admission` 位于 config 尾部，默认 false 保持全局 256；显式 true 才按活跃身份数分配 `max(1,256/max(1,active_count))`。closing 未 retired 占份额，unknown key 不计 active 但按 key queued，late join 不驱逐旧消息，global full 等 drain，FIFO/ownership 不变。双连接 fixture 显式启用；adapter 直接测试覆盖默认、late join、closing/retire、unknown/global-full。
+- **公共契约**：publication 头明确 publish/close single-owner、acquire 可并发、destroy 前先 close 并停止并发 API，以及 immutable snapshot lease 在 replace/close/destroy 后仍可读取并延迟 release。
+- **边界**：本轮没有实现默认全局公平调度，也不处理其他 deferred 测试增强；共享 live World、权威合并、Runtime Core 映射和完整资产链仍开放，不预写远端结果。

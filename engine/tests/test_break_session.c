@@ -451,7 +451,7 @@ TEST(break_session_applies_adapter_lifecycle_without_taking_payload_ownership)
 TEST(break_session_polls_adapter_and_dispatches_auth_phase)
 {
     BreakSessionConfig config = {0};
-    BreakNetReactorConfig reactor_config = {BREAK_NET_DRIVE_STEP, 0, 4u, 0, 0u, 0u};
+    BreakNetReactorConfig reactor_config = {BREAK_NET_DRIVE_STEP, 0, 4u, 0, 0u, 0u, false};
     BreakSessionManager *manager = break_session_manager_create(&config);
     BreakNetReactor *reactor = break_net_reactor_create(&reactor_config);
     const unsigned char auth_payload = 0x01u;
@@ -478,7 +478,7 @@ TEST(break_session_polls_adapter_and_dispatches_auth_phase)
 TEST(break_session_stale_close_watermark_rejects_queued_message)
 {
     BreakSessionConfig config = {0};
-    BreakNetReactorConfig reactor_config = {BREAK_NET_DRIVE_STEP, 0, 4u, 0, 0u, 0u};
+    BreakNetReactorConfig reactor_config = {BREAK_NET_DRIVE_STEP, 0, 4u, 0, 0u, 0u, false};
     BreakSessionManager *manager = break_session_manager_create(&config);
     BreakNetReactor *reactor = break_net_reactor_create(&reactor_config);
     const unsigned char auth_payload = 0x02u;
@@ -791,7 +791,7 @@ TEST(break_session_rejects_public_registry_count_out_of_bounds)
 TEST(break_session_poll_is_low_level_close_finalization)
 {
     BreakSessionConfig config = {0};
-    BreakNetReactorConfig reactor_config = {BREAK_NET_DRIVE_STEP, 0, 4u, 0, 0u, 0u};
+    BreakNetReactorConfig reactor_config = {BREAK_NET_DRIVE_STEP, 0, 4u, 0, 0u, 0u, false};
     BreakSessionManager *manager = break_session_manager_create(&config);
     BreakNetReactor *reactor = break_net_reactor_create(&reactor_config);
 
@@ -873,7 +873,7 @@ TEST(break_session_wire_auth_reaches_handler_and_sends_response)
 {
     BreakSessionConfig session_config = {0};
     BreakNetReactorConfig reactor_config = {BREAK_NET_DRIVE_THREAD, 0, 4u,
-                                             1000, 1000u, 10u};
+                                             1000, 1000u, 10u, false};
     BreakSessionWireHandlerState handler_state = {0};
     BreakNetEnvelope auth = break_test_envelope(
         BREAK_NET_PROTOCOL_VERSION, BREAK_NET_MESSAGE_ID_AUTH, 0u, 1u,
@@ -1328,7 +1328,7 @@ static void break_session_auth_fixture_close(BreakSessionAuthFixture *fixture)
 static bool break_session_auth_fixture_open(BreakSessionAuthFixture *fixture)
 {
     BreakNetReactorConfig reactor_config = {BREAK_NET_DRIVE_STEP, 0, 4u,
-                                             1000, 1000u, 1u};
+                                             1000, 1000u, 1u, false};
     BreakSessionConfig session_config = {0};
     uint8_t challenge_wire[BREAK_NET_ENVELOPE_HEADER_SIZE + 16u];
     BreakNetEnvelope challenge = {0};
@@ -1540,7 +1540,7 @@ TEST(break_session_challenge_client_helper_answers_auth_v2)
 {
     BreakSessionAuthKeys keys = {true};
     BreakNetReactorConfig reactor_config = {BREAK_NET_DRIVE_STEP, 0, 4u,
-                                             1000, 1000u, 1u};
+                                             1000, 1000u, 1u, false};
     BreakSessionConfig session_config = {0};
     BreakNetReactor *reactor = NULL;
     BreakSessionManager *manager = NULL;
@@ -1597,7 +1597,7 @@ TEST(break_session_challenge_auth_reply_echoes_correlation_id)
 {
     BreakSessionAuthKeys keys = {true};
     BreakNetReactorConfig reactor_config = {BREAK_NET_DRIVE_STEP, 0, 4u,
-                                             1000, 1000u, 1u};
+                                             1000, 1000u, 1u, false};
     BreakSessionConfig session_config = {0};
     BreakNetReactor *reactor = NULL;
     BreakSessionManager *manager = NULL;
@@ -1872,7 +1872,7 @@ TEST(break_session_reopen_on_closed_key_rebinds_with_fresh_id)
      * the key of a finished one: OPENED on a CLOSED entry is a new session
      * (fresh id, NEW), while OPENED on a CLOSING entry stays stale. */
     BreakSessionConfig config = {0};
-    BreakNetReactorConfig reactor_config = {BREAK_NET_DRIVE_STEP, 0, 4u, 0, 0u, 0u};
+    BreakNetReactorConfig reactor_config = {BREAK_NET_DRIVE_STEP, 0, 4u, 0, 0u, 0u, false};
     BreakSessionManager *manager = break_session_manager_create(&config);
     BreakNetReactor *reactor = break_net_reactor_create(&reactor_config);
     BreakSessionId first_id;

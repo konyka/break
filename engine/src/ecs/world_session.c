@@ -730,7 +730,7 @@ static bool world_session_history_would_exceed(const BreakWorldSession *session,
 
 static bool world_session_build_attempt_from_snapshot(
     BreakWorldSession *session, BreakWorldSessionConnection *connection,
-    BreakWorldSnapshot *target, u64 level_generation)
+    BreakWorldSnapshot *target, u64 level_generation, bool strict_tick)
 {
     BreakWorldSessionAttempt *attempt = &connection->attempt;
     const BreakWorldSnapshot *base = NULL;
@@ -746,7 +746,8 @@ static bool world_session_build_attempt_from_snapshot(
     base = connection->history_count != 0u
                ? connection->history[connection->history_count - 1u].target
                : connection->confirmed;
-    if (base && break_world_snapshot_tick(target) <= break_world_snapshot_tick(base)) {
+    if (base && break_world_snapshot_tick(target) <= break_world_snapshot_tick(base) &&
+        (strict_tick || !full)) {
         goto invalid;
     }
     if (!full) {
@@ -845,7 +846,7 @@ BreakNetSendResult break_world_session_publish(BreakWorldSession *session,
     if (!world) return BREAK_NET_SEND_INVALID;
     owned = break_world_snapshot_build(world, session->schemas, tick);
     if (!world_session_build_attempt_from_snapshot(session, state, owned,
-                                                   session->level_generation)) {
+                                                   session->level_generation, false)) {
         return BREAK_NET_SEND_INVALID;
     }
     return world_session_resume_attempt(session, state);
@@ -863,7 +864,8 @@ BreakNetSendResult break_world_session_publish_snapshot(
     state = &session->connections[slot];
     if (state->attempt.active) return world_session_resume_attempt(session, state);
     break_world_snapshot_retain(target);
-    if (!world_session_build_attempt_from_snapshot(session, state, target, level_generation)) {
+    if (!world_session_build_attempt_from_snapshot(session, state, target, level_generation,
+                                                   true)) {
         return BREAK_NET_SEND_INVALID;
     }
     return world_session_resume_attempt(session, state);

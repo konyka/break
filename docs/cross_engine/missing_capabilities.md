@@ -907,3 +907,12 @@ World session 对每连接 retain borrowed target，full/delta、confirmed/histo
 - **权威与 Runtime 集成**：权威 simulation 合并、Runtime Core 消息映射、跨 World 持久身份、预测回滚和 authority handoff 未实现。
 - **流式与资产链**：自动换级、资产选择/加载、schema online migration 和完整资产依赖链未实现；publication_epoch 不进入 BRWD/BRWC。
 - **验收边界**：focused normal/ASan+UBSan 各 39/39，TSan library/server-socket 13/13；core_app 的既有 Lua longjmp 与混合 TSan 不覆盖服务端的限制不变。完整 sanitizer suite、远端和其他平台结果不在本追加中预写。
+
+
+## 第 17 节补充（2026-11-25）：公平背压与 legacy 兼容边界
+
+outbound 每 key 公平配额现在是显式 opt-in，而不是默认全局能力。`fair_outbound_admission=false` 保持旧全局 256；true 时才使用 `share=max(1,256/max(1,active_count))`，active 为 `valid && key!=0 && !retired` 且 closing 未退休仍计入。key 达份额或全局满均拒绝；unknown key 不占 active 但按自己的 queued 检查。late join 不驱逐旧消息，global full 必须等 drain，退休后才恢复份额，FIFO 与 ownership 不变。
+
+World session 的旧 API 保留 full tick 兼容：首 full 未 ACK 或 NEED_FULL 后可同 tick fresh full，delta 非递增仍拒绝；borrowed snapshot API 的 full 准入仍严格。publication 公共头已补 single-owner、并发 acquire、destroy 前置和 lease 晚于 publication 的生命期说明。
+
+这些修正不关闭其他能力缺口：默认全局公平调度未迁移，跨连接共享 live World、权威 simulation 合并、Runtime Core 映射、自动换级和完整资产链仍未实现。此前 loopback 4/4、direct 300/300 仅是中间轮次，不是最终 HEAD 全量证明；最终全量与远端结果不在本追加中预写。

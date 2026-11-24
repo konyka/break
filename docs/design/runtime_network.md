@@ -482,3 +482,14 @@ publish 在替换 current 前原子检查 schema/tick/level/closed/epoch；同 l
 真实双 socket/AUTH 验收通过有界 reactor/Session dispatch 交错收片，未直接注入 completion。A 的队列 OVERLOAD 不阻断 B，A 的 NEED_FULL 不改变 B 的 delta 基线，B 的 S2 未确认时 S3 仍基于 S2；两个接收 World 只在各自 drain 后变化。7→8 换代使旧 lease 不可发布但不影响其只读生命期，两个连接的新代首包均为 full。focused normal 与 ASan+UBSan/LSan 均 39/39，TSan 的 library/server socket 组为 13/13；core_app TSan 的既有 Lua longjmp 和混合客户端证据另列，不扩展为完整服务端 sanitizer 结论。
 
 Runtime Core 消息映射仍未实现，CoreAppThread 诊断 drain 也没有变成权威合并。跨连接共享的是 immutable snapshot，不是 live `World *`；共享 live World、多写入者仲裁、权威 simulation 合并、自动资产选择/加载和完整资产链继续开放。本节不预写远端结果。
+
+
+## 补充（2026-11-25）：可配置 outbound admission 兼容边界
+
+动态每连接配额不再是默认全局迁移。`BreakNetReactorConfig.fair_outbound_admission` 位于 config 尾部，默认 false 时只使用旧的全局 256 限制；显式 true 时才在 `queue_mutex` 内分别做一次有界 identity 和 outbound 扫描，计算 `share=max(1,256/max(1,active_count))`。active 严格为 `valid && key!=0 && !retired`，closing 未 retired 仍占份额。key queued 达份额即拒绝，全局满也拒绝；unknown key 不增加 active_count，但仍按相同 key queued 检查。
+
+late join 会动态缩小份额，已排队旧消息不驱逐，超过新份额的旧 key 暂停新准入直到 drain；若全局已满，即使 sender 未达自身份额也返回 OVERLOAD。退休后 active_count 相应下降，剩余身份可恢复更大份额。队列总容量、drain 扫描、每 key FIFO、payload 深拷贝与释放责任不变。
+
+直接 adapter 测试使用真实 socket、硬 RST、slot 复用重连和既有 outbound ownership seam，覆盖默认 false、late join 旧消息保留、closing 未退休占份额及退休后恢复、unknown key 和 global full，不通过伪造状态 getter 代替生命周期。World 双连接 fixture 显式 opt-in，默认 core_app/raw-key 配置不变。
+
+legacy World API 的 full tick 规则也保持兼容：未 ACK full 与 NEED_FULL fresh full 可复用 tick，只有 delta 要求递增；borrowed snapshot API 的 full/delta 准入仍严格。publication 的 single-owner/acquire/destroy/lease 线程与生命期合同已写入公共头。本节不构成默认全局公平调度或最终全量验收声明。

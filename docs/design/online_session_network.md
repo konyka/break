@@ -217,3 +217,12 @@ World session 可在不关闭认证传输的情况下显式提升 level generati
 新增两个真实 raw TCP/AUTH 连接交错接收同一 S1/S2/S3 的分片。A 先因真实 outbound queue 饱和进入 OVERLOAD，B 仍能发布；A 延迟 ACK 并发送 NEED_FULL 后只有 A 收到 full，B 正常收到 S1→S2 delta。B 不 ACK S2 时，S3 明确以 S2 为 base；独立 inbound completion 在 drain 前不改变两个 World。level 7→8 后旧 S1 lease 可读且发布被拒，新代两连接都 full。临时删除 target level 校验使该真实用例降为 3/4，恢复后为 4/4且生产源码无残留 diff。
 
 普通与 ASan+UBSan（`detect_leaks=1`）的 library/core_app focused 各为 13/13、26/26；TSan library 13/13。core_app 进程组仍有既有 Lua longjmp 环境失败，normal server + TSan client 的混合 loopback 不覆盖 TSan server。共享 live World、权威 simulation 合并、Runtime Core 映射和完整资产链仍未交付，本追加不预写远端或其他平台验收。
+
+
+## 补充（2026-11-25）：认证连接公平发送保持 opt-in
+
+认证 Session 的默认 outbound 语义保持原样：任何 key 都可使用全局 256 项直到满员。只有调用方在 `BreakNetReactorConfig` 显式设置 `fair_outbound_admission=true`，才启用 `share=max(1,256/max(1,active_count))` 的每 key 配额。active 包含所有 `valid && key!=0 && !retired` 身份，closing 未退休不释放份额；unknown key 不算 active，但仍按自身 queued 计数。key 达份额和全局满分别独立触发 OVERLOAD。
+
+late join 不驱逐超出新份额的旧消息，global full 等 drain；退休后才恢复份额。FIFO、消息 ownership 和认证 phase 均未改变。真实双连接 World fixture 显式开启该选项，A 饱和时 B 仍可发布；adapter 默认/fair 边界测试覆盖 late join、closing/retire、unknown 和 global full，其他现有配置保持默认 false。
+
+World 发布兼容也明确分层：legacy `break_world_session_publish` 在首 full 未 ACK 或 NEED_FULL 后允许同 tick fresh full，delta 仍拒绝非递增 tick；borrowed `break_world_session_publish_snapshot` 对 full 同样执行严格非递增拒绝。新增 recovery 覆盖两种 full 和两种 strict 路径，未增加公共 admission 模式。publication 公共头现明确 owner/acquire/destroy/lease 契约。本追加不预写最终全量或远端结果。

@@ -190,7 +190,7 @@ static void test_store_u64(u8 *out, u64 value)
 
 static bool test_reactor_start(AspectReactorFixture *fixture)
 {
-    BreakNetReactorConfig config = {BREAK_NET_DRIVE_STEP, 0, 4u, 1000, 1000u, 1u};
+    BreakNetReactorConfig config = {BREAK_NET_DRIVE_STEP, 0, 4u, 1000, 1000u, 1u, false};
     SnowEndpoint *endpoint = NULL;
     memset(fixture, 0, sizeof(*fixture));
     if (SnowEndpointCreate(&endpoint) != SNOW_OK ||

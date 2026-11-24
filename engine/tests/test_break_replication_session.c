@@ -718,7 +718,7 @@ typedef struct TestReactorFixture {
 
 static bool test_reactor_start(TestReactorFixture *fixture)
 {
-    BreakNetReactorConfig config = {BREAK_NET_DRIVE_STEP, 0, 4u, 1000, 1000u, 1u};
+    BreakNetReactorConfig config = {BREAK_NET_DRIVE_STEP, 0, 4u, 1000, 1000u, 1u, false};
     SnowEndpoint *endpoint = NULL;
     memset(fixture, 0, sizeof(*fixture));
     if (SnowEndpointCreate(&endpoint) != SNOW_OK ||
@@ -1306,7 +1306,7 @@ TEST(bridge_send_propagates_reactor_closed_overload_and_caller_retry)
 {
     uint64_t now = 0u;
     BreakReplicationSessionBridgeConfig config = test_bridge_config(&now);
-    BreakNetReactorConfig reactor_config = {BREAK_NET_DRIVE_STEP, 0, 4u, 0, 0u, 0u};
+    BreakNetReactorConfig reactor_config = {BREAK_NET_DRIVE_STEP, 0, 4u, 0, 0u, 0u, false};
     BreakNetReactor *closed_reactor = break_net_reactor_create(&reactor_config);
     BreakReplicationSessionBridge *bridge;
     BreakReplicationFragment fragment = test_outbound_fragment();
@@ -1519,7 +1519,7 @@ TEST(bridge_rebaseline_preserves_keys_and_drops_old_completions)
     static const char new_payload[] = "new-data";
     uint64_t now = 100u;
     BreakReplicationSessionBridgeConfig config = test_bridge_config(&now);
-    BreakNetReactorConfig reactor_config = {BREAK_NET_DRIVE_STEP, 0, 4u, 0, 0u, 0u};
+    BreakNetReactorConfig reactor_config = {BREAK_NET_DRIVE_STEP, 0, 4u, 0, 0u, 0u, false};
     BreakNetReactor *reactor = break_net_reactor_create(&reactor_config);
     BreakReplicationSessionBridge *bridge;
     BreakReplicationFragment *pending = NULL;

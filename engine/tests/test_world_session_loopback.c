@@ -134,7 +134,7 @@ static bool auth_handler(BreakConnectionKey connection, const BreakNetOwnedMessa
 
 static bool reactor_start(SocketFixture *fixture)
 {
-    BreakNetReactorConfig config = {BREAK_NET_DRIVE_STEP, 0, 4u, 1000, 1000u, 1u};
+    BreakNetReactorConfig config = {BREAK_NET_DRIVE_STEP, 0, 4u, 1000, 1000u, 1u, true};
     SnowEndpoint *endpoint = NULL;
     if (SnowEndpointCreate(&endpoint) != SNOW_OK ||
         SnowEndpointSetHost(endpoint, "127.0.0.1") != SNOW_OK ||

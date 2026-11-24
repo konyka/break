@@ -6,6 +6,12 @@
 extern "C" {
 #endif
 
+/* publish/close are single-owner operations. acquire may run concurrently with
+ * other acquire calls and the owner's publish/close. destroy requires a prior
+ * close and no concurrent publication API calls. Published snapshots must be
+ * immutable. Each lease owns an independent snapshot reference and remains
+ * readable after replace, close, or publication destruction; lease_release may
+ * run after the publication is destroyed. */
 typedef struct BreakWorldSnapshotPublication BreakWorldSnapshotPublication;
 
 typedef struct {

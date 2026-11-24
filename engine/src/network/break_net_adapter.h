@@ -25,6 +25,17 @@ typedef struct BreakNetReactorConfig {
     int empty_connection_timeout_ms;
     uint32_t watchdog_interval_ms;
     uint32_t step_timeout_ms;
+    /* False (the zero-initialized default) preserves legacy global-256
+     * admission. True gives each sender key a share of
+     * max(1, 256 / max(1, active_count)); active identities are
+     * valid && key != 0 && !retired, including closing identities that have
+     * not retired. A key at its share returns OVERLOAD even when global
+     * capacity remains; global full also rejects. Unknown keys do not count
+     * as active, but their queued commands count toward their own key quota.
+     * Late joins shrink shares without evicting old messages; global-full
+     * admissions wait for drain. Per-key FIFO and message ownership are
+     * unchanged. */
+    bool fair_outbound_admission;
 } BreakNetReactorConfig;
 
 BreakNetReactor *break_net_reactor_create(const BreakNetReactorConfig *config);

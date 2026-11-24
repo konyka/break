@@ -379,3 +379,12 @@ publication 准入要求非空 snapshot、非零 tick、匹配 schema、未关�
 新增真实 raw TCP/AUTH 用例交错读取两个连接的 BRFG 分片，覆盖 A OVERLOAD 时 B 继续、A 延迟 ACK 后 NEED_FULL 只令 A full、B 未 ACK S2 时 S3 仍以 S2 为 base，以及 drain 前两个 World 均不变。level 7→8 后旧 S1 lease 字节仍可读但发布返回 INVALID，新代两连接都重新 full。普通与 ASan+UBSan（显式 leak 检测）focused 均为 library 13/13、core_app 26/26；TSan library 13/13。core_app 的既有 Lua longjmp 与 normal-server/TSan-client 混合运行不冒充 TSan 服务端验收。
 
 本项不新增消息或线格式，也不实现跨连接共享 live World、权威 simulation 合并、Runtime Core 映射、自动换级或完整资产链；publication_epoch 不进入 BRWD/BRWC，也不是持久身份。本补充不预写推送、CI 或其他平台结果。
+
+
+## 补充（2026-11-25）：legacy full 兼容与 opt-in outbound 公平准入
+
+`break_world_session_publish` 恢复旧的 full 行为：首 full 未 ACK 或收到 NEED_FULL 后，可用相同 tick 和新 delta id 发布 fresh full；实际构造 delta 时，base/target tick 仍必须严格递增。`break_world_session_publish_snapshot` 采用独立严格准入，即使将发 full 也拒绝相对该连接 base 的非递增 tick。内部 helper 仅以私有布尔区分两种准入，不增加公共模式。两个新增 recovery 用例同时验证上述 full 差异、legacy delta 拒绝和 snapshot strict 拒绝。
+
+`BreakNetReactorConfig` 尾部新增 `fair_outbound_admission`，零初始化默认 **false**，保持旧的全局 256 OVERLOAD 合同。显式 true 时才按 `share=max(1,256/max(1,active_count))` 限制每 key queued；active 为 `valid && key!=0 && !retired`，closing 未 retired 仍计入。key 达份额即 OVERLOAD，即使全局未满；全局满同样拒绝。unknown key 不计 active 但按自己的 key queued 计数，active_count=0 时 share=256。late join 会缩小份额但不驱逐旧消息，global full 必须等 drain；每 key FIFO 与消息 ownership 不变。
+
+双连接 World loopback 显式启用 fair admission，保留 A 饱和时 B 可推进及 pending-attempt lease 覆盖。adapter 直接边界用例验证默认旧行为、late join、真实 closing/retire、unknown key 与 global full。publication 公共头同时明确 publish/close single-owner、并发 acquire、destroy 前置条件，以及 immutable snapshot lease 可晚于 publication 的生命期。本文不预写最终全量或远端结果。

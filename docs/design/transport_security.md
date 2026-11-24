@@ -171,3 +171,12 @@ What this library gives you is TLS transport with `verify_peer` support — **no
 - Task evidence: `.superpowers/sdd/2026-10-24-stage5-transport-security/task-{1..5}-report.md` (RED-before-GREEN logs, review fix rounds, pin gate failure-path evidence).
 - Pin/supply chain: Snowflake pinned at `d5d4a9287d81468506a3f1962dead16f72a3b5c1` with a configure-time fail-closed FATAL gate (`engine/CMakeLists.txt:295-383`, mirrored in `engine/external/locked_dependencies.json` and `docs/design/snowflake_c11_adapter.md`); OpenSSL-stub snow builds are rejected at configure time when `BREAK_ENABLE_CRYPTO=ON`.
 - Sibling contracts: `docs/design/security_threat_model.md` §5/§7 (this phase is their delivered enforcement point), `docs/design/session_protocol.md` (session state machine and wire facts), `docs/design/snowflake_c11_adapter.md` (adapter lifecycle/queue contracts).
+
+
+## 补充（2026-11-25）：outbound 容量公平的 opt-in 安全边界
+
+`BreakNetReactorConfig.fair_outbound_admission` 默认 false，旧的全局 256 容量与 OVERLOAD 行为是兼容默认值。显式 true 后才启用按 sender key 的准入份额 `max(1,256/max(1,active_count))`，其中 active 仅包括 `valid && key!=0 && !retired`；closing 未 retired 仍计入。key queued 达份额即拒绝，即使全局尚未满，全局满也始终拒绝。
+
+unknown key 不占 active 身份份额，但自己的 queued 数仍受配额约束。late join 缩份额不驱逐旧消息，global-full 的新消息等待 drain；退休后才恢复剩余 key 的份额。每次 admission 在 `queue_mutex` 内只做一次有界 identity 扫描和一次有界 outbound 扫描，不改变全局 256、每 key FIFO、消息深拷贝/ownership 或 drain。真实生命周期测试覆盖默认行为、late join、closing/retire、unknown 与 global full。
+
+该选项是资源公平与背压控制，不是认证、防重放或 TLS 安全边界，也不改变 CHALLENGE/AUTH、registry phase 或密钥契约。legacy World full 的 tick 兼容与 borrowed snapshot 的严格准入分开处理，publication 的 immutable lease 生命期和 destroy 前置条件在公共头明确。最终全量与远端安全验收不在本追加中预写。

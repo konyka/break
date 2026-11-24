@@ -67,7 +67,7 @@ static void put64(u8 *out, u64 value)
 
 static bool reactor_start(Fixture *fixture)
 {
-    BreakNetReactorConfig config = {BREAK_NET_DRIVE_STEP, 0, 4u, 1000, 1000u, 1u};
+    BreakNetReactorConfig config = {BREAK_NET_DRIVE_STEP, 0, 4u, 1000, 1000u, 1u, false};
     SnowEndpoint *endpoint = NULL;
     if (SnowEndpointCreate(&endpoint) != SNOW_OK ||
         SnowEndpointSetHost(endpoint, "127.0.0.1") != SNOW_OK ||
@@ -1560,6 +1560,101 @@ TEST(world_session_snapshot_overload_is_independent_and_ignores_new_target)
     fixture_dispose(&fixture);
 }
 
+TEST(world_session_legacy_unacknowledged_full_can_refresh_same_tick)
+{
+    Fixture fixture;
+    AttemptWire first;
+    AttemptWire refreshed;
+    BreakWorldSnapshot *strict;
+    BreakWorldSessionSenderState state;
+    BreakWorldSessionStats stats;
+
+    ASSERT_TRUE(fixture_init(&fixture));
+    ASSERT_TRUE(publish_attempt(&fixture, 10u, 10u, &first));
+    ASSERT_EQ(first.kind, BREAK_WORLD_DELTA_WIRE_FULL);
+    ASSERT_TRUE(publish_attempt(&fixture, 11u, 10u, &refreshed));
+    ASSERT_EQ(refreshed.kind, BREAK_WORLD_DELTA_WIRE_FULL);
+    ASSERT_EQ(refreshed.delta_id, 2u);
+    ASSERT_EQ(refreshed.target_tick, 10u);
+    ASSERT_NEQ(refreshed.target_snapshot_id, first.target_snapshot_id);
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, 11u, &state));
+    ASSERT_EQ(state.history_count, 1u);
+    ASSERT_EQ(state.confirmed_snapshot_id, 0u);
+    ASSERT_EQ(state.next_delta_id, 3u);
+    break_world_session_stats(fixture.session, &stats);
+
+    ASSERT_TRUE(set_value(fixture.authoritative, 12u));
+    strict = break_world_snapshot_build(fixture.authoritative, fixture.schemas, 10u);
+    ASSERT_NOT_NULL(strict);
+    ASSERT_TRUE(invalid_snapshot_publish_preserves_state(&fixture, 11u, strict, TEST_LEVEL,
+                                                         &state, &stats));
+    break_world_snapshot_release(strict);
+
+    ASSERT_TRUE(ack_attempt(&fixture, &refreshed));
+    ASSERT_EQ(break_world_session_publish(fixture.session, 11u, fixture.authoritative, 10u),
+              BREAK_NET_SEND_INVALID);
+    ASSERT_EQ(break_net_reactor_outbound_count(fixture.reactor), 0u);
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, 11u, &state));
+    ASSERT_EQ(state.history_count, 0u);
+    ASSERT_EQ(state.confirmed_snapshot_id, refreshed.target_snapshot_id);
+    ASSERT_EQ(state.next_delta_id, 3u);
+
+    clear_attempt(&refreshed);
+    clear_attempt(&first);
+    fixture_dispose(&fixture);
+}
+
+TEST(world_session_legacy_need_full_can_refresh_same_tick)
+{
+    Fixture fixture;
+    AttemptWire initial;
+    AttemptWire refreshed;
+    BreakWorldSnapshot *strict;
+    BreakWorldSessionControl control;
+    BreakWorldSessionSenderState state;
+    BreakWorldSessionStats stats;
+
+    ASSERT_TRUE(fixture_init(&fixture));
+    ASSERT_TRUE(publish_attempt(&fixture, 20u, 20u, &initial));
+    ASSERT_TRUE(ack_attempt(&fixture, &initial));
+    memset(&control, 0, sizeof(control));
+    control.kind = BREAK_WORLD_SESSION_CONTROL_NEED_FULL;
+    control.target_snapshot_id = initial.target_snapshot_id;
+    control.target_tick = initial.target_tick;
+    ASSERT_TRUE(send_control_to_session(&fixture, &control));
+    ASSERT_TRUE(publish_attempt(&fixture, 21u, 20u, &refreshed));
+    ASSERT_EQ(refreshed.kind, BREAK_WORLD_DELTA_WIRE_FULL);
+    ASSERT_EQ(refreshed.delta_id, 2u);
+    ASSERT_EQ(refreshed.target_tick, 20u);
+    ASSERT_NEQ(refreshed.target_snapshot_id, initial.target_snapshot_id);
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, 11u, &state));
+    ASSERT_EQ(state.history_count, 1u);
+    ASSERT_EQ(state.confirmed_snapshot_id, 0u);
+    ASSERT_EQ(state.next_delta_id, 3u);
+
+    ASSERT_TRUE(ack_attempt(&fixture, &refreshed));
+    ASSERT_EQ(break_world_session_publish(fixture.session, 11u, fixture.authoritative, 20u),
+              BREAK_NET_SEND_INVALID);
+    ASSERT_EQ(break_net_reactor_outbound_count(fixture.reactor), 0u);
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, 11u, &state));
+    ASSERT_EQ(state.history_count, 0u);
+    ASSERT_EQ(state.confirmed_snapshot_id, refreshed.target_snapshot_id);
+    ASSERT_EQ(state.next_delta_id, 3u);
+
+    ASSERT_TRUE(send_control_to_session(&fixture, &control));
+    break_world_session_stats(fixture.session, &stats);
+    ASSERT_TRUE(set_value(fixture.authoritative, 22u));
+    strict = break_world_snapshot_build(fixture.authoritative, fixture.schemas, 20u);
+    ASSERT_NOT_NULL(strict);
+    ASSERT_TRUE(invalid_snapshot_publish_preserves_state(&fixture, 11u, strict, TEST_LEVEL,
+                                                         &state, &stats));
+    break_world_snapshot_release(strict);
+
+    clear_attempt(&refreshed);
+    clear_attempt(&initial);
+    fixture_dispose(&fixture);
+}
+
 TEST(world_session_snapshot_invalid_input_is_atomic_and_preserves_delta_id)
 {
     Fixture fixture;
@@ -1786,6 +1881,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(world_session_rebaseline_close_reopen_keeps_level_and_clears_connection);
     RUN_TEST(world_session_shared_snapshot_fanout_uses_per_connection_base);
     RUN_TEST(world_session_snapshot_overload_is_independent_and_ignores_new_target);
+    RUN_TEST(world_session_legacy_unacknowledged_full_can_refresh_same_tick);
+    RUN_TEST(world_session_legacy_need_full_can_refresh_same_tick);
     RUN_TEST(world_session_snapshot_invalid_input_is_atomic_and_preserves_delta_id);
     RUN_TEST(world_session_snapshot_rebaseline_rejects_old_lease_and_refills_both);
 TEST_MAIN_END()
