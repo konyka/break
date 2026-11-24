@@ -13729,3 +13729,12 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **真实验收**：`world_session_same_socket_rebaselines_and_rejects_late_traffic` 复用 raw TCP/AUTH fixture，在同一连接完成 level 7 full/ACK/delta 后双方显式进入 8。旧 epoch 反序/重复片、旧 v1/v2 ACK/NEED_FULL 均不推进 World/baseline/history；新代 delta 在 full 前 NEED_FULL，新 full drain 后 target id 一致，当前 v2 ACK 后才发布 delta。连接 key、session id、AUTH 次数和 TCP endpoint 连续，未直接注入 completion。
 - **反向控制**：正确实现初跑 loopback 内部 **3/3**；临时删除 v2 level 等值校验后可构建但降为 **2/3**，新用例在旧 ACK 不得推进 acknowledged 的断言处失败。恢复后重新 **3/3**，生产源码无残留 diff。
 - **边界**：不做自动换级、资产选择/加载、schema online migration 或混合 level；不实现共享 live World、Runtime Core 映射、权威 simulation 合并或完整资产链。Task 1/2 已 deferred 的 Minors 不在本任务处理。既有集成复验段保持唯一且不改写，本节不预写推送、CI、Windows、Proton 或其他远端结果。
+
+
+### World session rebaseline 最终验证与远端收据（2026-11-25）
+
+- 最终推送 `e7c9b0591e20098005e344ad7ca2bad747c72fc3`。任务与整分支独立评审均通过；终审发现的初始代接收规则文档超称已修正并复审关闭。三个 deferred 测试 Minor 为预算独立断言、非法 generation 完整 sender 状态和未 poll 控制复位覆盖，均明确不阻断本项。
+- 最终 focused：normal 库级 **11/11**、直接 **245/245**、core_app **25/25** 与 transport **1/1**；ASan+UBSan（显式 leak 检测）库级 **11/11**、core_app **25/25** 与 transport **1/1**；TSan 库级 **11/11** 与 transport **1/1**。混合 TSan world loopback 通过，但不覆盖 TSan 服务端；core_app 的既有 Lua longjmp 环境失败未写成通过，也不代表完整 sanitizer suite。
+- 在最终文档 HEAD 完整重跑：OpenGL **477 注册、473 执行通过、4 条件 skip、0 失败**（306.94 s）；Vulkan **479 注册、475 执行通过、4 条件 skip、0 失败**（312.71 s）。条件 skip 不计执行通过。
+- 远端 CI run `45449211965`、windows-d3d12 run `45449211975`、Proton run `45451294974` 均 completed/success；CI 为 **24 success、3 条件 skip、0 cancelled、0 failed**。Proton 上游 run-id=`45449211975`，device/pipeline contract 均为 77，仅表示兼容通道。该提交未触发 QUIC run，不补写 QUIC 结论。
+- 本项只关闭库级显式换代。自动换级、资产链、混合 level、共享 live World、Runtime Core 映射、权威 simulation 合并仍未完成；本收据提交自身触发的工作流结果不在此预写。

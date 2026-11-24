@@ -884,3 +884,12 @@ pool/bridge 现在能在不重新分配固定存储的情况下复位 World stre
 - **共享 live World**：没有跨连接共享可变 World、publication 或 epoch reclamation；drain World 仍由 owner 显式提供。
 - **Runtime Core 与权威合并**：没有 Runtime Core 消息映射、权威 simulation 合并、预测回滚或 authority handoff。
 - **生产与远端范围**：core_app 自动换代和完整资产链仍开放；条件 skip/既有 Proton 77 不升级为原生 GPU 通过。既有集成复验段保持唯一、不复制，本补充不预写新的推送或远端结果。
+
+
+### World session rebaseline 最终验证与远端收据（2026-11-25）
+
+`e7c9b059` 已完成任务与整分支独立评审并推送。最终 HEAD 的 OpenGL 全量为 **473/477 执行通过、4 条件 skip、0 失败**，Vulkan 为 **475/479 执行通过、4 条件 skip、0 失败**。focused normal 库级 **11/11**、直接 **245/245**，ASan+UBSan 与 TSan 库级均 **11/11**；core_app normal/ASan 各 **25/25**，混合 TSan 不覆盖服务端的限制不变。
+
+远端 CI `45449211965`、windows-d3d12 `45449211975`、Proton `45451294974` 均 success；CI 为 24 success、3 条件 skip、0 cancelled、0 failed。Proton 上游 run-id=`45449211975`，device/pipeline contract 均为 77，仅表示兼容通道；QUIC 未触发，不补写结论。
+
+本节只关闭库级显式 level rebaseline，不关闭自动换级、资产链、混合 level、共享 live World、Runtime Core 映射或权威 simulation 合并。条件 skip、Proton 77 与混合 TSan 不升级为原生 GPU 或完整 sanitizer 验收；本收据提交自身的工作流结果不在此预写。
