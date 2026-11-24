@@ -13530,3 +13530,12 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **丢弃完成的回收**：新增单分片 `COMPLETE` 用例，`completed_delta_id`、`payload`、`payload_size` 三个输出全部传 NULL；结果仍被丢弃并回收，pending stream/bytes 均归零，容量 1 的池可复用槽完成下一 delta，高水位继续拒绝较旧新流。生产代码未发现缺陷，本修复未修改生产文件。
 - **预算口径**：`max_pending_bytes` 不是总 RSS 上限，只计算活跃流持有的分片负载。每槽元数据独立受原 16 MiB 上限约束，最多 64 槽；固定槽存储和各槽元数据不共享该负载预算。拼装临时缓冲与已移交调用方的 payload 均不计共享 pending，后者的生命周期由调用方管理。
 - **验证**：`test_break_replication_fragment` 在 normal、ASan+UBSan（`detect_leaks=1`）和 TSan 三套现有构建树均为 **24 passed, 0 failed, 24 total**，无 sanitizer/leak 诊断。本 minor 修复只运行 focused 三 lane，未重跑完整 Vulkan/OpenGL CTest 或完整 sanitizer suite。
+
+## 远程同步复审：语音 bypass、降噪多声道与分片过期（2026-11-24）
+
+- **范围**：从 `e0654273` 快进到 `3638b5f4`（7 个提交）：对齐器模式与 bypass 的 core_app 命令行开关、`AudioVoiceProcessorConfig.bypass_stages`、`AudioNoiseSuppressorBank` 交织多声道降噪、复制分片重组的空闲过期（`push_at`/`expire`/`pending_bytes`），以及 macOS 契约测试超时上限 600→1200 s。
+- **审查结论**：未发现 Critical/Important 代码问题。复核点：未知 bypass 位在 create 拒绝，NOISE 被跳过时延迟报告为 0；降噪 bank 部分创建失败时 destroy 只释放已创建声道（未建槽位为 NULL，单声道 destroy 对 NULL 为空操作）；`push_at` 只在接受后仍有挂起流时刷新活动时间，`expire` 不清高水位，早于高水位的 delta 仍为 CONFLICT；CLI 的 `--voice-bypass` 逐项精确匹配，`--voice-aligner-crossfade` 拒绝 0、超过 48000 与非数字，且三项开关都要求语音开启。
+- **超时根因更正**：上一轮把 `67379fba` 上的 `test_core_app_ctest_config_contract` 失败记为“非复现”；上游 `299a3337` 依据 job 日志确认是 600 s 超时（五个嵌套运行都已通过），已把上限改为 1200 s。以该记录为准。上一轮收据提交 `e0654273` 的 CI run `45158314533` 最终为 cancelled（被后续推送取消，仅 Windows MSVC job 未完成），不计为通过。
+- **文档修正**：`docs/design/audio_extended.md`「语音参考自动对齐」的“未做”仍列出时钟漂移补偿和 VoiceProcessor/core_app/网络接线，这些已交付，已改为只剩多声道与真实声学验证，并给出交叉引用。
+- **变基补充**：提交前远端又新增 `4e8628ef`..`6a00e90f`（5 个提交，复制分片重组池：多流交错、共享字节预算、按流过期）。复核：新流先查槽位与字节预算再分配，失败不影响已有流；完成或过期都推进 retired 高水位，旧于高水位的新流为 CONFLICT；起流失败会释放槽位。未发现问题。
+- **macOS 验证**：Metal 全量 **435/435**、MoltenVK 全量 **438/438**，各 5 项既有条件 skip（不计为执行通过）。直接 cc 编译的 ASan+UBSan（`detect_leaks=0`，本机不支持 LSan）：`test_audio_noise_suppressor` 11/11、`test_audio_voice_processor` 5/5、`test_break_replication_fragment` 15/15（变基后含池用例为 24/24），无诊断。变基后 Metal 全量重跑仍为 **435/435**；MoltenVK 未重跑。未运行 TSan；Windows/Linux 以远端 CI 为准，本收据提交触发的工作流结果不在此预写。

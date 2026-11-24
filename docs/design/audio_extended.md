@@ -305,7 +305,7 @@ START 命令携带初始 pan，但不写 `pan_snapshot`：`spatial_begin_start` 
 - 2026-11-23 补充：`test_audio_voice_aligner` 由 6 项增至 7 项，新增 `reset_matches_a_fresh_aligner`；`test_audio_delay_estimator` 当前为 22 项，含新增 `the_delay_line_reset_matches_a_fresh_line`。
 - 复位：`audio_voice_aligner_reset` 回到刚创建的状态：tracker（含估计器或 GCC-PHAT）与延迟线复位，应用延迟、更新计数归零，距下次更新恢复完整周期；保留后端与配置，不分配，NULL 为空操作。设备重开或会话切换时无需销毁重建。
 - 2026-11-23 补充：sinc 与交叉淡化配置。`audio_voice_aligner_set_sinc`/`sinc` 切换延迟线 sinc 模式，对齐器应用 `max(测得延迟 − 8, 0)`，使输出总延迟等于测得延迟（测得值小于 8 帧时为 8 帧）；切换立即生效并按最近一次成功应用的延迟重新应用，淡化中返回 `AUDIO_REJECTED`。`audio_voice_aligner_set_crossfade_frames`/`crossfade_frames` 转发延迟线配置（0..48000）。`audio_voice_aligner_delay` 改为报告输出总延迟（线延迟加 sinc 延迟），线性模式下与原值相同。更新到达时若延迟线仍在淡化，本次应用被跳过而不是让 `process` 失败，下一周期重新应用；其他错误仍返回。`reset` 保留两项配置，复位到 0 延迟时不启动淡化。`test_audio_voice_aligner` 增至 14 项。
-- 未做：时钟漂移补偿、多声道、设备/VoiceProcessor/core_app/网络接线与真实声学验证。
+- 未做：多声道与真实声学验证。（2026-11-24 更正：时钟漂移补偿见「时钟漂移闭环补偿」与 [`core_app_integration.md`](core_app_integration.md)「语音漂移补偿」；设备、VoiceProcessor、core_app 与网络接线见下节「Core App 语音 PCM 泵」及 `core_app_integration.md` 各语音补充节。）
 
 ## Core App 语音 PCM 泵
 
