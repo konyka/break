@@ -41,6 +41,8 @@ static BreakWorldSessionConfig test_config(Fixture *fixture)
     config.bridge.stream_capacity = 4u;
     config.bridge.max_pending_bytes_per_connection = 4096u;
     config.bridge.max_total_pending_bytes = 8192u;
+    config.bridge.max_metadata_bytes_per_connection = 4096u;
+    config.bridge.max_total_metadata_bytes = 8192u;
     config.bridge.max_fragment_bytes = 64u;
     config.bridge.max_fragment_count = 64u;
     config.bridge.completion_capacity = 8u;

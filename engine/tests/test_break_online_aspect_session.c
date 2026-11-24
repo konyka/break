@@ -49,6 +49,8 @@ static BreakAspectSessionConfig test_aspect_session_config(BreakAspectStore *sto
     config.bridge.stream_capacity = 4u;
     config.bridge.max_pending_bytes_per_connection = 1024u;
     config.bridge.max_total_pending_bytes = 2048u;
+    config.bridge.max_metadata_bytes_per_connection = 4096u;
+    config.bridge.max_total_metadata_bytes = 8192u;
     config.bridge.max_fragment_bytes = 64u;
     config.bridge.max_fragment_count = 16u;
     config.bridge.completion_capacity = TEST_COMPLETION_CAPACITY;

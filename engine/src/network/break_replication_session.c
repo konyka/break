@@ -45,6 +45,14 @@ static bool bridge_config_valid(const BreakReplicationSessionBridgeConfig *confi
         config->max_connections * config->max_pending_bytes_per_connection >
             config->max_total_pending_bytes)
         return false;
+    if (config->max_metadata_bytes_per_connection == 0u ||
+        config->max_metadata_bytes_per_connection > BREAK_REPLICATION_MAX_REASSEMBLY_SIZE)
+        return false;
+    if (config->max_connections >
+            SIZE_MAX / config->max_metadata_bytes_per_connection ||
+        config->max_connections * config->max_metadata_bytes_per_connection >
+            config->max_total_metadata_bytes)
+        return false;
     if (config->max_fragment_bytes == 0u ||
         config->max_fragment_bytes > BREAK_REPLICATION_WIRE_MAX_FRAGMENT_DATA_SIZE)
         return false;
@@ -132,9 +140,10 @@ bool break_replication_session_connection_open(
         }
     }
     if (!slot) return false;
-    slot->pool = break_replication_reassembly_pool_create(
+    slot->pool = break_replication_reassembly_pool_create_with_metadata(
         expected_base_id, bridge->config.stream_capacity,
-        bridge->config.max_pending_bytes_per_connection);
+        bridge->config.max_pending_bytes_per_connection,
+        bridge->config.max_metadata_bytes_per_connection);
     if (!slot->pool) return false;
     if (bridge->config.expiry_enabled) {
         break_replication_reassembly_pool_set_expiry_schedule(
@@ -382,6 +391,8 @@ void break_replication_session_bridge_stats(
     for (i = 0u; i < bridge->config.max_connections; ++i) {
         out_stats->pending_bytes +=
             break_replication_reassembly_pool_pending_bytes(bridge->connections[i].pool);
+        out_stats->pending_metadata_bytes +=
+            break_replication_reassembly_pool_metadata_bytes(bridge->connections[i].pool);
     }
     out_stats->completion_count = bridge->completion_count;
     out_stats->completion_bytes = bridge->completion_bytes;

@@ -109,6 +109,8 @@ static bool fixture_init_without_adapter(Fixture *fixture, u64 level)
     config.bridge.stream_capacity = 4u;
     config.bridge.max_pending_bytes_per_connection = 8192u;
     config.bridge.max_total_pending_bytes = 16384u;
+    config.bridge.max_metadata_bytes_per_connection = 8192u;
+    config.bridge.max_total_metadata_bytes = 16384u;
     config.bridge.max_fragment_bytes = 4096u;
     config.bridge.max_fragment_count = 64u;
     config.bridge.completion_capacity = 8u;

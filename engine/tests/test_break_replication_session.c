@@ -35,6 +35,8 @@ static BreakReplicationSessionBridgeConfig test_bridge_config(uint64_t *now)
     config.stream_capacity = 4u;
     config.max_pending_bytes_per_connection = 64u;
     config.max_total_pending_bytes = 128u;
+    config.max_metadata_bytes_per_connection = 4096u;
+    config.max_total_metadata_bytes = 8192u;
     config.max_fragment_bytes = 32u;
     config.max_fragment_count = 8u;
     config.completion_capacity = 4u;
@@ -127,6 +129,15 @@ TEST(bridge_create_validates_ranges_products_and_null_calls)
     test_check_invalid_config(&invalid);
     invalid = config;
     invalid.max_total_pending_bytes = 127u;
+    test_check_invalid_config(&invalid);
+    invalid = config;
+    invalid.max_metadata_bytes_per_connection = 0u;
+    test_check_invalid_config(&invalid);
+    invalid = config;
+    invalid.max_metadata_bytes_per_connection = TEST_MAX_PENDING_BYTES + 1u;
+    test_check_invalid_config(&invalid);
+    invalid = config;
+    invalid.max_total_metadata_bytes = 8191u;
     test_check_invalid_config(&invalid);
     invalid = config;
     invalid.max_fragment_bytes = 0u;
@@ -1661,7 +1672,60 @@ TEST(bridge_rebaseline_clears_nonzero_head_wrapped_completions)
     ASSERT_EQ(stats.rejected_fragments, 1u);
     ASSERT_EQ(stats.completed_packets, 7u);
     ASSERT_EQ(stats.dropped_completions, 3u);
+}
 
+TEST(bridge_metadata_budget_rejects_large_counts_before_allocation)
+{
+    const size_t unit = sizeof(BreakReplicationFragment) + sizeof(uint8_t *) +
+                        sizeof(uint8_t);
+    uint64_t now = 10u;
+    BreakReplicationSessionBridgeConfig config = test_bridge_config(&now);
+    BreakReplicationSessionBridge *bridge;
+    BreakReplicationSessionBridgeStats stats;
+    BreakReplicationFragment *fragments = NULL;
+    BreakReplicationFragment fragment;
+    size_t count = 0u;
+    const uint8_t payload = 0x5au;
+
+    config.stream_capacity = 64u;
+    config.max_metadata_bytes_per_connection = 4u * unit;
+    config.max_total_metadata_bytes = 8u * unit;
+    config.max_fragment_count = 250000u;
+    bridge = break_replication_session_bridge_create(&config);
+    ASSERT_NOT_NULL(bridge);
+    ASSERT_TRUE(break_replication_session_connection_open(bridge, 1u, 5u));
+    ASSERT_EQ(break_replication_fragment_payload(
+                  1u, 5u, &payload, 1u, 1u, &fragments, &count),
+              BREAK_REPLICATION_FRAGMENT_OK);
+    fragment = fragments[0];
+
+    fragment.fragment_count = 250000u;
+    ASSERT_FALSE(test_push_fragment(bridge, 1u, &fragment));
+    break_replication_session_bridge_stats(bridge, &stats);
+    ASSERT_EQ(stats.rejected_fragments, 1u);
+    ASSERT_EQ(stats.pending_bytes, 0u);
+    ASSERT_EQ(stats.pending_metadata_bytes, 0u);
+
+    fragment.fragment_count = 4u;
+    ASSERT_TRUE(test_push_fragment(bridge, 1u, &fragment));
+    break_replication_session_bridge_stats(bridge, &stats);
+    ASSERT_EQ(stats.pending_bytes, 1u);
+    ASSERT_EQ(stats.pending_metadata_bytes, 4u * unit);
+    ASSERT_TRUE(test_push_fragment(bridge, 1u, &fragment));
+    break_replication_session_bridge_stats(bridge, &stats);
+    ASSERT_EQ(stats.pending_metadata_bytes, 4u * unit);
+
+    fragment.delta_id = 2u;
+    ASSERT_FALSE(test_push_fragment(bridge, 1u, &fragment));
+    break_replication_session_bridge_stats(bridge, &stats);
+    ASSERT_EQ(stats.pending_bytes, 1u);
+    ASSERT_EQ(stats.pending_metadata_bytes, 4u * unit);
+    ASSERT_TRUE(break_replication_session_connection_close(bridge, 1u));
+    break_replication_session_bridge_stats(bridge, &stats);
+    ASSERT_EQ(stats.pending_bytes, 0u);
+    ASSERT_EQ(stats.pending_metadata_bytes, 0u);
+
+    break_replication_fragments_free(fragments, count);
     break_replication_session_bridge_destroy(bridge);
 }
 
@@ -1688,4 +1752,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(bridge_non_auth_handler_failure_keeps_session_authenticated);
     RUN_TEST(bridge_rebaseline_preserves_keys_and_drops_old_completions);
     RUN_TEST(bridge_rebaseline_clears_nonzero_head_wrapped_completions);
+    RUN_TEST(bridge_metadata_budget_rejects_large_counts_before_allocation);
 TEST_MAIN_END()

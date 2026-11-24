@@ -83,13 +83,21 @@ void break_replication_reassembler_reset(BreakReplicationReassembler *reassemble
 
 #define BREAK_REPLICATION_REASSEMBLY_POOL_MAX_STREAMS 64u
 typedef struct BreakReplicationReassemblyPool BreakReplicationReassemblyPool;
-/* Owner-thread only. Active streams share max_pending_bytes; exhausting either
- * stream slots or that byte budget rejects new payload with OVER_LIMIT without
- * disturbing active streams. New deltas below the highest completed delta
- * return CONFLICT, while an equal delta may restart and active older streams
- * may still complete. */
+/* Owner-thread only. Active streams share separate payload and per-fragment
+ * metadata budgets; exhausting stream slots or either budget rejects new data
+ * with OVER_LIMIT without disturbing active streams. New deltas below the
+ * highest completed delta return CONFLICT, while an equal delta may restart
+ * and active older streams may still complete. This constructor allows up to
+ * BREAK_REPLICATION_MAX_REASSEMBLY_SIZE of dynamic metadata per pool. */
 BreakReplicationReassemblyPool *break_replication_reassembly_pool_create(
     uint64_t expected_base_id, size_t stream_capacity, size_t max_pending_bytes);
+/* Metadata is fragment_count * (sizeof(BreakReplicationFragment) +
+ * sizeof(uint8_t *) + sizeof(uint8_t)) across active streams. It covers the
+ * fragment, ownership-pointer and received-bitmap arrays, not fixed pool
+ * slots or payload copies. Both budgets are 1..16 MiB. */
+BreakReplicationReassemblyPool *break_replication_reassembly_pool_create_with_metadata(
+    uint64_t expected_base_id, size_t stream_capacity, size_t max_pending_bytes,
+    size_t max_metadata_bytes);
 void break_replication_reassembly_pool_destroy(BreakReplicationReassemblyPool *pool);
 BreakReplicationReassemblyResult break_replication_reassembly_pool_push_at(
     BreakReplicationReassemblyPool *pool, const BreakReplicationFragment *fragment,
@@ -115,6 +123,10 @@ size_t break_replication_reassembly_pool_tick(
 size_t break_replication_reassembly_pool_pending_streams(
     const BreakReplicationReassemblyPool *pool);
 size_t break_replication_reassembly_pool_pending_bytes(
+    const BreakReplicationReassemblyPool *pool);
+/* Dynamic fragment/ownership/bitmap array bytes held by active streams; 0 for
+ * NULL. Completion, expiry and reset release this budget. */
+size_t break_replication_reassembly_pool_metadata_bytes(
     const BreakReplicationReassemblyPool *pool);
 /* Restore fresh-pool stream state while preserving creation and expiry policy;
  * the expiry schedule epoch is cleared. */

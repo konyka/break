@@ -226,3 +226,8 @@ World session 可在不关闭认证传输的情况下显式提升 level generati
 late join 不驱逐超出新份额的旧消息，global full 等 drain；退休后才恢复份额。FIFO、消息 ownership 和认证 phase 均未改变。真实双连接 World fixture 显式开启该选项，A 饱和时 B 仍可发布；adapter 默认/fair 边界测试覆盖 late join、closing/retire、unknown 和 global full，其他现有配置保持默认 false。
 
 World 发布兼容也明确分层：legacy `break_world_session_publish` 在首 full 未 ACK 或 NEED_FULL 后允许同 tick fresh full，delta 仍拒绝非递增 tick；borrowed `break_world_session_publish_snapshot` 对 full 同样执行严格非递增拒绝。新增 recovery 覆盖两种 full 和两种 strict 路径，未增加公共 admission 模式。publication 公共头现明确 owner/acquire/destroy/lease 契约。本追加不预写最终全量或远端结果。
+## 补充（2026-11-24）：Session 元数据预算与 CI 覆盖
+
+bridge 创建配置现在必须同时提供 payload 与动态分片元数据的每连接/总预算：`max_metadata_bytes_per_connection`、`max_total_metadata_bytes`。open 将前者传给重组池；连接乘积不能超过对应总预算。stats 的 `pending_metadata_bytes` 报告三个动态重组数组的实际字节，close/expire/reset 会释放。原 payload-only 统计不能代表总内存，两个预算需分别配置；上述 core_app transport 也设置这两个字段。
+
+此前主 CI 和默认 macOS 配置均关闭 `BREAK_ENABLE_SNOWFLAKE`，新增 session/aspect socket 测试不在这些“全量”计数内。主 CI 新增 `macOS Snowflake replication (Clang)`，显式检出固定 Snowflake，运行 bridge、aspect、World Session、core_app transport 和真实 aspect/World loopback 等十四项测试。私有仓库凭据缺失时记录 **UNAVAILABLE**，不将未运行记为通过。

@@ -28,6 +28,8 @@ TEST(aspect_session_api_links_without_explicit_break_online)
     config.bridge.stream_capacity = 2u;
     config.bridge.max_pending_bytes_per_connection = 128u;
     config.bridge.max_total_pending_bytes = 128u;
+    config.bridge.max_metadata_bytes_per_connection = 4096u;
+    config.bridge.max_total_metadata_bytes = 4096u;
     config.bridge.max_fragment_bytes = 64u;
     config.bridge.max_fragment_count = 4u;
     config.bridge.completion_capacity = 2u;

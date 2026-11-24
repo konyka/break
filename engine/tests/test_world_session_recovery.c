@@ -138,6 +138,8 @@ static bool fixture_init_scaled(Fixture *fixture, usize history_entries,
     config.bridge.stream_capacity = 4u;
     config.bridge.max_pending_bytes_per_connection = 8192u;
     config.bridge.max_total_pending_bytes = 16384u;
+    config.bridge.max_metadata_bytes_per_connection = 8192u;
+    config.bridge.max_total_metadata_bytes = 16384u;
     config.bridge.max_fragment_bytes = fragment_bytes;
     config.bridge.max_fragment_count = fragment_count;
     config.bridge.completion_capacity = completion_capacity;

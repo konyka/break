@@ -956,3 +956,8 @@ submit 不调用 World，owner drain 是唯一应用入口。queue OVERLOAD 时 
 远端 CI `45512281106`、windows-d3d12 `45512280291`、QUIC `45512282037`、Proton `45514116011` 均 success；CI 为 24 success、3 条件 skip、0 cancelled、0 failed。Proton 上游 run-id=`45512280291`，两个 contract 均为 77，仅表示兼容通道。
 
 本节只关闭 Runtime 标量控制与生命周期切片，不关闭 snapshot/BRWD 数据面、Coordinator 自动注册、core_app authoritative World 或权威 simulation 合并。默认 fair_outbound_admission=false 的兼容不变，混合 TSan 与既有 Lua longjmp 不升级为完整 sanitizer 验收。本收据提交自身的工作流结果不在此预写。
+## 第 17 节补充（2026-11-24）：分片声明的元数据放大边界
+
+上一实现中“每流 16 MiB 元数据上限”不足以约束多流总占用；仅发送一字节分片并声明很大的 count，就能在 64 条流上请求约 870 MiB 动态数组。现已增加池级共享元数据预算，Session 另以每连接和总预算的乘积做静态约束，不再只按 payload 字节准入。原 pool create 默认整个池 16 MiB 元数据，显式 create_with_metadata 可进一步收紧；上方 core_app 调用点也已配置该预算。
+
+此修复不完成可靠重传、持久高水位、World delta 或 editor 接线。主 CI 新增 Snowflake focused job 前，普通 CI 总数不包含这些条件编译测试；该 job 的私有依赖不可用时应记为未验证，而不是通过。

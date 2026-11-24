@@ -291,6 +291,8 @@ static bool socket_start_with_connections(SocketFixture *fixture, bool include_d
     world_config.bridge.stream_capacity = 8u;
     world_config.bridge.max_pending_bytes_per_connection = 8192u;
     world_config.bridge.max_total_pending_bytes = 8192u * max_connections;
+    world_config.bridge.max_metadata_bytes_per_connection = 8192u;
+    world_config.bridge.max_total_metadata_bytes = 8192u * max_connections;
     world_config.bridge.max_fragment_bytes = 64u;
     world_config.bridge.max_fragment_count = 64u;
     world_config.bridge.completion_capacity = 8u;

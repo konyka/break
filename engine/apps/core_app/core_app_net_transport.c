@@ -112,6 +112,7 @@ _Static_assert(CORE_APP_VOICE_MUTE_BYTES == BREAK_NET_CORE_VOICE_MUTE_PAYLOAD,
 #define CORE_APP_ASPECT_DRAIN_BUDGET 64u
 #define CORE_APP_ASPECT_STREAM_CAPACITY 16u
 #define CORE_APP_ASPECT_PENDING_BYTES 16384u
+#define CORE_APP_ASPECT_METADATA_BYTES 16384u
 #define CORE_APP_ASPECT_COMPLETION_CAPACITY 64u
 #define CORE_APP_ASPECT_EXPIRY_INTERVAL_MS 10u
 #define CORE_APP_ASPECT_EXPIRY_IDLE_MS 50u
@@ -482,6 +483,10 @@ static bool net_aspect_create(CoreAppNetTransport *t) {
     session_config.bridge.max_pending_bytes_per_connection = CORE_APP_ASPECT_PENDING_BYTES;
     session_config.bridge.max_total_pending_bytes =
         CORE_APP_NET_MAX_CONNECTIONS * CORE_APP_ASPECT_PENDING_BYTES;
+    session_config.bridge.max_metadata_bytes_per_connection =
+        CORE_APP_ASPECT_METADATA_BYTES;
+    session_config.bridge.max_total_metadata_bytes =
+        CORE_APP_NET_MAX_CONNECTIONS * CORE_APP_ASPECT_METADATA_BYTES;
     session_config.bridge.max_fragment_bytes = CORE_APP_ASPECT_FRAGMENT_BYTES;
     session_config.bridge.max_fragment_count = CORE_APP_ASPECT_MAX_FRAGMENTS;
     session_config.bridge.completion_capacity = CORE_APP_ASPECT_COMPLETION_CAPACITY;
@@ -601,6 +606,9 @@ static BreakWorldSession *net_world_session_create(CoreAppNetTransport *t,
     config.bridge.stream_capacity = CORE_APP_WORLD_STREAM_CAPACITY;
     config.bridge.max_pending_bytes_per_connection = CORE_APP_WORLD_PENDING_BYTES;
     config.bridge.max_total_pending_bytes =
+        CORE_APP_NET_MAX_CONNECTIONS * CORE_APP_WORLD_PENDING_BYTES;
+    config.bridge.max_metadata_bytes_per_connection = CORE_APP_WORLD_PENDING_BYTES;
+    config.bridge.max_total_metadata_bytes =
         CORE_APP_NET_MAX_CONNECTIONS * CORE_APP_WORLD_PENDING_BYTES;
     config.bridge.max_fragment_bytes = CORE_APP_WORLD_FRAGMENT_BYTES;
     config.bridge.max_fragment_count = CORE_APP_WORLD_MAX_FRAGMENTS;

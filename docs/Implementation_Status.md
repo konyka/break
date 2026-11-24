@@ -13790,3 +13790,12 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 在最终 HEAD 完整构建并运行：OpenGL **480 注册、476 执行通过、4 条件 skip、0 失败**（303.79 s）；Vulkan **482 注册、478 执行通过、4 条件 skip、0 失败**（307.00 s）。条件 skip 不计执行通过。
 - 远端 CI run `45512281106`、windows-d3d12 run `45512280291`、QUIC run `45512282037`、Proton run `45514116011` 均 completed/success；CI 为 **24 success、3 条件 skip、0 cancelled、0 failed**。Proton 上游 run-id=`45512280291`，device/pipeline contract 均为 77，仅表示兼容通道。
 - 本项只关闭 Runtime 标量控制与生命周期切片，不关闭 snapshot/BRWD 数据面、Runtime Coordinator 自动注册、core_app authoritative World 或权威 simulation 合并。常驻 production consumer 和 runtime_core link-interface 契约增强仍是 deferred Minor，不改变交付边界。本收据提交自身的工作流结果不在此预写。
+## 远程同步复审：Session 元数据预算与网络测试覆盖（2026-11-24）
+
+- **同步范围**：从 `b5ec4a83` 快进到 `9fff3543`，共 **21 个提交**；提交前先后变基到 `146b9dcb`（5 个 core_app aspect 提交）和 `d468006f`（47 个 World delta/session/rebaseline 提交）。四份文档及两组新增测试的追加冲突均保留双方内容，未覆盖远程提交。
+- **Important 根因**：新流只按首片 payload 检查共享预算，三个按对端 `fragment_count` 分配的动态数组仅有每流 16 MiB 上限。64 条 `count=250000`、每片 1 字节的流可请求约 **870 MiB** 元数据，而 pending payload 仅 64 字节；片数越大，清理遍历也越长。
+- **修复**：重组器记录实际动态数组字节，池在分配前以除法检查共享元数据余额，complete/expire/reset 对称释放，上游 rebaseline 经 reset 同样归零。旧 pool create 签名不变，默认全池元数据上限 16 MiB；新增显式 `create_with_metadata` 与占用查询。Session 配置新增每连接/总元数据预算及溢出、乘积校验，stats 新增 `pending_metadata_bytes`。旧下游配置必须补两个必填字段并重新编译；新合入的 core_app aspect/World transport 均已配置 16 KiB/连接，相关 World 测试配置同步更新。
+- **TDD**：新增池用例在旧代码上以缺少两个 API 的编译错误判 RED；实现后 fragment **29/29**、wire **9/9**，合入上游 rebaseline 用例后 fragment **30/30**。覆盖超限原子拒绝、重复不重复计费、expire/reset/complete 释放；新增 Session 用例经真实 BRFG handler 拒绝 250000 片声明并检查连接预算。独立复审未发现 Critical/Important，确认新流、活动流、OOM、冲突与释放账目。
+- **CI 覆盖修复**：默认 macOS 构建和原有主 CI 都关闭 `BREAK_ENABLE_SNOWFLAKE`，不会编译新增 Session/aspect/World 测试。主 CI 新增 `macOS Snowflake replication (Clang)`，以固定私有依赖精确构建并运行 **14 项 CTest**（含 core_app transport、World Session 和真实 aspect/World loopback）；缺少凭据时明确记录 UNAVAILABLE。YAML 解析通过，仓内目标与测试注册均已核对。
+- **macOS 本地结果（最终变基树复跑）**：Metal 全量 **438/438**、MoltenVK 全量 **441/441**，各有 **5 项既有条件 skip**（d3d12 dependency gate、crash context、三个 nm），不计执行通过。直接 cc 的 ASan+UBSan（`detect_leaks=0`）fragment **30/30**、wire **9/9**，无诊断；Session/aspect 源码以 `-Wall -Wextra -Werror` 做语法编译通过。
+- **边界**：本机没有固定 Snowflake 私有检出，未在本地运行真实 Session/socket 测试；新增 CI job 的结果待推送后核验。未运行 TSan/LSan、完整 sanitizer suite 或 Windows/Linux 实机测试，不预写远端结论。

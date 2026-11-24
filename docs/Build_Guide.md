@@ -615,6 +615,34 @@ cmake --build build-quic --target test_break_net_quic test_break_net_quic_cpp20
 ctest --test-dir build-quic -L weak_network -j4 --output-on-failure --no-tests=error
 ```
 
+#### Snowflake 复制与 aspect Session 验证
+
+`BREAK_ENABLE_SNOWFLAKE` 默认关闭。因此，未显式启用它的 macOS 全量 CTest 不包含
+`test_break_replication_session`、`test_break_online_aspect_session` 或
+`test_break_online_aspect_session_link`；这些套件的总数不能作为真实 Session/socket 路径已执行的证据。
+已有固定 Snowflake 检出时，可单独构建并运行以下十四项测试（不需要启用 QUIC）：
+
+```bash
+cmake -S engine -B build-snowflake -G Ninja \
+  -DCMAKE_BUILD_TYPE=Debug -DENGINE_RHI_BACKEND=metal -DENGINE_VULKAN=OFF \
+  -DBREAK_ENABLE_SNOWFLAKE=ON \
+  -DSNOWFLAKE_SOURCE_DIR=<pinned snow checkout> \
+  -DOPENSSL_ROOT_DIR=<openssl 前缀>
+cmake --build build-snowflake --target \
+  core_app test_core_app_net_client test_core_app_net_transport \
+  test_break_replication_session test_break_online_aspect_session \
+  test_break_online_aspect_session_link test_break_session \
+  test_break_replication_wire test_break_replication_fragment test_public_api_cpp20 \
+  test_world_session test_world_session_loopback test_world_session_recovery \
+  test_runtime_world_session
+ctest --test-dir build-snowflake --output-on-failure --no-tests=error \
+  -R '^(test_break_replication_session|test_break_online_aspect_session|test_break_online_aspect_session_link|test_break_session|test_break_replication_wire|test_break_replication_fragment|test_public_api_cpp20|test_core_app_net_transport|test_core_app_network_aspect|test_world_session|test_world_session_loopback|test_world_session_recovery|test_runtime_world_session|test_core_app_network_world)$'
+```
+
+主 CI 的 `macOS Snowflake replication (Clang)` job 使用相同的 pin 和十四项精确选择，
+并要求 `14/14`。它需要上述 `SNOWFLAKE_READ_TOKEN`；未配置时明确记录 **UNAVAILABLE**，
+不会将未运行记为通过。原有 QUIC 弱网 job 仍只负责四个弱网场景。
+
 ```bash
 cd engine
 cmake -B build-macos -G Xcode -DCMAKE_BUILD_TYPE=Debug

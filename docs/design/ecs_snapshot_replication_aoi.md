@@ -328,3 +328,12 @@ normal、ASan+UBSan（显式 `detect_leaks=1`）和 TSan focused 均为 **6/6、
 Runtime 标量控制的 direct submit 不再 Bus fan-out，而是只 copy/enqueue 到目标 adapter；外部合法 `0x5753` publish 仍可到达每个订阅者，并仅在各自 drain 时改变对应 World Session。`submitted` 只计 direct 成功，`drained` 包括所有实际消费；pending 与 stats.queued 取 Runtime queue 的 `enqueued-dequeued`，pending 另加 transport control，避免外部消息造成无符号下溢。
 
 destroy 现在先 close/退订再判断真实 pending，false 后没有新 ingress，旧 FIFO/pending 继续由 owner drain，成功重试不重复退订；epoch 耗尽是计数的 REJECTED。该修复不涉及 snapshot/lease/BRWD/BRFG 数据面、AOI、publication epoch 或权威 World 合并，World Session 仍只能从 owner drain 调用。
+## 补充（2026-11-24）：重组元数据独立预算
+
+复审发现，原池只按首片 payload 检查共享预算，而 `fragment_count` 对应的 fragment、ownership pointer 和 received bitmap 三个数组只受“每流 16 MiB”限制。小分片因此可在 64 条流上放大为约 870 MiB 动态元数据，payload 统计仍只有数十字节。
+
+现在每条流记录三个数组的实际 `metadata_bytes`，池在分配前按 `fragment_count × (sizeof(BreakReplicationFragment) + sizeof(uint8_t *) + sizeof(uint8_t))` 检查共享元数据余额；complete、expire 和 reset 对称扣回。原 `break_replication_reassembly_pool_create` 保留，默认整个池最多 16 MiB 动态元数据；新增 `..._create_with_metadata` 允许调用方设置更低上限，`..._pool_metadata_bytes` 提供实际占用。固定池槽位、payload 与完成队列仍分别核算。
+
+`BreakReplicationSessionBridgeConfig` 新增必填的 `max_metadata_bytes_per_connection` 和 `max_total_metadata_bytes`，与 payload 一样校验连接乘积且每连接上限为 16 MiB。bridge stats 新增 `pending_metadata_bytes`。零初始化配置若未设置这两个字段会明确创建失败，不会回退到无界分配。
+
+新增池用例覆盖超限原子拒绝、重复片不重复计费、expire/reset/complete 释放；session 用例在真实 BRFG handler 入口拒绝 250000 片声明，并检查第二条流无法抢占剩余元数据。合入上游 rebaseline 后，普通及 ASan+UBSan 的 fragment/wire 分别为 **30/30、9/9**，无诊断。Snowflake session/socket 结果以新增 CI job 为准，不用本地未启用 Snowflake 的全量套件代替。

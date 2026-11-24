@@ -1407,6 +1407,84 @@ jobs:
           name: evidence-receipt-gpu-runtime-macos-metal
           path: receipt.json
 
+  snowflake-replication-macos:
+    name: macOS Snowflake replication (Clang)
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Check Snowflake read access
+        id: snow_access
+        env:
+          SNOWFLAKE_TOKEN: ${{ secrets.SNOWFLAKE_READ_TOKEN }}
+        run: |
+          if [ -z "$SNOWFLAKE_TOKEN" ]; then
+            echo 'available=false' >> "$GITHUB_OUTPUT"
+            echo '::warning::Snowflake replication tests UNAVAILABLE: SNOWFLAKE_READ_TOKEN is not configured'
+          else
+            echo 'available=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v6
+        if: steps.snow_access.outputs.available == 'true'
+        with:
+          repository: konyka/snowflake
+          ref: 4ab761fc58a9d15970f295e231003c99a7d44df8
+          path: snowflake
+          token: ${{ secrets.SNOWFLAKE_READ_TOKEN }}
+          persist-credentials: false
+
+      - name: Install build dependencies
+        if: steps.snow_access.outputs.available == 'true'
+        run: brew install ninja openssl@3
+
+      - name: Configure Snowflake replication tests
+        if: steps.snow_access.outputs.available == 'true'
+        run: |
+          cmake -S engine -B build-snowflake -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DENGINE_RHI_BACKEND=metal \
+            -DENGINE_VULKAN=OFF \
+            -DBREAK_ENABLE_SNOWFLAKE=ON \
+            -DSNOWFLAKE_SOURCE_DIR="$GITHUB_WORKSPACE/snowflake" \
+            -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"
+
+      - name: Build Snowflake replication tests
+        if: steps.snow_access.outputs.available == 'true'
+        run: |
+          cmake --build build-snowflake --parallel --target \
+            core_app \
+            test_core_app_net_client \
+            test_core_app_net_transport \
+            test_break_replication_session \
+            test_break_online_aspect_session \
+            test_break_online_aspect_session_link \
+            test_break_session \
+            test_break_replication_wire \
+            test_break_replication_fragment \
+            test_public_api_cpp20 \
+            test_world_session \
+            test_world_session_loopback \
+            test_world_session_recovery \
+            test_runtime_world_session
+
+      - name: Test Snowflake replication and real socket loopback
+        if: steps.snow_access.outputs.available == 'true'
+        run: |
+          set -o pipefail
+          ctest --test-dir build-snowflake --output-on-failure --no-tests=error \
+            -R '^(test_break_replication_session|test_break_online_aspect_session|test_break_online_aspect_session_link|test_break_session|test_break_replication_wire|test_break_replication_fragment|test_public_api_cpp20|test_core_app_net_transport|test_core_app_network_aspect|test_world_session|test_world_session_loopback|test_world_session_recovery|test_runtime_world_session|test_core_app_network_world)$' \
+            | tee snowflake-replication.log
+          grep -q '100% tests passed out of 14' snowflake-replication.log
+
+      - name: Record unavailable dependency boundary
+        if: steps.snow_access.outputs.available == 'false'
+        run: |
+          echo 'Snowflake replication tests: UNAVAILABLE (no credential; no test ran)' >> "$GITHUB_STEP_SUMMARY"
+
   lane-gpu-runtime-windows-d3d12:
     # 计划 D 的真机 D3D12 GPU lane（brief :165）：self-hosted windows GPU
     # runner 接单，ENABLE_GPU_LANES=1 显式开启（同 lane-benchmark-steam-deck

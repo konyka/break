@@ -1099,6 +1099,8 @@ static bool world_peer_init(WorldPeer *peer, u64 level_generation) {
     config.bridge.stream_capacity = 16u;
     config.bridge.max_pending_bytes_per_connection = NET_CLIENT_WORLD_PACKET_BYTES;
     config.bridge.max_total_pending_bytes = NET_CLIENT_WORLD_PACKET_BYTES;
+    config.bridge.max_metadata_bytes_per_connection = NET_CLIENT_WORLD_PACKET_BYTES;
+    config.bridge.max_total_metadata_bytes = NET_CLIENT_WORLD_PACKET_BYTES;
     config.bridge.max_fragment_bytes = 64u;
     config.bridge.max_fragment_count = NET_CLIENT_WORLD_MAX_FRAGMENTS;
     config.bridge.completion_capacity = 64u;

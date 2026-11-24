@@ -27,6 +27,7 @@ struct BreakReplicationReassembler {
     uint32_t fragment_count;
     uint32_t received_count;
     size_t total_size;
+    size_t metadata_bytes;
     BreakReplicationFragment *fragments;
     uint8_t **owned_data;
     uint8_t *received;
@@ -160,6 +161,7 @@ static void clear_reassembly(BreakReplicationReassembler *reassembler)
     reassembler->fragment_count = 0u;
     reassembler->received_count = 0u;
     reassembler->total_size = 0u;
+    reassembler->metadata_bytes = 0u;
     reassembler->timed = false;
 }
 
@@ -238,6 +240,7 @@ static BreakReplicationReassemblyResult start_stream(
     new_received[fragment->fragment_index] = 1u;
     reassembler->received_count = 1u;
     reassembler->total_size = fragment->size;
+    reassembler->metadata_bytes = metadata_bytes;
     reassembler->highest_delta_id = fragment->delta_id;
     reassembler->highest_valid = true;
     if (fragment->fragment_count > 1u) return BREAK_REPLICATION_REASSEMBLY_INCOMPLETE;
@@ -389,6 +392,8 @@ struct BreakReplicationReassemblyPool {
     size_t stream_capacity;
     size_t max_pending_bytes;
     size_t pending_bytes;
+    size_t max_metadata_bytes;
+    size_t metadata_bytes;
     uint64_t expected_base_id;
     uint64_t retired_delta_id;
     bool retired_valid;
@@ -402,10 +407,20 @@ struct BreakReplicationReassemblyPool {
 BreakReplicationReassemblyPool *break_replication_reassembly_pool_create(
     uint64_t expected_base_id, size_t stream_capacity, size_t max_pending_bytes)
 {
+    return break_replication_reassembly_pool_create_with_metadata(
+        expected_base_id, stream_capacity, max_pending_bytes,
+        BREAK_REPLICATION_MAX_REASSEMBLY_SIZE);
+}
+
+BreakReplicationReassemblyPool *break_replication_reassembly_pool_create_with_metadata(
+    uint64_t expected_base_id, size_t stream_capacity, size_t max_pending_bytes,
+    size_t max_metadata_bytes)
+{
     BreakReplicationReassemblyPool *pool;
     size_t i;
     if (!stream_capacity || stream_capacity > BREAK_REPLICATION_REASSEMBLY_POOL_MAX_STREAMS ||
-        !max_pending_bytes || max_pending_bytes > BREAK_REPLICATION_MAX_REASSEMBLY_SIZE)
+        !max_pending_bytes || max_pending_bytes > BREAK_REPLICATION_MAX_REASSEMBLY_SIZE ||
+        !max_metadata_bytes || max_metadata_bytes > BREAK_REPLICATION_MAX_REASSEMBLY_SIZE)
         return NULL;
     pool = (BreakReplicationReassemblyPool *)calloc(1u, sizeof(*pool));
     if (!pool) return NULL;
@@ -417,6 +432,7 @@ BreakReplicationReassemblyPool *break_replication_reassembly_pool_create(
     }
     pool->stream_capacity = stream_capacity;
     pool->max_pending_bytes = max_pending_bytes;
+    pool->max_metadata_bytes = max_metadata_bytes;
     pool->expected_base_id = expected_base_id;
     for (i = 0u; i < stream_capacity; ++i)
         pool->slots[i].reassembler.expected_base_id = expected_base_id;
@@ -443,6 +459,9 @@ BreakReplicationReassemblyResult break_replication_reassembly_pool_push_at(
     BreakReplicationReassemblyResult validation;
     BreakReplicationReassemblyResult result;
     size_t slot_pending_before = 0u;
+    size_t slot_metadata_before = 0u;
+    const size_t metadata_unit = sizeof(BreakReplicationFragment) +
+                                 sizeof(uint8_t *) + sizeof(uint8_t);
     size_t i;
     bool starting = false;
     if (completed_delta_id) *completed_delta_id = 0u;
@@ -463,8 +482,11 @@ BreakReplicationReassemblyResult break_replication_reassembly_pool_push_at(
         if (pool->retired_valid && fragment->delta_id < pool->retired_delta_id)
             return BREAK_REPLICATION_REASSEMBLY_CONFLICT;
         if (!empty) return BREAK_REPLICATION_REASSEMBLY_OVER_LIMIT;
-        if (fragment->size > pool->max_pending_bytes - pool->pending_bytes)
+        if (fragment->size > pool->max_pending_bytes - pool->pending_bytes ||
+            (size_t)fragment->fragment_count >
+                (pool->max_metadata_bytes - pool->metadata_bytes) / metadata_unit) {
             return BREAK_REPLICATION_REASSEMBLY_OVER_LIMIT;
+        }
         slot = empty;
         break_replication_reassembler_reset(&slot->reassembler);
         slot->delta_id = fragment->delta_id;
@@ -472,6 +494,7 @@ BreakReplicationReassemblyResult break_replication_reassembly_pool_push_at(
         starting = true;
     } else {
         slot_pending_before = slot->reassembler.total_size;
+        slot_metadata_before = slot->reassembler.metadata_bytes;
         if (fragment->fragment_count == slot->reassembler.fragment_count &&
             !slot->reassembler.received[fragment->fragment_index] &&
             fragment->size > pool->max_pending_bytes - pool->pending_bytes) {
@@ -482,6 +505,8 @@ BreakReplicationReassemblyResult break_replication_reassembly_pool_push_at(
         &slot->reassembler, fragment, now, payload, payload_size);
     pool->pending_bytes = pool->pending_bytes - slot_pending_before +
                           break_replication_reassembler_pending_bytes(&slot->reassembler);
+    pool->metadata_bytes = pool->metadata_bytes - slot_metadata_before +
+                           slot->reassembler.metadata_bytes;
     if (result == BREAK_REPLICATION_REASSEMBLY_COMPLETE) {
         if (completed_delta_id) *completed_delta_id = slot->delta_id;
         if (!pool->retired_valid || pool->retired_delta_id < slot->delta_id) {
@@ -505,9 +530,11 @@ size_t break_replication_reassembly_pool_expire(
         BreakReplicationReassemblyPoolSlot *slot = &pool->slots[i];
         const size_t slot_pending =
             break_replication_reassembler_pending_bytes(&slot->reassembler);
+        const size_t slot_metadata = slot->reassembler.metadata_bytes;
         if (!break_replication_reassembler_expire(&slot->reassembler, now, max_idle))
             continue;
         pool->pending_bytes -= slot_pending;
+        pool->metadata_bytes -= slot_metadata;
         slot->active = false;
         if (!pool->retired_valid || pool->retired_delta_id < slot->delta_id) {
             pool->retired_delta_id = slot->delta_id;
@@ -571,6 +598,12 @@ size_t break_replication_reassembly_pool_pending_bytes(
     return pool ? pool->pending_bytes : 0u;
 }
 
+size_t break_replication_reassembly_pool_metadata_bytes(
+    const BreakReplicationReassemblyPool *pool)
+{
+    return pool ? pool->metadata_bytes : 0u;
+}
+
 void break_replication_reassembly_pool_reset(BreakReplicationReassemblyPool *pool)
 {
     size_t i;
@@ -581,6 +614,7 @@ void break_replication_reassembly_pool_reset(BreakReplicationReassemblyPool *poo
         pool->slots[i].active = false;
     }
     pool->pending_bytes = 0u;
+    pool->metadata_bytes = 0u;
     pool->retired_delta_id = 0u;
     pool->retired_valid = false;
     pool->last_tick = 0u;

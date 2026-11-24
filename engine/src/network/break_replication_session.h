@@ -29,6 +29,8 @@ typedef struct BreakReplicationSessionBridgeConfig {
     size_t stream_capacity;                  /* 1..64 per connection */
     size_t max_pending_bytes_per_connection; /* 1..16 MiB */
     size_t max_total_pending_bytes;          /* >= connection product */
+    size_t max_metadata_bytes_per_connection; /* 1..16 MiB */
+    size_t max_total_metadata_bytes;          /* >= connection product */
     size_t max_fragment_bytes;               /* 1..65496 */
     size_t max_fragment_count;               /* 1..1048576 */
     size_t completion_capacity;              /* > 0 */
@@ -52,6 +54,7 @@ typedef struct BreakReplicationSessionCompletion {
 typedef struct BreakReplicationSessionBridgeStats {
     size_t connections;
     size_t pending_bytes;
+    size_t pending_metadata_bytes;
     size_t completion_count;
     size_t completion_bytes;
     uint64_t rejected_fragments;
@@ -61,13 +64,13 @@ typedef struct BreakReplicationSessionBridgeStats {
     uint64_t expired_streams;
 } BreakReplicationSessionBridgeStats;
 
-/* NULL on an out-of-range field, a missing clock, an overflowing size product
- * or max_connections * max_pending_bytes_per_connection above
- * max_total_pending_bytes, so the pending total is bounded statically. That
- * budget covers pool payload bytes only; stream metadata, the completion
- * scratch and handed-off payloads are outside it, and queued completions are
- * bounded separately by completion_capacity and max_completion_queue_bytes.
- * reactor, clock and clock_user are borrowed and must outlive the bridge. */
+/* NULL on an out-of-range field, a missing clock, an overflowing size product,
+ * or a per-connection payload/metadata product above its corresponding total.
+ * Payload and dynamic per-fragment metadata have separate static budgets.
+ * Fixed connection/pool tables, the completion scratch and handed-off payloads
+ * are outside them; queued completions are bounded separately by
+ * completion_capacity and max_completion_queue_bytes. reactor, clock and
+ * clock_user are borrowed and must outlive the bridge. */
 BreakReplicationSessionBridge *break_replication_session_bridge_create(
     const BreakReplicationSessionBridgeConfig *config);
 /* Frees every pool and every unpolled completion. NULL is a no-op. */
