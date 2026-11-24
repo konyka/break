@@ -92,6 +92,9 @@ bool break_world_session_poll_control(BreakWorldSession *session,
 BreakNetSendResult break_world_session_send_control(
     BreakWorldSession *session, BreakConnectionKey connection,
     const BreakWorldSessionControl *control);
+BreakNetSendResult break_world_session_send_control_correlated(
+    BreakWorldSession *session, BreakConnectionKey connection,
+    const BreakWorldSessionControl *control, u64 correlation_id);
 /* BreakSessionMessageHandler for 0x400B. ACK requires an exact history
  * (delta_id, target id, tick) match and trims through that entry. NEED_FULL
  * forces the next newly created attempt to be full. */

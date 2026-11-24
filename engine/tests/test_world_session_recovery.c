@@ -1208,16 +1208,19 @@ TEST(world_session_control_send_uses_exact_v1_and_v2_wire)
     ASSERT_EQ(outbound_connection, 11u);
     ASSERT_EQ(outbound.message_id, BREAK_NET_MESSAGE_ID_WORLD_CONTROL);
     ASSERT_EQ(outbound.protocol_version, 1u);
+    ASSERT_EQ(outbound.correlation_id, 0u);
     ASSERT_EQ(outbound.size, 32u);
     ASSERT_TRUE(memcmp(outbound.data, expected_v1, sizeof(expected_v1)) == 0);
     break_net_message_release(&outbound);
 
     control.level_generation = TEST_LEVEL;
-    ASSERT_EQ(break_world_session_send_control(fixture.session, 11u, &control),
+    ASSERT_EQ(break_world_session_send_control_correlated(
+                  fixture.session, 11u, &control, UINT64_C(0xF123456789ABCDEF)),
               BREAK_NET_SEND_OK);
     ASSERT_EQ(break_net_reactor_poll_outbound_for_test(
                   fixture.reactor, &outbound_connection, &outbound), BREAK_NET_EVENT_OK);
     ASSERT_EQ(outbound.protocol_version, 1u);
+    ASSERT_EQ(outbound.correlation_id, UINT64_C(0xF123456789ABCDEF));
     ASSERT_EQ(outbound.size, 32u);
     ASSERT_TRUE(memcmp(outbound.data, expected_v1, sizeof(expected_v1)) == 0);
     break_net_message_release(&outbound);
@@ -1238,12 +1241,14 @@ TEST(world_session_control_send_uses_exact_v1_and_v2_wire)
               BREAK_NET_SEND_INVALID);
     ASSERT_EQ(break_net_reactor_outbound_count(fixture.reactor), 0u);
     control.level_generation = 8u;
-    ASSERT_EQ(break_world_session_send_control(fixture.session, 11u, &control),
+    ASSERT_EQ(break_world_session_send_control_correlated(
+                  fixture.session, 11u, &control, UINT64_C(0xE123456789ABCDEF)),
               BREAK_NET_SEND_OK);
     ASSERT_EQ(break_net_reactor_poll_outbound_for_test(
                   fixture.reactor, &outbound_connection, &outbound), BREAK_NET_EVENT_OK);
     ASSERT_EQ(outbound.message_id, BREAK_NET_MESSAGE_ID_WORLD_CONTROL);
     ASSERT_EQ(outbound.protocol_version, 2u);
+    ASSERT_EQ(outbound.correlation_id, UINT64_C(0xE123456789ABCDEF));
     ASSERT_EQ(outbound.size, 40u);
     ASSERT_TRUE(memcmp(outbound.data, expected_v2, sizeof(expected_v2)) == 0);
     break_net_message_release(&outbound);

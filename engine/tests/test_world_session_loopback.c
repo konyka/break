@@ -39,6 +39,9 @@ typedef struct {
 typedef struct {
     u16 message_id;
     u16 protocol_version;
+    u16 flags;
+    u32 sequence;
+    u64 correlation_id;
     usize payload_size;
     u8 payload[128u];
 } SocketFrame;
@@ -108,6 +111,13 @@ static u32 get32(const u8 *bytes)
 {
     return (u32)bytes[0] | ((u32)bytes[1] << 8u) |
            ((u32)bytes[2] << 16u) | ((u32)bytes[3] << 24u);
+}
+
+static u64 get64(const u8 *bytes)
+{
+    u64 value = 0u;
+    for (u32 i = 0u; i < 8u; ++i) value |= (u64)bytes[i] << (i * 8u);
+    return value;
 }
 
 static bool write_all(int fd, const void *data, usize size)
@@ -367,14 +377,29 @@ static bool read_exact(SocketFixture *fixture, void *data, usize size)
 static bool read_frame(SocketFixture *fixture, SocketFrame *frame)
 {
     u8 header[BREAK_NET_ENVELOPE_HEADER_SIZE];
+    u8 correlation[BREAK_NET_ENVELOPE_CORRELATION_SIZE];
+    u32 body_size;
     memset(frame, 0, sizeof(*frame));
     if (!read_exact(fixture, header, sizeof(header)) ||
-        get32(header) != BREAK_NET_ENVELOPE_MAGIC || get16(header + 8u) != 0u) {
+        get32(header) != BREAK_NET_ENVELOPE_MAGIC) {
         return false;
     }
     frame->protocol_version = get16(header + 4u);
     frame->message_id = get16(header + 6u);
-    frame->payload_size = get32(header + 14u);
+    frame->flags = get16(header + 8u);
+    frame->sequence = get32(header + 10u);
+    body_size = get32(header + 14u);
+    if ((frame->flags & (u16)~BREAK_NET_ENVELOPE_FLAG_CORRELATED) != 0u) return false;
+    if ((frame->flags & BREAK_NET_ENVELOPE_FLAG_CORRELATED) != 0u) {
+        if (body_size < BREAK_NET_ENVELOPE_CORRELATION_SIZE ||
+            !read_exact(fixture, correlation, sizeof(correlation))) {
+            return false;
+        }
+        frame->correlation_id = get64(correlation);
+        if (frame->correlation_id == 0u) return false;
+        body_size -= BREAK_NET_ENVELOPE_CORRELATION_SIZE;
+    }
+    frame->payload_size = body_size;
     return frame->payload_size <= sizeof(frame->payload) &&
            read_exact(fixture, frame->payload, frame->payload_size);
 }
@@ -804,6 +829,74 @@ static bool world_matches(World *world, BreakComponentSchemaRegistry *schemas,
 static bool remote_matches(SocketFixture *fixture, u64 tick, u64 expected_id)
 {
     return world_matches(fixture->remote, fixture->schemas, tick, expected_id);
+}
+
+TEST(world_session_real_socket_control_correlation_preserves_v1_v2_and_sequences)
+{
+    static const u8 expected_v1[BREAK_WORLD_SESSION_CONTROL_WIRE_SIZE] = {
+        0x42, 0x52, 0x57, 0x43, 0x01, 0x00, 0x02, 0x00,
+        0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+    };
+    static const u8 expected_v2[BREAK_WORLD_SESSION_CONTROL_WIRE_SIZE_V2] = {
+        0x42, 0x52, 0x57, 0x43, 0x02, 0x00, 0x02, 0x00,
+        0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+    };
+    SocketFixture fixture;
+    BreakWorldSessionControl control;
+    SocketFrame frame;
+
+    memset(&fixture, 0, sizeof(fixture));
+    fixture.client_fd = -1;
+    LOOPBACK_CHECK(socket_start(&fixture, true));
+    LOOPBACK_CHECK(connect_authenticate(&fixture));
+    memset(&control, 0, sizeof(control));
+    control.kind = BREAK_WORLD_SESSION_CONTROL_ACK;
+    control.delta_id = 1u;
+    control.target_snapshot_id = 2u;
+    control.target_tick = 3u;
+
+    LOOPBACK_CHECK(break_world_session_send_control(
+                       fixture.session, fixture.connection, &control) == BREAK_NET_SEND_OK);
+    LOOPBACK_CHECK(read_frame(&fixture, &frame));
+    LOOPBACK_CHECK(frame.message_id == 0x400Bu && frame.protocol_version == 1u);
+    LOOPBACK_CHECK(frame.flags == 0u && frame.correlation_id == 0u);
+    LOOPBACK_CHECK(frame.sequence == 1u);
+    LOOPBACK_CHECK(frame.payload_size == sizeof(expected_v1));
+    LOOPBACK_CHECK(memcmp(frame.payload, expected_v1, sizeof(expected_v1)) == 0);
+
+    control.level_generation = TEST_LEVEL;
+    LOOPBACK_CHECK(break_world_session_send_control_correlated(
+                       fixture.session, fixture.connection, &control,
+                       UINT64_C(0xF123456789ABCDEF)) == BREAK_NET_SEND_OK);
+    LOOPBACK_CHECK(read_frame(&fixture, &frame));
+    LOOPBACK_CHECK(frame.message_id == 0x400Bu && frame.protocol_version == 1u);
+    LOOPBACK_CHECK(frame.flags == BREAK_NET_ENVELOPE_FLAG_CORRELATED);
+    LOOPBACK_CHECK(frame.correlation_id == UINT64_C(0xF123456789ABCDEF));
+    LOOPBACK_CHECK(frame.sequence == 2u);
+    LOOPBACK_CHECK(frame.payload_size == sizeof(expected_v1));
+    LOOPBACK_CHECK(memcmp(frame.payload, expected_v1, sizeof(expected_v1)) == 0);
+
+    LOOPBACK_CHECK(break_world_session_rebaseline(fixture.session, 8u));
+    control.level_generation = 8u;
+    LOOPBACK_CHECK(break_world_session_send_control_correlated(
+                       fixture.session, fixture.connection, &control,
+                       UINT64_C(0xE123456789ABCDEF)) == BREAK_NET_SEND_OK);
+    LOOPBACK_CHECK(read_frame(&fixture, &frame));
+    LOOPBACK_CHECK(frame.message_id == 0x400Bu && frame.protocol_version == 2u);
+    LOOPBACK_CHECK(frame.flags == BREAK_NET_ENVELOPE_FLAG_CORRELATED);
+    LOOPBACK_CHECK(frame.correlation_id == UINT64_C(0xE123456789ABCDEF));
+    LOOPBACK_CHECK(frame.sequence == 3u);
+    LOOPBACK_CHECK(frame.payload_size == sizeof(expected_v2));
+    LOOPBACK_CHECK(memcmp(frame.payload, expected_v2, sizeof(expected_v2)) == 0);
+    LOOPBACK_CHECK(break_world_session_level_generation(fixture.session) == 8u);
+
+cleanup:
+    socket_dispose(&fixture);
 }
 
 TEST(world_session_real_socket_reorders_duplicates_and_recovers_with_full)
@@ -1602,6 +1695,7 @@ TEST(world_session_registry_without_delta_fails_then_restores)
 }
 
 TEST_MAIN_BEGIN()
+    RUN_TEST(world_session_real_socket_control_correlation_preserves_v1_v2_and_sequences);
     RUN_TEST(world_session_real_socket_reorders_duplicates_and_recovers_with_full);
     RUN_TEST(world_session_same_socket_rebaselines_and_rejects_late_traffic);
     RUN_TEST(world_session_two_sockets_share_snapshots_with_independent_recovery);

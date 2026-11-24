@@ -491,6 +491,13 @@ BreakNetSendResult break_world_session_send_control(
     BreakWorldSession *session, BreakConnectionKey connection,
     const BreakWorldSessionControl *control)
 {
+    return break_world_session_send_control_correlated(session, connection, control, 0u);
+}
+
+BreakNetSendResult break_world_session_send_control_correlated(
+    BreakWorldSession *session, BreakConnectionKey connection,
+    const BreakWorldSessionControl *control, u64 correlation_id)
+{
     u8 payload[BREAK_WORLD_SESSION_CONTROL_WIRE_SIZE_V2];
     u16 version;
     size_t payload_size;
@@ -521,9 +528,9 @@ BreakNetSendResult break_world_session_send_control(
     put64(payload + 16u, control->target_snapshot_id);
     put64(payload + 24u, control->target_tick);
     if (version == 2u) put64(payload + 32u, control->level_generation);
-    return break_net_reactor_send(session->reactor, connection,
-                                  BREAK_NET_MESSAGE_ID_WORLD_CONTROL, version,
-                                  payload, payload_size);
+    return break_net_reactor_send_correlated(session->reactor, connection,
+                                             BREAK_NET_MESSAGE_ID_WORLD_CONTROL, version,
+                                             correlation_id, payload, payload_size);
 }
 
 bool break_world_session_handle_control(BreakConnectionKey connection,
