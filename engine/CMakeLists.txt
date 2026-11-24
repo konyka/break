@@ -8276,6 +8276,11 @@ endif()
     target_include_directories(fuzz_core_app_network PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(fuzz_core_app_network PRIVATE core_app_network m)
 
+    add_executable(fuzz_world_delta_wire EXCLUDE_FROM_ALL
+        tests/fuzz_world_delta_wire.c)
+    target_include_directories(fuzz_world_delta_wire PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(fuzz_world_delta_wire PRIVATE break_ecs_replication m)
+
     # Mutation fuzzer for the editor remote session wire path (ids 4..21):
     # mutated envelopes -> the real break_net codec -> the real session
     # manager -> the real editor_remote.c handlers on a live headless shell
@@ -8325,6 +8330,7 @@ endif()
         add_test(NAME fuzz_core_app_checkpoint_smoke COMMAND fuzz_core_app_checkpoint 200 31)
         add_test(NAME fuzz_core_app_scenario_smoke COMMAND fuzz_core_app_scenario 500 37)
         add_test(NAME fuzz_core_app_network_smoke COMMAND fuzz_core_app_network 2000 41)
+        add_test(NAME fuzz_world_delta_wire_smoke COMMAND fuzz_world_delta_wire 2000 47)
         add_test(NAME fuzz_break_online_voice_smoke COMMAND fuzz_break_online_voice 2000 43)
         # Checked-in wire samples, one per file; the name prefix is the expected
         # decode outcome. Regenerate with `fuzz_core_app_network --emit-corpus <dir>`.
@@ -8355,7 +8361,8 @@ endif()
             fuzz_decode_image_smoke fuzz_vfs_pak_smoke fuzz_asset_gltf_smoke
             fuzz_mycompose_tree_smoke fuzz_mycompose_intent_smoke
             fuzz_core_app_checkpoint_smoke fuzz_core_app_scenario_smoke
-            fuzz_core_app_network_smoke fuzz_break_online_voice_smoke
+            fuzz_core_app_network_smoke fuzz_world_delta_wire_smoke
+            fuzz_break_online_voice_smoke
             PROPERTIES LABELS "fuzz")
         if(ENGINE_BUILD_LIBFUZZER)
             if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang" OR MSVC)
@@ -8382,6 +8389,27 @@ endif()
                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/core_app_network_corpus)
             set_tests_properties(libfuzz_core_app_network_run PROPERTIES
                 LABELS "fuzz;libfuzzer" TIMEOUT 300)
+
+            add_executable(libfuzz_world_delta_wire EXCLUDE_FROM_ALL
+                tests/fuzz_world_delta_wire.c src/ecs/ecs.c src/ecs/replication_schema.c
+                src/ecs/world_snapshot.c src/ecs/world_delta.c src/ecs/world_delta_wire.c
+                src/core/log.c)
+            target_compile_definitions(libfuzz_world_delta_wire PRIVATE
+                WORLD_DELTA_WIRE_LIBFUZZER=1)
+            target_compile_options(libfuzz_world_delta_wire PRIVATE
+                -fsanitize=fuzzer -Wno-unused-function)
+            target_link_options(libfuzz_world_delta_wire PRIVATE -fsanitize=fuzzer)
+            target_include_directories(libfuzz_world_delta_wire PRIVATE ${TEST_INCLUDE_DIRS})
+            target_link_libraries(libfuzz_world_delta_wire PRIVATE m)
+            set(_libfuzz_world_delta_wire_dir
+                ${CMAKE_CURRENT_BINARY_DIR}/libfuzz_world_delta_wire_corpus)
+            file(MAKE_DIRECTORY ${_libfuzz_world_delta_wire_dir})
+            add_test(NAME libfuzz_world_delta_wire_run
+                COMMAND libfuzz_world_delta_wire -runs=200000 -seed=1 -max_len=4096
+                    ${_libfuzz_world_delta_wire_dir})
+            set_tests_properties(libfuzz_world_delta_wire_run PROPERTIES
+                LABELS "fuzz;libfuzzer" TIMEOUT 300)
+
             # Scenario parser: same accept/reject checks as fuzz_core_app_scenario.
             # max_len is above CORE_APP_SCENARIO_MAX_BYTES so the size cap is reached.
             add_executable(libfuzz_core_app_scenario EXCLUDE_FROM_ALL

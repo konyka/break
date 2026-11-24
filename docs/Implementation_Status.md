@@ -13657,3 +13657,13 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 整分支独立评审 approve，仅重复覆盖一处测试强化，随后已补测通过。
 - 远端：CI run `45353129203` success，windows-d3d12 run `45353129052` success，QUIC run `45353129051` success，Proton run `45355543355` success，上游 run-id `45353129052`，device/pipeline contract 均为 77。
 - 边界：World delta 编解码与恢复、inbound 回写 simulation、level rebaseline 仍未完成；World delta wire 在后续子项目实现。
+
+
+## World delta BRWD/v1 codec 与稀疏重建（2026-11-24）
+
+- **交付**：`break_ecs_replication` 新增 `world_delta_wire.{h,c}`。BRWD/v1 为 60 字节显式小端头加 17 字节记录头/payload；保存 full/delta kind、schema/level、base/target snapshot id 与 tick、五种 delta record。上限为 **1,048,576 records、67,108,864 bytes**，无宿主 `usize`、packed struct 或未对齐整数读取。
+- **严格解码**：检查 magic/version/kind/record kind、count/size、零 handle/component、CREATE/DESTROY/ADD/REMOVE/UPDATE 的 component/payload 形状、tick 顺序、截断和尾随。full 要求零 base id/tick 且只允许 CREATE/ADD；delta 要求非零 base id。decode 拥有记录数组、借用 payload，失败清零输出；重复 canonical re-encoding 逐字节一致。
+- **重建与稀疏实体**：full 从空 staging World 重建，使用临时占位跨越稀疏 entity index 后再销毁占位，保留目标 generation。delta 核对 caller World/base snapshot/schema/level/tick 并只修改 deep clone。最终重新 `break_world_snapshot_build`，以 `break_world_snapshot_id` 对照 wire target id；任何不匹配均拒绝且 caller World 不变。
+- **覆盖**：`test_world_delta_wire` **21/21**，含真实 4 实体×3 组件 full/delta、单 delta 混合五类记录、宽 u64、空 full、稀疏 full、精确 64 MiB 最大消息与重复 canonical round-trip。deterministic fuzz **2000** 次（accepted 534、rejected 1324、over_limit 142）；Clang libFuzzer **20000 runs**，均无发现。
+- **边界**：本项仅交付 codec、目标重建与验证。Session/bridge/core_app 接线、消息注册、ACK/NACK、重试/恢复、level rebaseline、权威 simulation 应用和生产启用仍未完成；没有新增线程或后台维护。
+- **最终验证**：Vulkan **471 注册、467 执行通过、4 条件 skip、0 失败**；OpenGL **462 注册、458 执行通过、4 条件 skip、0 失败**。五项 focused ASan+UBSan（`detect_leaks=1`）与 TSan 均为 **5/5 CTest、146/146 直接测试**，无 sanitizer/leak/race 诊断；条件 skip 不计执行通过。

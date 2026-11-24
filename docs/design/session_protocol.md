@@ -321,3 +321,14 @@ focused normal、ASan+UBSan（`ASAN_OPTIONS=detect_leaks=1`）和 TSan 均为 **
 真实 `test_core_app_network_aspect` 为 **1/1**：客户端 BRFG decode 后本地重组并应用两个固定句柄，六类字段与 snapshot 一致；随后反序发送 3 个有效分片及 1 个重复分片，再发送 3 个内部 schema mismatch 分片。服务端恰为 applied=1、rejected=1、drained=2、queue_depth=0、dropped=0，sent_fragments 合同要求至少 2（一次运行为 12）。临时移除 0x4009 handler 时用例 **0/1**，计数变为 0/0/0；恢复后重新 **1/1**。全部 core_app network/offline **12/12**、lifecycle **12/12**，默认关闭路径没有 aspect trace。ASan+UBSan（detect_leaks=1）focused **9/9**；TSan 直接目标 **7/7**，另以正常服务端 + TSan 客户端完成 aspect loopback **1/1**。两个 core_app TSan 进程场景仍命中既有 Lua `longjmp buf` 环境失败，未记为通过。
 
 **World delta、inbound 到 simulation、level rebaseline、可靠恢复仍未完成**；本节不包含远端或其他平台验收。
+
+
+## 补充（2026-11-24）：BRWD/v1 仅定义 World delta 载荷，不扩展 Session 协议
+
+World snapshot/delta 现在有独立 BRWD/v1 canonical codec。消息头为 60 字节：`BRWD`、version=1、kind=full/delta、schema_hash、level_generation、base/target snapshot id、base/target tick 和 record_count；记录头为 17 字节：record kind、u64 entity handle、component_id、byte_size，后接精确长度 payload。全部整数显式 little-endian；最多 **1,048,576** 条记录、**67,108,864** 字节整包。full 的 base id/tick 均为零且只含 CREATE/ADD，delta 的 base id 非零，target tick 必须递增。
+
+解码严格检查 magic/version/kind/record kind、字段和总字节上限、非零 handle/component、record payload 形状、精确终止和无尾随，失败输出清零。`rebuild` 核对 schema/level/base/tick，full 支持稀疏 entity index 的占位重建，delta 只修改 caller World 的 staging clone；最终以 `break_world_snapshot_build` 和 `break_world_snapshot_id` 重算并核对 target id，不信任线传 hash。测试 **21/21**，deterministic fuzz **2000** 次（accepted 534、rejected 1324、over_limit 142），libFuzzer **20000 runs**。
+
+**Session/bridge 接线仍未完成**：没有 BRWD message ID、registry 项、fragment 映射、认证 phase、completion drain 或 core_app 启用。ACK/NACK、重试、断点续传、base 恢复和可靠传输策略也均未定义；现有 0x4009 BRFG Session bridge 不会隐式传输或确认 BRWD。
+
+最终完整 CTest：Vulkan **471 注册、467 执行通过、4 条件 skip、0 失败**；OpenGL **462 注册、458 执行通过、4 条件 skip、0 失败**。五项 focused ASan+UBSan（`detect_leaks=1`）与 TSan 均为 **5/5 CTest、146/146 直接测试**，无诊断；条件 skip 不计执行通过，也不构成 Session/bridge 接线验收。

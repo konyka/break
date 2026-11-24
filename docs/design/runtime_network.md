@@ -420,3 +420,18 @@ inbound store 仅证明 BRFG/schema/BRA1 校验与 drain，永不写回 simulati
 真实 loopback **1/1** 验证本地重组、两个句柄全部值、反序 3 片 + 重复 1 片 + mismatch 3 片，服务端 applied/rejected/drained=1/1/2、queue/dropped=0，发送至少 2 片。0x4009 负对照 **0/1** 后恢复 **1/1**；network **12/12**、lifecycle **12/12**、ASan+UBSan **9/9**、TSan 直接目标 **7/7** 和 TSan 客户端 loopback **1/1**。core_app TSan 进程场景仍有既有 Lua longjmp 环境失败。
 
 World delta、inbound-to-simulation、level rebaseline、可靠恢复、Runtime Core 新映射及远端验收均不在本项。
+
+
+## 补充（2026-11-24）：World delta BRWD/v1 canonical codec 与目标重建
+
+`break_ecs_replication` 新增传输无关的 `break_world_delta_wire_{encoded_size,encode,decode,clear,rebuild}`。BRWD/v1 使用 60 字节显式 little-endian 头：`BRWD`、u16 version=1、u16 kind（full=1/delta=2），随后是 schema_hash、level_generation、base/target snapshot id、base/target tick（均 u64）和 u32 record_count。每条记录为 17 字节头加 payload：u8 kind、u64 entity_handle（低 32 位 index、高 32 位 generation）、u32 component_id、u32 byte_size。整包至多 **67,108,864** 字节，至多 **1,048,576** 条记录；线上没有宿主 `usize` 或 packed struct。
+
+解码拒绝错误 magic/version/kind/record kind、超限 count/size、零 entity handle、组件记录的零 component id、实体记录的非零 component/payload、ADD/UPDATE 的空 payload、REMOVE 的非空 payload、非递增 tick 和任何截断/尾随。full 的 base id/tick 必须都为零且只允许 CREATE/ADD；delta 的 base id 必须非零。成功 decode 拥有 record 数组但借用输入 payload，重复 decode→encode 必须逐字节一致；所有失败清零输出，encode 失败不写输出缓冲。
+
+`rebuild` 只在私有 staging World 上应用记录。full 从空 World 重建，稀疏 entity index 用临时占位创建后销毁，保留目标 index/generation；delta 要求调用方 World、base snapshot、schema、level、base id/tick 全部匹配。最终用 `break_world_snapshot_build` 重算 target，并要求 `break_world_snapshot_id` 等于线上 target id；线传 id 不是信任依据，失败不改变调用方 World 且输出为 NULL。
+
+`test_world_delta_wire` 现为 **21/21**，覆盖 4 实体/3 组件 full+delta、单 delta 内混合 CREATE/DESTROY/ADD/REMOVE/UPDATE、宽 u64、空 full、精确 64 MiB 边界、稀疏句柄和重复 canonical re-encoding。既有 deterministic fuzz 运行 **2000** 次（accepted 534、rejected 1324、over_limit 142），Clang libFuzzer 入口完成 **20000 runs**，均无发现。
+
+本项没有注册 BRWD 消息 ID，也没有 session/bridge/core_app 接线、ACK/NACK、重试、断线恢复或生产启用；BRFG 的可靠性与 session 语义不自动延伸到 BRWD。
+
+最终完整 CTest：Vulkan 注册 **471** 项，**467 执行通过、4 条件 skip、0 失败**；OpenGL 注册 **462** 项，**458 执行通过、4 条件 skip、0 失败**。五项 focused ASan+UBSan（`detect_leaks=1`）与 TSan 均为 **5/5 CTest、146/146 直接测试**，无 sanitizer/leak/race 诊断；条件 skip 不计执行通过。

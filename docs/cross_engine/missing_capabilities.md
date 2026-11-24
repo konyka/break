@@ -790,3 +790,20 @@ fix 后 normal、ASan+UBSan/LSan、TSan focused 均为 wire **9/9**、旧 fragme
 #### core_app aspect 复制远端收据（2026-11-24）
 
 `146b9dcb` 的 CI `45353129203`、windows-d3d12 `45353129052`、QUIC `45353129051`、Proton `45355543355` 均 success，Proton device/pipeline contract 均为 77，上游 run-id `45353129052`。inbound 仍为诊断专用，World delta wire、inbound 到 simulation 与可靠恢复未实现。
+
+
+## 第 17 节（大世界/流式）补充（2026-11-24）：仅关闭 World delta 线表达与重建缺口
+
+BRWD/v1 现在为 ECS World full snapshot 和 delta 提供传输无关的 canonical 表达：60 字节显式 little-endian 消息头、17 字节记录头、generation-aware u64 entity handle、schema/level/base/target/tick 和精确 payload。整包限制 **67,108,864** 字节、**1,048,576** 条记录；严格枚举/字段形状/count/size/tick/终止校验，失败输出清零，成功消息可重复逐字节重编码。
+
+目标重建不直接信任 wire id。full 在空 staging World 上通过临时占位支持稀疏 entity index，随后销毁占位；delta 验证 caller World/base/schema/level/tick 后只修改 deep clone。两边均通过 `break_world_snapshot_build` 重算 target，并要求 `break_world_snapshot_id` 与线传 target id 相等，失败不改变 caller World。`test_world_delta_wire` **21/21**，deterministic fuzz **2000** 次（534 accepted、1324 rejected、142 over_limit），libFuzzer **20000 runs**。
+
+以下能力明确仍然缺失：
+
+- BRWD 的 message ID、Session/bridge 注册、fragment/transport 映射、owner-thread drain 和 core_app/editor 生产接线。
+- ACK/NACK、重试、断线恢复、base snapshot 获取/再基线、权威 simulation 应用及安全准入策略。
+- 完整资产链、跨 World 持久身份、预测回滚和生产服务验收。
+
+本补充只关闭独立 codec 与 staging 重建缺口，不把既有 BRFG Session bridge 或 AOI drain 宣称为 BRWD 集成。
+
+最终完整 CTest：Vulkan **471 注册、467 执行通过、4 条件 skip、0 失败**；OpenGL **462 注册、458 执行通过、4 条件 skip、0 失败**。五项 focused ASan+UBSan（`detect_leaks=1`）与 TSan 均为 **5/5 CTest、146/146 直接测试**，无诊断；条件 skip 不计执行通过，也不关闭上述集成缺口。

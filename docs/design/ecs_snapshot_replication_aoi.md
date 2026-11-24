@@ -250,3 +250,18 @@ normal、ASan+UBSan（显式 `detect_leaks=1`）和 TSan focused 均为 **6/6、
 真实 loopback 先验证两个固定 handle 的六类值与 snapshot 完全一致，再反序发送 3 个有效片及 1 个重复片，并发送 3 个 schema-mismatch 片。服务端 applied=1、rejected=1、drained=2、sent_fragments≥2、queue_depth=0、dropped=0；负对照移除 0x4009 handler 后为 **0/1**（0/0/0），恢复为 **1/1**。core_app network **12/12**、lifecycle **12/12**、ASan+UBSan **9/9**、TSan 直接目标 **7/7**、TSan 客户端 loopback **1/1**；两个 core_app TSan 场景受既有 Lua longjmp 环境限制。
 
 **World delta、inbound 到 simulation、level rebaseline、可靠恢复仍未完成**；本项没有分布式 cell、预测回滚或完整资产链结论。
+
+
+## 补充（2026-11-24）：ECS World snapshot/delta 的 BRWD/v1 表达
+
+`world_delta_wire.{h,c}` 为既有 immutable snapshot 和 delta record 提供独立 BRWD/v1 编解码，不改变 `world_snapshot`、`world_delta`、AOI、BRA1 或 BRFG 的格式。60 字节消息头依次保存 magic/version/kind、schema/level、base/target id、base/target tick 和 record count；17 字节记录头保存 record kind、generation-aware u64 entity handle、component id 和 byte size。整数显式小端逐字节读写，count 上限 **1,048,576**，整包上限 **64 MiB（67,108,864 字节）**。
+
+校验覆盖枚举范围、count/size 上限、精确剩余长度、零 handle/component、各 record 的 component/payload 形状、target tick 严格大于 base tick，以及 full 零 base 与 delta 非零 base id。full 只含 CREATE/ADD，delta 支持五种既有 record kind；canonical decode 的 payload 借用输入，重新编码与原文逐字节一致。失败输出清零，输入与 encode 输出缓冲按 API 契约保持不变。
+
+重建继续使用 staging 隔离：full 从空 World 应用完整记录，遇到稀疏 entity index 时先创建临时占位、达到目标稀疏句柄后再销毁占位，因此 snapshot 不需要为缺失 index 伪造实体。delta 在 caller World 的 deep clone 上应用，先核对 base snapshot id/tick、schema hash 和 level generation。两边都重新构建 snapshot 并用 `break_world_snapshot_id` 验证 wire target id；schema/base/tick/hash 不符均拒绝，caller World 不变。
+
+测试为 **21/21**：真实 4 实体、3 组件 full/delta 在同一 delta 中覆盖五种记录，另有宽 u64 id/tick、空记录 full、最大尺寸记录、稀疏 full 和 3–16 轮 canonical re-encoding。deterministic fuzz **2000** 次（534/1324/142 为 accepted/rejected/over_limit），libFuzzer **20000 runs**，均无发现。
+
+本模块不直接写调用方 World，也不接 session、bridge 或 runtime owner drain。跨 level rebaseline、ACK/恢复、权威应用和生产启用仍未完成。
+
+最终完整 CTest：Vulkan **471 注册、467 执行通过、4 条件 skip、0 失败**；OpenGL **462 注册、458 执行通过、4 条件 skip、0 失败**。五项 focused ASan+UBSan（`detect_leaks=1`）与 TSan 均为 **5/5 CTest、146/146 直接测试**，无诊断；条件 skip 不计执行通过。

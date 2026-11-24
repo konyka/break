@@ -8,7 +8,9 @@
 
 #define COMP_VALUE 11u
 #define COMP_EXTRA 12u
+#define COMP_THIRD 13u
 #define TEST_LEVEL 7u
+#define RICH_LEVEL UINT64_C(0xf123456789abcde0)
 
 #define WIRE_KIND_OFFSET 6u
 #define WIRE_BASE_ID_OFFSET 24u
@@ -28,6 +30,11 @@ typedef struct {
 typedef struct {
     u64 value;
 } Extra;
+
+typedef struct {
+    u16 low;
+    u16 high;
+} Third;
 
 typedef struct {
     BreakComponentSchemaRegistry *schemas;
@@ -129,6 +136,14 @@ static bool add_extra(World *world, Entity entity, u64 value) {
     Extra *component = (Extra *)world_add_component(world, entity, COMP_EXTRA);
     if (!component) return false;
     component->value = value;
+    return true;
+}
+
+static bool add_third(World *world, Entity entity, u16 low, u16 high) {
+    Third *component = (Third *)world_add_component(world, entity, COMP_THIRD);
+    if (!component) return false;
+    component->low = low;
+    component->high = high;
     return true;
 }
 
@@ -282,6 +297,75 @@ static void fixture_destroy(Fixture *fixture) {
     memset(fixture, 0, sizeof(*fixture));
 }
 
+static bool rich_fixture_init(Fixture *fixture) {
+    Entity entities[4];
+    memset(fixture, 0, sizeof(*fixture));
+    fixture->schemas = break_schema_registry_create();
+    if (!fixture->schemas ||
+        !register_component(fixture->schemas, COMP_VALUE, sizeof(Value), _Alignof(Value), 1u) ||
+        !register_component(fixture->schemas, COMP_EXTRA, sizeof(Extra), _Alignof(Extra), 2u) ||
+        !register_component(fixture->schemas, COMP_THIRD, sizeof(Third), _Alignof(Third), 3u)) {
+        return false;
+    }
+    fixture->base_world = world_create();
+    fixture->target_world = world_create();
+    if (!fixture->base_world || !fixture->target_world) return false;
+    world_register_component(fixture->base_world, COMP_VALUE, sizeof(Value));
+    world_register_component(fixture->base_world, COMP_EXTRA, sizeof(Extra));
+    world_register_component(fixture->base_world, COMP_THIRD, sizeof(Third));
+    world_register_component(fixture->target_world, COMP_VALUE, sizeof(Value));
+    world_register_component(fixture->target_world, COMP_EXTRA, sizeof(Extra));
+    world_register_component(fixture->target_world, COMP_THIRD, sizeof(Third));
+
+    for (u32 i = 0u; i < 4u; ++i) entities[i] = world_create_entity(fixture->base_world);
+    if (!add_value(fixture->base_world, entities[0], 10u) ||
+        !add_extra(fixture->base_world, entities[0], 100u) ||
+        !add_third(fixture->base_world, entities[0], 1u, 2u) ||
+        !add_value(fixture->base_world, entities[1], 20u) ||
+        !add_value(fixture->base_world, entities[2], 30u) ||
+        !add_extra(fixture->base_world, entities[2], 300u) ||
+        !add_third(fixture->base_world, entities[2], 3u, 4u) ||
+        !add_value(fixture->base_world, entities[3], 40u) ||
+        !add_third(fixture->base_world, entities[3], 5u, 6u)) {
+        return false;
+    }
+
+    for (u32 i = 0u; i < 4u; ++i) entities[i] = world_create_entity(fixture->target_world);
+    if (!add_value(fixture->target_world, entities[0], 11u) ||
+        !add_third(fixture->target_world, entities[0], 7u, 8u) ||
+        !add_value(fixture->target_world, entities[1], 20u) ||
+        !add_extra(fixture->target_world, entities[1], 200u) ||
+        !add_third(fixture->target_world, entities[1], 9u, 10u) ||
+        !add_value(fixture->target_world, entities[2], 30u) ||
+        !add_extra(fixture->target_world, entities[2], 300u) ||
+        !add_third(fixture->target_world, entities[2], 3u, 4u) ||
+        !add_value(fixture->target_world, entities[3], 40u) ||
+        !add_third(fixture->target_world, entities[3], 5u, 6u)) {
+        return false;
+    }
+    world_destroy_entity(fixture->target_world, entities[2]);
+    entities[2] = world_create_entity(fixture->target_world);
+    if (entities[2].index != 3u || entities[2].generation != 3u ||
+        !add_value(fixture->target_world, entities[2], 33u) ||
+        !add_extra(fixture->target_world, entities[2], 333u) ||
+        !add_third(fixture->target_world, entities[2], 11u, 12u)) {
+        return false;
+    }
+
+    fixture->base = break_world_snapshot_build(fixture->base_world, fixture->schemas,
+                                                UINT64_C(0x8000000000000000));
+    fixture->target = break_world_snapshot_build(fixture->target_world, fixture->schemas,
+                                                  UINT64_C(0x8000000000000001));
+    if (!fixture->base || !fixture->target) return false;
+    fixture->delta = break_world_delta_diff(fixture->base, fixture->target);
+    if (!fixture->delta ||
+        !message_from_delta(fixture->delta, RICH_LEVEL, &fixture->delta_message) ||
+        !message_from_snapshot(fixture->target, RICH_LEVEL, &fixture->full_message)) {
+        return false;
+    }
+    return true;
+}
+
 static bool messages_equal(const BreakWorldDeltaWire *a, const BreakWorldDeltaWire *b) {
     if (a->kind != b->kind || a->schema_hash != b->schema_hash ||
         a->level_generation != b->level_generation ||
@@ -301,6 +385,64 @@ static bool messages_equal(const BreakWorldDeltaWire *a, const BreakWorldDeltaWi
         if (left->size != 0u && memcmp(left->bytes, right->bytes, left->size) != 0) return false;
     }
     return true;
+}
+
+static bool encode_alloc(const BreakWorldDeltaWire *message, u8 **out_wire, usize *out_size) {
+    u8 *wire;
+    usize size = 0u;
+    *out_wire = NULL;
+    *out_size = 0u;
+    if (break_world_delta_wire_encoded_size(message, &size) != BREAK_WORLD_DELTA_WIRE_OK) {
+        return false;
+    }
+    wire = (u8 *)malloc(size ? size : 1u);
+    if (!wire) return false;
+    if (break_world_delta_wire_encode(message, wire, size, &size) != BREAK_WORLD_DELTA_WIRE_OK) {
+        free(wire);
+        return false;
+    }
+    *out_wire = wire;
+    *out_size = size;
+    return true;
+}
+
+static bool canonical_reencoding(const void *initial, usize size, u32 rounds) {
+    u8 *first = (u8 *)malloc(size ? size : 1u);
+    u8 *second = (u8 *)malloc(size ? size : 1u);
+    u8 *current = first;
+    u8 *next = second;
+    bool ok = true;
+    if (!first || !second) {
+        free(second);
+        free(first);
+        return false;
+    }
+    if (size != 0u) memcpy(first, initial, size);
+    for (u32 round = 0u; round < rounds; ++round) {
+        BreakWorldDeltaWire decoded;
+        usize encoded_size = 0u;
+        memset(&decoded, 0, sizeof(decoded));
+        if (break_world_delta_wire_decode(current, size, &decoded) != BREAK_WORLD_DELTA_WIRE_OK) {
+            ok = false;
+            break;
+        }
+        if (break_world_delta_wire_encode(&decoded, next, size, &encoded_size) !=
+                BREAK_WORLD_DELTA_WIRE_OK ||
+            encoded_size != size || memcmp(next, current, size) != 0) {
+            break_world_delta_wire_clear(&decoded);
+            ok = false;
+            break;
+        }
+        break_world_delta_wire_clear(&decoded);
+        {
+            u8 *swap = current;
+            current = next;
+            next = swap;
+        }
+    }
+    free(second);
+    free(first);
+    return ok;
 }
 
 static void check_decode_rejection(const void *data, usize size,
@@ -870,6 +1012,173 @@ TEST(world_delta_wire_rejects_remove_record_with_payload) {
     fixture_destroy(&fixture);
 }
 
+TEST(world_delta_wire_multi_entity_component_full_delta_are_canonical) {
+    Fixture fixture;
+    BreakWorldDeltaWire decoded;
+    BreakWorldSnapshot *rebuilt = NULL;
+    u8 *delta_wire = NULL;
+    u8 *full_wire = NULL;
+    usize delta_size = 0u;
+    usize full_size = 0u;
+    bool kinds[5] = {false, false, false, false, false};
+    ASSERT_TRUE(rich_fixture_init(&fixture));
+    ASSERT_EQ(fixture.delta_message.record_count, 10u);
+    ASSERT_EQ(fixture.full_message.record_count, 14u);
+    for (u32 i = 0u; i < fixture.delta_message.record_count; ++i) {
+        kinds[fixture.delta_message.records[i].kind] = true;
+    }
+    for (u32 i = 0u; i < 5u; ++i) ASSERT_TRUE(kinds[i]);
+
+    ASSERT_TRUE(encode_alloc(&fixture.delta_message, &delta_wire, &delta_size));
+    ASSERT_EQ(break_world_delta_wire_decode(delta_wire, delta_size, &decoded),
+              BREAK_WORLD_DELTA_WIRE_OK);
+    ASSERT_EQ(break_world_delta_wire_rebuild(&decoded, fixture.base_world, fixture.base,
+                                             fixture.schemas, RICH_LEVEL, &rebuilt),
+              BREAK_WORLD_DELTA_WIRE_OK);
+    ASSERT_NOT_NULL(rebuilt);
+    ASSERT_EQ(break_world_snapshot_id(rebuilt), break_world_snapshot_id(fixture.target));
+    ASSERT_EQ(break_world_snapshot_tick(rebuilt), UINT64_C(0x8000000000000001));
+    ASSERT_EQ(break_world_snapshot_entity_count(rebuilt), 4u);
+    ASSERT_TRUE(canonical_reencoding(delta_wire, delta_size, 8u));
+    ASSERT_EQ(((Value *)world_get_component(fixture.base_world, (Entity){1u, 1u}, COMP_VALUE))->value,
+              10u);
+    break_world_snapshot_release(rebuilt);
+    break_world_delta_wire_clear(&decoded);
+
+    ASSERT_TRUE(encode_alloc(&fixture.full_message, &full_wire, &full_size));
+    rebuilt = NULL;
+    ASSERT_EQ(break_world_delta_wire_decode(full_wire, full_size, &decoded),
+              BREAK_WORLD_DELTA_WIRE_OK);
+    ASSERT_EQ(break_world_delta_wire_rebuild(&decoded, NULL, NULL, fixture.schemas,
+                                             RICH_LEVEL, &rebuilt),
+              BREAK_WORLD_DELTA_WIRE_OK);
+    ASSERT_NOT_NULL(rebuilt);
+    ASSERT_EQ(break_world_snapshot_id(rebuilt), break_world_snapshot_id(fixture.target));
+    ASSERT_TRUE(canonical_reencoding(full_wire, full_size, 8u));
+    break_world_snapshot_release(rebuilt);
+    break_world_delta_wire_clear(&decoded);
+    free(full_wire);
+    free(delta_wire);
+    fixture_destroy(&fixture);
+}
+
+TEST(world_delta_wire_wide_u64_fields_survive_repeated_round_trips) {
+    static const u8 expected_base_id[] = {
+        0x01u, 0x00u, 0x00u, 0x00u, 0x01u, 0x00u, 0x00u, 0x80u
+    };
+    static const u8 expected_target_id[] = {
+        0xefu, 0xcdu, 0xabu, 0x89u, 0x67u, 0x45u, 0x23u, 0xf1u
+    };
+    static const u8 expected_base_tick[] = {
+        0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x80u
+    };
+    static const u8 expected_target_tick[] = {
+        0x01u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x80u
+    };
+    BreakWorldDeltaWire message = golden_message();
+    BreakWorldDeltaWire decoded;
+    u8 *wire = NULL;
+    usize size = 0u;
+    message.kind = BREAK_WORLD_DELTA_WIRE_DELTA;
+    message.base_snapshot_id = UINT64_C(0x8000000100000001);
+    message.target_snapshot_id = UINT64_C(0xf123456789abcdef);
+    message.base_tick = UINT64_C(0x8000000000000000);
+    message.target_tick = UINT64_C(0x8000000000000001);
+    ASSERT_TRUE(encode_alloc(&message, &wire, &size));
+    ASSERT_EQ(size, sizeof(golden_wire));
+    ASSERT_TRUE(memcmp(wire + WIRE_BASE_ID_OFFSET, expected_base_id, 8u) == 0);
+    ASSERT_TRUE(memcmp(wire + WIRE_TARGET_ID_OFFSET, expected_target_id, 8u) == 0);
+    ASSERT_TRUE(memcmp(wire + WIRE_BASE_TICK_OFFSET, expected_base_tick, 8u) == 0);
+    ASSERT_TRUE(memcmp(wire + WIRE_TARGET_TICK_OFFSET, expected_target_tick, 8u) == 0);
+    ASSERT_EQ(break_world_delta_wire_decode(wire, size, &decoded), BREAK_WORLD_DELTA_WIRE_OK);
+    ASSERT_EQ(decoded.schema_hash, UINT64_C(0x1122334455667788));
+    ASSERT_EQ(decoded.level_generation, UINT64_C(0x99aabbccddeeff00));
+    ASSERT_EQ(decoded.base_snapshot_id, UINT64_C(0x8000000100000001));
+    ASSERT_EQ(decoded.target_snapshot_id, UINT64_C(0xf123456789abcdef));
+    ASSERT_EQ(decoded.base_tick, UINT64_C(0x8000000000000000));
+    ASSERT_EQ(decoded.target_tick, UINT64_C(0x8000000000000001));
+    break_world_delta_wire_clear(&decoded);
+    ASSERT_TRUE(canonical_reencoding(wire, size, 16u));
+    free(wire);
+}
+
+TEST(world_delta_wire_empty_record_full_message_rebuilds_empty_snapshot) {
+    Fixture fixture;
+    World *empty_world;
+    BreakWorldSnapshot *empty;
+    BreakWorldDeltaWire message;
+    BreakWorldDeltaWire decoded;
+    BreakWorldSnapshot *rebuilt = NULL;
+    u8 *wire = NULL;
+    usize size = 0u;
+    ASSERT_TRUE(fixture_init(&fixture));
+    empty_world = world_create();
+    ASSERT_NOT_NULL(empty_world);
+    empty = break_world_snapshot_build(empty_world, fixture.schemas, UINT64_C(0x100000000));
+    ASSERT_NOT_NULL(empty);
+    ASSERT_TRUE(message_from_snapshot(empty, TEST_LEVEL, &message));
+    ASSERT_EQ(message.record_count, 0u);
+    ASSERT_TRUE(message.records == NULL);
+    ASSERT_TRUE(encode_alloc(&message, &wire, &size));
+    ASSERT_EQ(size, BREAK_WORLD_DELTA_WIRE_HEADER_SIZE);
+    ASSERT_EQ(break_world_delta_wire_decode(wire, size, &decoded), BREAK_WORLD_DELTA_WIRE_OK);
+    ASSERT_EQ(decoded.record_count, 0u);
+    ASSERT_TRUE(decoded.records == NULL);
+    ASSERT_EQ(break_world_delta_wire_rebuild(&decoded, NULL, NULL, fixture.schemas,
+                                             TEST_LEVEL, &rebuilt),
+              BREAK_WORLD_DELTA_WIRE_OK);
+    ASSERT_NOT_NULL(rebuilt);
+    ASSERT_EQ(break_world_snapshot_entity_count(rebuilt), 0u);
+    ASSERT_EQ(break_world_snapshot_id(rebuilt), break_world_snapshot_id(empty));
+    ASSERT_TRUE(canonical_reencoding(wire, size, 8u));
+    break_world_snapshot_release(rebuilt);
+    break_world_delta_wire_clear(&decoded);
+    free(wire);
+    break_world_snapshot_release(empty);
+    world_destroy(empty_world);
+    fixture_destroy(&fixture);
+}
+
+TEST(world_delta_wire_maximum_size_record_round_trips_exactly) {
+    const usize payload_size = (usize)BREAK_WORLD_DELTA_WIRE_MAX_BYTES -
+                               BREAK_WORLD_DELTA_WIRE_HEADER_SIZE -
+                               BREAK_WORLD_DELTA_WIRE_RECORD_HEADER_SIZE;
+    BreakWorldDeltaWire message = golden_message();
+    u8 *payload = (u8 *)malloc(payload_size + 1u);
+    u8 *wire = (u8 *)malloc((usize)BREAK_WORLD_DELTA_WIRE_MAX_BYTES + 1u);
+    usize size = 99u;
+    ASSERT_NOT_NULL(payload);
+    ASSERT_NOT_NULL(wire);
+    for (usize i = 0u; i < payload_size; ++i) payload[i] = (u8)(i ^ (i >> 8u));
+    payload[payload_size] = 0x5au;
+    message.record_count = 1u;
+    message.records = &message.records[1];
+    message.records[0].bytes = payload;
+    message.records[0].size = payload_size + 1u;
+    ASSERT_EQ(break_world_delta_wire_encoded_size(&message, &size),
+              BREAK_WORLD_DELTA_WIRE_OVER_LIMIT);
+    ASSERT_EQ(size, 0u);
+    memset(wire, 0xa5, 32u);
+    size = 99u;
+    ASSERT_EQ(break_world_delta_wire_encode(&message, wire,
+                                            (usize)BREAK_WORLD_DELTA_WIRE_MAX_BYTES + 1u, &size),
+              BREAK_WORLD_DELTA_WIRE_OVER_LIMIT);
+    ASSERT_EQ(size, 0u);
+    ASSERT_TRUE(bytes_are(wire, 32u, 0xa5u));
+
+    message.records[0].size = payload_size;
+    ASSERT_EQ(break_world_delta_wire_encoded_size(&message, &size), BREAK_WORLD_DELTA_WIRE_OK);
+    ASSERT_EQ(size, BREAK_WORLD_DELTA_WIRE_MAX_BYTES);
+    ASSERT_EQ(break_world_delta_wire_encode(&message, wire,
+                                            BREAK_WORLD_DELTA_WIRE_MAX_BYTES, &size),
+              BREAK_WORLD_DELTA_WIRE_OK);
+    ASSERT_EQ(size, BREAK_WORLD_DELTA_WIRE_MAX_BYTES);
+    ASSERT_EQ(wire[WIRE_COUNT_OFFSET], 1u);
+    ASSERT_TRUE(canonical_reencoding(wire, size, 3u));
+    free(wire);
+    free(payload);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(world_delta_wire_golden_full_layout_and_round_trip);
     RUN_TEST(world_delta_wire_unaligned_decode_borrows_input);
@@ -888,4 +1197,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(world_delta_wire_full_rebuilds_sparse_entity_indices);
     RUN_TEST(world_delta_wire_rejects_negative_record_kind);
     RUN_TEST(world_delta_wire_rejects_remove_record_with_payload);
+    RUN_TEST(world_delta_wire_multi_entity_component_full_delta_are_canonical);
+    RUN_TEST(world_delta_wire_wide_u64_fields_survive_repeated_round_trips);
+    RUN_TEST(world_delta_wire_empty_record_full_message_rebuilds_empty_snapshot);
+    RUN_TEST(world_delta_wire_maximum_size_record_round_trips_exactly);
 TEST_MAIN_END()
