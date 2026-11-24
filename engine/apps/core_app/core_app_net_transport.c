@@ -1368,10 +1368,12 @@ static void net_trace_aspect_stats(CoreAppNetTransport *t) {
     snprintf(line, sizeof(line),
              "COREAPPTRACE version=1 event=network_aspect_stats opened=%" PRIu64
              " closed=%" PRIu64 " applied=%zu rejected=%zu drained=%zu"
-             " sent_fragments=%" PRIu64 " queue_depth=%zu dropped=%" PRIu64 "\n",
+             " sent_fragments=%" PRIu64 " queue_depth=%zu dropped=%" PRIu64
+             " duplicates=%" PRIu64 " pending_bytes=%zu\n",
              t->aspect_stats.opened, t->aspect_stats.closed, aspect.applied_packets,
              aspect.rejected_packets, aspect.drained_packets, t->aspect_stats.sent_fragments,
-             aspect.bridge.completion_count, aspect.bridge.dropped_completions);
+             aspect.bridge.completion_count, aspect.bridge.dropped_completions,
+             aspect.bridge.duplicate_fragments, aspect.bridge.pending_bytes);
     net_trace(t, line);
 }
 

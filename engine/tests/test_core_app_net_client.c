@@ -924,15 +924,15 @@ static bool aspect_peer_send_packet(NetClient *c, AspectPeer *peer, u64 delta_id
                client_send(c, BREAK_NET_MESSAGE_ID_REPLICATION_FRAGMENT,
                            BREAK_REPLICATION_WIRE_VERSION, wire, wire_size);
         if (sent) (*sent_fragments)++;
-    }
-    if (sent && !mismatch && fragment_count > 0u) {
-        u8 wire[BREAK_REPLICATION_WIRE_HEADER_SIZE + NET_CLIENT_ASPECT_FRAGMENT_BYTES];
-        size_t wire_size = 0u;
-        sent = break_replication_wire_encode(&fragments[0], wire, sizeof(wire), &wire_size) ==
-                   BREAK_REPLICATION_FRAGMENT_OK &&
-               client_send(c, BREAK_NET_MESSAGE_ID_REPLICATION_FRAGMENT,
-                           BREAK_REPLICATION_WIRE_VERSION, wire, wire_size);
-        if (sent) (*duplicates)++;
+        if (sent && !mismatch && i == 1u) {
+            wire_size = 0u;
+            sent = break_replication_wire_encode(&fragments[i], wire, sizeof(wire),
+                                                 &wire_size) ==
+                       BREAK_REPLICATION_FRAGMENT_OK &&
+                   client_send(c, BREAK_NET_MESSAGE_ID_REPLICATION_FRAGMENT,
+                               BREAK_REPLICATION_WIRE_VERSION, wire, wire_size);
+            if (sent) (*duplicates)++;
+        }
     }
     break_replication_fragments_free(fragments, fragment_count);
     return sent;

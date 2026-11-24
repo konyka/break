@@ -119,3 +119,13 @@ World delta, inbound-to-simulation, level rebaseline, and reliable recovery rema
 - `.superpowers/sdd/2026-11-24-core-app-aspect-replication/task-2-report.md`
 
 `git diff --check` passes. No push is performed.
+
+## Final review (agent-425) strengthening
+
+Verdict approve with minor fixes: the duplicate used to be sent after the packet
+completed, which starts a new partial stream instead of hitting duplicate
+suppression. The client now repeats fragment 1 before fragment 0, and the aspect
+trace adds duplicates and pending_bytes. Final aspect loopback: 1/1 with
+network_aspect_stats opened=1 closed=1 applied=1 rejected=1 drained=2
+sent_fragments=10 queue_depth=0 dropped=0 duplicates=1 pending_bytes=0.
+Trace-field documentation updated to match.

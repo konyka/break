@@ -415,7 +415,7 @@ open 的 connection key 各自持有 pool 与 expected base，连接数和每连
 
 可选 `--aspect-replication` 把现有 bridge/aspect session 接入 `core_app_net_transport`，不改变 Runtime Core 消息映射。两个 store、spatial index、replication、session 和所有 AOI scope 都由 transport 在 CoreAppThread 拥有；open 位于 `net_slot_add` 后、adapter event 应用前，失败回滚，close 先 replication disconnect 再 session close。`net_tick` 与 shutdown `net_drain` 在 pump 后执行 session tick 和最多 64 包的 drain，发送位于 welcome 之后。没有新线程、锁或后台维护。
 
-inbound store 仅证明 BRFG/schema/BRA1 校验与 drain，永不写回 simulation 或 World。唯一 apply 入口是 `break_aspect_session_drain`，固定 handle 1/2 只用于两个现有 POD 实体的诊断复制。`network_aspect_stats` 暴露 opened/closed、applied/rejected/drained、sent_fragments、queue_depth、dropped；默认关闭无此行，`network_stats` 文本保持原样。
+inbound store 仅证明 BRFG/schema/BRA1 校验与 drain，永不写回 simulation 或 World。唯一 apply 入口是 `break_aspect_session_drain`，固定 handle 1/2 只用于两个现有 POD 实体的诊断复制。`network_aspect_stats` 暴露 opened/closed、applied/rejected/drained、sent_fragments、queue_depth、dropped、duplicates、pending_bytes；默认关闭无此行，`network_stats` 文本保持原样。
 
 真实 loopback **1/1** 验证本地重组、两个句柄全部值、反序 3 片 + 重复 1 片 + mismatch 3 片，服务端 applied/rejected/drained=1/1/2、queue/dropped=0，发送至少 2 片。0x4009 负对照 **0/1** 后恢复 **1/1**；network **12/12**、lifecycle **12/12**、ASan+UBSan **9/9**、TSan 直接目标 **7/7** 和 TSan 客户端 loopback **1/1**。core_app TSan 进程场景仍有既有 Lua longjmp 环境失败。
 

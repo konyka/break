@@ -13638,7 +13638,7 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 ## core_app 可选 aspect replication 与真实 loopback（2026-11-24）
 
 - **交付**：`core_app` 新增默认关闭的 `--aspect-replication`。transport 在 CoreAppThread 持有同 schema 的 authoritative/inbound store、spatial index、AOI replication 与 aspect session，注册 0x4009，按 reactor connection key open/rollback/close，并在 tick/shutdown 有界 drain。两个固定对象为 `{index=1,generation=1}` 与 `{index=2,generation=1}`，字段复制现有 snapshot POD 的 index、generation、x/y/z、flags；authoritative 槽 0 仅作保留。inbound 仅诊断，不写 simulation/World，未新增线程或锁。
-- **诊断**：仅开启时输出 `network_aspect_stats`，含 opened/closed、applied/rejected/drained、sent_fragments、queue_depth、dropped；旧 `network_stats` 与默认关闭 trace 不变。
+- **诊断**：仅开启时输出 `network_aspect_stats`，含 opened/closed、applied/rejected/drained、sent_fragments、queue_depth、dropped、duplicates、pending_bytes；旧 `network_stats` 与默认关闭 trace 不变。
 - **真实验收**：`test_core_app_network_aspect` **1/1**。客户端经 BRFG decode 和本地重组应用两个 handle，六类字段与 snapshot 一致；反序发送 valid_fragments=3、duplicates=1，再发送 mismatch_fragments=3。服务端 applied=1、rejected=1、drained=2、sent_fragments≥2、queue_depth=0、dropped=0；一次运行 sent_fragments=12。移除 0x4009 handler 的负对照 **0/1**（applied/rejected/drained=0/0/0），恢复后 **1/1**。
 - **兼容与 focused**：全部 network/offline **12/12**、lifecycle **12/12**，非 aspect 模式显式禁止 aspect trace。直接计数为 transport **11/11**、bridge **19/19**、aspect session **12/12**、link **1/1**、Session **43/43**、wire **9/9**、fragment **28/28**。
 - **Sanitizer**：ASan+UBSan（`ASAN_OPTIONS=detect_leaks=1`）focused **9/9**。TSan 直接 transport/bridge/aspect/link/Session/wire/fragment **7/7**；正常服务端 + TSan 客户端的完整 aspect loopback **1/1**。TSan 的 target-contract 与 aspect 两个 core_app 进程场景均命中既有 Lua `longjmp buf` 环境失败（exit 66），不计为通过，也未在本项修改该运行库路径。

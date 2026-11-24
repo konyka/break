@@ -775,7 +775,7 @@ fix 后 normal、ASan+UBSan/LSan、TSan focused 均为 wire **9/9**、旧 fragme
 
 ## 第 17 节（大世界/流式）补充（2026-11-24）：仅关闭 core_app 诊断 aspect 接线缺口
 
-生产 `core_app` 现在可用默认关闭的 `--aspect-replication` 启用两个固定 POD 对象的 AOI 发送与 Session 接收。authoritative/inbound store 使用相同 schema 和固定 handle 1/2，owner-thread drain 才 apply；inbound 只用于诊断，不写 simulation/World。`network_aspect_stats` 提供 opened/closed、applied/rejected/drained、sent_fragments、queue_depth、dropped，默认关闭无该行。
+生产 `core_app` 现在可用默认关闭的 `--aspect-replication` 启用两个固定 POD 对象的 AOI 发送与 Session 接收。authoritative/inbound store 使用相同 schema 和固定 handle 1/2，owner-thread drain 才 apply；inbound 只用于诊断，不写 simulation/World。`network_aspect_stats` 提供 opened/closed、applied/rejected/drained、sent_fragments、queue_depth、dropped、duplicates、pending_bytes，默认关闭无该行。
 
 真实 loopback **1/1** 覆盖两个 handle 的值、本地 BRFG 重组、反序 3 个有效片、1 个重复片、3 个 schema-mismatch 片，以及服务端 1/1/2 的 applied/rejected/drained、至少 2 个发送片和零 queue/drop。0x4009 负对照 **0/1** 后恢复 **1/1**；network **12/12**、lifecycle **12/12**、ASan+UBSan **9/9**、TSan 直接目标 **7/7** 与 TSan 客户端 loopback **1/1**。两个 core_app TSan 场景保留既有 Lua longjmp 环境失败。
 

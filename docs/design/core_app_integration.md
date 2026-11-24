@@ -1812,7 +1812,7 @@ arm64 lane 新增 `test_core_app_network`（25/25）和 `test_core_app_network_o
 - **配置**：`core_app --network ... --aspect-replication` 开启诊断 aspect 复制；该开关默认关闭，单独使用会走既有 `network options require --network` 错误。关闭时不创建 store/AOI/session，也不输出 aspect trace。
 - **对象与发送**：transport 持有同 schema 的 authoritative/inbound store，固定 handle 为 `{index=1,generation=1}` 和 `{index=2,generation=1}`，字段为 index、generation、x/y/z、flags。authoritative 保留槽 0；两个对象 always-relevant，AOI scope 按连接维护。welcome 先于 BRFG/BRA1 流量，发送错误保持 OVERLOAD 语义。
 - **接收与权威**：0x4009 handler 只重组入队，CoreAppThread 在 tick/shutdown drain 最多 64 包；apply 只写 diagnostic inbound store，不写 simulation/World。连接 open/rollback/close/destroy 都清理 replication、session 和 AOI scope，没有新增线程或锁。
-- **trace**：仅开启时写 `event=network_aspect_stats opened=N closed=N applied=N rejected=N drained=N sent_fragments=N queue_depth=N dropped=N`；既有 `network_stats` 不变。
+- **trace**：仅开启时写 `event=network_aspect_stats opened=N closed=N applied=N rejected=N drained=N sent_fragments=N queue_depth=N dropped=N duplicates=N pending_bytes=N`；既有 `network_stats` 不变。
 
 `test_core_app_net_client aspect` 与 `test_core_app_network_aspect` 使用真实 TLS/AUTH。客户端先经 BRFG decode、本地重组和 apply 验证两个 handle 的全部值，再反序发 3 个有效片、重复其中 1 片，并反序发 3 个 BRA1 schema-mismatch 片，最后用时钟回复作 drain barrier。CMake 要求服务端 opened=1、closed=1、applied=1、rejected=1、drained=2、sent_fragments≥2、queue_depth=0、dropped=0，并要求非网络 trace 与离线一致。一次运行为 sent_fragments=12；客户端计数的精确值为 valid=3、duplicates=1、mismatch=3。
 
