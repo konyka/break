@@ -297,3 +297,16 @@ Task 5 文档应与实际验证保持一致：adapter focused normal/ASan/TSan �
 最终 normal focused 为 bridge **19/19**、Session **43/43**、wire **9/9**、fragment **28/28**。完整 Vulkan 注册 **468** 项，**464 执行通过、4 条件 skip、0 失败**；OpenGL 注册 **459** 项，**455 执行通过、4 条件 skip、0 失败**。两套 skip 均为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计为执行通过。ASan+UBSan（`ASAN_OPTIONS=detect_leaks=1`）与 TSan 的上述 focused CTest 均为 **4/4**，直接运行也分别为 **19/19、43/43、9/9、28/28**，无 sanitizer、leak 或 race 诊断。
 
 本补充只关闭库级 Session/reactor 分片接线与真实 loopback 缺口。**生产 core_app/editor 接线、aspect drain、World delta、可靠恢复和完整资产链仍未完成**；本机结果也不预写远端或其他平台验收。
+
+
+## 补充（2026-11-24）：aspect completion drain 与真实 0x4009 loopback
+
+`break_online_aspect_session.{h,c}` 在 `BreakReplicationSessionBridge` 上提供 `BreakAspectSession`，并借用 owner-thread 的 `BreakAspectStore`。每次 `break_aspect_session_open` 都以 `break_aspect_schema_hash(store)` 作为该连接唯一的 expected base，调用方不能另传 base。网络 handler 仍只做 BRFG/v1 decode、重组和 completion 入队；只有 `break_aspect_session_drain(max_packets)` 才逐个调用 `break_aspect_apply`，按 FIFO 统计 applied/rejected/drained，继续处理拒绝后的后续包，并无条件 release 已取出的 completion。`max_packets=0` 不访问 store，所有 API 都没有新增线程或锁。
+
+既有 aspect scheduler 的发送片长现在最多为 `BREAK_REPLICATION_WIRE_MAX_FRAGMENT_DATA_SIZE = 65496`，给 40 字节 BRFG 头保留空间；65536 配置返回 `BREAK_RUNTIME_INVALID`。`break_aspect_session_send` 复用 bridge 的 0x4009/v1 发送路径。由于 session 实现调用 aspect store/apply，`break_net` 与 `break_net_test` 的 PUBLIC link interface 均显式传递 `break_online`；`test_break_online_aspect_session_link` 只链接 `break_net_test`，以 **1/1** 证明消费方无需手工补依赖。
+
+新增真实 raw TCP 用例先 AUTH，再由既有 `BreakAspectReplication` 的 AOI sync 产生 BRA1 分片，经默认 registry 的 0x4009、reactor step 和 `break_session_manager_poll_adapter` 到远端 bridge。预 adopt 的占位 handle 在 drain 前 active mask/revision 均为 0，两个字段不可读；drain 后为 42/-17。第二个 BRA1 包只改内部 schema hash 并重算完整性 checksum，bridge 仍接受而 apply 拒绝，值保持 42/-17。随后同 key close/reopen，delta 从 40/41 降为 1 仍完成，最终值为 84/-34。三次发送回调、三次完成、consumer 0→3、applied/rejected/drained=2/1/3、Session applied=5 且 invalid/handler_failed=0 都有非空断言。临时移除 0x4009 registry 项时用例 **11/12**（唯一新 socket 用例失败），恢复后 **12/12**。
+
+focused normal、ASan+UBSan（`ASAN_OPTIONS=detect_leaks=1`）和 TSan 均为 **6/6 CTest、112/112 直接测试**：aspect session 12、link contract 1、bridge 19、Session 43、wire 9、fragment 28，无 sanitizer/leak/race 诊断。完整 Vulkan 注册 **463** 项，**459 执行通过、4 条件 skip、0 失败**；OpenGL 注册 **461** 项，**457 执行通过、4 条件 skip、0 失败**。四项为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计执行通过。
+
+本节只交付库级 aspect drain 和真实 loopback。**生产 core_app/editor 接线、World delta、可靠恢复和完整资产链仍未完成**；条件 skip 不计执行通过，也不据此预写远端或其他平台结论。

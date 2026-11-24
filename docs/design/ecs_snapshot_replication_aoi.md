@@ -226,3 +226,16 @@ TDD 先新增四组测试，三个缺失 API 的隐式声明在 `-Werror` 下构
 两个真实 Snowflake loopback 用例验证 AUTH 后的乱序双 delta、相同 BRFG bytes 重复、错误 expected base 拒绝、FIFO/connection/delta/payload、poll 前 consumer 为 0，以及同 key 真实 close/reconnect 后不继承旧 high-water。bridge 现为 **19/19**，Session/wire/fragment 分别为 **43/43、9/9、28/28**。完整 Vulkan **464 通过 + 4 条件 skip/468，0 失败**，OpenGL **455 通过 + 4 条件 skip/459，0 失败**；skip 不计执行通过。ASan+UBSan（显式 `detect_leaks=1`）和 TSan focused 均 **4/4**，直接 case 计数同为 **19/19、43/43、9/9、28/28**，无诊断。
 
 本项没有完成 **生产 core_app/editor 接线、aspect drain、World delta、可靠恢复或完整资产链**。后续 drain 仍需校验 `BRA1.schema_hash == expected_base` 并在所有者线程显式 apply；本项真实 loopback 不等于上述集成已经交付。
+
+
+## 补充（2026-11-24）：AOI BRA1 包的 Session drain 边界
+
+既有 AOI `BreakAspectReplication` 现在可通过 `BreakAspectSession` 把完成包交给远端 aspect store。open 的 expected base 固定为 `break_aspect_schema_hash(store)`，与 BRA1 内 schema hash 校验构成同一兼容边界。发送 fragment_size 收窄至 **65496**，不允许把 65536 数据片交给需要 40 字节头的 BRFG/v1。
+
+网络 handler 不触碰 aspect/World。owner-thread 的 `break_aspect_session_drain` 才按 FIFO 调用 `break_aspect_apply`，每个 completion 都 release；apply 失败计入 rejected 并继续后续包，stats 保留 bridge 计数。`break_net`/`break_net_test` PUBLIC 传递 `break_online`，独立 link-only 测试 **1/1**。这只连接 aspect record，不定义 ECS snapshot/World delta 的线格式。
+
+真实 socket 用例从 AUTH 后的 AOI enter/stay sync 产生 BRA1，经 0x4009 和 `poll_adapter` 到达 bridge。drain 前预 adopt 占位 handle 无 active aspect、revision 或可读字段；首次 drain 后 U32/I32=42/-17。内部 schema 不匹配的包被 drain 拒绝，原值不变；同 key close/reopen 后 delta 1 在旧 40/41 之后完成，最终值为 84/-34。三次发送/完成、consumer 0→3、applied/rejected/drained=2/1/3 均直接断言。默认 registry 负对照 **11/12**，恢复 **12/12**。
+
+normal、ASan+UBSan（显式 `detect_leaks=1`）和 TSan focused 均为 **6/6、112/112**；aspect session/link/bridge/Session/wire/fragment 分别为 **12/12、1/1、19/19、43/43、9/9、28/28**。完整 Vulkan 注册 **463** 项，**459 执行通过、4 条件 skip、0 失败**；OpenGL 注册 **461** 项，**457 执行通过、4 条件 skip、0 失败**。四项为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计执行通过。
+
+**生产 core_app/editor 接线、World delta、可靠恢复和完整资产链仍未完成**。本项不改变 AOI、snapshot、delta 或 fragment/reassembly 的既有格式与高水位契约。

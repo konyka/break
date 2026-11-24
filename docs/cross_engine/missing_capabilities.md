@@ -752,3 +752,18 @@ fix 后 normal、ASan+UBSan/LSan、TSan focused 均为 wire **9/9**、旧 fragme
 #### session bridge 远端收据（2026-11-24）
 
 `3b775bd2` 的 CI `45332414619`、windows-d3d12 `45332414595`、QUIC `45332414708` 均 success。Proton `45333934438` 在安装 Wine 时 20 分钟超时，未进入构建，不计为通过；Proton 仅为兼容参考通道。生产 core_app/editor 接线、World delta 与可靠恢复仍未实现，aspect drain 由后续子项目接入。
+
+
+## 第 17 节（大世界/流式）补充（2026-11-24）：仅关闭 aspect session drain 缺口
+
+`BreakAspectSession` 已把认证 Session 的 completion queue 接到 aspect store：expected base 由 `break_aspect_schema_hash(store)` 固定，handler 只入队，owner-thread `break_aspect_session_drain` 才 apply 并 release。拒绝计入 rejected 后继续，applied/rejected/drained 与 bridge stats 可直接观测。发送片长上限为 **65496**；`break_net`/`break_net_test` PUBLIC 传递 `break_online`，link-only **1/1** 防止漏依赖。上一节的“aspect drain 未完成”仅由这一库级切片关闭，历史段落保留不改。
+
+真实 raw socket/AUTH/AOI-sync 证据覆盖 drain 前无 active aspect 或字段、首次 drain 后 42/-17、schema mismatch 拒绝且原值不变，以及同 key 重开后 delta 1 在旧 40/41 后完成并得到 84/-34。发送回调、BRA1 分片和 completion 各 3，consumer 0→3，applied/rejected/drained=2/1/3。0x4009 registry 负对照 **11/12**，恢复 **12/12**。normal、ASan+UBSan（显式 leak 检测）和 TSan 六项目标均 **6/6、112/112**。完整 Vulkan 注册 **463** 项，**459 执行通过、4 条件 skip、0 失败**；OpenGL 注册 **461** 项，**457 执行通过、4 条件 skip、0 失败**。四项为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计执行通过。
+
+以下缺口明确保留，不因 loopback 通过而关闭：
+
+- **生产 core_app/editor 接线**尚未实现；owner 仍需显式调用 drain。
+- **World delta** 协议与本切片无关，未定义或接入。
+- **可靠恢复**（丢包重试、断线恢复、持久高水位）未实现。
+- **完整资产链**及依赖解析未实现。
+- 完整 sanitizer suite、远端和其他平台验收不在本项证据内；条件 skip 不计执行通过。

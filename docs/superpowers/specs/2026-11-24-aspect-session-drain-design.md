@@ -13,7 +13,7 @@ session/reactor，并把完成包放进有界 FIFO，只有 owner 调用
 
 ## 命名
 
-沿用现有 `break_online_aspect*` 命名，不使用 cry/game 等词。
+沿用现有 `break_online_aspect*` 命名，并遵循仓库命名合同。
 新文件 `engine/src/network/break_online_aspect_session.{h,c}`，类型与函数使用
 `BreakAspectSession` / `break_aspect_session_*`。
 

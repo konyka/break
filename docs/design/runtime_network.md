@@ -396,3 +396,16 @@ open 的 connection key 各自持有 pool 与 expected base，连接数和每连
 真实 loopback 使用 raw TCP client 先 AUTH，再由 `break_net_reactor_step` 与 `break_session_manager_poll_adapter` 驱动真实 registry、envelope、Session、pool 和 completion queue。覆盖两个 delta 的乱序与逐字节重复片、expected base 拒绝、FIFO/connection/delta/payload、poll 前 consumer 为 0，以及真实 close 后同 key 重连时从 delta 40 到新 delta 1。最终 bridge **19/19**、Session **43/43**、wire **9/9**、fragment **28/28**；Vulkan **464 通过 + 4 skip/468**、OpenGL **455 通过 + 4 skip/459**，均 0 失败且 skip 不计通过。ASan+UBSan（`detect_leaks=1`）与 TSan focused 均 **4/4**，直接 case 计数与 normal 相同，无 sanitizer/leak/race 诊断。
 
 这只是 runtime 可消费的库级 ownership 边界。**生产 core_app/editor 接线、aspect drain、World delta、可靠恢复和完整资产链仍未完成**，也没有据此声明远端部署或完整 sanitizer suite 已验收。
+
+
+## 补充（2026-11-24）：Runtime 所有线程边界上的 aspect drain
+
+`BreakAspectSession` 把 bridge completion 的所有权转移延伸为明确的 owner-thread 消费步骤。open 时 expected base 由 `break_aspect_schema_hash(store)` 决定；网络回调只重组并入队，`break_aspect_session_drain` 是唯一 `break_aspect_apply` 入口。drain 按 FIFO 每次最多消费 `max_packets`，逐项记录 applied/rejected/drained，apply 失败不升级为连接关闭，并在分支结束后 release completion。零预算不解包、不访问 store；未 drain 的项仍由 bridge 持有。模块不新增线程、锁或原子。
+
+发送端 fragment data 上限为 **65496**，与 BRFG/v1 总 payload 65536 及 40 字节头一致。`break_aspect_session_send` 将 runtime 错误映射到 `OK/INVALID/OVERLOAD/CLOSED` 并保持 0x4009/v1。`break_net` 与 `break_net_test` PUBLIC 链接 `break_online`，只链接后者的消费侧契约测试 **1/1**，证明 aspect 符号会随正式依赖传播。
+
+真实 loopback 依次穿过 raw socket AUTH、默认 registry、reactor、SessionManager、既有 AOI aspect scheduler、bridge 和 owner drain。drain 前占位 handle 无 active aspect 或字段值；第一次 drain 后为 42/-17，schema mismatch 后保持原值并计 rejected，同 key 重开后 delta 1 不继承 40/41 高水位，最后为 84/-34。三个真实发送回调和三个 completion 均有计数，consumer=3，Session applied=5、invalid=0、handler_failed=0。移除 registry 项时 **11/12**，恢复后 **12/12**。
+
+六项目标在 normal、ASan+UBSan（`detect_leaks=1`）和 TSan 下均为 **6/6 CTest、112/112 直接测试**，包括 aspect session 12、link 1、bridge 19、Session 43、wire 9、fragment 28。完整 Vulkan 注册 **463** 项，**459 执行通过、4 条件 skip、0 失败**；OpenGL 注册 **461** 项，**457 执行通过、4 条件 skip、0 失败**。四项为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计执行通过。
+
+本补充没有实现 Runtime Core 消息映射或生产接线。**core_app/editor 接线、World delta、可靠恢复和完整资产链仍未完成**；focused sanitizer 不等于完整 sanitizer suite。

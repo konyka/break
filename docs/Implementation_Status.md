@@ -13613,3 +13613,14 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 独立评审：Task 1 初审发现入站过期未计数并修复后 approve；整分支初审发现无 crypto 头文件自包含、消费计数空断言、断言失败清理三项问题，`3b775bd2` 修复后复审 approve。消费计数变异（handler 直接递增）产生 17 通过 2 失败，证明前置零断言有效；移除 0x4009 注册项产生 16 通过 3 失败，证明 loopback 依赖真实注册。
 - 远端：CI run `45332414619` success，windows-d3d12 run `45332414595` success，QUIC run `45332414708` success。Proton run `45333934438` 为 failure：job 的 `Install Wine + vkd3d-proton` 步骤下载 i386 软件包时再次达到 20 分钟超时，未进入构建与测试，因此本次没有 device/pipeline contract 证据，不计为 Proton 通过。令牌无权重跑；上一次成功 Proton run `45323313612`（`59e5c96e`）证明兼容通道本身可用。
 - 边界：生产 core_app/editor 接线、aspect drain、World delta、可靠恢复与完整资产链仍未完成；aspect drain 在后续子项目实现。
+
+
+## Aspect session drain 与真实 socket 验收（2026-11-24）
+
+- **交付**：`BreakAspectSession` 拥有 bridge、借用 owner-thread aspect store；open 固定使用 `break_aspect_schema_hash(store)` 作为 expected base。网络 handler 只入队，只有 `break_aspect_session_drain` 调 `break_aspect_apply`，按 FIFO 统计 applied/rejected/drained、拒绝后继续并无条件 release。发送 fragment_size 上限为 **65496**。
+- **链接契约**：`break_net` 和 `break_net_test` PUBLIC 链接 `break_online`。`test_break_online_aspect_session_link` 不显式链接后者，**1/1** 通过。
+- **真实 loopback**：raw TCP 先 AUTH，既有 AOI aspect sync 产生 BRA1，经默认 registry 0x4009、reactor step 和 `poll_adapter` 入队。drain 前占位 handle 无 active aspect/revision/字段；首次 drain 后字段为 42/-17。schema mismatch 计 rejected 且原值不变；同 key close/reopen 后 delta 1 在 40/41 后被接受，最终为 84/-34。实际发送/completion 各 3，consumer 0→3，applied/rejected/drained=2/1/3，Session applied=5、invalid/handler_failed=0。
+- **负对照**：临时删除 0x4009 registry 项及计数，只有新 socket 用例失败，合计 **11/12**；恢复源码后 **12/12**，registry 无残留 diff。
+- **Focused**：normal、ASan+UBSan（`ASAN_OPTIONS=detect_leaks=1`）和 TSan 均为 **6/6 CTest、112/112 直接测试**，即 aspect session 12、link 1、bridge 19、Session 43、wire 9、fragment 28，无 sanitizer/leak/race 诊断。
+- **完整套件**：Vulkan 注册 **463** 项，**459 执行通过、4 条件 skip、0 失败**；OpenGL 注册 **461** 项，**457 执行通过、4 条件 skip、0 失败**。四项为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计执行通过。
+- **边界**：**生产 core_app/editor 接线、World delta、可靠恢复和完整资产链仍未完成**。条件 skip 不计执行通过；本记录不包含远端、Windows、Proton 或完整 sanitizer suite 验收，不预写推送结论。

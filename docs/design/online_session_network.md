@@ -148,3 +148,16 @@ fix 后 normal、ASan+UBSan/LSan、TSan focused 均为 wire **9/9**、旧 fragme
 两个真实 socket 用例覆盖 AUTH 后乱序交织两个 delta、相同 BRFG bytes 的重复片、错误 base 拒绝、完成 FIFO/connection/payload、poll 前 consumer 计数为 0，以及 close 后同 key 真实重连完成较低 delta。`test_break_replication_session` 现为 **19/19**； companion Session/wire/fragment 分别为 **43/43、9/9、28/28**。完整 Vulkan 为 **464 通过 + 4 条件 skip/468，0 失败**，OpenGL 为 **455 通过 + 4 条件 skip/459，0 失败**；skip 是 `test_d3d12_dependency_gate` 与三个 `test_core_app_nm_*`，不计执行通过。ASan+UBSan（显式 leak 检测）和 TSan focused 均 **4/4**，直接 case 计数同样为 **19/19、43/43、9/9、28/28**，无诊断。
 
 剩余边界明确保留：**生产 core_app/editor 接线、aspect drain、World delta、可靠恢复和完整资产链均未完成**。aspect 发送侧 fragment size 收窄、completion drain 中校验 `BRA1.schema_hash == expected_base` 后再 apply，仍属于后续独立工作。
+
+
+## 补充（2026-11-24）：AOI aspect 发送与 Session drain 对接
+
+`BreakAspectSession` 将现有 `BreakAspectReplication` 的 BRA1 发送端与认证 Session 的 completion queue 连接起来。接收连接 open 时 expected base 固定来自远端 `break_aspect_schema_hash(store)`；发送侧 `fragment_size` 上限收窄为 **65496**，因此每片都可由 BRFG/v1 的 40 字节头封装。接收 handler 不调用 aspect store，owner 必须显式调用 `break_aspect_session_drain` 才 apply；每个 completion 无论成功或拒绝都会 release，拒绝只累计 `rejected_packets`，不关闭连接。stats 同时包含 applied/rejected/drained 与完整 bridge stats。
+
+`break_net`/`break_net_test` 通过 PUBLIC `break_online` 链接依赖满足上述实现；独立 link-only 测试 **1/1**，防止消费方必须显式追加 `break_online` 的隐性契约。发送适配仍固定 0x4009/v1，不包含可靠恢复语义。
+
+真实 socket 验收使用 AUTH 后的既有 AOI enter/stay sync，而不是直接构造 completion。首个 baseline 到达后、drain 前，预 adopt 占位 handle 没有 active aspect、record revision 或可读字段；drain 后 U32/I32 为 42/-17。schema-mismatch dirty 包计 rejected 且两值不变；同 key close/reopen 后较低 delta 1 在旧 delta 40/41 之后被接受，最终为 84/-34。实际发送回调/BRA1 分片/completion 各 3，consumer 从 0 到 3，最终 applied/rejected/drained 为 2/1/3。registry 负对照为 **11/12**，恢复为 **12/12**。
+
+normal、ASan+UBSan（显式 leak 检测）和 TSan focused 均为 **6/6、112/112**：aspect session **12/12**、link **1/1**、bridge **19/19**、Session **43/43**、wire **9/9**、fragment **28/28**。完整 Vulkan 注册 **463** 项，**459 执行通过、4 条件 skip、0 失败**；OpenGL 注册 **461** 项，**457 执行通过、4 条件 skip、0 失败**。四项为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计执行通过。
+
+**生产 core_app/editor 接线、World delta、可靠恢复和完整资产链保持未完成**。本证据不表示已有可靠传输、自动重连恢复或资产依赖解析。

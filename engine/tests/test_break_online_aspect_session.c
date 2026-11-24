@@ -1,14 +1,22 @@
 #include "test_framework.h"
 
+#include <network/break_net_envelope.h>
 #include <network/break_net_message.h>
 #include <network/break_net_message_registry.h>
+#include <network/break_online_aspect_replication.h>
 #include <network/break_online_aspect_session.h>
 #include <network/break_replication_wire.h>
+#include <network/break_session.h>
 #include <snow/acceptor.h>
 #include <snow/endpoint.h>
 
+#include <arpa/inet.h>
 #include <stdint.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+extern int usleep(unsigned int);
 
 #define TEST_PACKET_CAPACITY 256u
 #define TEST_COMPLETION_CAPACITY 8u
@@ -621,6 +629,466 @@ TEST(aspect_session_send_forwards_brfg_v1_and_maps_overload)
     test_reactor_dispose(&reactor);
 }
 
+typedef struct AspectSocketFixture {
+    AspectReactorFixture transport;
+    BreakSessionManager *manager;
+    BreakAspectStore *authoritative;
+    BreakAspectStore *remote;
+    BreakAspectSession *session;
+    BreakSpatialIndex *index;
+    BreakAspectReplication *replication;
+    BreakOnlineHandle object;
+    BreakAoIResult aoi;
+    BreakAoIScope scope;
+    BreakConnectionKey connection;
+    uint64_t now;
+    uint64_t delta_override;
+    uint32_t sequence;
+    size_t auth_calls;
+    size_t send_calls;
+    size_t sent_fragments;
+    size_t sent_bra1_fragments;
+    size_t sent_payload_bytes;
+    int client_fd;
+    bool mutate_schema;
+} AspectSocketFixture;
+
+size_t break_test_aspect_consumer_count = 0u;
+
+static BreakAspectStore *test_aspect_socket_store(void)
+{
+    BreakAspectStoreConfig config = {4u, 16u, TEST_PACKET_CAPACITY};
+    BreakAspectSchema health = {2u, 1u, BREAK_ASPECT_U32, 4u};
+    BreakAspectSchema signed_value = {3u, 1u, BREAK_ASPECT_I32, 4u};
+    BreakAspectStore *store = NULL;
+    if (break_aspect_store_create(&config, &store) != BREAK_RUNTIME_OK) return NULL;
+    if (break_aspect_schema_register(store, &health) != BREAK_RUNTIME_OK ||
+        break_aspect_schema_register(store, &signed_value) != BREAK_RUNTIME_OK) {
+        break_aspect_store_destroy(store);
+        return NULL;
+    }
+    return store;
+}
+
+static bool test_aspect_socket_auth_handler(BreakConnectionKey connection,
+                                            const BreakNetOwnedMessage *message,
+                                            void *user_data)
+{
+    AspectSocketFixture *fixture = (AspectSocketFixture *)user_data;
+    if (!message || message->message_id != BREAK_NET_MESSAGE_ID_AUTH) return false;
+    fixture->connection = connection;
+    fixture->auth_calls++;
+    return true;
+}
+
+static bool test_aspect_socket_write_all(int fd, const void *data, size_t size)
+{
+    const u8 *bytes = (const u8 *)data;
+    size_t offset = 0u;
+    while (offset < size) {
+        ssize_t written = write(fd, bytes + offset, size - offset);
+        if (written <= 0) return false;
+        offset += (size_t)written;
+    }
+    return true;
+}
+
+static void test_aspect_socket_store_u16(u8 *out, uint16_t value)
+{
+    out[0] = (u8)value;
+    out[1] = (u8)(value >> 8u);
+}
+
+static void test_aspect_socket_store_u32(u8 *out, uint32_t value)
+{
+    out[0] = (u8)value;
+    out[1] = (u8)(value >> 8u);
+    out[2] = (u8)(value >> 16u);
+    out[3] = (u8)(value >> 24u);
+}
+
+static bool test_aspect_socket_write_frame(AspectSocketFixture *fixture,
+                                           uint16_t message_id, uint32_t sequence,
+                                           const void *payload, size_t payload_size)
+{
+    u8 wire[BREAK_NET_ENVELOPE_HEADER_SIZE + BREAK_REPLICATION_WIRE_HEADER_SIZE +
+            TEST_PACKET_CAPACITY];
+    const size_t capacity = BREAK_REPLICATION_WIRE_HEADER_SIZE + TEST_PACKET_CAPACITY;
+    if (payload_size > capacity || (payload_size != 0u && !payload)) return false;
+    test_aspect_socket_store_u32(wire, BREAK_NET_ENVELOPE_MAGIC);
+    test_aspect_socket_store_u16(wire + 4u, BREAK_NET_PROTOCOL_VERSION);
+    test_aspect_socket_store_u16(wire + 6u, message_id);
+    test_aspect_socket_store_u16(wire + 8u, 0u);
+    test_aspect_socket_store_u32(wire + 10u, sequence);
+    test_aspect_socket_store_u32(wire + 14u, (uint32_t)payload_size);
+    if (payload_size != 0u) {
+        memcpy(wire + BREAK_NET_ENVELOPE_HEADER_SIZE, payload, payload_size);
+    }
+    return test_aspect_socket_write_all(fixture->client_fd, wire,
+                                        BREAK_NET_ENVELOPE_HEADER_SIZE + payload_size);
+}
+
+static uint32_t test_aspect_socket_checksum(const u8 *data, size_t size)
+{
+    uint32_t hash = 2166136261u;
+    size_t i;
+    for (i = 0u; i < size; ++i) {
+        hash ^= data[i];
+        hash *= 16777619u;
+    }
+    return hash;
+}
+
+static BreakRuntimeError test_aspect_socket_send(void *user, u64 connection,
+                                                  const BreakReplicationFragment *fragment)
+{
+    AspectSocketFixture *fixture = (AspectSocketFixture *)user;
+    BreakReplicationFragment outbound = *fragment;
+    u8 mutated[TEST_PACKET_CAPACITY];
+    u8 wire[BREAK_REPLICATION_WIRE_HEADER_SIZE + TEST_PACKET_CAPACITY];
+    usize wire_size = 0u;
+    fixture->send_calls++;
+    if (connection != fixture->connection || fragment->size > TEST_PACKET_CAPACITY) {
+        return BREAK_RUNTIME_INVALID;
+    }
+    if (fragment->size >= 4u && memcmp(fragment->data, "BRA1", 4u) == 0) {
+        fixture->sent_bra1_fragments++;
+    }
+    if (fixture->delta_override != 0u) outbound.delta_id = fixture->delta_override;
+    if (fixture->mutate_schema) {
+        if (fragment->fragment_count != 1u || fragment->size < 12u ||
+            memcmp(fragment->data, "BRA1", 4u) != 0) {
+            return BREAK_RUNTIME_INVALID;
+        }
+        memcpy(mutated, fragment->data, fragment->size);
+        test_store_u64(mutated + 4u,
+                       break_aspect_schema_hash(fixture->authoritative) ^ 1u);
+        outbound.data = mutated;
+        outbound.checksum = test_aspect_socket_checksum(mutated, fragment->size);
+    }
+    if (break_replication_wire_encode(&outbound, wire, sizeof(wire), &wire_size) !=
+        BREAK_REPLICATION_FRAGMENT_OK) {
+        return BREAK_RUNTIME_INVALID;
+    }
+    fixture->sequence++;
+    if (!test_aspect_socket_write_frame(fixture, BREAK_NET_MESSAGE_ID_REPLICATION_FRAGMENT,
+                                        fixture->sequence, wire, wire_size)) {
+        return BREAK_RUNTIME_FAILED;
+    }
+    fixture->sent_fragments++;
+    fixture->sent_payload_bytes += fragment->size;
+    return BREAK_RUNTIME_OK;
+}
+
+static bool test_aspect_socket_pump(AspectSocketFixture *fixture)
+{
+    bool stepped = break_net_reactor_step(fixture->transport.reactor, 1);
+    (void)break_session_manager_poll_adapter(fixture->manager, 64u);
+    return stepped;
+}
+
+static void test_aspect_socket_dispose(AspectSocketFixture *fixture)
+{
+    size_t i;
+    if (fixture->client_fd >= 0) {
+        close(fixture->client_fd);
+        fixture->client_fd = -1;
+    }
+    if (fixture->manager && fixture->transport.reactor && fixture->connection != 0u) {
+        for (i = 0u; i < 5000u &&
+             break_session_manager_state(fixture->manager, fixture->connection) !=
+                 BREAK_SESSION_CLOSED; ++i) {
+            if (!test_aspect_socket_pump(fixture)) break;
+            usleep(1000u);
+        }
+        (void)break_session_manager_poll(fixture->manager, 64u);
+    }
+    break_aoi_result_clear(&fixture->aoi);
+    break_aoi_scope_clear(&fixture->scope);
+    break_aspect_replication_destroy(fixture->replication);
+    break_spatial_index_destroy(fixture->index);
+    break_aspect_session_destroy(fixture->session);
+    break_aspect_store_destroy(fixture->remote);
+    break_aspect_store_destroy(fixture->authoritative);
+    break_session_manager_destroy(fixture->manager);
+    test_reactor_dispose(&fixture->transport);
+    memset(fixture, 0, sizeof(*fixture));
+    fixture->client_fd = -1;
+}
+
+static bool test_aspect_socket_start(AspectSocketFixture *fixture)
+{
+    BreakSessionConfig session_config = {0};
+    BreakAspectSessionConfig aspect_config;
+    BreakAspectReplicationConfig replication_config;
+    BreakReplicationObject desc;
+    memset(fixture, 0, sizeof(*fixture));
+    fixture->client_fd = -1;
+    if (!test_reactor_start(&fixture->transport)) return false;
+    fixture->authoritative = test_aspect_socket_store();
+    fixture->remote = test_aspect_socket_store();
+    fixture->index = break_spatial_index_create(10.0f);
+    if (fixture->remote) {
+        aspect_config = test_aspect_session_config(fixture->remote, &fixture->now);
+        aspect_config.bridge.max_connections = 1u;
+        aspect_config.bridge.max_total_pending_bytes = 1024u;
+        fixture->session = break_aspect_session_create(&aspect_config);
+    }
+    memset(&replication_config, 0, sizeof(replication_config));
+    replication_config.max_connections = 1u;
+    replication_config.max_objects = 4u;
+    replication_config.max_packet_bytes = TEST_PACKET_CAPACITY;
+    replication_config.max_fragments = 4u;
+    replication_config.send = test_aspect_socket_send;
+    replication_config.send_user = fixture;
+    if (fixture->authoritative && fixture->index &&
+        break_aspect_replication_create(&replication_config, fixture->authoritative,
+                                        fixture->index, &fixture->replication) ==
+            BREAK_RUNTIME_OK) {
+        memset(&desc, 0, sizeof(desc));
+        desc.flags = BREAK_AOI_OBJECT_ALWAYS_RELEVANT;
+        if (break_aspect_object_register(fixture->replication, &desc, &fixture->object) !=
+            BREAK_RUNTIME_OK) {
+            fixture->object.index = UINT32_MAX;
+        }
+    }
+    fixture->manager = break_session_manager_create(&session_config);
+    if (!fixture->authoritative || !fixture->remote || !fixture->index || !fixture->session ||
+        !fixture->replication || fixture->object.index == UINT32_MAX ||
+        break_aspect_object_adopt(fixture->remote, fixture->object) != BREAK_RUNTIME_OK ||
+        !fixture->manager ||
+        !break_session_manager_attach_reactor(fixture->manager, fixture->transport.reactor) ||
+        !break_session_manager_set_message_handler(
+            fixture->manager, BREAK_NET_MESSAGE_ID_AUTH,
+            test_aspect_socket_auth_handler, fixture) ||
+        !break_session_manager_set_message_handler(
+            fixture->manager, BREAK_NET_MESSAGE_ID_REPLICATION_FRAGMENT,
+            break_replication_session_handle_message,
+            break_aspect_session_bridge(fixture->session))) {
+        test_aspect_socket_dispose(fixture);
+        return false;
+    }
+    return true;
+}
+
+static bool test_aspect_socket_connect(AspectSocketFixture *fixture)
+{
+    const SnowEndpoint *bound = SnowAcceptorEndpoint(fixture->transport.acceptor);
+    struct sockaddr_in address = {0};
+    fixture->client_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fixture->client_fd < 0) return false;
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = htons((uint16_t)SnowEndpointPort(bound));
+    if (connect(fixture->client_fd, (const struct sockaddr *)&address,
+                sizeof(address)) != 0) {
+        close(fixture->client_fd);
+        fixture->client_fd = -1;
+        return false;
+    }
+    return true;
+}
+
+static bool test_aspect_socket_authenticate(AspectSocketFixture *fixture)
+{
+    static const u8 auth_payload[] = {'a', 'u', 't', 'h'};
+    size_t i;
+    if (!test_aspect_socket_connect(fixture)) return false;
+    fixture->sequence = 1u;
+    if (!test_aspect_socket_write_frame(fixture, BREAK_NET_MESSAGE_ID_AUTH,
+                                        fixture->sequence, auth_payload,
+                                        sizeof(auth_payload))) {
+        return false;
+    }
+    for (i = 0u; i < 5000u; ++i) {
+        if (fixture->auth_calls == 1u && fixture->connection != 0u &&
+            break_session_manager_state(fixture->manager, fixture->connection) ==
+                BREAK_SESSION_AUTHENTICATED) {
+            return break_aspect_session_open(fixture->session, fixture->connection);
+        }
+        if (!test_aspect_socket_pump(fixture)) return false;
+        usleep(1000u);
+    }
+    return false;
+}
+
+static bool test_aspect_socket_wait_completed(AspectSocketFixture *fixture,
+                                               uint64_t expected)
+{
+    size_t i;
+    for (i = 0u; i < 5000u; ++i) {
+        BreakAspectSessionStats stats;
+        break_aspect_session_stats(fixture->session, &stats);
+        if (stats.bridge.completed_packets >= expected) return true;
+        if (stats.bridge.rejected_fragments != 0u ||
+            break_session_manager_state(fixture->manager, fixture->connection) ==
+                BREAK_SESSION_CLOSED) {
+            return false;
+        }
+        if (!test_aspect_socket_pump(fixture)) return false;
+        usleep(1000u);
+    }
+    return false;
+}
+
+static size_t test_aspect_socket_drain(AspectSocketFixture *fixture, size_t max_packets)
+{
+    size_t drained = break_aspect_session_drain(fixture->session, max_packets);
+    break_test_aspect_consumer_count += drained;
+    return drained;
+}
+
+static void test_aspect_socket_loopback_run(AspectSocketFixture *fixture)
+{
+    BreakAspectSessionStats stats;
+    BreakSessionApplyStats session_stats;
+    BreakWitness witness;
+    BreakAoIEntityId id;
+    u32 health = 777u;
+    i32 signed_value = 777;
+
+    break_test_aspect_consumer_count = 0u;
+    ASSERT_TRUE(test_aspect_socket_start(fixture));
+    ASSERT_TRUE(test_aspect_socket_authenticate(fixture));
+    ASSERT_EQ(fixture->auth_calls, 1u);
+    ASSERT_EQ(break_aspect_active_mask(fixture->remote, fixture->object), 0u);
+    ASSERT_EQ(break_aspect_object_revision(fixture->remote, fixture->object), 0u);
+    ASSERT_EQ(break_aspect_get_u32(fixture->remote, fixture->object, 2u, &health),
+              BREAK_RUNTIME_FAILED);
+    ASSERT_EQ(break_aspect_get_i32(fixture->remote, fixture->object, 3u, &signed_value),
+              BREAK_RUNTIME_FAILED);
+    ASSERT_EQ(health, 777u);
+    ASSERT_EQ(signed_value, 777);
+
+    ASSERT_EQ(break_aspect_replication_set_u32(fixture->replication, fixture->object,
+                                                2u, 42u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_replication_set_i32(fixture->replication, fixture->object,
+                                                3u, -17), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_connection_open(fixture->replication, fixture->connection,
+                                            1024u, TEST_PACKET_CAPACITY),
+              BREAK_RUNTIME_OK);
+    memset(&witness, 0, sizeof(witness));
+    witness.connection_id = fixture->connection;
+    witness.radius = 10.0f;
+    ASSERT_TRUE(break_aoi_compute(fixture->index, &witness, 1u, NULL, &fixture->aoi));
+    ASSERT_EQ(fixture->aoi.enter_count, 1u);
+    fixture->delta_override = 40u;
+    ASSERT_EQ(break_aspect_replication_sync(fixture->replication, fixture->connection,
+                                             &fixture->aoi, 1024u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(fixture->send_calls, 1u);
+    ASSERT_EQ(fixture->sent_fragments, 1u);
+    ASSERT_EQ(fixture->sent_bra1_fragments, 1u);
+    ASSERT_TRUE(fixture->sent_payload_bytes > 22u);
+    ASSERT_TRUE(test_aspect_socket_wait_completed(fixture, 1u));
+    break_aspect_session_stats(fixture->session, &stats);
+    ASSERT_EQ(stats.bridge.completed_packets, 1u);
+    ASSERT_EQ(stats.bridge.completion_count, 1u);
+    ASSERT_EQ(stats.drained_packets, 0u);
+    ASSERT_EQ(break_test_aspect_consumer_count, 0u);
+    ASSERT_EQ(break_aspect_active_mask(fixture->remote, fixture->object), 0u);
+    ASSERT_EQ(break_aspect_object_revision(fixture->remote, fixture->object), 0u);
+    ASSERT_EQ(break_aspect_get_u32(fixture->remote, fixture->object, 2u, &health),
+              BREAK_RUNTIME_FAILED);
+    ASSERT_EQ(break_aspect_get_i32(fixture->remote, fixture->object, 3u, &signed_value),
+              BREAK_RUNTIME_FAILED);
+    break_session_manager_apply_stats(fixture->manager, &session_stats);
+    ASSERT_EQ(session_stats.applied, 3u);
+    ASSERT_EQ(session_stats.invalid, 0u);
+    ASSERT_EQ(session_stats.handler_failed, 0u);
+
+    ASSERT_EQ(test_aspect_socket_drain(fixture, 1u), 1u);
+    ASSERT_EQ(break_test_aspect_consumer_count, 1u);
+    ASSERT_EQ(break_aspect_get_u32(fixture->remote, fixture->object, 2u, &health),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_get_i32(fixture->remote, fixture->object, 3u, &signed_value),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(health, 42u);
+    ASSERT_EQ(signed_value, -17);
+    ASSERT_EQ(break_aspect_active_mask(fixture->remote, fixture->object),
+              (UINT64_C(1) << 1u) | (UINT64_C(1) << 2u));
+    id = break_aspect_aoi_id(fixture->object);
+    ASSERT_TRUE(break_aoi_scope_assign(&fixture->scope, &id, 1u));
+    break_aoi_result_clear(&fixture->aoi);
+    ASSERT_TRUE(break_aoi_compute(fixture->index, &witness, 1u, &fixture->scope,
+                                  &fixture->aoi));
+    ASSERT_EQ(fixture->aoi.stay_count, 1u);
+
+    ASSERT_EQ(break_aspect_replication_set_u32(fixture->replication, fixture->object,
+                                                2u, 999u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_replication_set_i32(fixture->replication, fixture->object,
+                                                3u, -99), BREAK_RUNTIME_OK);
+    fixture->delta_override = 41u;
+    fixture->mutate_schema = true;
+    ASSERT_EQ(break_aspect_replication_sync(fixture->replication, fixture->connection,
+                                             &fixture->aoi, 1024u), BREAK_RUNTIME_OK);
+    fixture->mutate_schema = false;
+    ASSERT_EQ(fixture->send_calls, 2u);
+    ASSERT_EQ(fixture->sent_bra1_fragments, 2u);
+    ASSERT_TRUE(test_aspect_socket_wait_completed(fixture, 2u));
+    ASSERT_EQ(test_aspect_socket_drain(fixture, 1u), 1u);
+    ASSERT_EQ(break_test_aspect_consumer_count, 2u);
+    ASSERT_EQ(break_aspect_get_u32(fixture->remote, fixture->object, 2u, &health),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_get_i32(fixture->remote, fixture->object, 3u, &signed_value),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(health, 42u);
+    ASSERT_EQ(signed_value, -17);
+    break_aspect_session_stats(fixture->session, &stats);
+    ASSERT_EQ(stats.applied_packets, 1u);
+    ASSERT_EQ(stats.rejected_packets, 1u);
+    ASSERT_EQ(stats.drained_packets, 2u);
+    ASSERT_EQ(stats.bridge.completion_count, 0u);
+
+    ASSERT_TRUE(break_aspect_session_close(fixture->session, fixture->connection));
+    ASSERT_TRUE(break_aspect_session_open(fixture->session, fixture->connection));
+    ASSERT_EQ(break_aspect_replication_set_u32(fixture->replication, fixture->object,
+                                                2u, 84u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_replication_set_i32(fixture->replication, fixture->object,
+                                                3u, -34), BREAK_RUNTIME_OK);
+    fixture->delta_override = 1u;
+    ASSERT_EQ(break_aspect_replication_sync(fixture->replication, fixture->connection,
+                                             &fixture->aoi, 1024u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(fixture->send_calls, 3u);
+    ASSERT_EQ(fixture->sent_fragments, 3u);
+    ASSERT_EQ(fixture->sent_bra1_fragments, 3u);
+    ASSERT_TRUE(test_aspect_socket_wait_completed(fixture, 3u));
+    break_aspect_session_stats(fixture->session, &stats);
+    ASSERT_EQ(stats.bridge.completed_packets, 3u);
+    ASSERT_EQ(stats.bridge.rejected_fragments, 0u);
+    ASSERT_EQ(stats.bridge.completion_count, 1u);
+    ASSERT_EQ(break_test_aspect_consumer_count, 2u);
+    ASSERT_EQ(break_aspect_get_u32(fixture->remote, fixture->object, 2u, &health),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(health, 42u);
+    ASSERT_EQ(test_aspect_socket_drain(fixture, 1u), 1u);
+    ASSERT_EQ(break_test_aspect_consumer_count, 3u);
+    ASSERT_EQ(break_aspect_get_u32(fixture->remote, fixture->object, 2u, &health),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_get_i32(fixture->remote, fixture->object, 3u, &signed_value),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(health, 84u);
+    ASSERT_EQ(signed_value, -34);
+    break_aspect_session_stats(fixture->session, &stats);
+    ASSERT_EQ(stats.applied_packets, 2u);
+    ASSERT_EQ(stats.rejected_packets, 1u);
+    ASSERT_EQ(stats.drained_packets, 3u);
+    ASSERT_EQ(stats.drained_packets, stats.applied_packets + stats.rejected_packets);
+    ASSERT_EQ(stats.bridge.completed_packets, 3u);
+    ASSERT_EQ(stats.bridge.rejected_fragments, 0u);
+    ASSERT_EQ(stats.bridge.completion_count, 0u);
+    break_session_manager_apply_stats(fixture->manager, &session_stats);
+    ASSERT_EQ(session_stats.applied, 5u);
+    ASSERT_EQ(session_stats.invalid, 0u);
+    ASSERT_EQ(session_stats.handler_failed, 0u);
+}
+
+TEST(aspect_session_real_socket_send_drain_reject_and_key_reuse)
+{
+    AspectSocketFixture fixture;
+    test_aspect_socket_loopback_run(&fixture);
+    test_aspect_socket_dispose(&fixture);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(aspect_session_create_validate_and_null_calls_are_safe);
     RUN_TEST(aspect_session_handler_queues_valid_bra1_without_mutating_store);
@@ -633,4 +1101,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(aspect_session_tick_forwards_bridge_expiry);
     RUN_TEST(aspect_session_send_maps_invalid_and_closed_without_reactor);
     RUN_TEST(aspect_session_send_forwards_brfg_v1_and_maps_overload);
+    RUN_TEST(aspect_session_real_socket_send_drain_reject_and_key_reuse);
 TEST_MAIN_END()
