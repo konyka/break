@@ -265,7 +265,7 @@ struct CoreAppNetTransport {
     bool world_replication;
     BreakComponentSchemaRegistry *world_schemas;
     World *world_authoritative;
-    World *world_diagnostic;
+    World *world_diagnostics[CORE_APP_NET_MAX_CONNECTIONS];
     BreakWorldSession *world_session;
     Entity world_objects[CORE_APP_WORLD_OBJECT_COUNT];
     bool world_open[CORE_APP_NET_MAX_CONNECTIONS];
@@ -627,6 +627,20 @@ static bool net_world_register_handlers(CoreAppNetTransport *t) {
                net_world_on_control, t);
 }
 
+static World *net_world_diagnostic_create(const CoreAppNetTransport *t) {
+    World *diagnostic = world_create();
+    if (!diagnostic) return NULL;
+    for (ComponentType component = 1u; component <= 6u; ++component) {
+        const BreakComponentSchema *schema = break_schema_lookup(t->world_schemas, component);
+        if (!schema) {
+            world_destroy(diagnostic);
+            return NULL;
+        }
+        world_register_component(diagnostic, component, (u32)schema->size);
+    }
+    return diagnostic;
+}
+
 static bool net_world_create(CoreAppNetTransport *t) {
     static const BreakComponentSchema schemas[] = {
         {1u, 1u, sizeof(u32), _Alignof(u32),
@@ -644,13 +658,10 @@ static bool net_world_create(CoreAppNetTransport *t) {
     };
     t->world_schemas = break_schema_registry_create();
     t->world_authoritative = world_create();
-    t->world_diagnostic = world_create();
-    if (!t->world_schemas || !t->world_authoritative || !t->world_diagnostic) return false;
+    if (!t->world_schemas || !t->world_authoritative) return false;
     for (u32 i = 0u; i < sizeof(schemas) / sizeof(schemas[0]); ++i) {
         if (break_schema_register(t->world_schemas, &schemas[i]) != BREAK_SCHEMA_OK) return false;
         world_register_component(t->world_authoritative, schemas[i].component_id,
-                                 (u32)schemas[i].size);
-        world_register_component(t->world_diagnostic, schemas[i].component_id,
                                  (u32)schemas[i].size);
     }
     for (u32 i = 0u; i < CORE_APP_WORLD_OBJECT_COUNT; ++i) {
@@ -689,6 +700,8 @@ static void net_world_close(CoreAppNetTransport *t, u32 slot) {
         t->world_open[slot] = false;
         t->world_stats.closed++;
     }
+    world_destroy(t->world_diagnostics[slot]);
+    t->world_diagnostics[slot] = NULL;
     t->world_control_pending[slot] = false;
     t->world_force_full[slot] = false;
     memset(&t->world_controls[slot], 0, sizeof(t->world_controls[slot]));
@@ -701,11 +714,9 @@ static void net_world_close_all(CoreAppNetTransport *t) {
 static void net_world_destroy(CoreAppNetTransport *t) {
     net_world_close_all(t);
     break_world_session_destroy(t->world_session);
-    world_destroy(t->world_diagnostic);
     world_destroy(t->world_authoritative);
     break_schema_registry_destroy(t->world_schemas);
     t->world_session = NULL;
-    t->world_diagnostic = NULL;
     t->world_authoritative = NULL;
     t->world_schemas = NULL;
     t->world_level_initialized = false;
@@ -741,10 +752,18 @@ static void net_world_update(CoreAppNetTransport *t, const CoreAppSnapshotEntity
 }
 
 static bool net_world_open(CoreAppNetTransport *t, u32 slot, BreakConnectionKey key) {
+    World *diagnostic;
     if (!t->world_replication) return true;
-    if (!t->world_level_initialized || !break_world_session_open(t->world_session, key)) {
+    if (!t->world_level_initialized) return false;
+    world_destroy(t->world_diagnostics[slot]);
+    t->world_diagnostics[slot] = NULL;
+    diagnostic = net_world_diagnostic_create(t);
+    if (!diagnostic) return false;
+    if (!break_world_session_open(t->world_session, key)) {
+        world_destroy(diagnostic);
         return false;
     }
+    t->world_diagnostics[slot] = diagnostic;
     t->world_open[slot] = true;
     t->world_stats.opened++;
     return true;
@@ -789,7 +808,7 @@ static void net_world_tick_drain(CoreAppNetTransport *t, u64 now_ms) {
     for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
         BreakNetSendResult sent;
         if (!t->world_open[i]) continue;
-        (void)break_world_session_drain(t->world_session, t->keys[i], t->world_diagnostic,
+        (void)break_world_session_drain(t->world_session, t->keys[i], t->world_diagnostics[i],
                                         CORE_APP_WORLD_DRAIN_BUDGET);
         if (!t->world_control_pending[i]) {
             t->world_control_pending[i] = break_world_session_poll_control(
@@ -1885,9 +1904,8 @@ bool core_app_net_transport_world_for_test(CoreAppNetTransport *transport,
     out->enabled = transport->world_replication;
     out->schemas = transport->world_schemas;
     out->authoritative = transport->world_authoritative;
-    out->diagnostic = transport->world_diagnostic;
     out->session = transport->world_session;
-    out->created = out->schemas && out->authoritative && out->diagnostic && out->session;
+    out->created = out->schemas && out->authoritative && out->session;
     memcpy(out->objects, transport->world_objects, sizeof(out->objects));
     out->level_generation = transport->world_level_generation;
     out->opened = transport->world_stats.opened;
@@ -1896,6 +1914,7 @@ bool core_app_net_transport_world_for_test(CoreAppNetTransport *transport,
     out->terminal_errors = transport->world_stats.terminal_errors;
     for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
         if (transport->world_open[i]) out->open_count++;
+        if (transport->world_diagnostics[i]) out->diagnostic = transport->world_diagnostics[i];
     }
     return true;
 }
@@ -1915,6 +1934,16 @@ bool core_app_net_transport_world_control_for_test(CoreAppNetTransport *transpor
                                                    const BreakNetOwnedMessage *message) {
     if (!transport || !transport->world_replication || !transport->world_session) return false;
     return net_world_on_control(key, message, transport);
+}
+
+World *core_app_net_transport_world_reopen_for_test(CoreAppNetTransport *transport, u64 key) {
+    int slot;
+    if (!transport || !transport->world_replication || !transport->world_session) return NULL;
+    slot = net_slot_find(transport, key);
+    if (slot < 0 || !transport->world_open[slot]) return NULL;
+    net_world_close(transport, (u32)slot);
+    if (!net_world_open(transport, (u32)slot, key)) return NULL;
+    return transport->world_diagnostics[slot];
 }
 
 BreakNetReactor *core_app_net_transport_reactor_for_test(CoreAppNetTransport *transport) {

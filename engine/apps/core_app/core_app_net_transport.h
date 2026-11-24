@@ -130,6 +130,7 @@ BreakNetSendResult core_app_net_transport_world_publish_for_test(CoreAppNetTrans
                                                                  u64 key);
 bool core_app_net_transport_world_control_for_test(CoreAppNetTransport *transport, u64 key,
                                                    const BreakNetOwnedMessage *message);
+World *core_app_net_transport_world_reopen_for_test(CoreAppNetTransport *transport, u64 key);
 /* Test-only (test_core_app_net_transport): the live reactor, or NULL. */
 BreakNetReactor *core_app_net_transport_reactor_for_test(CoreAppNetTransport *transport);
 /* Test-only: after the step that blocked the stop has returned, stops and

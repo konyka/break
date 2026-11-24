@@ -1009,7 +1009,8 @@ TEST(world_transport_bounded_tick_and_shutdown_drain_only_fill_diagnostic_world)
     ASSERT_EQ(stats.applied_packets, 3u);
     ASSERT_EQ(stats.rejected_packets, 0u);
     ASSERT_EQ(stats.bridge.completion_count, 0u);
-    ASSERT_EQ(*(const u32 *)world_get_component(view.diagnostic, view.objects[0], 1u), 72u);
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    ASSERT_TRUE(view.diagnostic == NULL);
     ASSERT_EQ(*authoritative_index, 9u);
     break_world_snapshot_release(third);
     break_world_snapshot_release(second);
@@ -1190,6 +1191,108 @@ TEST(world_transport_terminal_error_releases_attempt_and_counts_drop) {
     aspect_fixture_dispose(&fixture);
 }
 
+static BreakWorldSnapshot *world_snapshot_with_index(CoreAppNetWorldTestView *view,
+                                                     u32 value, u64 tick) {
+    u32 *index = (u32 *)world_get_component(view->authoritative, view->objects[0], 1u);
+    if (!index) return NULL;
+    *index = value;
+    return break_world_snapshot_build(view->authoritative, view->schemas, tick);
+}
+
+TEST(world_transport_two_connections_isolate_diagnostic_world_and_reopen) {
+    AspectTransportFixture fixture;
+    CoreAppNetWorldTestView view;
+    BreakWorldSessionStats stats;
+    BreakWorldSnapshot *snapshot;
+    World *diagnostic_a;
+    World *diagnostic_b;
+    const BreakConnectionKey key_a = 0x250au;
+    const BreakConnectionKey key_b = 0x350au;
+    ASSERT_TRUE(world_fixture_start(&fixture, "core_app_world_isolation.port", true, false));
+    ASSERT_TRUE(world_fixture_open(&fixture, key_a));
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    diagnostic_a = view.diagnostic;
+    ASSERT_NOT_NULL(diagnostic_a);
+    ASSERT_TRUE(break_net_reactor_enqueue_opened_for_test(fixture.reactor, key_b));
+    world_fixture_tick(&fixture);
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    ASSERT_EQ(view.open_count, 2u);
+    diagnostic_b = view.diagnostic;
+    ASSERT_NOT_NULL(diagnostic_b);
+
+    snapshot = world_snapshot_with_index(&view, 70u, 20u);
+    ASSERT_NOT_NULL(snapshot);
+    ASSERT_TRUE(world_queue_full(&fixture, key_a, snapshot, 70u));
+    break_world_snapshot_release(snapshot);
+    world_fixture_tick(&fixture);
+    ASSERT_EQ(*(const u32 *)world_get_component(diagnostic_a, view.objects[0], 1u), 70u);
+
+    snapshot = world_snapshot_with_index(&view, 71u, 21u);
+    ASSERT_NOT_NULL(snapshot);
+    ASSERT_TRUE(world_queue_full(&fixture, key_b, snapshot, 71u));
+    break_world_snapshot_release(snapshot);
+    world_fixture_tick(&fixture);
+    ASSERT_EQ(*(const u32 *)world_get_component(diagnostic_a, view.objects[0], 1u), 70u);
+    ASSERT_EQ(*(const u32 *)world_get_component(diagnostic_b, view.objects[0], 1u), 71u);
+    break_world_session_stats(view.session, &stats);
+    ASSERT_EQ(stats.applied_packets, 2u);
+    ASSERT_EQ(stats.rejected_packets, 0u);
+    ASSERT_EQ(stats.need_full_packets, 0u);
+
+    snapshot = world_snapshot_with_index(&view, 72u, 22u);
+    ASSERT_NOT_NULL(snapshot);
+    ASSERT_TRUE(world_queue_full(&fixture, key_a, snapshot, 72u));
+    break_world_snapshot_release(snapshot);
+    snapshot = world_snapshot_with_index(&view, 81u, 23u);
+    ASSERT_NOT_NULL(snapshot);
+    ASSERT_TRUE(world_queue_full(&fixture, key_b, snapshot, 81u));
+    break_world_snapshot_release(snapshot);
+    world_fixture_tick(&fixture);
+    ASSERT_EQ(*(const u32 *)world_get_component(diagnostic_a, view.objects[0], 1u), 72u);
+    ASSERT_EQ(*(const u32 *)world_get_component(diagnostic_b, view.objects[0], 1u), 81u);
+    break_world_session_stats(view.session, &stats);
+    ASSERT_EQ(stats.applied_packets, 4u);
+    ASSERT_EQ(stats.rejected_packets, 0u);
+    ASSERT_EQ(stats.need_full_packets, 0u);
+
+    diagnostic_a = core_app_net_transport_world_reopen_for_test(fixture.transport, key_a);
+    ASSERT_NOT_NULL(diagnostic_a);
+    ASSERT_EQ(break_world_entity_count(diagnostic_a), 0u);
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    ASSERT_EQ(view.open_count, 2u);
+    ASSERT_EQ(view.opened, 3u);
+    ASSERT_EQ(view.closed, 1u);
+    ASSERT_TRUE(view.diagnostic == diagnostic_b);
+    ASSERT_EQ(break_world_entity_count(diagnostic_a), 0u);
+    ASSERT_EQ(*(const u32 *)world_get_component(diagnostic_b, view.objects[0], 1u), 81u);
+
+    snapshot = world_snapshot_with_index(&view, 80u, 30u);
+    ASSERT_NOT_NULL(snapshot);
+    ASSERT_TRUE(world_queue_full(&fixture, key_a, snapshot, 80u));
+    break_world_snapshot_release(snapshot);
+    snapshot = world_snapshot_with_index(&view, 91u, 31u);
+    ASSERT_NOT_NULL(snapshot);
+    ASSERT_TRUE(world_queue_full(&fixture, key_b, snapshot, 91u));
+    break_world_snapshot_release(snapshot);
+    world_fixture_tick(&fixture);
+    ASSERT_EQ(*(const u32 *)world_get_component(diagnostic_a, view.objects[0], 1u), 80u);
+    ASSERT_EQ(*(const u32 *)world_get_component(diagnostic_b, view.objects[0], 1u), 91u);
+    break_world_session_stats(view.session, &stats);
+    ASSERT_EQ(stats.applied_packets, 6u);
+    ASSERT_EQ(stats.rejected_packets, 0u);
+    ASSERT_EQ(stats.need_full_packets, 0u);
+    ASSERT_EQ(stats.bridge.completion_count, 0u);
+
+    ASSERT_EQ(fixture.hooks.destroy(fixture.hooks.user), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    ASSERT_EQ(view.open_count, 0u);
+    ASSERT_EQ(view.closed, 3u);
+    ASSERT_TRUE(view.diagnostic == NULL);
+    ASSERT_TRUE(trace_contains(fixture.trace,
+        "event=network_world_stats opened=3 closed=3 applied=6 need_full=0 rejected=0"));
+    aspect_fixture_dispose(&fixture);
+}
+
 TEST(world_transport_open_failure_rolls_back_aspect_and_world) {
     AspectTransportFixture fixture;
     CoreAppNetWorldTestView world;
@@ -1207,6 +1310,7 @@ TEST(world_transport_open_failure_rolls_back_aspect_and_world) {
     ASSERT_EQ(world.open_count, 0u);
     ASSERT_EQ(world.opened, 0u);
     ASSERT_EQ(world.closed, 0u);
+    ASSERT_TRUE(world.diagnostic == NULL);
     ASSERT_TRUE(core_app_net_transport_aspect_for_test(fixture.transport, &aspect));
     ASSERT_EQ(aspect.open_count, 0u);
     ASSERT_EQ(aspect.opened, 1u);
@@ -1256,6 +1360,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(world_transport_publishes_full_delta_and_need_full_from_confirmed_baseline);
     RUN_TEST(world_transport_overload_resumes_the_same_immutable_attempt);
     RUN_TEST(world_transport_terminal_error_releases_attempt_and_counts_drop);
+    RUN_TEST(world_transport_two_connections_isolate_diagnostic_world_and_reopen);
     RUN_TEST(world_transport_open_failure_rolls_back_aspect_and_world);
     RUN_TEST(world_transport_destroy_releases_enabled_state);
 TEST_MAIN_END()
