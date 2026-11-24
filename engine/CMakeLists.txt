@@ -972,7 +972,7 @@ if(BREAK_ENABLE_SNOWFLAKE)
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_include_directories(break_net PRIVATE
         ${SNOWFLAKE_SOURCE_DIR}/include)
-    target_link_libraries(break_net PUBLIC break_replication_core snow::net)
+    target_link_libraries(break_net PUBLIC break_replication_core break_online snow::net)
     # PUBLIC so every break_net consumer (the editor executable's
     # editor_remote.c, test_editor_shell) compiles the real remote host,
     # never the !BREAK_ENABLE_SNOWFLAKE stub surface.
@@ -993,7 +993,7 @@ if(BREAK_ENABLE_SNOWFLAKE)
             ${CMAKE_CURRENT_SOURCE_DIR}/src)
         target_include_directories(break_net_test PRIVATE
             ${SNOWFLAKE_SOURCE_DIR}/include)
-        target_link_libraries(break_net_test PUBLIC break_replication_core snow::net)
+        target_link_libraries(break_net_test PUBLIC break_replication_core break_online snow::net)
         target_compile_definitions(break_net_test PUBLIC
             BREAK_ENABLE_SNOWFLAKE=1 BREAK_NET_TESTING=1)
         if(BREAK_ENABLE_CRYPTO)
@@ -7106,6 +7106,17 @@ endif()
             break_net_test break_online)
         add_test(NAME test_break_online_aspect_session COMMAND test_break_online_aspect_session)
         set_tests_properties(test_break_online_aspect_session PROPERTIES
+            TIMEOUT 30 LABELS "network;snowflake;session;replication;aspect")
+
+        add_executable(test_break_online_aspect_session_link
+            tests/test_break_online_aspect_session_link.c)
+        target_include_directories(test_break_online_aspect_session_link PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_break_online_aspect_session_link PRIVATE
+            break_net_test)
+        add_test(NAME test_break_online_aspect_session_link
+            COMMAND test_break_online_aspect_session_link)
+        set_tests_properties(test_break_online_aspect_session_link PROPERTIES
             TIMEOUT 30 LABELS "network;snowflake;session;replication;aspect")
 
         # Stage 5 Phase D Task 2: TLS transport mode. The self-signed PEM

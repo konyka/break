@@ -198,3 +198,20 @@ Results:
 ## Remaining Task 2 work
 
 This task deliberately uses direct real bridge-handler/completion-path tests rather than the full authenticated socket-to-aspect loopback. Task 2 still owns that end-to-end socket coverage, temporary 0x4009 registration mutation, full Vulkan/OpenGL validation, production documentation updates, and any later integration. No claim of full graphics-suite or production-wiring verification is made here.
+
+## Independent review (agent-420) fixes
+
+Verdict was needs changes for one Important and one Minor.
+
+- Important: break_net/break_net_test did not propagate break_online although
+  break_online_aspect_session.c references aspect symbols. Added the new
+  test_break_online_aspect_session_link consumer which links ONLY
+  break_net_test. Before the CMake fix it failed to link with undefined
+  references to break_aspect_store_create, break_aspect_schema_register,
+  break_aspect_store_destroy, break_aspect_schema_hash and break_aspect_apply
+  (RED). After adding break_online PUBLIC to both libraries it builds and runs
+  1/1 (GREEN).
+- Minor: header now states the owner-thread/queue-only contract and documents
+  that the accessor returns a borrowed, session-owned bridge.
+- Post-fix: link contract 1/1, aspect session 11/11, bridge 19/19; ASan+UBSan
+  (detect_leaks=1) and TSan for the two aspect targets each 2/2, no diagnostics.

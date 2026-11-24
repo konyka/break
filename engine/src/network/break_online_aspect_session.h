@@ -8,6 +8,9 @@
 extern "C" {
 #endif
 
+/* Every function in this header is owner-thread only. Network callbacks only
+ * queue completions in the owned bridge; break_aspect_session_drain is the sole
+ * apply entry point and the only place the store may be mutated. */
 typedef struct BreakAspectSession BreakAspectSession;
 
 typedef struct BreakAspectSessionConfig {
@@ -24,6 +27,9 @@ typedef struct BreakAspectSessionStats {
 
 BreakAspectSession *break_aspect_session_create(const BreakAspectSessionConfig *config);
 void break_aspect_session_destroy(BreakAspectSession *session);
+/* Borrowed: owned by the session, valid until break_aspect_session_destroy.
+ * Callers use it to register the bridge handler and to send fragments; they
+ * must not destroy it separately. */
 BreakReplicationSessionBridge *break_aspect_session_bridge(BreakAspectSession *session);
 bool break_aspect_session_open(BreakAspectSession *session, BreakConnectionKey connection);
 bool break_aspect_session_close(BreakAspectSession *session, BreakConnectionKey connection);
