@@ -13539,3 +13539,13 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **文档修正**：`docs/design/audio_extended.md`「语音参考自动对齐」的“未做”仍列出时钟漂移补偿和 VoiceProcessor/core_app/网络接线，这些已交付，已改为只剩多声道与真实声学验证，并给出交叉引用。
 - **变基补充**：提交前远端又新增 `4e8628ef`..`6a00e90f`（5 个提交，复制分片重组池：多流交错、共享字节预算、按流过期）。复核：新流先查槽位与字节预算再分配，失败不影响已有流；完成或过期都推进 retired 高水位，旧于高水位的新流为 CONFLICT；起流失败会释放槽位。未发现问题。
 - **macOS 验证**：Metal 全量 **435/435**、MoltenVK 全量 **438/438**，各 5 项既有条件 skip（不计为执行通过）。直接 cc 编译的 ASan+UBSan（`detect_leaks=0`，本机不支持 LSan）：`test_audio_noise_suppressor` 11/11、`test_audio_voice_processor` 5/5、`test_break_replication_fragment` 15/15（变基后含池用例为 24/24），无诊断。变基后 Metal 全量重跑仍为 **435/435**；MoltenVK 未重跑。未运行 TSan；Windows/Linux 以远端 CI 为准，本收据提交触发的工作流结果不在此预写。
+
+## 复制分片重组池周期过期调度（2026-11-24）
+
+- **交付**：新增 `break_replication_reassembly_pool_set_expiry_schedule`、`_disable_expiry_schedule`、`_tick`。默认禁用；set 替换策略并清纪元，第一次 tick 立即检查，后续 `now-last_tick>=interval` 才单次 expire 并记录 `now`。回退不改纪元，长间隔不 catch-up；`interval=0` 每次到期，`max_idle=0` 到期时驱逐全部计时流。手动 expire 不推进纪元。
+- **生命周期与入口**：`push_at` 在校验、路由、容量和预算准入之前 tick。disable 保留流并清纪元；reset 保留创建配置与调度策略、清空流和高水位并清纪元。旧单流和池默认行为不变；所有者线程语义，不新增分配、墙钟、锁、线程或网络调用。
+- **TDD**：四组测试先因三个 API 未声明而在 `-Werror` 下编译 RED；实现后由基线 **24/24** 达到 **28/28**。测试还覆盖默认禁用、重复分片刷新、准入前释放容量、零周期/零空闲、禁用后重启用、回退、多槽单次驱逐、reset 和手动 expire 纪元。
+- **变异**：八项均成功构建并由行为断言判红：首次不立即 **27 通过/1 失败**，`>=` 改 `>` **24/4**，准入后维护 **27/1**，无符号回退 **27/1**，disable 仍执行 **27/1**，reset 丢策略 **26/2**，reset 留旧纪元 **27/1**，长间隔 catch-up **27/1**。每项后恢复，最终 focused **28/28**。
+- **完整验证**：Vulkan CTest 注册 **462** 项，**458 通过、4 条件 skip、0 失败**；OpenGL 注册 **453** 项，**449 通过、4 条件 skip、0 失败**。skip 均为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计为执行通过。
+- **Sanitizer**：项目选项 `ENGINE_USE_ASAN=ON + ENGINE_USE_UBSAN=ON` 并以 `ASAN_OPTIONS=detect_leaks=1` 运行 focused **28/28**；`ENGINE_USE_TSAN=ON` focused **28/28**。均无 sanitizer/leak 诊断，只运行 focused 目标，不是完整 sanitizer suite。
+- **剩余边界**：周期调度器不再列为本项未实现项；应用仍必须在 owner tick/frame 调用 `pool_tick` 或经 `push_at` 驱动，没有后台维护。session/网络接线、真实网络和生产服务验收未做；本记录不包含远端 CI、Windows 或 Proton 新收据。

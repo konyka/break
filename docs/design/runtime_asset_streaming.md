@@ -413,3 +413,16 @@ arm64 lane 新增 `test_vfs`（36 例）、`test_async_loader`（17 例）和 `t
 新增 `break_replication_reassembly_pool_expire(pool, now, max_idle)` 逐流过期并返回驱逐数，新增 `break_replication_reassembly_pool_reset(pool)` 恢复同配置新池状态。计时来自调用者，重复只刷新本槽，拒绝不刷新，时钟回退不产生巨额空闲，`max_idle=0` 清理全部计时流；reset 保留容量、预算和 expected base。API 仅限所有者线程，不自行读时钟或创建线程、锁、网络任务。
 
 focused 测试 **22/22**，包含三流过期/复位、交织 pending 字节、destroy-with-pending 和完成高水位单调性；八项定向变异均被测试判红。Vulkan 完整套件 462 项中 458 通过、4 条件 skip、0 失败，OpenGL 453 项中 449 通过、4 条件 skip、0 失败；ASan+UBSan（含 leak 检测）和 TSan focused 均 22/22、无诊断。这些结果不包括真实网络、生产资产服务、session 接线或周期调度器，后者仍是后续工作。
+
+
+## 补充（2026-11-24）：重组池周期过期调度
+
+分片重组池新增可选的 set/disable/tick 周期过期 API。set 保存 `interval/max_idle` 并清纪元，第一次 tick 立即检查；之后只有 `now-last_tick>=interval` 才执行一次，回退不改纪元，长间隔不 catch-up。零 interval 表示每次到期，零 max_idle 表示到期时驱逐全部计时流；手动 expire 不推进纪元。默认禁用，旧池行为不变。
+
+`push_at` 在任何分片校验与准入之前维护，可在容量/预算判断前释放到期槽。disable 保留流并清纪元，reset 保留策略但清纪元；接口不分配、不读墙钟、不加锁、不创建线程或网络任务，仍由所有者线程驱动。
+
+验证按严格 TDD 完成：四组测试先因三个 API 未声明而编译 RED，随后 focused **28/28**（基线 **24/24**）。八项变异全部成功构建并判红：首次不立即 **27/1**、严格大于边界 **24/4**、准入后维护 **27/1**、无符号回退 **27/1**、disable 无效 **27/1**、reset 丢策略 **26/2**、reset 留旧纪元 **27/1**、循环 catch-up **27/1**（均为通过/失败）；恢复后 **28/28**。
+
+完整 Vulkan **458/462**、OpenGL **449/453** 实际通过，各 **4 个既有条件 skip、0 失败**；skip 为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`。ASan+UBSan（显式 leak 检测）和 TSan focused 均 **28/28**、无诊断，不是完整 sanitizer suite。
+
+周期调度器不再列为本项缺口；资产路径仍需应用在 owner tick/frame 显式 tick，或依靠 `push_at` 触发，不存在后台维护。session/网络、真实资产流与生产服务接线及验收不在本切片内。

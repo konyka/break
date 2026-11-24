@@ -690,3 +690,14 @@ core_app 新增 `--voice-bypass`，可从命令行关闭语音处理链的任意
 上一追加段所列“多 delta 并发重组”由 `BreakReplicationReassemblyPool` 关闭；历史段落保留不改。池提供固定槽位按 `delta_id` 路由、共享负载预算、失败原子拒绝、完成/过期高水位、逐流 expire 和保留配置的 reset。旧单流语义不变，池 API 不读墙钟、不加锁，仍属所有者线程的传输无关原语。
 
 剩余缺口仅为本项明确边界：**周期性调用 expire 的调度器、session/网络接线、真实网络与生产服务验收仍未完成**；FNV-1a 仍不是认证。focused 22/22、八项定向变异全部判红；Vulkan 458/462、OpenGL 449/453 实际通过且各 4 条件 skip、0 失败；ASan+UBSan（含 leak 检测）和 TSan focused 均 22/22、无诊断。上述结果不构成 session、真实网络、生产服务或完整 sanitizer suite 的验收。
+
+
+## 第 17 节（大世界/流式）补充（2026-11-24）：重组池周期调度缺口关闭
+
+上一追加段中的“周期性调用 expire 的调度器”由池内 set/disable/tick API 关闭，历史段落保持不改。默认禁用；set 替换 `interval/max_idle` 并清纪元，第一次 tick 立即检查，后续按 `now-last_tick>=interval` 单次维护，回退不改纪元，长间隔不 catch-up。零 interval 每次到期，零 max_idle 到期时驱逐全部计时流；手动 expire 不推进纪元。`push_at` 在校验与准入前先维护，disable 保留流，reset 保留策略但清纪元。实现不新增分配、墙钟、锁、线程或网络调用。
+
+严格 TDD 证据为缺失三个 API 的编译 RED 到 focused **28/28**（基线 **24/24**）。八项可构建变异均判红：首次不立即 **27/1**、严格大于边界 **24/4**、准入后维护 **27/1**、无符号回退 **27/1**、disable 仍执行 **27/1**、reset 丢策略 **26/2**、reset 留旧纪元 **27/1**、catch-up **27/1**（通过/失败）；恢复后 **28/28**。
+
+完整 Vulkan **458/462**、OpenGL **449/453** 实际通过，各 **4 条件 skip、0 失败**；跳过 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`。ASan+UBSan（显式 leak 检测）与 TSan focused 均 **28/28**、无诊断，不构成完整 sanitizer suite。
+
+剩余边界是调用与集成责任：应用必须在 owner tick/frame 显式 `pool_tick`，或由 `push_at` 触发；无后台线程。session/网络接线、真实网络和生产服务验收仍未完成，FNV-1a 仍不是认证。

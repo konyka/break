@@ -334,3 +334,16 @@ arm64 lane 新增 `test_hotreload`（7 例），与 VFS、异步加载和 filewa
 `break_replication_reassembly_pool_expire(pool, now, max_idle)` 对每个计时槽独立判断，支持时钟回退按 0 空闲及 `max_idle=0` 全部驱逐；`break_replication_reassembly_pool_reset(pool)` 清空流、pending 与高水位，保留创建配置。两者均由所有者线程调用，不读墙钟、不加锁，也不提供周期调度。
 
 `test_break_replication_fragment` **22/22**，三个 deferred minor 已补为交织非零 pending 字节、带 pending 数据销毁的 sanitizer 覆盖、完成高水位单调性断言。错误路由、满槽覆盖、completed id、共享预算、重复计数、expire 漏槽/高水位、reset pending 八项变异均判红。完整 Vulkan/OpenGL 分别 458/462、449/453 实际通过，各 4 条件 skip、0 失败；ASan+UBSan（含 leak 检测）与 TSan focused 均 22/22。周期调度器、session/网络接线和真实热重载资产链路仍未实现或验收。
+
+
+## 补充（2026-11-24）：重组池周期过期调度
+
+`BreakReplicationReassemblyPool` 现可通过 set/disable/tick API 在池内保存可选过期策略。默认禁用；set 替换 `interval/max_idle` 并清纪元，第一次 tick 立即检查，后续按 `now-last_tick>=interval` 单次执行，回退不清流也不改纪元，长间隔只记录本次 `now` 而不 catch-up。`interval=0` 每次到期，`max_idle=0` 到期时清理全部计时未完成流，手动 expire 不改变调度纪元。
+
+准入前维护由 `push_at` 在校验、路由和容量/预算判断之前触发。disable 保留现有流并清纪元；reset 保留策略与创建配置但清纪元。调度与池一样只允许所有者线程串行调用，不新增分配、墙钟、锁、线程或网络依赖。
+
+四组测试先以缺少三个 API 的编译失败取得 RED，再由 **24/24** 基线达到 focused **28/28**。八项可构建变异均被行为测试判红：首次不立即 **27/1**、`>` 边界 **24/4**、准入后维护 **27/1**、无符号回退 **27/1**、disable 仍执行 **27/1**、reset 丢策略 **26/2**、reset 留旧纪元 **27/1**、catch-up **27/1**（通过/失败）；全部恢复后 **28/28**。
+
+完整 Vulkan 为 **458/462**、OpenGL 为 **449/453** 实际通过，各 **4 条件 skip、0 失败**；跳过项同为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`。ASan+UBSan（含显式 leak 检测）与 TSan focused 均 **28/28**、无诊断，未声称完整 sanitizer suite。
+
+本切片只关闭周期调度原语缺口。热重载所有者仍须显式 tick 或经 `push_at` 驱动，没有后台线程；真实热重载资产链、session/网络接线和生产验收仍未完成。

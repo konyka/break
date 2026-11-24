@@ -1574,6 +1574,233 @@ TEST(reassembly_pool_complete_with_null_outputs_discards_and_recycles)
     break_replication_fragments_free(fragments70, count70);
 }
 
+TEST(reassembly_pool_expiry_schedule_honors_interval_and_activity)
+{
+    const uint8_t payload[] = {'a', 'b', 'c', 'd'};
+    BreakReplicationFragment *fragments = NULL;
+    size_t count = 0u;
+    BreakReplicationReassemblyPool *pool;
+    uint64_t completed_id = 0u;
+    uint8_t *assembled = NULL;
+    size_t assembled_size = 0u;
+
+    ASSERT_EQ(break_replication_fragment_payload(
+                  1u, 7u, payload, sizeof(payload), 2u, &fragments, &count),
+              BREAK_REPLICATION_FRAGMENT_OK);
+    ASSERT_EQ(count, 2u);
+    pool = break_replication_reassembly_pool_create(7u, 2u, 64u);
+    ASSERT_NOT_NULL(pool);
+    break_replication_reassembly_pool_set_expiry_schedule(pool, 10u, 5u);
+
+    ASSERT_EQ(break_replication_reassembly_pool_push_at(
+                  pool, &fragments[0], 100u, &completed_id, &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_INCOMPLETE);
+    ASSERT_EQ(break_replication_reassembly_pool_push_at(
+                  pool, &fragments[0], 104u, &completed_id, &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_DUPLICATE);
+    ASSERT_EQ(break_replication_reassembly_pool_tick(pool, 109u), 0u);
+    ASSERT_EQ(break_replication_reassembly_pool_pending_streams(pool), 1u);
+    ASSERT_EQ(break_replication_reassembly_pool_pending_bytes(pool), 2u);
+    ASSERT_EQ(break_replication_reassembly_pool_tick(pool, 110u), 1u);
+    ASSERT_EQ(break_replication_reassembly_pool_pending_streams(pool), 0u);
+    ASSERT_EQ(break_replication_reassembly_pool_pending_bytes(pool), 0u);
+
+    ASSERT_EQ(break_replication_reassembly_pool_push_at(
+                  pool, &fragments[0], 111u, &completed_id, &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_INCOMPLETE);
+    ASSERT_EQ(break_replication_reassembly_pool_expire(pool, 115u, 0u), 1u);
+    ASSERT_EQ(break_replication_reassembly_pool_push_at(
+                  pool, &fragments[0], 116u, &completed_id, &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_INCOMPLETE);
+    ASSERT_EQ(break_replication_reassembly_pool_tick(pool, 120u), 0u);
+    ASSERT_EQ(break_replication_reassembly_pool_tick(pool, 125u), 0u);
+    ASSERT_EQ(break_replication_reassembly_pool_pending_streams(pool), 1u);
+
+    break_replication_reassembly_pool_destroy(pool);
+    break_replication_fragments_free(fragments, count);
+}
+
+TEST(reassembly_pool_expiry_schedule_runs_before_admission_and_survives_reset)
+{
+    const uint8_t payload10[] = {'1', '0', 'a', 'b'};
+    const uint8_t payload11[] = {'1', '1'};
+    BreakReplicationFragment *fragments10 = NULL;
+    BreakReplicationFragment *fragments11 = NULL;
+    size_t count10 = 0u;
+    size_t count11 = 0u;
+    BreakReplicationFragment delta12;
+    BreakReplicationReassemblyPool *pool;
+    uint64_t completed_id = 0u;
+    uint8_t *assembled = NULL;
+    size_t assembled_size = 0u;
+
+    ASSERT_EQ(break_replication_fragment_payload(
+                  10u, 7u, payload10, sizeof(payload10), 2u, &fragments10, &count10),
+              BREAK_REPLICATION_FRAGMENT_OK);
+    ASSERT_EQ(break_replication_fragment_payload(
+                  11u, 7u, payload11, sizeof(payload11), sizeof(payload11),
+                  &fragments11, &count11),
+              BREAK_REPLICATION_FRAGMENT_OK);
+    ASSERT_EQ(count10, 2u);
+    ASSERT_EQ(count11, 1u);
+    delta12 = fragments10[0];
+    delta12.delta_id = 12u;
+    pool = break_replication_reassembly_pool_create(7u, 1u, 64u);
+    ASSERT_NOT_NULL(pool);
+    break_replication_reassembly_pool_set_expiry_schedule(pool, 10u, 5u);
+
+    ASSERT_EQ(break_replication_reassembly_pool_push_at(
+                  pool, &fragments10[0], 100u, &completed_id, &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_INCOMPLETE);
+    ASSERT_EQ(break_replication_reassembly_pool_push_at(
+                  pool, &fragments11[0], 105u, &completed_id, &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_OVER_LIMIT);
+    ASSERT_EQ(break_replication_reassembly_pool_pending_streams(pool), 1u);
+    ASSERT_EQ(break_replication_reassembly_pool_push_at(
+                  pool, &fragments11[0], 110u, &completed_id, &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_COMPLETE);
+    ASSERT_EQ(completed_id, 11u);
+    ASSERT_EQ(assembled_size, sizeof(payload11));
+    ASSERT_NOT_NULL(assembled);
+    ASSERT_TRUE(memcmp(assembled, payload11, sizeof(payload11)) == 0);
+    ASSERT_EQ(break_replication_reassembly_pool_pending_streams(pool), 0u);
+    break_replication_reassembly_free(assembled);
+    assembled = NULL;
+    assembled_size = 0u;
+
+    ASSERT_EQ(break_replication_reassembly_pool_push_at(
+                  pool, &delta12, 111u, &completed_id, &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_INCOMPLETE);
+    ASSERT_EQ(break_replication_reassembly_pool_pending_streams(pool), 1u);
+    break_replication_reassembly_pool_reset(pool);
+    ASSERT_EQ(break_replication_reassembly_pool_pending_streams(pool), 0u);
+    ASSERT_EQ(break_replication_reassembly_pool_pending_bytes(pool), 0u);
+
+    ASSERT_EQ(break_replication_reassembly_pool_tick(pool, 100u), 0u);
+    ASSERT_EQ(break_replication_reassembly_pool_push_at(
+                  pool, &delta12, 100u, &completed_id, &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_INCOMPLETE);
+    ASSERT_EQ(break_replication_reassembly_pool_tick(pool, 110u), 1u);
+    ASSERT_EQ(break_replication_reassembly_pool_pending_streams(pool), 0u);
+    ASSERT_EQ(break_replication_reassembly_pool_pending_bytes(pool), 0u);
+
+    break_replication_reassembly_pool_destroy(pool);
+    break_replication_fragments_free(fragments11, count11);
+    break_replication_fragments_free(fragments10, count10);
+}
+
+TEST(reassembly_pool_expiry_schedule_zero_disable_and_reenable)
+{
+    const uint8_t payload[] = {'z', 'e', 'r', 'o'};
+    BreakReplicationFragment *fragments = NULL;
+    size_t count = 0u;
+    BreakReplicationReassemblyPool *pool;
+    uint64_t completed_id = 0u;
+    uint8_t *assembled = NULL;
+    size_t assembled_size = 0u;
+
+    ASSERT_EQ(break_replication_fragment_payload(
+                  20u, 7u, payload, sizeof(payload), 2u, &fragments, &count),
+              BREAK_REPLICATION_FRAGMENT_OK);
+    ASSERT_EQ(count, 2u);
+    pool = break_replication_reassembly_pool_create(7u, 1u, 64u);
+    ASSERT_NOT_NULL(pool);
+    break_replication_reassembly_pool_set_expiry_schedule(NULL, 0u, 0u);
+    break_replication_reassembly_pool_disable_expiry_schedule(NULL);
+    ASSERT_EQ(break_replication_reassembly_pool_tick(NULL, 100u), 0u);
+
+    ASSERT_EQ(break_replication_reassembly_pool_push_at(
+                  pool, &fragments[0], 10u, &completed_id, &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_INCOMPLETE);
+    ASSERT_EQ(break_replication_reassembly_pool_tick(pool, 1000u), 0u);
+    ASSERT_EQ(break_replication_reassembly_pool_pending_streams(pool), 1u);
+    break_replication_reassembly_pool_reset(pool);
+
+    break_replication_reassembly_pool_set_expiry_schedule(pool, 0u, 0u);
+    ASSERT_EQ(break_replication_reassembly_pool_push_at(
+                  pool, &fragments[0], 100u, &completed_id, &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_INCOMPLETE);
+    ASSERT_EQ(break_replication_reassembly_pool_tick(pool, 100u), 1u);
+    ASSERT_EQ(break_replication_reassembly_pool_pending_streams(pool), 0u);
+
+    ASSERT_EQ(break_replication_reassembly_pool_push_at(
+                  pool, &fragments[0], 100u, &completed_id, &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_INCOMPLETE);
+    break_replication_reassembly_pool_disable_expiry_schedule(pool);
+    ASSERT_EQ(break_replication_reassembly_pool_tick(pool, 10000u), 0u);
+    ASSERT_EQ(break_replication_reassembly_pool_pending_streams(pool), 1u);
+    ASSERT_EQ(break_replication_reassembly_pool_pending_bytes(pool), 2u);
+
+    break_replication_reassembly_pool_set_expiry_schedule(pool, 100u, 5u);
+    ASSERT_EQ(break_replication_reassembly_pool_tick(pool, 110u), 1u);
+    ASSERT_EQ(break_replication_reassembly_pool_pending_streams(pool), 0u);
+    ASSERT_EQ(break_replication_reassembly_pool_pending_bytes(pool), 0u);
+
+    break_replication_reassembly_pool_destroy(pool);
+    break_replication_fragments_free(fragments, count);
+}
+
+TEST(reassembly_pool_expiry_schedule_clock_rollback_and_single_pass)
+{
+    const uint8_t payload[] = {'t', 'i', 'm', 'e'};
+    BreakReplicationFragment *fragments = NULL;
+    size_t count = 0u;
+    BreakReplicationFragment second;
+    BreakReplicationFragment third;
+    BreakReplicationReassemblyPool *pool;
+    uint64_t completed_id = 0u;
+    uint8_t *assembled = NULL;
+    size_t assembled_size = 0u;
+
+    ASSERT_EQ(break_replication_fragment_payload(
+                  30u, 7u, payload, sizeof(payload), 2u, &fragments, &count),
+              BREAK_REPLICATION_FRAGMENT_OK);
+    ASSERT_EQ(count, 2u);
+    second = fragments[0];
+    second.delta_id = 31u;
+    third = fragments[0];
+    third.delta_id = 32u;
+    pool = break_replication_reassembly_pool_create(7u, 4u, 64u);
+    ASSERT_NOT_NULL(pool);
+    break_replication_reassembly_pool_set_expiry_schedule(pool, 10u, 5u);
+
+    ASSERT_EQ(break_replication_reassembly_pool_push_at(
+                  pool, &fragments[0], 100u, &completed_id, &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_INCOMPLETE);
+    ASSERT_EQ(break_replication_reassembly_pool_push_at(
+                  pool, &second, 100u, &completed_id, &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_INCOMPLETE);
+    ASSERT_EQ(break_replication_reassembly_pool_tick(pool, 50u), 0u);
+    ASSERT_EQ(break_replication_reassembly_pool_pending_streams(pool), 2u);
+    ASSERT_EQ(break_replication_reassembly_pool_tick(pool, 109u), 0u);
+    ASSERT_EQ(break_replication_reassembly_pool_pending_streams(pool), 2u);
+    ASSERT_EQ(break_replication_reassembly_pool_tick(pool, 110u), 2u);
+    ASSERT_EQ(break_replication_reassembly_pool_pending_streams(pool), 0u);
+    ASSERT_EQ(break_replication_reassembly_pool_pending_bytes(pool), 0u);
+
+    break_replication_reassembly_pool_reset(pool);
+    ASSERT_EQ(break_replication_reassembly_pool_push_at(
+                  pool, &fragments[0], 200u, &completed_id, &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_INCOMPLETE);
+    ASSERT_EQ(break_replication_reassembly_pool_push_at(
+                  pool, &second, 200u, &completed_id, &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_INCOMPLETE);
+    ASSERT_EQ(break_replication_reassembly_pool_push_at(
+                  pool, &fragments[0], 204u, &completed_id, &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_DUPLICATE);
+    ASSERT_EQ(break_replication_reassembly_pool_tick(pool, 255u), 2u);
+    ASSERT_EQ(break_replication_reassembly_pool_pending_streams(pool), 0u);
+    ASSERT_EQ(break_replication_reassembly_pool_push_at(
+                  pool, &third, 255u, &completed_id, &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_INCOMPLETE);
+    ASSERT_EQ(break_replication_reassembly_pool_tick(pool, 260u), 0u);
+    ASSERT_EQ(break_replication_reassembly_pool_pending_streams(pool), 1u);
+    ASSERT_EQ(break_replication_reassembly_pool_pending_bytes(pool), 2u);
+
+    break_replication_reassembly_pool_destroy(pool);
+    break_replication_fragments_free(fragments, count);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(fragment_round_trip_reordered_and_checksum);
     RUN_TEST(fragment_rejects_duplicates_conflicts_loss_and_base_mismatch);
@@ -1599,4 +1826,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(reassembly_pool_destroy_releases_pending_streams);
     RUN_TEST(reassembly_pool_expire_releases_shared_budget_for_retry);
     RUN_TEST(reassembly_pool_complete_with_null_outputs_discards_and_recycles);
+    RUN_TEST(reassembly_pool_expiry_schedule_honors_interval_and_activity);
+    RUN_TEST(reassembly_pool_expiry_schedule_runs_before_admission_and_survives_reset);
+    RUN_TEST(reassembly_pool_expiry_schedule_zero_disable_and_reenable);
+    RUN_TEST(reassembly_pool_expiry_schedule_clock_rollback_and_single_pass);
 TEST_MAIN_END()

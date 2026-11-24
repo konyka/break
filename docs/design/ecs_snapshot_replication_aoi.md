@@ -202,3 +202,16 @@ void break_replication_reassembly_pool_reset(BreakReplicationReassemblyPool *poo
 新增 `reassembly_pool_expire_releases_shared_budget_for_retry`：8 字节共享预算下，delta 59/60 共占 6 字节，单分片 delta 61 首次为 `OVER_LIMIT`；只驱逐较低 id 的 60 后 pending 降为 2 字节，原 61 分片重试完成，活跃较旧 59 随后完成，最终 high-water 仍为 61 并拒绝新 delta 60。新增 `reassembly_pool_complete_with_null_outputs_discards_and_recycles`：单分片完成时 `completed_delta_id`、`payload`、`payload_size` 全部为 NULL，仍返回 `COMPLETE`、pending 归零，容量 1 的槽可接收下一 delta，且高水位拒绝较旧流。
 
 本次只补测试和文档，生产代码未变。focused normal、ASan+UBSan（显式 LSan）和 TSan 均为 **24/24**，无 sanitizer/leak 诊断。
+
+
+## 补充（2026-11-24）：重组池周期过期调度
+
+`BreakReplicationReassemblyPool` 新增 `break_replication_reassembly_pool_set_expiry_schedule`、`break_replication_reassembly_pool_disable_expiry_schedule` 和 `break_replication_reassembly_pool_tick`。调度默认禁用；set 启用或替换 `interval/max_idle` 并清纪元，第一次 tick 立即检查，后续仅在 `now-last_tick>=interval` 时执行一次 expire 并把纪元记录为本次 `now`。时钟回退不执行也不改纪元，长间隔不做 catch-up；`interval=0` 每次 tick 到期，`max_idle=0` 在到期 tick 清理全部计时未完成流。手动 expire 不推进纪元。
+
+`push_at` 在校验、路由、容量与预算准入前先 tick，因此到期维护可先释放槽位；随后被拒绝的分片仍不刷新活动时间。disable 保留流并关闭调度、清纪元；reset 保留策略和创建配置、清空流与高水位并清纪元。所有入口仍为所有者线程串行语义，不新增分配、墙钟读取、锁、线程或网络调用。
+
+TDD 先新增四组测试，三个缺失 API 的隐式声明在 `-Werror` 下构成编译 RED；实现后 focused 从基线 **24/24** 到 **28/28**。八项定向变异均成功构建并被行为断言判红：首次 tick 不立即执行 **27 通过/1 失败**，`>=` 改 `>` **24/4**，push 在准入后维护 **27/1**，回退按无符号差值 **27/1**，disable 后仍 tick **27/1**，reset 丢失策略 **26/2**，reset 保留旧纪元 **27/1**，长间隔循环 catch-up **27/1**；恢复后再次 **28/28**。
+
+最终完整 Vulkan CTest 注册 **462** 项，**458 通过、4 条件 skip、0 失败**；OpenGL 注册 **453** 项，**449 通过、4 条件 skip、0 失败**。两者 skip 均为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计为执行通过。`ENGINE_USE_ASAN=ON + ENGINE_USE_UBSAN=ON` 且显式 `detect_leaks=1` 的 focused 为 **28/28**，TSan focused 为 **28/28**，均无 sanitizer/leak 诊断；未运行完整 sanitizer suite。
+
+本项关闭“周期性调用 expire 的调度器”缺口，但应用仍必须在 owner tick/frame 调用 `pool_tick`，或由 `push_at` 触发维护；无流量且不 tick 时没有后台维护。session/网络接线、真实网络与生产服务验收仍未完成，FNV-1a 仍不是安全认证。

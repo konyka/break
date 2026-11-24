@@ -392,6 +392,11 @@ struct BreakReplicationReassemblyPool {
     uint64_t expected_base_id;
     uint64_t retired_delta_id;
     bool retired_valid;
+    uint64_t expiry_interval;
+    uint64_t expiry_max_idle;
+    uint64_t last_tick;
+    bool expiry_enabled;
+    bool tick_initialized;
 };
 
 BreakReplicationReassemblyPool *break_replication_reassembly_pool_create(
@@ -444,6 +449,7 @@ BreakReplicationReassemblyResult break_replication_reassembly_pool_push_at(
     if (payload) *payload = NULL;
     if (payload_size) *payload_size = 0u;
     if (!pool) return BREAK_REPLICATION_REASSEMBLY_INVALID;
+    (void)break_replication_reassembly_pool_tick(pool, now);
     if (!validate_reassembly_fragment(pool->expected_base_id, fragment, &validation))
         return validation;
     for (i = 0u; i < pool->stream_capacity; ++i) {
@@ -512,6 +518,41 @@ size_t break_replication_reassembly_pool_expire(
     return expired;
 }
 
+void break_replication_reassembly_pool_set_expiry_schedule(
+    BreakReplicationReassemblyPool *pool, uint64_t interval, uint64_t max_idle)
+{
+    if (!pool) return;
+    pool->expiry_enabled = true;
+    pool->expiry_interval = interval;
+    pool->expiry_max_idle = max_idle;
+    pool->last_tick = 0u;
+    pool->tick_initialized = false;
+}
+
+void break_replication_reassembly_pool_disable_expiry_schedule(
+    BreakReplicationReassemblyPool *pool)
+{
+    if (!pool) return;
+    pool->expiry_enabled = false;
+    pool->last_tick = 0u;
+    pool->tick_initialized = false;
+}
+
+size_t break_replication_reassembly_pool_tick(
+    BreakReplicationReassemblyPool *pool, uint64_t now)
+{
+    if (!pool || !pool->expiry_enabled) return 0u;
+    if (!pool->tick_initialized) {
+        pool->last_tick = now;
+        pool->tick_initialized = true;
+        return break_replication_reassembly_pool_expire(pool, now, pool->expiry_max_idle);
+    }
+    if (now < pool->last_tick || now - pool->last_tick < pool->expiry_interval)
+        return 0u;
+    pool->last_tick = now;
+    return break_replication_reassembly_pool_expire(pool, now, pool->expiry_max_idle);
+}
+
 size_t break_replication_reassembly_pool_pending_streams(
     const BreakReplicationReassemblyPool *pool)
 {
@@ -542,4 +583,6 @@ void break_replication_reassembly_pool_reset(BreakReplicationReassemblyPool *poo
     pool->pending_bytes = 0u;
     pool->retired_delta_id = 0u;
     pool->retired_valid = false;
+    pool->last_tick = 0u;
+    pool->tick_initialized = false;
 }

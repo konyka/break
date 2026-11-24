@@ -99,11 +99,25 @@ BreakReplicationReassemblyResult break_replication_reassembly_pool_push_at(
  * high-water; active older streams remain usable. */
 size_t break_replication_reassembly_pool_expire(
     BreakReplicationReassemblyPool *pool, uint64_t now, uint64_t max_idle);
+/* Set or replace the owner-thread expiry policy and clear its schedule epoch.
+ * The first tick checks immediately; later ticks run once when interval has
+ * elapsed. Zero interval makes every tick due, and zero max_idle expires every
+ * timed pending stream on a due tick. */
+void break_replication_reassembly_pool_set_expiry_schedule(
+    BreakReplicationReassemblyPool *pool, uint64_t interval, uint64_t max_idle);
+/* Disable automatic expiry and clear its epoch without dropping any stream. */
+void break_replication_reassembly_pool_disable_expiry_schedule(
+    BreakReplicationReassemblyPool *pool);
+/* Run one due expiry pass and return its eviction count. Clock rollback and a
+ * not-yet-due or disabled schedule return zero without advancing the epoch. */
+size_t break_replication_reassembly_pool_tick(
+    BreakReplicationReassemblyPool *pool, uint64_t now);
 size_t break_replication_reassembly_pool_pending_streams(
     const BreakReplicationReassemblyPool *pool);
 size_t break_replication_reassembly_pool_pending_bytes(
     const BreakReplicationReassemblyPool *pool);
-/* Restore fresh-pool behavior while preserving the creation configuration. */
+/* Restore fresh-pool stream state while preserving creation and expiry policy;
+ * the expiry schedule epoch is cleared. */
 void break_replication_reassembly_pool_reset(BreakReplicationReassemblyPool *pool);
 
 #ifdef __cplusplus
