@@ -13706,3 +13706,12 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 ### 最终 HEAD 验证补充（2026-11-24）
 
 代码与测试提交 `13d74092e52b084e8036c9d0324abd99079f584c` 的完整 CTest 实际结果：OpenGL 注册 **477**，**473 执行通过、4 条件 skip、0 失败**（310.06 s）；Vulkan 注册 **479**，**475 执行通过、4 条件 skip、0 失败**（297.11 s）。两项 skip 均为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计执行通过。World loopback、clean-room 与两个 core_app archive 契约在两套后端均实际通过。后续仅追加验证文档，最终文档 HEAD 的 naming 门禁为 **2/2**；不重跑已完整通过的套件，不预写远端结果。
+
+
+### core_app World replication 推送与远端收据（2026-11-24）
+
+- 最终推送 `35e8d55c2f9d24aae67b85668d69ba1d13183330`，任务评审与整分支终审均 approve；连接间共享可变 diagnostic World 的评审发现已改为按 slot 隔离并补双连接、同 key 重开与回滚测试。自动 tick 覆盖缺口由真实 ACK 驱动 loopback 关闭；剩余两个 Minor 为诊断 OOM 更新原子性与统计断言增强，终审明确不阻断本项。
+- 在该最终文档 HEAD 上重新完整构建并运行 CTest：OpenGL **477 注册、473 执行通过、4 条件 skip、0 失败**（301.01 s）；Vulkan **479 注册、475 执行通过、4 条件 skip、0 失败**（307.03 s）。条件 skip 不计执行通过。Task 2 另有 ASan+UBSan（显式 leak 检测）**14/14**、TSan 相关库 **12/12** 与正常服务端 + TSan 客户端 loopback **1/1**；既有 Lua longjmp 与 TSan 服务端 socket 未覆盖限制不变。
+- windows-d3d12 run `45414002947`、QUIC run `45414003043`、Proton run `45417162209` 均 success。Proton 上游 run-id=`45414002947`，device/pipeline contract 均为 77，仅表示兼容通道。
+- CI run `45414003035` 的最终结论为 **failure**：22 success、3 条件 skip、2 cancelled、0 failed。`macOS + Clang (rule engine with native Redis provider)` job `138515134561` 与 `macOS native Metal (Clang)` job `138515134595` 在任何步骤开始前取消，没有编译或测试失败日志；`gh run rerun 45414003035 --failed` 被令牌以 `Resource not accessible by personal access token` 拒绝。因此本项不宣称首轮远端 CI 全绿，后续集成运行另行核验，不预写结果。
+- 生产 level rebaseline、跨连接共享 live World、Runtime Core 映射、权威 simulation 合并和完整资产链仍未完成。本收据提交自身触发的工作流结果不在此预写。

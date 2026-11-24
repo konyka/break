@@ -855,3 +855,12 @@ TSan 的 core_app target/离线 record 仍有既有 Lua longjmp 环境失败；�
 ### 最终 HEAD 验证补充（2026-11-24）
 
 代码与测试提交 `13d74092e52b084e8036c9d0324abd99079f584c` 的完整 CTest 实际结果：OpenGL 注册 **477**，**473 执行通过、4 条件 skip、0 失败**（310.06 s）；Vulkan 注册 **479**，**475 执行通过、4 条件 skip、0 失败**（297.11 s）。两项 skip 均为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计执行通过。World loopback、clean-room 与两个 core_app archive 契约在两套后端均实际通过。后续仅追加验证文档，最终文档 HEAD 的 naming 门禁为 **2/2**；不重跑已完整通过的套件，不预写远端结果。
+
+
+### core_app World replication 推送与远端收据（2026-11-24）
+
+`35e8d55c` 已完成任务与整分支独立评审并推送。最终 HEAD 的 OpenGL 全量为 **473/477 执行通过、4 条件 skip、0 失败**，Vulkan 为 **475/479 执行通过、4 条件 skip、0 失败**；ASan+UBSan focused **14/14**，TSan 相关库 **12/12** 与混合 loopback **1/1**。诊断 OOM 更新原子性和发送片数精确断言仍是 deferred Minor，不改变本项边界。
+
+windows-d3d12 `45414002947`、QUIC `45414003043`、Proton `45417162209` 均 success，Proton 上游 run-id=`45414002947`，两个 contract 均为 77。CI `45414003035` 为 **failure**：22 success、3 条件 skip、2 cancelled、0 failed；两个 macOS job 在步骤开始前取消，未产生代码或测试失败。令牌无权重跑，故不宣称首轮 CI 全绿。
+
+生产 level rebaseline、跨连接共享 live World、Runtime Core 映射、权威 simulation 合并和完整资产链仍未完成；条件 skip、Proton 77 与混合 TSan 不升级为原生 GPU 或完整 sanitizer 验收。本收据提交自身触发的工作流结果不在此预写。
