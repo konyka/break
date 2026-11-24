@@ -13522,3 +13522,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **变异**：错误路由（16 通过/6 失败）、满槽覆盖（21/1）、漏写 completed id（17/5）、共享预算不累计（16/6）、重复重复计预算（21/1）、expire 只处理首个到期槽（21/1）、过期不推进高水位（21/1）、reset 漏清 pending（21/1）均先成功构建再由行为断言判红；每次变异后均恢复，最终 focused 22/22。
 - **本地验证**：完整构建后 Vulkan CTest 462 项注册，**458 通过、4 条件 skip、0 失败**；OpenGL CTest 453 项注册，**449 通过、4 条件 skip、0 失败**。两者 skip 均为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计为执行通过。`ENGINE_USE_ASAN=ON + ENGINE_USE_UBSAN=ON` focused 22/22，显式 `detect_leaks=1` 复跑 22/22，无 sanitizer/leak 诊断；`ENGINE_USE_TSAN=ON` focused 22/22、无诊断。sanitizer 只运行 focused 目标，不是完整 sanitizer suite。
 - **边界**：多 delta 并发重组不再列为未实现项；周期性 expire 调度器、session/网络接线、真实网络与生产服务验收仍未完成。本记录不包含远端 CI、Windows 或 Proton 新收据，不预写推送或远端通过结论。
+
+
+## 复制分片重组池审查 minor 修复（2026-11-24）
+
+- **expire 跨切片恢复**：新增小预算直接验收，先让单分片新流因共享预算返回 `OVER_LIMIT`，再驱逐另一个较低 id 的未完成槽，确认 pending 字节释放、原分片重试成功、未驱逐的活跃较旧流仍能完成，并且完成旧流不会降低已由较新完成推进的高水位。
+- **丢弃完成的回收**：新增单分片 `COMPLETE` 用例，`completed_delta_id`、`payload`、`payload_size` 三个输出全部传 NULL；结果仍被丢弃并回收，pending stream/bytes 均归零，容量 1 的池可复用槽完成下一 delta，高水位继续拒绝较旧新流。生产代码未发现缺陷，本修复未修改生产文件。
+- **预算口径**：`max_pending_bytes` 不是总 RSS 上限，只计算活跃流持有的分片负载。每槽元数据独立受原 16 MiB 上限约束，最多 64 槽；固定槽存储和各槽元数据不共享该负载预算。拼装临时缓冲与已移交调用方的 payload 均不计共享 pending，后者的生命周期由调用方管理。
+- **验证**：`test_break_replication_fragment` 在 normal、ASan+UBSan（`detect_leaks=1`）和 TSan 三套现有构建树均为 **24 passed, 0 failed, 24 total**，无 sanitizer/leak 诊断。本 minor 修复只运行 focused 三 lane，未重跑完整 Vulkan/OpenGL CTest 或完整 sanitizer suite。

@@ -193,3 +193,12 @@ void break_replication_reassembly_pool_reset(BreakReplicationReassemblyPool *poo
 `test_break_replication_fragment` 现为 **22/22**。测试覆盖三流独立过期、复位对照、高水位单调性、交织时非零 pending 字节，以及带 pending 数据销毁。八项定向变异（错误路由、满槽覆盖、漏 completed id、共享预算不累计、重复计预算、expire 漏槽、过期不推进高水位、reset 漏清 pending）均成功构建并被行为断言判红。完整 Vulkan 为 462 项注册、458 通过、4 条件 skip、0 失败；OpenGL 为 453 项注册、449 通过、4 条件 skip、0 失败；ASan+UBSan（含显式 leak 检测）与 TSan focused 均为 22/22、无诊断。
 
 本项只交付传输无关的池原语。周期性调用 `expire` 的调度器、session/网络接线、真实网络与生产服务验收仍未完成；FNV-1a 仍不是安全认证。
+
+
+## 补充（2026-11-24）：池预算范围与恢复/丢弃完成验收
+
+`max_pending_bytes` 只限制池内各活跃流已接收、尚未完成或驱逐的**分片负载字节之和**，不是进程总 RSS 上限，也不包含全部分配。每个槽的分片元数据仍独立遵循单流原有 `BREAK_REPLICATION_MAX_REASSEMBLY_SIZE`（16 MiB）上限；池最多 64 槽，这些元数据及固定槽存储不共享 `max_pending_bytes`。完成时的拼装临时缓冲不计共享 pending；已移交调用方的 payload 也不再计入，其所有权和释放责任仍属调用方。因此不能由该配置推断总 RSS 或所有暂存内存的上限。
+
+新增 `reassembly_pool_expire_releases_shared_budget_for_retry`：8 字节共享预算下，delta 59/60 共占 6 字节，单分片 delta 61 首次为 `OVER_LIMIT`；只驱逐较低 id 的 60 后 pending 降为 2 字节，原 61 分片重试完成，活跃较旧 59 随后完成，最终 high-water 仍为 61 并拒绝新 delta 60。新增 `reassembly_pool_complete_with_null_outputs_discards_and_recycles`：单分片完成时 `completed_delta_id`、`payload`、`payload_size` 全部为 NULL，仍返回 `COMPLETE`、pending 归零，容量 1 的槽可接收下一 delta，且高水位拒绝较旧流。
+
+本次只补测试和文档，生产代码未变。focused normal、ASan+UBSan（显式 LSan）和 TSan 均为 **24/24**，无 sanitizer/leak 诊断。
