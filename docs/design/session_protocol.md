@@ -352,3 +352,8 @@ World snapshot/delta 现在有独立 BRWD/v1 canonical codec。消息头为 60 �
 同一连接随后回传 full、内部 base id 不匹配的 delta 和恢复 full。服务端分别以 ACK、携带 last-good id/tick 的 NEED_FULL、ACK 应答，最终 `network_world_stats` 为 opened/closed=1/1、applied=2、need_full=1、rejected=1、full_publishes=1、delta_publishes=1、queue_depth=0、dropped=0，sent_fragments≥2。临时只移除服务端 0x400A handler 后，真实用例在首个入站 ACK 前失败，服务端 applied/need_full/rejected 均为 0；恢复注册后用例重新通过。
 
 所有非 world 网络模式都断言没有 `network_world_stats` 行。该验收不表示 exactly-once，也不改变诊断 World 与权威 simulation 的边界。
+
+
+### 最终 HEAD 验证补充（2026-11-24）
+
+代码与测试提交 `13d74092e52b084e8036c9d0324abd99079f584c` 的完整 CTest 实际结果：OpenGL 注册 **477**，**473 执行通过、4 条件 skip、0 失败**（310.06 s）；Vulkan 注册 **479**，**475 执行通过、4 条件 skip、0 失败**（297.11 s）。两项 skip 均为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计执行通过。World loopback、clean-room 与两个 core_app archive 契约在两套后端均实际通过。后续仅追加验证文档，最终文档 HEAD 的 naming 门禁为 **2/2**；不重跑已完整通过的套件，不预写远端结果。

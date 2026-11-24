@@ -1829,3 +1829,8 @@ arm64 lane 新增 `test_core_app_network`（25/25）和 `test_core_app_network_o
 - **回归与限制**：普通 network/offline **13/13**、lifecycle **12/12**、相关 focused **13/13**；ASan+UBSan/LSan **14/14**。TSan 相关库 **12/12** 与正常服务端 + TSan 客户端 **1/1** 通过；TSan core_app target/离线 record 的既有 Lua longjmp 环境问题仍失败，不声称 TSan 服务端真实 loopback 通过。
 
 仍未完成：**生产 level rebaseline、跨连接共享 live World、Runtime Core 映射、权威 simulation 合并、完整资产链**。本项不预写远端或其他平台验收。
+
+
+### 最终 HEAD 验证补充（2026-11-24）
+
+代码与测试提交 `13d74092e52b084e8036c9d0324abd99079f584c` 的完整 CTest 实际结果：OpenGL 注册 **477**，**473 执行通过、4 条件 skip、0 失败**（310.06 s）；Vulkan 注册 **479**，**475 执行通过、4 条件 skip、0 失败**（297.11 s）。两项 skip 均为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计执行通过。World loopback、clean-room 与两个 core_app archive 契约在两套后端均实际通过。后续仅追加验证文档，最终文档 HEAD 的 naming 门禁为 **2/2**；不重跑已完整通过的套件，不预写远端结果。

@@ -190,3 +190,8 @@ normal、ASan+UBSan（显式 leak 检测）和 TSan focused 均为 **6/6、112/1
 普通 focused 中 core_app network/offline 为 **13/13**、lifecycle 为 **12/12**，相关 transport/session/ECS 套件为 **13/13**。ASan+UBSan 且显式 `detect_leaks=1` 为 **14/14**；TSan 相关库为 **12/12**，正常服务端 + TSan 客户端的真实 world loopback 为 **1/1**。TSan 的 core_app target/离线 record 仍在既有 Lua protected-error 路径以 `can't find longjmp buf` 退出 66，未记为通过；混合 loopback 不覆盖 TSan 服务端 socket 进程。
 
 移除 0x400A 注册的真实负对照为 **0/1**，恢复后为 **1/1**，transport 无残留 diff。本项仍是 at-least-once/final-consistency 的诊断切片，不包含完整资产链、生产 level rebaseline 或权威合并。
+
+
+### 最终 HEAD 验证补充（2026-11-24）
+
+代码与测试提交 `13d74092e52b084e8036c9d0324abd99079f584c` 的完整 CTest 实际结果：OpenGL 注册 **477**，**473 执行通过、4 条件 skip、0 失败**（310.06 s）；Vulkan 注册 **479**，**475 执行通过、4 条件 skip、0 失败**（297.11 s）。两项 skip 均为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计执行通过。World loopback、clean-room 与两个 core_app archive 契约在两套后端均实际通过。后续仅追加验证文档，最终文档 HEAD 的 naming 门禁为 **2/2**；不重跑已完整通过的套件，不预写远端结果。

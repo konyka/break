@@ -455,3 +455,8 @@ World delta、inbound-to-simulation、level rebaseline、可靠恢复、Runtime 
 仅开启时输出的 `network_world_stats` 字段为 opened、closed、applied、need_full、rejected、full_publishes、delta_publishes、sent_fragments、queue_depth、dropped；默认关闭没有该行，既有 `network_stats` 格式不变。本次真实用例得到 2 次诊断 apply、1 次 base mismatch 拒绝与 NEED_FULL、1 次 full 和 1 次 delta 发布，queue/drop 均为 0。
 
 本项没有 Runtime Core 消息映射、跨连接共享 live World 或权威 simulation 合并；full/delta 的诊断重建不等于生产 World 已接入网络权威。
+
+
+### 最终 HEAD 验证补充（2026-11-24）
+
+代码与测试提交 `13d74092e52b084e8036c9d0324abd99079f584c` 的完整 CTest 实际结果：OpenGL 注册 **477**，**473 执行通过、4 条件 skip、0 失败**（310.06 s）；Vulkan 注册 **479**，**475 执行通过、4 条件 skip、0 失败**（297.11 s）。两项 skip 均为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计执行通过。World loopback、clean-room 与两个 core_app archive 契约在两套后端均实际通过。后续仅追加验证文档，最终文档 HEAD 的 naming 门禁为 **2/2**；不重跑已完整通过的套件，不预写远端结果。

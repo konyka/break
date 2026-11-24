@@ -111,9 +111,40 @@ All explicitly retain production level rebaseline, cross-connection shared live 
 
 The first naming run was **1/2** because the pre-existing implementation plan literally enumerated prohibited naming examples. `docs/superpowers/plans/2026-11-24-core-app-world-replication.md` now refers to the repository naming contract without repeating those examples; the design meaning is unchanged. `test_core_app_naming_contract` and `test_repo_naming_contract` then passed **2/2** (`engine/build/task2-naming-restored-green.log`).
 
+## Full backend CTest and final HEAD verification
+
+The code, tests, documentation and this report were committed as `13d74092e52b084e8036c9d0324abd99079f584c` before either full archive-based contract ran. OpenGL reused the existing required-pin tree; Vulkan was configured explicitly with:
+
+```sh
+cmake -S engine -B engine/build-vulkan -G Ninja \
+  -DCMAKE_BUILD_TYPE=Debug -DENGINE_BUILD_TESTS=ON \
+  -DENGINE_RHI_BACKEND=vulkan -DBREAK_ENABLE_CRASH=ON \
+  -DBREAK_ENABLE_CRYPTO=ON -DCORE_APP_ENABLE_NETWORK=ON \
+  -DBREAK_ENABLE_SNOWFLAKE=ON \
+  -DSNOWFLAKE_SOURCE_DIR=/home/timeshift/opensource/break/.worktrees/snowflake-pin-4ab761fc
+```
+
+Both commands then performed a full build followed by an unfiltered CTest run with `-j2`:
+
+```sh
+cmake --build engine/build -j2
+ctest --test-dir engine/build --output-on-failure -j2
+cmake --build engine/build-vulkan -j2
+ctest --test-dir engine/build-vulkan --output-on-failure -j2
+```
+
+After the interruption, the recovered task records showed both original background commands `completed` with exit code 0; their complete logs were read and neither suite was rerun.
+
+- **OpenGL:** 477 registered, **473 executed passes, 4 conditional skips, 0 failures**, 310.06 s. Log: `engine/build/task2-full-ctest.log`.
+- **Vulkan:** 479 registered, **475 executed passes, 4 conditional skips, 0 failures**, 297.11 s. Log: `engine/build-vulkan/task2-full-ctest.log`.
+- Both skip sets are exactly `test_d3d12_dependency_gate`, `test_core_app_nm_missing`, `test_core_app_nm_unsupported`, and `test_core_app_nm_symbol_missing_unsupported`; they are not counted as executed passes.
+- `test_core_app_network_world`, `test_clean_room_build_contract`, `test_core_app_contract_compat`, and `test_core_app_ctest_config_contract` actually passed in both full runs, including the archive-based contracts against HEAD `13d74092`.
+
+The final documentation-only follow-up HEAD repeats only these recorded results; it does not change the tested source. After the additions, both naming contracts passed **2/2 on each backend**, and `test_core_app_checkout_attributes_dangling` also passed, giving **3/3 on OpenGL and 3/3 on Vulkan**. Logs: `engine/build/task2-final-docs-gates.log` and `engine/build-vulkan/task2-final-docs-gates.log`. No full suite is represented as a sanitizer run, and no remote result is claimed.
+
 ## Self-review
 
 - Production transport is unchanged; the retained code changes are test registration, the real client scenario and its CMake contract.
 - The test uses actual socket/TLS/AUTH traffic and real World session drain/control behavior, not direct completion injection.
 - No new dependency, production naming surface, deferred authoritative partial-update work, or additional replication feature was introduced.
-- The new report and all source files must be in HEAD before the full archive-based contract runs. Final full-suite results and the final commit SHA are appended after those runs.
+- The new report and all source files were in HEAD `13d74092` before the full archive-based contracts ran. The final full-suite results are recorded in this documentation-only follow-up; no already-green suite was rerun after recovery.

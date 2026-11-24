@@ -285,3 +285,8 @@ normal、ASan+UBSan（显式 `detect_leaks=1`）和 TSan focused 均为 **6/6、
 反向诊断输入先形成一个 full baseline，再发送篡改内部 base snapshot id 的 delta。服务端保留 last-good World 并返回 NEED_FULL；恢复 full 的 ACK 再次确认 diagnostic target id。服务端最终 applied=2、need_full=1、rejected=1，非 network trace 与离线运行一致，证明这些 apply 没有进入权威 simulation。移除 0x400A handler 时上述反向 apply 不发生，恢复 handler 后合同重新通过。
 
 本项不引入跨 World 持久身份、预测回滚或资产依赖解析。**生产 level rebaseline、跨连接共享 live World、Runtime Core 映射、权威 simulation 合并和完整资产链仍未完成**；库级 World session 的既有验证与远端收据保持原记录，不在本节重复。
+
+
+### 最终 HEAD 验证补充（2026-11-24）
+
+代码与测试提交 `13d74092e52b084e8036c9d0324abd99079f584c` 的完整 CTest 实际结果：OpenGL 注册 **477**，**473 执行通过、4 条件 skip、0 失败**（310.06 s）；Vulkan 注册 **479**，**475 执行通过、4 条件 skip、0 失败**（297.11 s）。两项 skip 均为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计执行通过。World loopback、clean-room 与两个 core_app archive 契约在两套后端均实际通过。后续仅追加验证文档，最终文档 HEAD 的 naming 门禁为 **2/2**；不重跑已完整通过的套件，不预写远端结果。
