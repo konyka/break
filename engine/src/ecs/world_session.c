@@ -53,6 +53,7 @@ typedef struct {
 struct BreakWorldSession {
     const BreakComponentSchemaRegistry *schemas;
     u64 protocol_version;
+    u64 initial_level_generation;
     u64 level_generation;
     BreakNetReactor *reactor;
     BreakReplicationSessionBridge *bridge;
@@ -181,6 +182,7 @@ BreakWorldSession *break_world_session_create(const BreakWorldSessionConfig *con
     if (!session) return NULL;
     session->schemas = config->schemas;
     session->protocol_version = config->protocol_version;
+    session->initial_level_generation = config->level_generation;
     session->level_generation = config->level_generation;
     session->reactor = config->bridge.reactor;
     session->max_connections = config->bridge.max_connections;
@@ -219,6 +221,42 @@ void break_world_session_destroy(BreakWorldSession *session)
 BreakReplicationSessionBridge *break_world_session_bridge(BreakWorldSession *session)
 {
     return session ? session->bridge : NULL;
+}
+
+bool break_world_session_rebaseline(BreakWorldSession *session, u64 level_generation)
+{
+    u64 epoch;
+    if (!session || level_generation == 0u || level_generation <= session->level_generation) {
+        return false;
+    }
+    epoch = break_world_session_stream_epoch(
+        session->protocol_version, break_schema_hash(session->schemas), level_generation);
+    break_replication_session_rebaseline(session->bridge, epoch);
+    for (size_t i = 0u; i < session->max_connections; ++i) {
+        BreakWorldSessionConnection *state = &session->connections[i];
+        if (state->key == 0u) continue;
+        world_session_clear_attempt(&state->attempt);
+        world_session_clear_history(state);
+        break_world_snapshot_release(state->baseline);
+        break_world_snapshot_release(state->confirmed);
+        state->baseline = NULL;
+        state->confirmed = NULL;
+        state->next_delta_id = 1u;
+        state->force_full = true;
+        state->need_full_pending = false;
+        state->ack_pending = false;
+        state->need_full_tick_valid = false;
+        state->last_need_full_tick = 0u;
+        memset(&state->need_full_control, 0, sizeof(state->need_full_control));
+        memset(&state->ack_control, 0, sizeof(state->ack_control));
+    }
+    session->level_generation = level_generation;
+    return true;
+}
+
+u64 break_world_session_level_generation(const BreakWorldSession *session)
+{
+    return session ? session->level_generation : 0u;
 }
 
 bool break_world_session_open(BreakWorldSession *session, BreakConnectionKey connection)
@@ -426,11 +464,13 @@ bool break_world_session_poll_control(BreakWorldSession *session,
     if (slot == session->max_connections) return false;
     if (session->connections[slot].need_full_pending) {
         *out_control = session->connections[slot].need_full_control;
+        out_control->level_generation = session->level_generation;
         session->connections[slot].need_full_pending = false;
         return true;
     }
     if (session->connections[slot].ack_pending) {
         *out_control = session->connections[slot].ack_control;
+        out_control->level_generation = session->level_generation;
         session->connections[slot].ack_pending = false;
         return true;
     }
@@ -451,20 +491,39 @@ BreakNetSendResult break_world_session_send_control(
     BreakWorldSession *session, BreakConnectionKey connection,
     const BreakWorldSessionControl *control)
 {
-    u8 payload[BREAK_WORLD_SESSION_CONTROL_WIRE_SIZE];
+    u8 payload[BREAK_WORLD_SESSION_CONTROL_WIRE_SIZE_V2];
+    u16 version;
+    size_t payload_size;
     if (!session || !session->reactor) return BREAK_NET_SEND_CLOSED;
     if (world_session_connection_index(session, connection) == session->max_connections)
         return BREAK_NET_SEND_CLOSED;
     if (!world_session_control_valid(control)) return BREAK_NET_SEND_INVALID;
+    if (session->level_generation == session->initial_level_generation) {
+        if (control->level_generation != 0u &&
+            control->level_generation != session->initial_level_generation) {
+            return BREAK_NET_SEND_INVALID;
+        }
+        version = 1u;
+        payload_size = BREAK_WORLD_SESSION_CONTROL_WIRE_SIZE;
+    } else {
+        if (control->level_generation == 0u ||
+            control->level_generation != session->level_generation) {
+            return BREAK_NET_SEND_INVALID;
+        }
+        version = 2u;
+        payload_size = BREAK_WORLD_SESSION_CONTROL_WIRE_SIZE_V2;
+    }
+    memset(payload, 0, sizeof(payload));
     memcpy(payload, "BRWC", 4u);
-    put16(payload + 4u, 1u);
+    put16(payload + 4u, version);
     put16(payload + 6u, (u16)control->kind);
     put64(payload + 8u, control->delta_id);
     put64(payload + 16u, control->target_snapshot_id);
     put64(payload + 24u, control->target_tick);
+    if (version == 2u) put64(payload + 32u, control->level_generation);
     return break_net_reactor_send(session->reactor, connection,
-                                  BREAK_NET_MESSAGE_ID_WORLD_CONTROL, 1u,
-                                  payload, sizeof(payload));
+                                  BREAK_NET_MESSAGE_ID_WORLD_CONTROL, version,
+                                  payload, payload_size);
 }
 
 bool break_world_session_handle_control(BreakConnectionKey connection,
@@ -478,16 +537,32 @@ bool break_world_session_handle_control(BreakConnectionKey connection,
     size_t slot;
     size_t ack_index;
     size_t released_bytes = 0u;
-    if (!session || !message || message->message_id != BREAK_NET_MESSAGE_ID_WORLD_CONTROL ||
-        message->protocol_version != 1u ||
-        message->size != BREAK_WORLD_SESSION_CONTROL_WIRE_SIZE) {
+    if (!session || !message || !message->data ||
+        message->message_id != BREAK_NET_MESSAGE_ID_WORLD_CONTROL) {
         return false;
     }
     slot = world_session_connection_index(session, connection);
     if (slot == session->max_connections) return false;
     payload = (const u8 *)message->data;
-    if (memcmp(payload, "BRWC", 4u) != 0 || get16(payload + 4u) != 1u) return false;
+    if (message->size < 4u || memcmp(payload, "BRWC", 4u) != 0) return false;
     memset(&control, 0, sizeof(control));
+    if (message->protocol_version == 1u) {
+        if (session->level_generation != session->initial_level_generation ||
+            message->size != BREAK_WORLD_SESSION_CONTROL_WIRE_SIZE ||
+            get16(payload + 4u) != 1u) {
+            return false;
+        }
+        control.level_generation = session->initial_level_generation;
+    } else if (message->protocol_version == 2u) {
+        if (message->size != BREAK_WORLD_SESSION_CONTROL_WIRE_SIZE_V2 ||
+            get16(payload + 4u) != 2u) {
+            return false;
+        }
+        control.level_generation = get64(payload + 32u);
+        if (control.level_generation != session->level_generation) return false;
+    } else {
+        return false;
+    }
     control.kind = (BreakWorldSessionControlKind)get16(payload + 6u);
     control.delta_id = get64(payload + 8u);
     control.target_snapshot_id = get64(payload + 16u);

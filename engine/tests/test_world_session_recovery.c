@@ -36,6 +36,7 @@ typedef struct {
     u64 base_snapshot_id;
     u64 target_snapshot_id;
     u64 target_tick;
+    u64 level_generation;
     u8 *payload;
     usize payload_size;
 } AttemptWire;
@@ -132,10 +133,10 @@ static bool fixture_init_scaled(Fixture *fixture, usize history_entries,
     config.protocol_version = TEST_PROTOCOL;
     config.level_generation = TEST_LEVEL;
     config.bridge.reactor = fixture->reactor;
-    config.bridge.max_connections = 1u;
+    config.bridge.max_connections = 2u;
     config.bridge.stream_capacity = 4u;
     config.bridge.max_pending_bytes_per_connection = 8192u;
-    config.bridge.max_total_pending_bytes = 8192u;
+    config.bridge.max_total_pending_bytes = 16384u;
     config.bridge.max_fragment_bytes = fragment_bytes;
     config.bridge.max_fragment_count = fragment_count;
     config.bridge.completion_capacity = completion_capacity;
@@ -351,7 +352,8 @@ static bool receive_bad_delta(Fixture *fixture, const BreakWorldSnapshot *base,
     return ok;
 }
 
-static bool collect_attempt(Fixture *fixture, AttemptWire *out)
+static bool collect_attempt_for_connection(Fixture *fixture, BreakConnectionKey connection,
+                                           AttemptWire *out)
 {
     BreakReplicationReassembler *reassembler =
         break_replication_reassembler_create(fixture->epoch);
@@ -365,7 +367,7 @@ static bool collect_attempt(Fixture *fixture, AttemptWire *out)
                       BREAK_NET_EVENT_OK) {
         BreakReplicationFragment fragment;
         BreakReplicationReassemblyResult result;
-        if (outbound_connection != 11u ||
+        if (outbound_connection != connection ||
             message.message_id != BREAK_NET_MESSAGE_ID_WORLD_DELTA ||
             break_replication_wire_decode(message.data, message.size, &fragment) !=
                 BREAK_REPLICATION_FRAGMENT_OK) {
@@ -394,6 +396,7 @@ static bool collect_attempt(Fixture *fixture, AttemptWire *out)
     out->base_snapshot_id = decoded.base_snapshot_id;
     out->target_snapshot_id = decoded.target_snapshot_id;
     out->target_tick = decoded.target_tick;
+    out->level_generation = decoded.level_generation;
     break_world_delta_wire_clear(&decoded);
     return true;
 }
@@ -404,38 +407,66 @@ static void clear_attempt(AttemptWire *attempt)
     memset(attempt, 0, sizeof(*attempt));
 }
 
-static bool publish_attempt(Fixture *fixture, u32 value, u64 tick, AttemptWire *out)
+static bool publish_attempt_for_connection(Fixture *fixture, BreakConnectionKey connection,
+                                           u32 value, u64 tick, AttemptWire *out)
 {
     if (!set_value(fixture->authoritative, value) ||
-        break_world_session_publish(fixture->session, 11u, fixture->authoritative, tick) !=
-            BREAK_NET_SEND_OK) {
+        break_world_session_publish(fixture->session, connection, fixture->authoritative,
+                                    tick) != BREAK_NET_SEND_OK) {
         return false;
     }
-    return collect_attempt(fixture, out);
+    return collect_attempt_for_connection(fixture, connection, out);
+}
+
+static bool publish_attempt(Fixture *fixture, u32 value, u64 tick, AttemptWire *out)
+{
+    return publish_attempt_for_connection(fixture, 11u, value, tick, out);
+}
+
+static bool send_control_version_to_session(Fixture *fixture, BreakConnectionKey connection,
+                                            u16 outer_version, u16 payload_version,
+                                            usize payload_size, u64 level_generation,
+                                            const BreakWorldSessionControl *control)
+{
+    u8 payload[BREAK_WORLD_SESSION_CONTROL_WIRE_SIZE_V2 + 1u];
+    BreakNetOwnedMessage message;
+    memset(payload, 0, sizeof(payload));
+    memcpy(payload, "BRWC", 4u);
+    put16(payload + 4u, payload_version);
+    put16(payload + 6u, (u16)control->kind);
+    put64(payload + 8u, control->delta_id);
+    put64(payload + 16u, control->target_snapshot_id);
+    put64(payload + 24u, control->target_tick);
+    put64(payload + 32u, level_generation);
+    memset(&message, 0, sizeof(message));
+    message.message_id = BREAK_NET_MESSAGE_ID_WORLD_CONTROL;
+    message.protocol_version = outer_version;
+    message.sequence = 1u;
+    message.data = payload;
+    message.size = payload_size;
+    return break_world_session_handle_control(connection, &message, fixture->session);
 }
 
 static bool send_control_to_session(Fixture *fixture,
                                     const BreakWorldSessionControl *control)
 {
-    u8 payload[BREAK_WORLD_SESSION_CONTROL_WIRE_SIZE];
-    BreakNetOwnedMessage message;
-    memset(payload, 0, sizeof(payload));
-    memcpy(payload, "BRWC", 4u);
-    put16(payload + 4u, 1u);
-    put16(payload + 6u, (u16)control->kind);
-    put64(payload + 8u, control->delta_id);
-    put64(payload + 16u, control->target_snapshot_id);
-    put64(payload + 24u, control->target_tick);
-    memset(&message, 0, sizeof(message));
-    message.message_id = BREAK_NET_MESSAGE_ID_WORLD_CONTROL;
-    message.protocol_version = 1u;
-    message.sequence = 1u;
-    message.data = payload;
-    message.size = sizeof(payload);
-    return break_world_session_handle_control(11u, &message, fixture->session);
+    return send_control_version_to_session(fixture, 11u, 1u, 1u,
+                                           BREAK_WORLD_SESSION_CONTROL_WIRE_SIZE, 0u,
+                                           control);
 }
 
-static bool ack_attempt(Fixture *fixture, const AttemptWire *attempt)
+static bool send_control_v2_to_session(Fixture *fixture, BreakConnectionKey connection,
+                                       u64 level_generation,
+                                       const BreakWorldSessionControl *control)
+{
+    return send_control_version_to_session(fixture, connection, 2u, 2u,
+                                           BREAK_WORLD_SESSION_CONTROL_WIRE_SIZE_V2,
+                                           level_generation, control);
+}
+
+static bool ack_attempt_for_connection(Fixture *fixture, BreakConnectionKey connection,
+                                       const AttemptWire *attempt, u16 version,
+                                       u64 level_generation)
 {
     BreakWorldSessionControl control;
     memset(&control, 0, sizeof(control));
@@ -443,7 +474,28 @@ static bool ack_attempt(Fixture *fixture, const AttemptWire *attempt)
     control.delta_id = attempt->delta_id;
     control.target_snapshot_id = attempt->target_snapshot_id;
     control.target_tick = attempt->target_tick;
-    return send_control_to_session(fixture, &control);
+    control.level_generation = level_generation;
+    if (version == 1u) {
+        return send_control_version_to_session(fixture, connection, 1u, 1u,
+                                               BREAK_WORLD_SESSION_CONTROL_WIRE_SIZE, 0u,
+                                               &control);
+    }
+    return send_control_version_to_session(fixture, connection, version, version,
+                                           version == 2u
+                                               ? BREAK_WORLD_SESSION_CONTROL_WIRE_SIZE_V2
+                                               : BREAK_WORLD_SESSION_CONTROL_WIRE_SIZE,
+                                           level_generation, &control);
+}
+
+static bool ack_attempt(Fixture *fixture, const AttemptWire *attempt)
+{
+    return ack_attempt_for_connection(fixture, 11u, attempt, 1u, 0u);
+}
+
+static bool ack_attempt_v2(Fixture *fixture, BreakConnectionKey connection,
+                           const AttemptWire *attempt, u64 level_generation)
+{
+    return ack_attempt_for_connection(fixture, connection, attempt, 2u, level_generation);
 }
 
 static void clear_controls(Fixture *fixture)
@@ -860,6 +912,397 @@ TEST(world_session_reconnect_clears_sender_receiver_and_rate_state)
     fixture_dispose(&fixture);
 }
 
+TEST(world_session_rebaseline_resets_sender_and_requires_current_ack)
+{
+    Fixture fixture;
+    AttemptWire initial;
+    AttemptWire old_delta;
+    AttemptWire recovered;
+    AttemptWire delta;
+    BreakWorldSessionSenderState state;
+    BreakWorldSessionStats before;
+    BreakWorldSessionStats after;
+
+    ASSERT_TRUE(fixture_init(&fixture));
+    ASSERT_TRUE(publish_attempt(&fixture, 10u, 10u, &initial));
+    ASSERT_EQ(initial.kind, BREAK_WORLD_DELTA_WIRE_FULL);
+    ASSERT_EQ(initial.level_generation, TEST_LEVEL);
+    ASSERT_TRUE(ack_attempt(&fixture, &initial));
+    ASSERT_TRUE(publish_attempt(&fixture, 11u, 20u, &old_delta));
+    ASSERT_EQ(old_delta.kind, BREAK_WORLD_DELTA_WIRE_DELTA);
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, 11u, &state));
+    ASSERT_EQ(state.history_count, 1u);
+    ASSERT_EQ(state.confirmed_snapshot_id, initial.target_snapshot_id);
+    ASSERT_EQ(state.next_delta_id, 3u);
+    break_world_session_stats(fixture.session, &before);
+
+    ASSERT_TRUE(break_world_session_rebaseline(fixture.session, 8u));
+    ASSERT_EQ(break_world_session_level_generation(fixture.session), 8u);
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, 11u, &state));
+    ASSERT_EQ(state.history_count, 0u);
+    ASSERT_EQ(state.history_bytes, 0u);
+    ASSERT_EQ(state.confirmed_snapshot_id, 0u);
+    ASSERT_EQ(state.confirmed_tick, 0u);
+    ASSERT_EQ(state.next_delta_id, 1u);
+    ASSERT_FALSE(state.attempt_pending);
+    break_world_session_stats(fixture.session, &after);
+    ASSERT_TRUE(memcmp(&before, &after, sizeof(before)) == 0);
+
+    fixture.epoch = break_world_session_stream_epoch(
+        TEST_PROTOCOL, break_schema_hash(fixture.schemas), 8u);
+    ASSERT_TRUE(publish_attempt(&fixture, 11u, 20u, &recovered));
+    ASSERT_EQ(recovered.kind, BREAK_WORLD_DELTA_WIRE_FULL);
+    ASSERT_EQ(recovered.delta_id, 1u);
+    ASSERT_EQ(recovered.level_generation, 8u);
+    ASSERT_EQ(recovered.target_snapshot_id, old_delta.target_snapshot_id);
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, 11u, &state));
+    ASSERT_EQ(state.history_count, 1u);
+    ASSERT_EQ(state.confirmed_snapshot_id, 0u);
+    ASSERT_EQ(state.next_delta_id, 2u);
+    ASSERT_TRUE(ack_attempt_v2(&fixture, 11u, &recovered, 8u));
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, 11u, &state));
+    ASSERT_EQ(state.history_count, 0u);
+    ASSERT_EQ(state.confirmed_snapshot_id, recovered.target_snapshot_id);
+
+    ASSERT_TRUE(publish_attempt(&fixture, 12u, 30u, &delta));
+    ASSERT_EQ(delta.kind, BREAK_WORLD_DELTA_WIRE_DELTA);
+    ASSERT_EQ(delta.delta_id, 2u);
+    ASSERT_EQ(delta.base_snapshot_id, recovered.target_snapshot_id);
+    ASSERT_EQ(delta.level_generation, 8u);
+    break_world_session_stats(fixture.session, &after);
+    ASSERT_EQ(after.published_full_packets, 2u);
+    ASSERT_EQ(after.published_delta_packets, 2u);
+    ASSERT_EQ(after.acknowledged_packets, 2u);
+
+    clear_attempt(&delta);
+    clear_attempt(&recovered);
+    clear_attempt(&old_delta);
+    clear_attempt(&initial);
+    fixture_dispose(&fixture);
+}
+
+TEST(world_session_rebaseline_discards_old_overload_attempt)
+{
+    Fixture fixture;
+    AttemptWire recovered;
+    BreakWorldSessionSenderState state;
+    BreakNetOwnedMessage outbound;
+    u64 outbound_connection = 0u;
+
+    ASSERT_TRUE(fixture_init_scaled(&fixture, 4u, 16384u, 4096u, 64u, 8u, 64u));
+    ASSERT_TRUE(set_value(fixture.authoritative, 42u));
+    for (usize i = 0u; i < BREAK_NET_OUTBOUND_QUEUE_CAPACITY - 1u; ++i) {
+        ASSERT_EQ(break_net_reactor_send(fixture.reactor, 11u,
+                                         BREAK_NET_MESSAGE_ID_PING, 1u, "x", 1u),
+                  BREAK_NET_SEND_OK);
+    }
+    ASSERT_EQ(break_world_session_publish(fixture.session, 11u, fixture.authoritative, 10u),
+              BREAK_NET_SEND_OVERLOAD);
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, 11u, &state));
+    ASSERT_TRUE(state.attempt_pending);
+    ASSERT_EQ(state.next_delta_id, 2u);
+
+    ASSERT_TRUE(break_world_session_rebaseline(fixture.session, 8u));
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, 11u, &state));
+    ASSERT_FALSE(state.attempt_pending);
+    ASSERT_EQ(state.history_count, 0u);
+    ASSERT_EQ(state.confirmed_snapshot_id, 0u);
+    ASSERT_EQ(state.next_delta_id, 1u);
+    while (break_net_reactor_poll_outbound_for_test(
+               fixture.reactor, &outbound_connection, &outbound) == BREAK_NET_EVENT_OK) {
+        break_net_message_release(&outbound);
+    }
+    fixture.epoch = break_world_session_stream_epoch(
+        TEST_PROTOCOL, break_schema_hash(fixture.schemas), 8u);
+    ASSERT_TRUE(publish_attempt(&fixture, 43u, 20u, &recovered));
+    ASSERT_EQ(recovered.kind, BREAK_WORLD_DELTA_WIRE_FULL);
+    ASSERT_EQ(recovered.delta_id, 1u);
+    ASSERT_EQ(recovered.target_tick, 20u);
+    ASSERT_EQ(recovered.level_generation, 8u);
+    ASSERT_EQ(break_net_reactor_outbound_count(fixture.reactor), 0u);
+    clear_attempt(&recovered);
+    fixture_dispose(&fixture);
+}
+
+TEST(world_session_rebaseline_rejects_stale_v1_v2_control_collisions)
+{
+    Fixture fixture;
+    AttemptWire old_full;
+    AttemptWire new_full;
+    AttemptWire delta;
+    BreakWorldSessionControl old_ack;
+    BreakWorldSessionControl old_need_full;
+    BreakWorldSessionSenderState before;
+    BreakWorldSessionSenderState after;
+    BreakWorldSessionStats stats;
+
+    ASSERT_TRUE(fixture_init(&fixture));
+    ASSERT_TRUE(publish_attempt(&fixture, 10u, 10u, &old_full));
+    ASSERT_TRUE(break_world_session_rebaseline(fixture.session, 8u));
+    fixture.epoch = break_world_session_stream_epoch(
+        TEST_PROTOCOL, break_schema_hash(fixture.schemas), 8u);
+    ASSERT_TRUE(publish_attempt(&fixture, 10u, 10u, &new_full));
+    ASSERT_EQ(old_full.delta_id, 1u);
+    ASSERT_EQ(new_full.delta_id, old_full.delta_id);
+    ASSERT_EQ(new_full.target_snapshot_id, old_full.target_snapshot_id);
+    ASSERT_EQ(new_full.target_tick, old_full.target_tick);
+    ASSERT_EQ(old_full.level_generation, TEST_LEVEL);
+    ASSERT_EQ(new_full.level_generation, 8u);
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, 11u, &before));
+    ASSERT_EQ(before.history_count, 1u);
+    ASSERT_EQ(before.confirmed_snapshot_id, 0u);
+
+    memset(&old_ack, 0, sizeof(old_ack));
+    old_ack.kind = BREAK_WORLD_SESSION_CONTROL_ACK;
+    old_ack.delta_id = old_full.delta_id;
+    old_ack.target_snapshot_id = old_full.target_snapshot_id;
+    old_ack.target_tick = old_full.target_tick;
+    old_ack.level_generation = TEST_LEVEL;
+    memset(&old_need_full, 0, sizeof(old_need_full));
+    old_need_full.kind = BREAK_WORLD_SESSION_CONTROL_NEED_FULL;
+    old_need_full.target_snapshot_id = old_full.target_snapshot_id;
+    old_need_full.target_tick = old_full.target_tick;
+    old_need_full.level_generation = TEST_LEVEL;
+
+    ASSERT_FALSE(send_control_to_session(&fixture, &old_ack));
+    ASSERT_FALSE(send_control_to_session(&fixture, &old_need_full));
+    ASSERT_FALSE(send_control_v2_to_session(&fixture, 11u, TEST_LEVEL, &old_ack));
+    ASSERT_FALSE(send_control_v2_to_session(&fixture, 11u, TEST_LEVEL, &old_need_full));
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, 11u, &after));
+    ASSERT_TRUE(memcmp(&before, &after, sizeof(before)) == 0);
+
+    ASSERT_TRUE(send_control_v2_to_session(&fixture, 11u, 8u, &old_ack));
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, 11u, &after));
+    ASSERT_EQ(after.history_count, 0u);
+    ASSERT_EQ(after.confirmed_snapshot_id, new_full.target_snapshot_id);
+    ASSERT_TRUE(publish_attempt(&fixture, 11u, 20u, &delta));
+    ASSERT_EQ(delta.kind, BREAK_WORLD_DELTA_WIRE_DELTA);
+    ASSERT_EQ(delta.delta_id, 2u);
+    break_world_session_stats(fixture.session, &stats);
+    ASSERT_EQ(stats.acknowledged_packets, 1u);
+    ASSERT_EQ(stats.published_full_packets, 2u);
+    ASSERT_EQ(stats.published_delta_packets, 1u);
+
+    clear_attempt(&delta);
+    clear_attempt(&new_full);
+    clear_attempt(&old_full);
+    fixture_dispose(&fixture);
+}
+
+TEST(world_session_rebaseline_multi_connection_ack_is_independent)
+{
+    Fixture fixture;
+    AttemptWire a_full;
+    AttemptWire b_full;
+    AttemptWire a_delta;
+    AttemptWire b_next;
+    BreakWorldSessionSenderState a_state;
+    BreakWorldSessionSenderState b_state;
+    BreakWorldSessionStats stats;
+
+    ASSERT_TRUE(fixture_init(&fixture));
+    ASSERT_TRUE(break_world_session_open(fixture.session, 22u));
+    ASSERT_TRUE(break_world_session_rebaseline(fixture.session, 8u));
+    fixture.epoch = break_world_session_stream_epoch(
+        TEST_PROTOCOL, break_schema_hash(fixture.schemas), 8u);
+    ASSERT_TRUE(publish_attempt_for_connection(&fixture, 11u, 10u, 10u, &a_full));
+    ASSERT_TRUE(publish_attempt_for_connection(&fixture, 22u, 10u, 10u, &b_full));
+    ASSERT_EQ(a_full.kind, BREAK_WORLD_DELTA_WIRE_FULL);
+    ASSERT_EQ(b_full.kind, BREAK_WORLD_DELTA_WIRE_FULL);
+    ASSERT_EQ(a_full.delta_id, 1u);
+    ASSERT_EQ(b_full.delta_id, 1u);
+
+    ASSERT_TRUE(ack_attempt_v2(&fixture, 11u, &a_full, 8u));
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, 11u, &a_state));
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, 22u, &b_state));
+    ASSERT_EQ(a_state.history_count, 0u);
+    ASSERT_EQ(a_state.confirmed_snapshot_id, a_full.target_snapshot_id);
+    ASSERT_EQ(b_state.history_count, 1u);
+    ASSERT_EQ(b_state.confirmed_snapshot_id, 0u);
+
+    ASSERT_TRUE(publish_attempt_for_connection(&fixture, 11u, 11u, 20u, &a_delta));
+    ASSERT_TRUE(publish_attempt_for_connection(&fixture, 22u, 11u, 20u, &b_next));
+    ASSERT_EQ(a_delta.kind, BREAK_WORLD_DELTA_WIRE_DELTA);
+    ASSERT_EQ(a_delta.delta_id, 2u);
+    ASSERT_EQ(b_next.kind, BREAK_WORLD_DELTA_WIRE_FULL);
+    ASSERT_EQ(b_next.delta_id, 2u);
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, 22u, &b_state));
+    ASSERT_EQ(b_state.confirmed_snapshot_id, 0u);
+    ASSERT_EQ(b_state.history_count, 1u);
+    break_world_session_stats(fixture.session, &stats);
+    ASSERT_EQ(stats.acknowledged_packets, 1u);
+    ASSERT_EQ(stats.published_full_packets, 3u);
+    ASSERT_EQ(stats.published_delta_packets, 1u);
+
+    clear_attempt(&b_next);
+    clear_attempt(&a_delta);
+    clear_attempt(&b_full);
+    clear_attempt(&a_full);
+    fixture_dispose(&fixture);
+}
+
+TEST(world_session_control_send_uses_exact_v1_and_v2_wire)
+{
+    static const u8 expected_v1[BREAK_WORLD_SESSION_CONTROL_WIRE_SIZE] = {
+        0x42, 0x52, 0x57, 0x43, 0x01, 0x00, 0x02, 0x00,
+        0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+    };
+    static const u8 expected_v2[BREAK_WORLD_SESSION_CONTROL_WIRE_SIZE_V2] = {
+        0x42, 0x52, 0x57, 0x43, 0x02, 0x00, 0x02, 0x00,
+        0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+    };
+    Fixture fixture;
+    BreakWorldSessionControl control;
+    BreakNetOwnedMessage outbound;
+    u64 outbound_connection = 0u;
+
+    ASSERT_EQ(BREAK_WORLD_SESSION_CONTROL_WIRE_SIZE, 32u);
+    ASSERT_EQ(BREAK_WORLD_SESSION_CONTROL_WIRE_SIZE_V2, 40u);
+    ASSERT_TRUE(fixture_init(&fixture));
+    memset(&control, 0, sizeof(control));
+    control.kind = BREAK_WORLD_SESSION_CONTROL_ACK;
+    control.delta_id = 1u;
+    control.target_snapshot_id = 2u;
+    control.target_tick = 3u;
+    ASSERT_EQ(break_world_session_send_control(fixture.session, 11u, &control),
+              BREAK_NET_SEND_OK);
+    ASSERT_EQ(break_net_reactor_poll_outbound_for_test(
+                  fixture.reactor, &outbound_connection, &outbound), BREAK_NET_EVENT_OK);
+    ASSERT_EQ(outbound_connection, 11u);
+    ASSERT_EQ(outbound.message_id, BREAK_NET_MESSAGE_ID_WORLD_CONTROL);
+    ASSERT_EQ(outbound.protocol_version, 1u);
+    ASSERT_EQ(outbound.size, 32u);
+    ASSERT_TRUE(memcmp(outbound.data, expected_v1, sizeof(expected_v1)) == 0);
+    break_net_message_release(&outbound);
+
+    control.level_generation = TEST_LEVEL;
+    ASSERT_EQ(break_world_session_send_control(fixture.session, 11u, &control),
+              BREAK_NET_SEND_OK);
+    ASSERT_EQ(break_net_reactor_poll_outbound_for_test(
+                  fixture.reactor, &outbound_connection, &outbound), BREAK_NET_EVENT_OK);
+    ASSERT_EQ(outbound.protocol_version, 1u);
+    ASSERT_EQ(outbound.size, 32u);
+    ASSERT_TRUE(memcmp(outbound.data, expected_v1, sizeof(expected_v1)) == 0);
+    break_net_message_release(&outbound);
+    control.level_generation = 8u;
+    ASSERT_EQ(break_world_session_send_control(fixture.session, 11u, &control),
+              BREAK_NET_SEND_INVALID);
+    ASSERT_EQ(break_net_reactor_outbound_count(fixture.reactor), 0u);
+
+    ASSERT_TRUE(break_world_session_rebaseline(fixture.session, 8u));
+    control.level_generation = 0u;
+    ASSERT_EQ(break_world_session_send_control(fixture.session, 11u, &control),
+              BREAK_NET_SEND_INVALID);
+    control.level_generation = TEST_LEVEL;
+    ASSERT_EQ(break_world_session_send_control(fixture.session, 11u, &control),
+              BREAK_NET_SEND_INVALID);
+    control.level_generation = 9u;
+    ASSERT_EQ(break_world_session_send_control(fixture.session, 11u, &control),
+              BREAK_NET_SEND_INVALID);
+    ASSERT_EQ(break_net_reactor_outbound_count(fixture.reactor), 0u);
+    control.level_generation = 8u;
+    ASSERT_EQ(break_world_session_send_control(fixture.session, 11u, &control),
+              BREAK_NET_SEND_OK);
+    ASSERT_EQ(break_net_reactor_poll_outbound_for_test(
+                  fixture.reactor, &outbound_connection, &outbound), BREAK_NET_EVENT_OK);
+    ASSERT_EQ(outbound.message_id, BREAK_NET_MESSAGE_ID_WORLD_CONTROL);
+    ASSERT_EQ(outbound.protocol_version, 2u);
+    ASSERT_EQ(outbound.size, 40u);
+    ASSERT_TRUE(memcmp(outbound.data, expected_v2, sizeof(expected_v2)) == 0);
+    break_net_message_release(&outbound);
+    fixture_dispose(&fixture);
+}
+
+TEST(world_session_control_rejects_version_length_and_level_mismatch)
+{
+    Fixture fixture;
+    AttemptWire current;
+    BreakWorldSessionControl control;
+    BreakWorldSessionSenderState state;
+
+    ASSERT_TRUE(fixture_init(&fixture));
+    ASSERT_TRUE(break_world_session_rebaseline(fixture.session, 8u));
+    fixture.epoch = break_world_session_stream_epoch(
+        TEST_PROTOCOL, break_schema_hash(fixture.schemas), 8u);
+    ASSERT_TRUE(publish_attempt(&fixture, 10u, 10u, &current));
+    memset(&control, 0, sizeof(control));
+    control.kind = BREAK_WORLD_SESSION_CONTROL_ACK;
+    control.delta_id = current.delta_id;
+    control.target_snapshot_id = current.target_snapshot_id;
+    control.target_tick = current.target_tick;
+    control.level_generation = 8u;
+
+    ASSERT_FALSE(send_control_version_to_session(
+        &fixture, 11u, 1u, 2u, BREAK_WORLD_SESSION_CONTROL_WIRE_SIZE_V2, 8u, &control));
+    ASSERT_FALSE(send_control_version_to_session(
+        &fixture, 11u, 3u, 2u, BREAK_WORLD_SESSION_CONTROL_WIRE_SIZE_V2, 8u, &control));
+    ASSERT_FALSE(send_control_version_to_session(
+        &fixture, 11u, 2u, 1u, BREAK_WORLD_SESSION_CONTROL_WIRE_SIZE_V2, 8u, &control));
+    ASSERT_FALSE(send_control_version_to_session(
+        &fixture, 11u, 2u, 3u, BREAK_WORLD_SESSION_CONTROL_WIRE_SIZE_V2, 8u, &control));
+    ASSERT_FALSE(send_control_version_to_session(&fixture, 11u, 2u, 2u, 31u, 8u, &control));
+    ASSERT_FALSE(send_control_version_to_session(&fixture, 11u, 2u, 2u, 32u, 8u, &control));
+    ASSERT_FALSE(send_control_version_to_session(&fixture, 11u, 2u, 2u, 39u, 8u, &control));
+    ASSERT_FALSE(send_control_version_to_session(&fixture, 11u, 2u, 2u, 41u, 8u, &control));
+    ASSERT_FALSE(send_control_v2_to_session(&fixture, 11u, 0u, &control));
+    ASSERT_FALSE(send_control_v2_to_session(&fixture, 11u, TEST_LEVEL, &control));
+    ASSERT_FALSE(send_control_v2_to_session(&fixture, 11u, 9u, &control));
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, 11u, &state));
+    ASSERT_EQ(state.history_count, 1u);
+    ASSERT_EQ(state.confirmed_snapshot_id, 0u);
+    ASSERT_TRUE(send_control_v2_to_session(&fixture, 11u, 8u, &control));
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, 11u, &state));
+    ASSERT_EQ(state.history_count, 0u);
+    ASSERT_EQ(state.confirmed_snapshot_id, current.target_snapshot_id);
+    clear_attempt(&current);
+    fixture_dispose(&fixture);
+}
+
+TEST(world_session_rebaseline_close_reopen_keeps_level_and_clears_connection)
+{
+    Fixture fixture;
+    AttemptWire initial;
+    AttemptWire current;
+    AttemptWire reopened;
+    BreakWorldSessionControl control;
+    BreakWorldSessionSenderState state;
+
+    ASSERT_TRUE(fixture_init(&fixture));
+    ASSERT_TRUE(publish_attempt(&fixture, 10u, 10u, &initial));
+    ASSERT_TRUE(break_world_session_rebaseline(fixture.session, 8u));
+    fixture.epoch = break_world_session_stream_epoch(
+        TEST_PROTOCOL, break_schema_hash(fixture.schemas), 8u);
+    ASSERT_TRUE(publish_attempt(&fixture, 10u, 10u, &current));
+    ASSERT_EQ(current.delta_id, 1u);
+    ASSERT_TRUE(break_world_session_close(fixture.session, 11u));
+    ASSERT_EQ(break_world_session_level_generation(fixture.session), 8u);
+    ASSERT_FALSE(break_world_session_sender_state(fixture.session, 11u, &state));
+    ASSERT_EQ(state.history_count, 0u);
+    ASSERT_EQ(state.next_delta_id, 0u);
+    ASSERT_TRUE(break_world_session_open(fixture.session, 11u));
+    ASSERT_EQ(break_world_session_level_generation(fixture.session), 8u);
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, 11u, &state));
+    ASSERT_EQ(state.history_count, 0u);
+    ASSERT_EQ(state.history_bytes, 0u);
+    ASSERT_EQ(state.confirmed_snapshot_id, 0u);
+    ASSERT_EQ(state.next_delta_id, 1u);
+    ASSERT_FALSE(state.attempt_pending);
+    ASSERT_FALSE(break_world_session_poll_control(fixture.session, 11u, &control));
+    ASSERT_TRUE(publish_attempt(&fixture, 11u, 20u, &reopened));
+    ASSERT_EQ(reopened.kind, BREAK_WORLD_DELTA_WIRE_FULL);
+    ASSERT_EQ(reopened.delta_id, 1u);
+    ASSERT_EQ(reopened.level_generation, 8u);
+    clear_attempt(&reopened);
+    clear_attempt(&current);
+    clear_attempt(&initial);
+    fixture_dispose(&fixture);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(world_session_need_full_is_rate_limited_and_control_wire_has_last_good);
     RUN_TEST(world_session_ack_trims_history_and_need_full_publishes_fresh_full);
@@ -869,4 +1312,11 @@ TEST_MAIN_BEGIN()
     RUN_TEST(world_session_fragment_count_invalid_releases_attempt);
     RUN_TEST(world_session_overload_resumes_same_immutable_attempt);
     RUN_TEST(world_session_reconnect_clears_sender_receiver_and_rate_state);
+    RUN_TEST(world_session_rebaseline_resets_sender_and_requires_current_ack);
+    RUN_TEST(world_session_rebaseline_discards_old_overload_attempt);
+    RUN_TEST(world_session_rebaseline_rejects_stale_v1_v2_control_collisions);
+    RUN_TEST(world_session_rebaseline_multi_connection_ack_is_independent);
+    RUN_TEST(world_session_control_send_uses_exact_v1_and_v2_wire);
+    RUN_TEST(world_session_control_rejects_version_length_and_level_mismatch);
+    RUN_TEST(world_session_rebaseline_close_reopen_keeps_level_and_clears_connection);
 TEST_MAIN_END()

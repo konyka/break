@@ -1068,7 +1068,11 @@ TEST(break_session_registry_has_physics_sync_messages)
         ASSERT_EQ(delta->phase, BREAK_NET_MESSAGE_PHASE_AUTHENTICATED);
         ASSERT_EQ(delta->duplicate_policy, BREAK_NET_DUPLICATE_IDEMPOTENT);
         ASSERT_EQ(control->minimum_version, 1u);
-        ASSERT_EQ(control->maximum_version, 1u);
+        ASSERT_EQ(control->maximum_version, 2u);
+        ASSERT_TRUE(break_net_message_definition_supports_version(control, 1u));
+        ASSERT_TRUE(break_net_message_definition_supports_version(control, 2u));
+        ASSERT_FALSE(break_net_message_definition_supports_version(control, 0u));
+        ASSERT_FALSE(break_net_message_definition_supports_version(control, 3u));
         ASSERT_EQ(control->payload_limit, (size_t)BREAK_NET_MAX_PAYLOAD_SIZE);
         ASSERT_EQ(control->phase, BREAK_NET_MESSAGE_PHASE_AUTHENTICATED);
         ASSERT_EQ(control->duplicate_policy, BREAK_NET_DUPLICATE_IDEMPOTENT);

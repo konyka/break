@@ -26,6 +26,7 @@ typedef struct {
 } BreakWorldSessionConfig;
 
 #define BREAK_WORLD_SESSION_CONTROL_WIRE_SIZE 32u
+#define BREAK_WORLD_SESSION_CONTROL_WIRE_SIZE_V2 40u
 
 typedef enum {
     BREAK_WORLD_SESSION_CONTROL_NEED_FULL = 1,
@@ -37,6 +38,7 @@ typedef struct {
     u64 delta_id;
     u64 target_snapshot_id;
     u64 target_tick;
+    u64 level_generation;
 } BreakWorldSessionControl;
 
 typedef struct {
@@ -65,6 +67,8 @@ u64 break_world_session_stream_epoch(u64 protocol_version, u64 schema_hash,
 BreakWorldSession *break_world_session_create(const BreakWorldSessionConfig *config);
 void break_world_session_destroy(BreakWorldSession *session);
 BreakReplicationSessionBridge *break_world_session_bridge(BreakWorldSession *session);
+bool break_world_session_rebaseline(BreakWorldSession *session, u64 level_generation);
+u64 break_world_session_level_generation(const BreakWorldSession *session);
 bool break_world_session_open(BreakWorldSession *session, BreakConnectionKey connection);
 bool break_world_session_close(BreakWorldSession *session, BreakConnectionKey connection);
 /* Returns false for an unknown connection. An open connection without a

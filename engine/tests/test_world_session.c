@@ -129,7 +129,8 @@ static bool encode_message(BreakWorldDeltaWire *message, u8 **out_wire, usize *o
     return true;
 }
 
-static bool encode_full(const BreakWorldSnapshot *snapshot, u8 **out_wire, usize *out_size)
+static bool encode_full_at_level(const BreakWorldSnapshot *snapshot, u64 level_generation,
+                                 u8 **out_wire, usize *out_size)
 {
     BreakWorldDeltaWire message;
     usize entity_count = break_world_snapshot_entity_count(snapshot);
@@ -151,7 +152,7 @@ static bool encode_full(const BreakWorldSnapshot *snapshot, u8 **out_wire, usize
     if (count > UINT32_MAX) return false;
     message.kind = BREAK_WORLD_DELTA_WIRE_FULL;
     message.schema_hash = break_world_snapshot_schema_hash(snapshot);
-    message.level_generation = TEST_LEVEL;
+    message.level_generation = level_generation;
     message.target_snapshot_id = break_world_snapshot_id(snapshot);
     message.target_tick = break_world_snapshot_tick(snapshot);
     message.record_count = (u32)count;
@@ -181,8 +182,14 @@ static bool encode_full(const BreakWorldSnapshot *snapshot, u8 **out_wire, usize
     return encode_message(&message, out_wire, out_size);
 }
 
-static bool encode_delta(const BreakWorldSnapshot *base, const BreakWorldSnapshot *target,
-                         u8 **out_wire, usize *out_size)
+static bool encode_full(const BreakWorldSnapshot *snapshot, u8 **out_wire, usize *out_size)
+{
+    return encode_full_at_level(snapshot, TEST_LEVEL, out_wire, out_size);
+}
+
+static bool encode_delta_at_level(const BreakWorldSnapshot *base,
+                                  const BreakWorldSnapshot *target, u64 level_generation,
+                                  u8 **out_wire, usize *out_size)
 {
     BreakWorldDelta *delta = break_world_delta_diff(base, target);
     BreakWorldDeltaWire message;
@@ -197,7 +204,7 @@ static bool encode_delta(const BreakWorldSnapshot *base, const BreakWorldSnapsho
     memset(&message, 0, sizeof(message));
     message.kind = BREAK_WORLD_DELTA_WIRE_DELTA;
     message.schema_hash = break_world_delta_target_schema_hash(delta);
-    message.level_generation = TEST_LEVEL;
+    message.level_generation = level_generation;
     message.base_snapshot_id = break_world_delta_base_id(delta);
     message.target_snapshot_id = break_world_delta_target_id(delta);
     message.base_tick = break_world_delta_base_tick(delta);
@@ -220,6 +227,12 @@ static bool encode_delta(const BreakWorldSnapshot *base, const BreakWorldSnapsho
     ok = encode_message(&message, out_wire, out_size);
     break_world_delta_release(delta);
     return ok;
+}
+
+static bool encode_delta(const BreakWorldSnapshot *base, const BreakWorldSnapshot *target,
+                         u8 **out_wire, usize *out_size)
+{
+    return encode_delta_at_level(base, target, TEST_LEVEL, out_wire, out_size);
 }
 
 static bool push_bytes_with_epoch(Fixture *fixture, BreakConnectionKey connection,
@@ -763,6 +776,179 @@ TEST(world_session_close_releases_confirmed_baseline)
     fixture_dispose(&fixture);
 }
 
+TEST(world_session_rebaseline_validates_level_and_resets_receiver)
+{
+    Fixture fixture;
+    BreakWorldSnapshot *base = NULL;
+    BreakWorldSnapshot *target = NULL;
+    BreakWorldSnapshot *later = NULL;
+    BreakWorldSnapshot *latest = NULL;
+    BreakWorldSessionControl control;
+    BreakWorldSessionStats before;
+    BreakWorldSessionStats after;
+    Value *value;
+    u8 *wire = NULL;
+    usize size = 0u;
+    u64 old_epoch;
+
+    ASSERT_EQ(break_world_session_level_generation(NULL), 0u);
+    ASSERT_FALSE(break_world_session_rebaseline(NULL, 8u));
+    ASSERT_TRUE(fixture_init(&fixture));
+    ASSERT_EQ(break_world_session_level_generation(fixture.session), TEST_LEVEL);
+    ASSERT_TRUE(break_world_session_open(fixture.session, 11u));
+    ASSERT_TRUE(establish_baseline(&fixture, 11u, 10u, &base));
+    ASSERT_TRUE(break_world_session_poll_control(fixture.session, 11u, &control));
+    ASSERT_EQ(control.kind, BREAK_WORLD_SESSION_CONTROL_ACK);
+    ASSERT_EQ(control.level_generation, TEST_LEVEL);
+
+    value = (Value *)world_get_component(fixture.authoritative, (Entity){1u, 1u},
+                                         TEST_COMPONENT);
+    ASSERT_NOT_NULL(value);
+    value->value = 11u;
+    target = break_world_snapshot_build(fixture.authoritative, fixture.schemas, 20u);
+    ASSERT_NOT_NULL(target);
+    ASSERT_TRUE(encode_delta(base, target, &wire, &size));
+    ASSERT_TRUE(push_bytes(&fixture, 11u, 2u, wire, size));
+    ASSERT_EQ(break_world_session_drain(fixture.session, 11u, fixture.remote, 1u), 1u);
+    ASSERT_TRUE(break_world_session_poll_control(fixture.session, 11u, &control));
+    ASSERT_EQ(control.level_generation, TEST_LEVEL);
+    free(wire);
+    wire = NULL;
+
+    value->value = 12u;
+    later = break_world_snapshot_build(fixture.authoritative, fixture.schemas, 30u);
+    ASSERT_NOT_NULL(later);
+    ASSERT_TRUE(encode_delta(base, later, &wire, &size));
+    ASSERT_TRUE(push_bytes(&fixture, 11u, 3u, wire, size));
+    ASSERT_EQ(break_world_session_drain(fixture.session, 11u, fixture.remote, 1u), 1u);
+    ASSERT_TRUE(baseline_matches(&fixture, 11u, break_world_snapshot_id(target), 20u));
+    break_world_session_stats(fixture.session, &before);
+
+    ASSERT_FALSE(break_world_session_rebaseline(fixture.session, 0u));
+    ASSERT_FALSE(break_world_session_rebaseline(fixture.session, TEST_LEVEL));
+    ASSERT_FALSE(break_world_session_rebaseline(fixture.session, TEST_LEVEL - 1u));
+    ASSERT_EQ(break_world_session_level_generation(fixture.session), TEST_LEVEL);
+    ASSERT_TRUE(baseline_matches(&fixture, 11u, break_world_snapshot_id(target), 20u));
+    break_world_session_stats(fixture.session, &after);
+    ASSERT_TRUE(memcmp(&before, &after, sizeof(before)) == 0);
+    ASSERT_TRUE(break_world_session_poll_control(fixture.session, 11u, &control));
+    ASSERT_EQ(control.kind, BREAK_WORLD_SESSION_CONTROL_NEED_FULL);
+    ASSERT_EQ(control.level_generation, TEST_LEVEL);
+    ASSERT_EQ(control.target_snapshot_id, break_world_snapshot_id(target));
+    ASSERT_EQ(control.target_tick, 20u);
+
+    value->value = 13u;
+    latest = break_world_snapshot_build(fixture.authoritative, fixture.schemas, 40u);
+    ASSERT_NOT_NULL(latest);
+    free(wire);
+    wire = NULL;
+    ASSERT_TRUE(encode_delta(base, latest, &wire, &size));
+    ASSERT_TRUE(push_bytes(&fixture, 11u, 4u, wire, size));
+    ASSERT_EQ(break_world_session_drain(fixture.session, 11u, fixture.remote, 1u), 1u);
+    break_world_session_stats(fixture.session, &before);
+    ASSERT_TRUE(break_world_session_rebaseline(fixture.session, 8u));
+    ASSERT_EQ(break_world_session_level_generation(fixture.session), 8u);
+    ASSERT_FALSE(break_world_session_rebaseline(fixture.session, 8u));
+    ASSERT_TRUE(baseline_matches(&fixture, 11u, 0u, 0u));
+    ASSERT_FALSE(break_world_session_poll_control(fixture.session, 11u, &control));
+    break_world_session_stats(fixture.session, &after);
+    ASSERT_TRUE(memcmp(&before, &after, sizeof(before)) == 0);
+    ASSERT_TRUE(remote_matches(&fixture, 20u, break_world_snapshot_id(target)));
+
+    old_epoch = fixture.epoch;
+    fixture.epoch = break_world_session_stream_epoch(
+        TEST_PROTOCOL, break_schema_hash(fixture.schemas), 8u);
+    ASSERT_NEQ(fixture.epoch, old_epoch);
+    ASSERT_FALSE(push_bytes_with_epoch(&fixture, 11u, 5u, old_epoch, wire, size));
+    free(wire);
+    wire = NULL;
+    ASSERT_TRUE(encode_delta_at_level(target, later, 8u, &wire, &size));
+    ASSERT_TRUE(push_bytes(&fixture, 11u, 1u, wire, size));
+    ASSERT_EQ(break_world_session_drain(fixture.session, 11u, fixture.remote, 1u), 1u);
+    ASSERT_TRUE(remote_matches(&fixture, 20u, break_world_snapshot_id(target)));
+    ASSERT_TRUE(baseline_matches(&fixture, 11u, 0u, 0u));
+    ASSERT_TRUE(break_world_session_poll_control(fixture.session, 11u, &control));
+    ASSERT_EQ(control.kind, BREAK_WORLD_SESSION_CONTROL_NEED_FULL);
+    ASSERT_EQ(control.level_generation, 8u);
+    ASSERT_EQ(control.target_snapshot_id, 0u);
+    ASSERT_EQ(control.target_tick, 0u);
+
+    free(wire);
+    break_world_snapshot_release(latest);
+    break_world_snapshot_release(later);
+    break_world_snapshot_release(target);
+    break_world_snapshot_release(base);
+    fixture_dispose(&fixture);
+}
+
+TEST(world_session_rebaseline_bad_full_recovers_and_reopen_keeps_level)
+{
+    Fixture fixture;
+    BreakWorldSnapshot *base = NULL;
+    BreakWorldSnapshot *target;
+    BreakWorldSessionControl control;
+    BreakWorldSessionStats stats;
+    Value *value;
+    u8 *wire = NULL;
+    usize size = 0u;
+    u64 old_epoch;
+
+    ASSERT_TRUE(fixture_init(&fixture));
+    ASSERT_TRUE(break_world_session_open(fixture.session, 11u));
+    ASSERT_TRUE(establish_baseline(&fixture, 11u, 10u, &base));
+    ASSERT_TRUE(break_world_session_poll_control(fixture.session, 11u, &control));
+    value = (Value *)world_get_component(fixture.authoritative, (Entity){1u, 1u},
+                                         TEST_COMPONENT);
+    ASSERT_NOT_NULL(value);
+    value->value = 20u;
+    target = break_world_snapshot_build(fixture.authoritative, fixture.schemas, 20u);
+    ASSERT_NOT_NULL(target);
+    old_epoch = fixture.epoch;
+    ASSERT_TRUE(break_world_session_rebaseline(fixture.session, 8u));
+    fixture.epoch = break_world_session_stream_epoch(
+        TEST_PROTOCOL, break_schema_hash(fixture.schemas), 8u);
+    ASSERT_TRUE(encode_full_at_level(target, 8u, &wire, &size));
+
+    break_world_delta_wire_test_fail_after_mutation(1u);
+    ASSERT_TRUE(push_bytes(&fixture, 11u, 1u, wire, size));
+    ASSERT_EQ(break_world_session_drain(fixture.session, 11u, fixture.remote, 1u), 1u);
+    break_world_delta_wire_test_fail_after_mutation(0u);
+    ASSERT_EQ(remote_value(&fixture), 10u);
+    ASSERT_TRUE(remote_matches(&fixture, 10u, break_world_snapshot_id(base)));
+    ASSERT_TRUE(baseline_matches(&fixture, 11u, 0u, 0u));
+    ASSERT_TRUE(break_world_session_poll_control(fixture.session, 11u, &control));
+    ASSERT_EQ(control.kind, BREAK_WORLD_SESSION_CONTROL_NEED_FULL);
+    ASSERT_EQ(control.level_generation, 8u);
+
+    ASSERT_TRUE(push_bytes(&fixture, 11u, 2u, wire, size));
+    ASSERT_EQ(break_world_session_drain(fixture.session, 11u, fixture.remote, 1u), 1u);
+    ASSERT_EQ(remote_value(&fixture), 20u);
+    ASSERT_TRUE(remote_matches(&fixture, 20u, break_world_snapshot_id(target)));
+    ASSERT_TRUE(baseline_matches(&fixture, 11u, break_world_snapshot_id(target), 20u));
+    ASSERT_TRUE(break_world_session_poll_control(fixture.session, 11u, &control));
+    ASSERT_EQ(control.kind, BREAK_WORLD_SESSION_CONTROL_ACK);
+    ASSERT_EQ(control.level_generation, 8u);
+    ASSERT_EQ(control.delta_id, 2u);
+    break_world_session_stats(fixture.session, &stats);
+    ASSERT_EQ(stats.applied_packets, 2u);
+    ASSERT_EQ(stats.need_full_packets, 1u);
+    ASSERT_EQ(stats.rejected_packets, 1u);
+    ASSERT_EQ(stats.drained_packets, 3u);
+
+    ASSERT_TRUE(break_world_session_close(fixture.session, 11u));
+    ASSERT_EQ(break_world_session_level_generation(fixture.session), 8u);
+    ASSERT_TRUE(break_world_session_open(fixture.session, 11u));
+    ASSERT_EQ(break_world_session_level_generation(fixture.session), 8u);
+    ASSERT_TRUE(baseline_matches(&fixture, 11u, 0u, 0u));
+    ASSERT_FALSE(break_world_session_poll_control(fixture.session, 11u, &control));
+    ASSERT_FALSE(push_bytes_with_epoch(&fixture, 11u, 3u, old_epoch, wire, size));
+
+    free(wire);
+    break_world_snapshot_release(target);
+    break_world_snapshot_release(base);
+    fixture_dispose(&fixture);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(world_session_epoch_open_close_and_empty_baseline);
     RUN_TEST(world_session_full_is_applied_only_by_drain_and_advances_baseline);
@@ -777,4 +963,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(world_session_full_fault_rolls_back_world_and_baseline);
     RUN_TEST(world_session_reconnect_full_replaces_stale_nonempty_world);
     RUN_TEST(world_session_close_releases_confirmed_baseline);
+    RUN_TEST(world_session_rebaseline_validates_level_and_resets_receiver);
+    RUN_TEST(world_session_rebaseline_bad_full_recovers_and_reopen_keeps_level);
 TEST_MAIN_END()
