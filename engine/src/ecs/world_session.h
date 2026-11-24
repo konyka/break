@@ -17,13 +17,46 @@ typedef struct {
     u64 protocol_version;
     u64 level_generation;
     BreakReplicationSessionBridgeConfig bridge;
+    /* Zero selects 8 entries, 1 MiB of BRWD history, 64 KiB per packet and a
+     * 30-tick need-full interval. Limits are per connection. */
+    size_t history_entry_limit;
+    size_t history_byte_limit;
+    size_t packet_byte_limit;
+    u64 need_full_tick_interval;
 } BreakWorldSessionConfig;
+
+#define BREAK_WORLD_SESSION_CONTROL_WIRE_SIZE 32u
+
+typedef enum {
+    BREAK_WORLD_SESSION_CONTROL_NEED_FULL = 1,
+    BREAK_WORLD_SESSION_CONTROL_ACK = 2
+} BreakWorldSessionControlKind;
+
+typedef struct {
+    BreakWorldSessionControlKind kind;
+    u64 delta_id;
+    u64 target_snapshot_id;
+    u64 target_tick;
+} BreakWorldSessionControl;
+
+typedef struct {
+    size_t history_count;
+    size_t history_bytes;
+    u64 confirmed_snapshot_id;
+    u64 confirmed_tick;
+    u64 next_delta_id;
+    bool attempt_pending;
+} BreakWorldSessionSenderState;
 
 typedef struct {
     size_t applied_packets;
     size_t need_full_packets;
     size_t rejected_packets;
     size_t drained_packets;
+    size_t need_full_suppressed;
+    size_t published_full_packets;
+    size_t published_delta_packets;
+    size_t acknowledged_packets;
     BreakReplicationSessionBridgeStats bridge;
 } BreakWorldSessionStats;
 
@@ -46,6 +79,32 @@ bool break_world_session_baseline(const BreakWorldSession *session,
 size_t break_world_session_drain(BreakWorldSession *session,
                                  BreakConnectionKey connection, World *world,
                                  size_t max_packets);
+/* NEED_FULL is rate-limited per connection and takes priority over the latest
+ * coalesced ACK. The caller may send the returned value more than once after a
+ * transport overload; polling consumes only the local event. */
+bool break_world_session_poll_control(BreakWorldSession *session,
+                                      BreakConnectionKey connection,
+                                      BreakWorldSessionControl *out_control);
+BreakNetSendResult break_world_session_send_control(
+    BreakWorldSession *session, BreakConnectionKey connection,
+    const BreakWorldSessionControl *control);
+/* BreakSessionMessageHandler for 0x400B. ACK requires an exact history
+ * (delta_id, target id, tick) match and trims through that entry. NEED_FULL
+ * forces the next newly created attempt to be full. */
+bool break_world_session_handle_control(BreakConnectionKey connection,
+                                        const BreakNetOwnedMessage *message,
+                                        void *user_data);
+/* Publishes a full packet until an ACK establishes a baseline. Delta chains
+ * use the newest unacknowledged target. History or packet budget pressure and
+ * NEED_FULL fall back to full with a fresh delta_id. An OVERLOAD leaves the
+ * immutable attempt pending; the next call resumes unsent fragments without
+ * reading the supplied World again. */
+BreakNetSendResult break_world_session_publish(BreakWorldSession *session,
+                                               BreakConnectionKey connection,
+                                               World *world, u64 tick);
+bool break_world_session_sender_state(const BreakWorldSession *session,
+                                      BreakConnectionKey connection,
+                                      BreakWorldSessionSenderState *out_state);
 void break_world_session_stats(const BreakWorldSession *session,
                                BreakWorldSessionStats *out_stats);
 

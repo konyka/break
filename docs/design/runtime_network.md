@@ -435,3 +435,14 @@ World delta、inbound-to-simulation、level rebaseline、可靠恢复、Runtime 
 本项没有注册 BRWD 消息 ID，也没有 session/bridge/core_app 接线、ACK/NACK、重试、断线恢复或生产启用；BRFG 的可靠性与 session 语义不自动延伸到 BRWD。
 
 最终完整 CTest：Vulkan 注册 **471** 项，**467 执行通过、4 条件 skip、0 失败**；OpenGL 注册 **462** 项，**458 执行通过、4 条件 skip、0 失败**。五项 focused ASan+UBSan（`detect_leaks=1`）与 TSan 均为 **5/5 CTest、146/146 直接测试**，无 sanitizer/leak/race 诊断；条件 skip 不计执行通过。
+
+
+## 补充（2026-11-24）：World session 的 owner 基线与恢复边界
+
+`BreakWorldSession` 把接收 World、发送 confirmed baseline、未确认历史、不可变 publish attempt 和控制事件全部限定在 owner-thread。网络 callback 只做 BRFG decode/reassembly/completion queue；`break_world_session_drain(connection, world, max)` 才执行 BRWD decode、base 检查、staging rebuild/target hash 校验和 `break_world_delta_apply`。因此网络线程不会借 ACK 或恢复路径直接修改 World，其他连接的 completion FIFO 也不会被当前 drain 消耗。
+
+0x400A 用于 BRWD 分片，0x400B 用于 32 字节 BRWC 控制。接收方 ACK 合并到最后成功 target；NEED_FULL 携带 last-good id/tick，并按连接每 N tick 限流。发送方只把精确 `(delta_id,target_id,tick)` ACK 当作 confirmed baseline 推进，裁剪对应历史。没有 ACK 或需要恢复时发送 full；历史 entry/byte/packet 限制退化为 full，fresh delta id 防止把新 full 与旧 attempt 混淆。OVERLOAD 后 World 可以已经变化，但重试仍使用原 BRWD bytes、snapshot、delta id 和未发分片位置，不重新生成部分内容。重连清空所有接收/发送状态。
+
+测试既覆盖这些状态机，也覆盖真实 AUTH/socket 的乱序重复、base mismatch/NEED_FULL/full，以及移除并恢复 0x400A 注册的负对照。直接测试 **189/189**，其中新增 recovery **6/6**、loopback **2/2**；normal focused CTest **11/11**。ASan+UBSan 显式 `detect_leaks=1` 与 TSan 九项 focused 均 **9/9**。八项定向变异（限速、ACK 字节、full 回退、history bytes、payload 生命周期、OVERLOAD 游标、重连序号、confirmed reset）均先判红再恢复。实现早期还由测试定位并修复了 fragment descriptor 借用 BRWD 缓冲而 attempt 提前释放的问题，最终 payload 存活到末片发送完成。
+
+完整 Vulkan **463/467 执行通过**，另有 **4 条件 skip、0 失败**；OpenGL **461/465 执行通过**，另有 **4 条件 skip、0 失败**。skip 名称与既有四项相同，不转为通过。**core_app 启用、生产 level 策略、跨连接共享 World 和 Runtime Core 消息映射仍未完成**，focused sanitizer 不等于完整 sanitizer suite。

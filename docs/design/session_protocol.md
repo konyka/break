@@ -332,3 +332,14 @@ World snapshot/delta 现在有独立 BRWD/v1 canonical codec。消息头为 60 �
 **Session/bridge 接线仍未完成**：没有 BRWD message ID、registry 项、fragment 映射、认证 phase、completion drain 或 core_app 启用。ACK/NACK、重试、断点续传、base 恢复和可靠传输策略也均未定义；现有 0x4009 BRFG Session bridge 不会隐式传输或确认 BRWD。
 
 最终完整 CTest：Vulkan **471 注册、467 执行通过、4 条件 skip、0 失败**；OpenGL **462 注册、458 执行通过、4 条件 skip、0 失败**。五项 focused ASan+UBSan（`detect_leaks=1`）与 TSan 均为 **5/5 CTest、146/146 直接测试**，无诊断；条件 skip 不计执行通过，也不构成 Session/bridge 接线验收。
+
+
+## 补充（2026-11-24）：BRWD session、0x400B 控制与基线恢复
+
+默认 registry 新增 `BREAK_NET_MESSAGE_ID_WORLD_DELTA = 0x400A` 与 `BREAK_NET_MESSAGE_ID_WORLD_CONTROL = 0x400B`，均为 v1、64 KiB payload、`AUTHENTICATED + IDEMPOTENT`；连同既有 0x4009，crypto 开启/关闭时定义总数为 **32/31**。0x400A 的 BRFG 外层 `base_id` 是由协议版本、schema hash、level generation 派生的固定 World stream epoch，真正的 base/target snapshot id 只在 BRWD 内层。0x400B 的 32 字节控制载荷为 `BRWC`、version/kind、delta id、target snapshot id/tick；NEED_FULL 的 delta id 为 0，target 是接收方最后确认的 id/tick，ACK 则以非零 delta id 加 target id/tick 精确确认一次发送。
+
+`break_world_session_drain` 仍是唯一 World apply 入口。成功 apply 后接收方合并最新 ACK；base/schema/level/target/apply 失败保留 World 和 confirmed baseline，并产生 NEED_FULL。NEED_FULL 在每连接每 N 个 target tick 最多发出一次，超限只增加 suppressed 统计。发送端在 ACK 建立基线前只发 full；ACK 后可从最新未确认 target 链接 delta。历史条数、BRWD 字节和单包均有界，预算压力或 NEED_FULL 使下一次新 attempt 退化为带新 delta id 的 full。精确 ACK 裁剪到对应项；full 成功后才淘汰旧历史与旧 confirmed baseline。OVERLOAD 保留同一不可变 BRWD、delta id 和分片游标，下次只继续未发片段；close/reopen 清空双方基线、历史、限速与发送序号。语义是 at-least-once 与最终一致，不是 exactly-once。
+
+真实 raw TCP/AUTH 测试覆盖乱序和重复 0x400A 分片、drain 前 World 不变、drain 后 snapshot id 一致、base mismatch 触发携带 last-good id/tick 的 NEED_FULL，以及后续 full 恢复。移除 0x400A registry 项时真实 Session 记录 invalid 且 bridge/World 均无推进；恢复注册的新鲜 loopback 再次通过。直接计数为 recovery **6/6**、loopback **2/2**、world session **11/11**、bridge **20/20**、aspect session **12/12**、Session **43/43**、wire **9/9**、fragment **28/28**、ECS replication **35/35**、world delta wire **23/23**，合计 **189/189**；focused normal CTest 含 target contract **11/11**。ASan+UBSan（`detect_leaks=1`）与 TSan 的九项 focused 均 **9/9**，无诊断。
+
+完整 Vulkan 注册 **467** 项，**463 执行通过、4 条件 skip、0 失败**；OpenGL 注册 **465** 项，**461 执行通过、4 条件 skip、0 失败**。四项条件 skip 均为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计执行通过。**core_app 启用、生产 level rebaseline 策略与跨连接共享 World 仍未完成**；本段也不预写远端或其他平台验收。

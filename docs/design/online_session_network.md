@@ -170,3 +170,14 @@ normal、ASan+UBSan（显式 leak 检测）和 TSan focused 均为 **6/6、112/1
 真实 loopback 在 AUTH/welcome 后验证两个句柄的全部值，再反序发送 3 个有效片，在完成前重复第 2 片以命中服务端重复抑制，最后发送 3 个 schema-mismatch 片。服务端 `network_aspect_stats` 精确要求 applied=1、rejected=1、drained=2、queue_depth=0、dropped=0、duplicates=1、pending_bytes=0，发送分片至少 2；重复片被服务端计数且没有产生第二次 apply，也没有留下 pending stream。移除 0x4009 handler 的负对照为 **0/1**（0/0/0），恢复为 **1/1**。core_app network **12/12**、lifecycle **12/12**、ASan+UBSan focused **9/9**；TSan library/transport **7/7**，TSan 客户端 loopback **1/1**。core_app 自身在 TSan 下的两个场景受既有 Lua longjmp 环境限制，未掩饰为成功。
 
 本项不定义新消息或 World delta，也不把 inbound 数据合并进 simulation。level 切换 rebaseline、可靠恢复、远端和其他平台验收保持未做。
+
+
+## 补充（2026-11-24）：World delta 的认证 session 与恢复控制
+
+`0x400A` 现在承载 BRWD/v1 的 BRFG 分片，`0x400B` 承载 BRWC/v1 控制；两者均为 `AUTHENTICATED + IDEMPOTENT`、64 KiB 上限。控制载荷固定 32 字节，NEED_FULL 报告接收方 last-good target id/tick，ACK 以 `(delta_id,target_id,tick)` 精确确认。外层 stream epoch 不随 ACK 基线变化，避免恢复时重建分片池。
+
+接收侧 owner drain 成功后才推进 confirmed baseline 并合并 ACK，拒绝路径不变更 World。每连接 NEED_FULL 按 N tick 限流。发送侧在 ACK 前发 full，ACK 后允许从最新未确认 target 发 delta；精确 ACK 裁剪历史。历史 entry/byte 与 packet 上限、NEED_FULL 和未知 baseline 都会退化到 fresh-id full。所有片段未成功交付前，full 不丢弃旧历史；OVERLOAD 只恢复同一 immutable attempt 的未发片段，close/reopen 重置历史、confirmed baseline、控制限速和 delta id。
+
+真实 socket 验收先 AUTH，再以不同 envelope sequence 反序发送并重复 BRWD 分片；接收 World 只在 drain 后与 target snapshot id 一致。注入内部 base mismatch 后产生 NEED_FULL，后续 full 使 World 达到恢复 target id。独立负对照从 manager registry 删除 0x400A，真实消息被分类 invalid 且 completion/World 都为零；恢复定义后新 socket 用例通过。新增 recovery **6/6**、loopback **2/2**，连同 world session/bridge/aspect/Session/wire/fragment/ECS/delta 直接计数共 **189/189**；normal focused **11/11**，ASan+UBSan（detect_leaks=1）和 TSan focused 均 **9/9**。
+
+完整 Vulkan 注册 **467**，**463 通过、4 条件 skip、0 失败**；OpenGL 注册 **465**，**461 通过、4 条件 skip、0 失败**。四项 skip 不计通过。**core_app 启用、生产 level rebaseline、跨连接共享 World、预测回滚及远端验收仍未完成**；本特性只承诺 at-least-once 和最终一致。

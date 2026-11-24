@@ -13675,3 +13675,13 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 评审历史：稀疏实体全量重建、CREATE 乱序、枚举校验、REMOVE 载荷、排序复杂度（改 qsort 并先拒绝超上限 CREATE）均经独立评审提出并修复，复审 approve。
 - 远端：`546fc25e` 首轮 CI `45377890030` 有 4 个 job 失败，均为 fuzz 目标未随显式列表构建导致的 Not Run/libFuzzer 步骤失败，不是代码测试失败；`fc26e099` 修复后 CI `45382035753` success，windows-d3d12 `45382035415` success，Proton `45384575836` success，上游 run-id `45382035415`，device/pipeline contract 均为 77。`546fc25e` 的 windows `45377889620` 与 Proton `45379643109` 亦 success，QUIC `45377889646` success。
 - 边界：session 接线、ACK/恢复和生产启用仍未完成；world session 在后续子项目实现。
+
+
+## World session 基线恢复与真实 loopback（2026-11-24）
+
+- **交付**：`BreakWorldSession` 使用 0x400A 传输 BRWD、0x400B 传输 32 字节 BRWC 控制，registry 在 crypto 开关下为 **32/31**。接收方仅 owner drain 修改 World，成功后推进 confirmed baseline 并合并 ACK；NEED_FULL 携带 last-good id/tick，每连接每 N tick 限流。发送方以精确 `(delta_id,target_id,tick)` ACK 裁剪未确认历史，未知 baseline/恢复/预算压力回退为 fresh-id full，entry/byte/packet 均有界。OVERLOAD 续发同一不可变 attempt，重连清空全部接收和发送状态。
+- **TDD 与修复**：新 recovery/loopback 测试先因配置、控制和 publish API 缺失而编译 RED。实现后，checksum 失败定位到 fragment descriptor 借用 BRWD 缓冲、attempt 提前释放；改为保留原 buffer 到末片发送后，recovery **6/6**、loopback **2/2**。八项定向变异覆盖限速、ACK 字节、full 回退、history bytes、payload 生命周期、OVERLOAD 游标、重连序号和 confirmed reset，均判红后恢复。
+- **真实证据**：raw TCP/AUTH 后乱序和重复 0x400A 分片，drain 前 World 不变，drain 后 snapshot id 与 target 一致；base mismatch 产生带 last-good id/tick 的 NEED_FULL，后续 full 恢复。删除 0x400A registry 项时真实 Session invalid、completion=0、World 不变；恢复后的新鲜 loopback 通过。
+- **计数**：recovery 6、loopback 2、world session 11、bridge 20、aspect session 12、Session 43、wire 9、fragment 28、ECS replication 35、world delta wire 23，直接测试合计 **189/189**；normal focused CTest 含 replication target contract **11/11**。ASan+UBSan（`detect_leaks=1`）与 TSan 九项 focused 均 **9/9**，无 sanitizer/leak/race 诊断。
+- **完整套件**：Vulkan 注册 **467** 项，**463 执行通过、4 条件 skip、0 失败**；OpenGL 注册 **465** 项，**461 执行通过、4 条件 skip、0 失败**。skip 均为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计执行通过。
+- **边界**：**core_app 启用、生产 level rebaseline 策略、跨连接共享 World、Runtime Core 映射和权威 simulation 合并未完成**。只承诺 at-least-once 与最终一致；不包含 exactly-once、完整资产链、远端或其他平台验收。

@@ -7141,6 +7141,24 @@ endif()
         set_tests_properties(test_world_session PROPERTIES
             TIMEOUT 30 LABELS "ecs;replication;session;wire")
 
+        add_executable(test_world_session_recovery tests/test_world_session_recovery.c)
+        target_include_directories(test_world_session_recovery PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_world_session_recovery PRIVATE
+            break_net_test break_ecs_replication_test)
+        add_test(NAME test_world_session_recovery COMMAND test_world_session_recovery)
+        set_tests_properties(test_world_session_recovery PROPERTIES
+            TIMEOUT 30 LABELS "ecs;replication;session;wire;recovery")
+
+        add_executable(test_world_session_loopback tests/test_world_session_loopback.c)
+        target_include_directories(test_world_session_loopback PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_world_session_loopback PRIVATE
+            break_net_test break_ecs_replication_test)
+        add_test(NAME test_world_session_loopback COMMAND test_world_session_loopback)
+        set_tests_properties(test_world_session_loopback PROPERTIES
+            TIMEOUT 60 LABELS "ecs;replication;session;wire;recovery;loopback")
+
         add_executable(test_break_online_aspect_session_link
             tests/test_break_online_aspect_session_link.c)
         target_include_directories(test_break_online_aspect_session_link PRIVATE

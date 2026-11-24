@@ -33,4 +33,4 @@ ACK 裁剪与 full 回退。
       push master，核验 CI/Windows/QUIC/Proton 并补收据。
 
 所有 configure 使用 `-DBREAK_ENABLE_SNOWFLAKE=ON
--DSNOWFLAKE_SOURCE_DIR=<pin 4ab761fc 检出>`；禁止 cry/game 等命名。
+-DSNOWFLAKE_SOURCE_DIR=<pin 4ab761fc 检出>`；命名遵循项目禁用词约定。

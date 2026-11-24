@@ -811,3 +811,18 @@ BRWD/v1 现在为 ECS World full snapshot 和 delta 提供传输无关的 canoni
 #### World delta wire 远端收据（2026-11-24）
 
 `fc26e099` 的 CI `45382035753`、windows-d3d12 `45382035415`、Proton `45384575836` 均 success，contract 77。此前 `546fc25e` 的 CI 失败是 fuzz 目标未构建的环境配置问题，已由该提交修复。session/ACK/生产启用仍未实现。
+
+
+## 第 17 节（大世界/流式）补充（2026-11-24）：World session 恢复缺口关闭
+
+BRWD 不再只是独立 codec：0x400A 已把 full/delta 接入认证 Session，0x400B 已提供 ACK 与 NEED_FULL 控制。接收方只在 owner drain 重建、校验 target hash 并 staging apply，NEED_FULL 携带 last-good id/tick 且按连接每 N tick 限流。发送方保存有界未确认历史，精确 ACK 裁剪；未知 baseline、NEED_FULL 或 entry/byte/packet 超限回退为 fresh-delta-id full。OVERLOAD 不重新生成 World 内容，只续发原 attempt 的未发片段；重连清空双方状态。
+
+真实 raw socket/AUTH 验收覆盖乱序重复、drain 后 snapshot id、base mismatch 后 NEED_FULL/full 恢复，以及移除 0x400A 注册时 invalid/零 completion、恢复后成功。直接测试 **189/189**，新增 recovery **6/6**、loopback **2/2**；normal focused **11/11**，ASan+UBSan（detect_leaks=1）与 TSan focused 均 **9/9**。完整 Vulkan **463/467 执行通过、4 条件 skip、0 失败**；OpenGL **461/465 执行通过、4 条件 skip、0 失败**，条件 skip 不计通过。
+
+以下缺口明确保留：
+
+- **core_app 启用**尚未实现，库级 loopback 不等于生产应用接线。
+- **生产 level rebaseline 策略**尚未实现；当前 level 是 session 配置的一部分，不自动选择或迁移。
+- **跨连接共享 World**尚未实现；每个 drain 显式接收 owner World，没有共享 publication、锁或 epoch reclamation。
+- 权威 simulation 合并、跨 World 持久身份、预测回滚和完整资产链不在本项；只提供 at-least-once/final-consistency，未承诺 exactly-once。
+- 完整 sanitizer suite、远端和其他平台验收不在本记录内，条件 skip 不转为执行通过。
