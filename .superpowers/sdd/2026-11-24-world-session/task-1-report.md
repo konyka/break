@@ -123,3 +123,12 @@ Result: **8/8 CTest tests passed**, with no thread sanitizer diagnostics.
 - `engine/tests/test_world_session.c`
 
 Final checks before commit: `git diff --check` passed; the focused source and test files contain no forbidden naming; no build products are included in the change.
+
+## Review (agent-431) coverage addition
+
+Verdict approve with minor fixes: selective completion polling had no wrapped
+ring test. Added bridge_selective_poll_wraps_ring_and_preserves_survivor_order
+covering a full ring, interleaved connections, selective multi-entry polling,
+selected FIFO, survivor FIFO, byte accounting and subsequent global polling.
+Disabling survivor compaction in the selective path turns it red (19/20);
+restored to 20/20 in normal, ASan+UBSan and TSan.

@@ -1454,6 +1454,65 @@ TEST(bridge_non_auth_handler_failure_keeps_session_authenticated)
     break_replication_session_bridge_destroy(bridge);
 }
 
+
+TEST(bridge_selective_poll_wraps_ring_and_preserves_survivor_order)
+{
+    uint64_t now = 0u;
+    BreakReplicationSessionBridgeConfig config = test_bridge_config(&now);
+    BreakReplicationSessionBridge *bridge =
+        break_replication_session_bridge_create(&config);
+    BreakReplicationSessionCompletion selected[2];
+    BreakReplicationSessionCompletion rest[3];
+    BreakReplicationSessionBridgeStats stats;
+    ASSERT_NOT_NULL(bridge);
+    ASSERT_TRUE(break_replication_session_connection_open(bridge, 1u, 7u));
+    ASSERT_TRUE(break_replication_session_connection_open(bridge, 2u, 7u));
+    ASSERT_TRUE(test_push_payload(bridge, 1u, 11u, 7u, "a1", 2u));
+    ASSERT_TRUE(test_push_payload(bridge, 2u, 21u, 7u, "b1", 2u));
+    ASSERT_TRUE(test_push_payload(bridge, 1u, 12u, 7u, "a2", 2u));
+    ASSERT_TRUE(test_push_payload(bridge, 2u, 22u, 7u, "b2", 2u));
+    ASSERT_EQ(break_replication_session_poll_completed_for_connection(
+                  bridge, 1u, selected, 2u),
+              2u);
+    ASSERT_EQ(selected[0].delta_id, 11u);
+    ASSERT_EQ(selected[1].delta_id, 12u);
+    ASSERT_TRUE(memcmp(selected[0].payload, "a1", 2u) == 0);
+    ASSERT_TRUE(memcmp(selected[1].payload, "a2", 2u) == 0);
+    break_replication_session_completion_release(&selected[0]);
+    break_replication_session_completion_release(&selected[1]);
+    break_replication_session_bridge_stats(bridge, &stats);
+    ASSERT_EQ(stats.completion_count, 2u);
+    ASSERT_EQ(stats.completion_bytes, 4u);
+    ASSERT_TRUE(test_push_payload(bridge, 1u, 13u, 7u, "a3", 2u));
+    ASSERT_TRUE(test_push_payload(bridge, 2u, 23u, 7u, "b3", 2u));
+    ASSERT_EQ(break_replication_session_poll_completed_for_connection(
+                  bridge, 2u, selected, 2u),
+              2u);
+    ASSERT_EQ(selected[0].delta_id, 21u);
+    ASSERT_EQ(selected[1].delta_id, 22u);
+    ASSERT_TRUE(memcmp(selected[0].payload, "b1", 2u) == 0);
+    ASSERT_TRUE(memcmp(selected[1].payload, "b2", 2u) == 0);
+    break_replication_session_completion_release(&selected[0]);
+    break_replication_session_completion_release(&selected[1]);
+    break_replication_session_bridge_stats(bridge, &stats);
+    ASSERT_EQ(stats.completion_count, 2u);
+    ASSERT_EQ(stats.completion_bytes, 4u);
+    ASSERT_TRUE(test_push_payload(bridge, 1u, 14u, 7u, "a4", 2u));
+    ASSERT_EQ(break_replication_session_poll_completed(bridge, rest, 3u), 3u);
+    ASSERT_EQ(rest[0].delta_id, 13u);
+    ASSERT_EQ(rest[1].delta_id, 23u);
+    ASSERT_EQ(rest[2].delta_id, 14u);
+    ASSERT_TRUE(memcmp(rest[0].payload, "a3", 2u) == 0);
+    ASSERT_TRUE(memcmp(rest[1].payload, "b3", 2u) == 0);
+    ASSERT_TRUE(memcmp(rest[2].payload, "a4", 2u) == 0);
+    for (size_t i = 0u; i < 3u; ++i)
+        break_replication_session_completion_release(&rest[i]);
+    break_replication_session_bridge_stats(bridge, &stats);
+    ASSERT_EQ(stats.completion_count, 0u);
+    ASSERT_EQ(stats.completion_bytes, 0u);
+    break_replication_session_bridge_destroy(bridge);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(bridge_create_validates_ranges_products_and_null_calls);
     RUN_TEST(bridge_open_capacity_close_and_key_reuse_start_fresh);
@@ -1468,6 +1527,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(bridge_handler_enforces_configured_fragment_size_and_count);
     RUN_TEST(bridge_inbound_fragment_expiration_is_counted_without_owner_tick);
     RUN_TEST(bridge_wrapped_fifo_close_compaction_preserves_survivor_order);
+    RUN_TEST(bridge_selective_poll_wraps_ring_and_preserves_survivor_order);
     RUN_TEST(bridge_socket_loopback_reassembles_interleaved_duplicates_in_fifo);
     RUN_TEST(bridge_socket_reconnect_same_key_resets_completed_high_water);
     RUN_TEST(bridge_send_validates_and_encodes_through_real_reactor);
