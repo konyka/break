@@ -402,7 +402,7 @@ open 的 connection key 各自持有 pool 与 expected base，连接数和每连
 
 `BreakAspectSession` 把 bridge completion 的所有权转移延伸为明确的 owner-thread 消费步骤。open 时 expected base 由 `break_aspect_schema_hash(store)` 决定；网络回调只重组并入队，`break_aspect_session_drain` 是唯一 `break_aspect_apply` 入口。drain 按 FIFO 每次最多消费 `max_packets`，逐项记录 applied/rejected/drained，apply 失败不升级为连接关闭，并在分支结束后 release completion。零预算不解包、不访问 store；未 drain 的项仍由 bridge 持有。模块不新增线程、锁或原子。
 
-发送端 fragment data 上限为 **65496**，与 BRFG/v1 总 payload 65536 及 40 字节头一致。`break_aspect_session_send` 将 runtime 错误映射到 `OK/INVALID/OVERLOAD/CLOSED` 并保持 0x4009/v1。`break_net` 与 `break_net_test` PUBLIC 链接 `break_online`，只链接后者的消费侧契约测试 **1/1**，证明 aspect 符号会随正式依赖传播。
+发送端 fragment data 上限为 **65496**，与 BRFG/v1 总 payload 65536 及 40 字节头一致。`break_aspect_session_send` 将 runtime 错误映射到 `OK/INVALID/OVERLOAD/CLOSED` 并保持 0x4009/v1。`break_net` 与 `break_net_test` PUBLIC 链接 `break_online`。`test_break_online_aspect_session_link` 只链接 `break_net_test`、不显式链接 `break_online`，契约测试 **1/1**，证明 aspect 符号会随正式依赖传播。
 
 真实 loopback 依次穿过 raw socket AUTH、默认 registry、reactor、SessionManager、既有 AOI aspect scheduler、bridge 和 owner drain。drain 前占位 handle 无 active aspect 或字段值；第一次 drain 后为 42/-17，schema mismatch 后保持原值并计 rejected，同 key 重开后 delta 1 不继承 40/41 高水位，最后为 84/-34。三个真实发送回调和三个 completion 均有计数，consumer=3，Session applied=5、invalid=0、handler_failed=0。移除 registry 项时 **11/12**，恢复后 **12/12**。
 
