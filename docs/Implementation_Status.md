@@ -13756,3 +13756,12 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **admission 兼容**：`fair_outbound_admission` 位于 config 尾部，默认 false 保持全局 256；显式 true 才按活跃身份数分配 `max(1,256/max(1,active_count))`。closing 未 retired 占份额，unknown key 不计 active 但按 key queued，late join 不驱逐旧消息，global full 等 drain，FIFO/ownership 不变。双连接 fixture 显式启用；adapter 直接测试覆盖默认、late join、closing/retire、unknown/global-full。
 - **公共契约**：publication 头明确 publish/close single-owner、acquire 可并发、destroy 前先 close 并停止并发 API，以及 immutable snapshot lease 在 replace/close/destroy 后仍可读取并延迟 release。
 - **边界**：本轮没有实现默认全局公平调度，也不处理其他 deferred 测试增强；共享 live World、权威合并、Runtime Core 映射和完整资产链仍开放，不预写远端结果。
+
+
+### 共享 snapshot publication 最终验证与远端收据（2026-11-25）
+
+- 最终推送 `bf9d08ab149cb4d9b4fd58d03d3f68d90d486b79`。任务与整分支独立评审全部通过；终审发现的 legacy same-tick full 回归、公开 admission 语义和 editor config 未初始化均已修复并复审关闭。公平 admission 最终为默认关闭的 `fair_outbound_admission` opt-in，单活跃身份和其他默认调用保持原全局 256 行为。
+- 最终 focused：normal library **10/10**、core_app **5/5**、直接 **218/218**；ASan+UBSan（显式 leak 检测）**11/11**（含 editor shell）及 core_app **5/5**；TSan **10/10** 与 core_app **2/2**。editor shell normal/ASan 均为 **235/235**；TSan editor remote 路径受既有 Lua longjmp 限制，不写成覆盖。
+- 在最终 HEAD 完整构建并运行：OpenGL **478 注册、474 执行通过、4 条件 skip、0 失败**（300.29 s）；Vulkan **480 注册、476 执行通过、4 条件 skip、0 失败**（304.27 s）。条件 skip 不计执行通过，完整 sanitizer suite 未运行。
+- 远端 CI run `45487057078`、windows-d3d12 run `45487057107`、QUIC run `45487057440`、Proton run `45490144324` 均 completed/success；CI 为 **24 success、3 条件 skip、0 cancelled、0 failed**。Proton 上游 run-id=`45487057107`，device/pipeline contract 均为 77，仅表示兼容通道。
+- 本项只关闭库级只读 publication 与共享 snapshot fan-out，不关闭共享 live World、Runtime Core 映射、权威 simulation 合并、自动换级或完整资产链。剩余 S2/S3 断言和审计 rc 增强是 deferred Minor，不改变交付边界。本收据提交自身的工作流结果不在此预写。

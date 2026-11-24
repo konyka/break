@@ -916,3 +916,12 @@ outbound 每 key 公平配额现在是显式 opt-in，而不是默认全局能�
 World session 的旧 API 保留 full tick 兼容：首 full 未 ACK 或 NEED_FULL 后可同 tick fresh full，delta 非递增仍拒绝；borrowed snapshot API 的 full 准入仍严格。publication 公共头已补 single-owner、并发 acquire、destroy 前置和 lease 晚于 publication 的生命期说明。
 
 这些修正不关闭其他能力缺口：默认全局公平调度未迁移，跨连接共享 live World、权威 simulation 合并、Runtime Core 映射、自动换级和完整资产链仍未实现。此前 loopback 4/4、direct 300/300 仅是中间轮次，不是最终 HEAD 全量证明；最终全量与远端结果不在本追加中预写。
+
+
+### 共享 snapshot publication 最终验证与远端收据（2026-11-25）
+
+`bf9d08ab` 已完成任务与整分支独立评审并推送。最终 HEAD 的 OpenGL 全量为 **474/478 执行通过、4 条件 skip、0 失败**，Vulkan 为 **476/480 执行通过、4 条件 skip、0 失败**。normal library **10/10**、直接 **218/218**；ASan+UBSan **11/11**，TSan **10/10**；core_app normal/ASan 各 **5/5**、TSan **2/2**，既有 Lua longjmp 与混合 TSan 不覆盖服务端的限制不变。
+
+远端 CI `45487057078`、windows-d3d12 `45487057107`、QUIC `45487057440`、Proton `45490144324` 均 success；CI 为 24 success、3 条件 skip、0 cancelled、0 failed。Proton 上游 run-id=`45487057107`，两个 contract 均为 77，仅表示兼容通道。
+
+本节只关闭库级只读 publication 和共享 snapshot fan-out，不关闭共享 live World、Runtime Core 映射、权威 simulation 合并、自动换级或完整资产链。公平 admission 是默认关闭的 opt-in，不宣称默认全局公平调度。本收据提交自身的工作流结果不在此预写。
