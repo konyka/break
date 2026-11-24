@@ -98,3 +98,10 @@ cmake -S engine -B engine/build-tsan \
 - `.superpowers/sdd/2026-11-24-core-app-aspect-replication/task-1-report.md`
 
 `git diff --check` passes. No loopback client files, production threads, or locks were added.
+
+## Review (agent-424) fix
+
+Verdict approve with minor fixes. The repeated-sync assertion read a stale view;
+the test now polls the reactor outbound queue after the second sync and requires
+BREAK_NET_EVENT_EMPTY, then refreshes the view before asserting sent_fragments=2.
+A duplicated second sync would now fail both checks. Transport remains 11/11.

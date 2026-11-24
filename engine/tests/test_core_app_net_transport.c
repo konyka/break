@@ -551,6 +551,10 @@ TEST(aspect_transport_sync_counts_sends_and_close_releases_connection) {
     ASSERT_EQ(view.scope_count, 2u);
     ASSERT_EQ(core_app_net_transport_aspect_sync_for_test(fixture.transport, 0x4409u),
               BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_net_reactor_poll_outbound_for_test(
+                  fixture.reactor, &(BreakConnectionKey){0u}, &(BreakNetOwnedMessage){0}),
+              BREAK_NET_EVENT_EMPTY);
+    ASSERT_TRUE(core_app_net_transport_aspect_for_test(fixture.transport, &view));
     ASSERT_EQ(view.sent_fragments, 2u);
 
     ASSERT_EQ(fixture.hooks.stop_admission(fixture.hooks.user), BREAK_RUNTIME_OK);
