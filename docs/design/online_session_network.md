@@ -128,3 +128,12 @@ apply 要求相同 schema hash、live generation 和递增的每对象 record ep
 aspect 接入仍有一个明确发送侧缺口：现有 fragmenter 的通用片长上限是 65536，而 BRFG 数据片必须收窄到 65496，才能给 40 字节头留出空间。bridge 还必须另设完成队列、每连接和全 manager 预算，不能把 count 的绝对上限 1048576 当成生产准入配置。decode 不验 FNV-1a 是有意分层，重组池继续负责 checksum/base/high-water；FNV 仍不是认证。
 
 focused 证据为新 wire **7/7**、旧 fragment/scheduler **28/28**，ASan+UBSan/TSan 亦通过相同两组测试。真实 session 收发、消息注册、aspect 发送上限调整、可靠传输、认证和 World delta 协议均不在本切片，不以 codec 往返测试冒充真实网络验收。
+
+
+### 复制分片 wire codec 最终验证补充（2026-11-24）
+
+最终代码与测试对象为 `2f1c28d08ab9444f119fdf24bdc5d1c4fac16a26`。控制器在该 SHA 实际取得 Vulkan **100%（463/463）**：459 通过、4 条件 skip、0 失败，以及 OpenGL **100%（454/454）**：450 通过、4 条件 skip、0 失败。skip 为 `test_d3d12_dependency_gate` 和 `test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计为执行通过。
+
+fix 后 normal、ASan+UBSan/LSan、TSan focused 均为 wire **9/9**、旧 fragment/scheduler **28/28**，累计 **14 项变异均判红并恢复**。上一段的 **7/7** 与首轮八项变异是 fix 前历史记录，最终为 **9/9、14 项**。
+
+这些结果不改变本文件的接入边界：完整 sanitizer suite、Session 收发、消息注册、aspect bridge、真实网络及远端验收仍未完成，不以 codec/CTest 证据代替，也不预写推送或 CI 结果。

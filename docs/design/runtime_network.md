@@ -376,3 +376,12 @@ TDD 先取得缺少 wire 头的编译 RED，随后 focused 新测试 **7/7**、�
 ### 最终 HEAD 完整验证（2026-11-24）
 
 新文件进入 HEAD 后复跑完整构建与 CTest，上一段的两个 archive contract 均通过。Vulkan 注册 **463** 项，**459 执行通过、4 条件 skip、0 失败**；OpenGL 注册 **454** 项，**450 执行通过、4 条件 skip、0 失败**。两套 skip 均为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计为执行通过。该结果仍不构成真实 session/网络或完整 sanitizer suite 验收。
+
+
+### 最终 HEAD 与 fix 后证据对齐（2026-11-24）
+
+控制器在精确提交 `2f1c28d08ab9444f119fdf24bdc5d1c4fac16a26` 上重跑：Vulkan **100%（463/463）**，即 459 执行通过、4 条件 skip、0 失败；OpenGL **100%（454/454）**，即 450 执行通过、4 条件 skip、0 失败。四项 skip 仍为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不转换为执行通过。
+
+fix 后 normal、ASan+UBSan/LSan、TSan focused 均为 wire **9/9**、旧 fragment/scheduler **28/28**；首轮八项加 fix 六项共 **14 项定向变异均判红并恢复**。此前 **7/7** 和八项变异仅是 fix 前历史记录，最终证据以 **9/9、14 项**为准。新增覆盖包括每个截断的独立精确可访问区域、仅高 32 位非零的 delta、宽 base、count/index 最大值，以及完整 magic/version/header/fragment_bytes 高位负例。
+
+完整 sanitizer suite、Session/真实网络与远端验收仍未完成；本补充不预写推送或 CI 结论。

@@ -713,3 +713,12 @@ core_app 新增 `--voice-bypass`，可从命令行关闭语音处理链的任意
 - aspect 发送侧仍须把 fragment_size 收窄到 65496，并另设完成队列、每连接与全 manager 预算；1048576 只是 codec 绝对 count 上限，不是生产配置。
 - decode 的输入生命周期由调用者管理，FNV-1a 由重组池验证且不提供认证。可靠性、拥塞控制、安全传输、World delta 协议与生产服务均未因此交付。
 - 本机证据只覆盖 focused normal/ASan+UBSan/TSan 与另行记录的完整 CTest，不代表 Windows、Proton、远端 CI 或真实网络验收。
+
+
+## 第 17 节（大世界/流式）补充（2026-11-24）：wire 最终证据与未关闭边界
+
+最终验证 SHA 为 `2f1c28d08ab9444f119fdf24bdc5d1c4fac16a26`。控制器实测 Vulkan **100%（463/463）**：459 执行通过、4 条件 skip、0 失败；OpenGL **100%（454/454）**：450 执行通过、4 条件 skip、0 失败。skip 仍是 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计为执行通过。
+
+fix 后 normal、ASan+UBSan/LSan、TSan focused 均为 wire **9/9**、旧 fragment/scheduler **28/28**，首轮与 fix 合计 **14 项定向变异均判红并恢复**。此前 **7/7** 和八项变异属于 fix 前历史记录，最终计数以 **9/9、14 项**为准。
+
+未关闭的边界保持不变：完整 sanitizer suite 未验收，Session/reactor/aspect 和真实网络未接线或验收，Windows/Proton/远端 CI 未由本补充验收；不预写推送或 CI 结果。

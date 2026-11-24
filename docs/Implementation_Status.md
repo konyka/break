@@ -13567,3 +13567,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 新文件进入 HEAD 后，完整构建成功，`test_core_app_contract_compat` 与 `test_core_app_ctest_config_contract` 均实际通过；上一追加段的中间 archive 缺源失败已关闭。
 - Vulkan CTest 注册 **463** 项：**459 通过、4 条件 skip、0 失败**；OpenGL 注册 **454** 项：**450 通过、4 条件 skip、0 失败**。skip 均为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计为执行通过。
 - 完整 normal 结果与上述 focused sanitizer 结果分别成立；未运行完整 ASan/UBSan/TSan suite，未完成真实 session/网络、Windows、Proton 或远端 CI 验收。
+
+
+### 复制分片 wire codec 最终 HEAD 验证补充（2026-11-24）
+
+- **精确验证对象**：控制器在 `2f1c28d08ab9444f119fdf24bdc5d1c4fac16a26` 实际重跑完整套件。Vulkan CTest **100%（463/463）**：459 执行通过、4 条件 skip、0 失败；OpenGL CTest **100%（454/454）**：450 执行通过、4 条件 skip、0 失败。skip 为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计为执行通过。
+- **fix 后 focused**：normal、ASan+UBSan（显式 LSan `detect_leaks=1`）与 TSan 均为新 wire **9/9**、旧 fragment/scheduler **28/28**，恢复后无 sanitizer/leak/race 诊断。首轮 8 项与 fix round 1 的 6 项定向变异合计 **14 项均判红并恢复**。
+- **历史计数对齐**：上文 wire **7/7** 与八项变异是 fix 前历史记录；最终测试增加精确截断分配、宽 delta/base、count/index 最大值及高位/完整字段负例，最终计数以 **9/9、14 项变异**为准。
+- **边界**：只运行 focused sanitizer 目标，未验收完整 sanitizer suite；Session、真实网络和远端仍未验收。本补充不预写推送或 CI 结果。
