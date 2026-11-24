@@ -767,3 +767,7 @@ fix 后 normal、ASan+UBSan/LSan、TSan focused 均为 wire **9/9**、旧 fragme
 - **可靠恢复**（丢包重试、断线恢复、持久高水位）未实现。
 - **完整资产链**及依赖解析未实现。
 - 完整 sanitizer suite、远端和其他平台验收不在本项证据内；条件 skip 不计执行通过。
+
+#### aspect session drain 远端收据（2026-11-24）
+
+`c97c20c2` 的 CI `45340766116`、windows-d3d12 `45340765950`、QUIC `45340766073`、Proton `45342271652` 均 success，Proton device/pipeline contract 均为 77，上游 run-id `45340765950`。drain 只负责把完成包交给 aspect store，生产 core_app 接入、World delta 与可靠恢复仍未实现。

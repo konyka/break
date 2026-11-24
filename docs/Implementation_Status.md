@@ -13624,3 +13624,12 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **Focused**：normal、ASan+UBSan（`ASAN_OPTIONS=detect_leaks=1`）和 TSan 均为 **6/6 CTest、112/112 直接测试**，即 aspect session 12、link 1、bridge 19、Session 43、wire 9、fragment 28，无 sanitizer/leak/race 诊断。
 - **完整套件**：Vulkan 注册 **463** 项，**459 执行通过、4 条件 skip、0 失败**；OpenGL 注册 **461** 项，**457 执行通过、4 条件 skip、0 失败**。四项为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计执行通过。
 - **边界**：**生产 core_app/editor 接线、World delta、可靠恢复和完整资产链仍未完成**。条件 skip 不计执行通过；本记录不包含远端、Windows、Proton 或完整 sanitizer suite 验收，不预写推送结论。
+
+### aspect session drain 验证收据（2026-11-24）
+
+- 最终推送 `c97c20c26fea657db0ea903b3bb6596ac8d0333b`（含 spec、`0a13971a` drain 实现、`116ce03c` 链接依赖修复、`0acc1038` 真实 loopback 与文档、`c97c20c2` 文档措辞）。
+- 本地证据：aspect session **12/12**、链接契约 **1/1**、bridge **19/19**、session **43/43**、wire **9/9**、fragment **28/28**；focused normal/ASan+UBSan（detect_leaks=1）/TSan 均 6/6，无诊断。完整 Vulkan **463** 项注册 **459 通过、4 条件 skip、0 失败**；OpenGL **461** 项注册 **457 通过、4 条件 skip、0 失败**。
+- 真实 loopback 由既有 AOI 发送路径产生 BRA1 分片，drain 前占位对象无 active aspect，drain 后为 42/-17，schema 不匹配计 rejected 且原值不变，同 key 重开接受 delta 1，最终 84/-34；applied/rejected/drained 为 2/1/3。移除 0x4009 注册项时 11/12，恢复后 12/12。链接契约曾以未定义 aspect 引用判红，修复后只链接 `break_net_test` 即可通过。
+- 独立评审：Task 1 的 `break_net` 未传播 `break_online` 依赖已修复并 approve；整分支评审 approve（仅一处文档措辞修正）。
+- 远端：CI run `45340766116` success，windows-d3d12 run `45340765950` success，QUIC run `45340766073` success，Proton run `45342271652` success，上游 run-id `45340765950`，device/pipeline contract 均为 77。
+- 边界：生产 core_app/editor 接线、World delta、可靠恢复与完整资产链仍未完成；core_app 接入在后续子项目实现。
