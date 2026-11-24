@@ -13738,3 +13738,12 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 在最终文档 HEAD 完整重跑：OpenGL **477 注册、473 执行通过、4 条件 skip、0 失败**（306.94 s）；Vulkan **479 注册、475 执行通过、4 条件 skip、0 失败**（312.71 s）。条件 skip 不计执行通过。
 - 远端 CI run `45449211965`、windows-d3d12 run `45449211975`、Proton run `45451294974` 均 completed/success；CI 为 **24 success、3 条件 skip、0 cancelled、0 failed**。Proton 上游 run-id=`45449211975`，device/pipeline contract 均为 77，仅表示兼容通道。该提交未触发 QUIC run，不补写 QUIC 结论。
 - 本项只关闭库级显式换代。自动换级、资产链、混合 level、共享 live World、Runtime Core 映射、权威 simulation 合并仍未完成；本收据提交自身触发的工作流结果不在此预写。
+
+
+## 共享 snapshot publication 与多连接 fan-out（2026-11-25）
+
+- **已交付（库级）**：`BreakWorldSnapshotPublication` 以短锁保护 acquire/replace/close，锁内仅做状态检查、retain 和 current/元数据更新；构建、diff、编码、发送、drain 与回调在锁外。publish/close 由同一 owner 调用，destroy 前先 close 并停止并发 API。lease 独立持有 snapshot 引用，replace/close/destroy 后旧 lease 仍可读，release 可晚于 publication destroy。
+- **准入与所有权**：schema/tick/level/closed/epoch 失败原子保留 current；同 level tick 严格递增，高 level 可重置 tick。`break_world_session_publish_snapshot` 复用 borrowed immutable target，每连接 attempt/history 各自 retain。一次构建可供多连接 fan-out，但 confirmed/history、ACK/NEED_FULL、full/delta base、OVERLOAD 和 rebaseline 均独立；active attempt 优先续发原字节。
+- **真实验收**：两个认证 socket 交错接收共享 S1/S2/S3，A OVERLOAD 不妨碍 B，A 延迟 ACK/NEED_FULL 不改变 B 的 delta，B 未 ACK S2 时 S3 仍以 S2 为 base，drain 前 World 不变。7→8 后旧 lease 可读但不能发布，新代两连接都 full。level 校验变异的 RED 为 3/4，恢复后的 loopback 为 4/4，`engine/src` 无残留 diff。
+- **本地验证**：普通 library 13/13、core_app 26/26，14 个直接二进制合计 300/300；ASan+UBSan（显式 `detect_leaks=1`）同样 13/13、26/26。TSan library 13/13，真实 loopback 4/4；core_app 进程组 3/26，其余 23 项均走既有 Lua longjmp 环境失败，未记为通过。normal server + TSan client 的 World hybrid 通过，但不覆盖 TSan server，也不构成完整 sanitizer suite。
+- **仍然开放**：跨连接共享 live World、权威 simulation 合并、Runtime Core 映射、自动换级和完整资产链未实现；共享 publication_epoch 不进入 wire，也不是持久身份。本节不预写推送、CI、Windows、Proton 或其他远端结果，历史收据保持不变。

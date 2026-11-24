@@ -471,3 +471,14 @@ World delta、inbound-to-simulation、level rebaseline、可靠恢复、Runtime 
 同 socket 验收让 raw TCP 客户端和服务端在 AUTH 后从 level 7 显式进入 8，真实收发 BRFG/BRWC，覆盖旧 epoch 乱序重复片、旧 v1/v2 ACK/NEED_FULL、新代 full 前 NEED_FULL、full target id 和当前 ACK 后 delta。旧 completion 不直接注入，连接 key/session id 与 TCP 身份保持连续。
 
 本项没有自动换级、资产处理、混合 level、共享 live World、Runtime Core 消息映射、权威合并或完整资产链，也没有把 CoreAppThread 诊断 drain 扩展成生产权威 World 集成。既有远端与集成复验收据不复制，本追加不预写新的远端结果。
+
+
+## 补充（2026-11-25）：只读 snapshot lease 与 Runtime 所有线程 fan-out 边界
+
+snapshot publication 的短锁只覆盖 acquire 与 replace/close 的状态检查、retain 和 current/元数据更新；旧引用的 release 在锁外，构建、diff、编码、发送、drain、回调、渲染和音频处理也都不得进入该临界区。owner 串行调用 publish/close，close 后 acquire 返回 CLOSED；destroy 要求先 close 并停止全部并发 publication 调用。已 acquire 的 lease 通过 snapshot refcount 独立存活，replace/close/destroy 不使其字节失效，lease release 可晚于 publication destroy。
+
+publish 在替换 current 前原子检查 schema/tick/level/closed/epoch；同 level tick 必须递增，高 level 开启新纪元且允许更小 tick。World session 不接触 publication 锁，只在热路径前消费调用方取得的 immutable lease。`break_world_session_publish_snapshot` 对每连接 retain target，既有一次 snapshot 构建因而可供多个认证连接复用，但各连接仍从自己的 confirmed 或 newest-unacknowledged history 选择 base，独立处理 ACK、NEED_FULL、OVERLOAD 和 level 复位；active attempt 始终优先续发原字节。
+
+真实双 socket/AUTH 验收通过有界 reactor/Session dispatch 交错收片，未直接注入 completion。A 的队列 OVERLOAD 不阻断 B，A 的 NEED_FULL 不改变 B 的 delta 基线，B 的 S2 未确认时 S3 仍基于 S2；两个接收 World 只在各自 drain 后变化。7→8 换代使旧 lease 不可发布但不影响其只读生命期，两个连接的新代首包均为 full。focused normal 与 ASan+UBSan/LSan 均 39/39，TSan 的 library/server socket 组为 13/13；core_app TSan 的既有 Lua longjmp 和混合客户端证据另列，不扩展为完整服务端 sanitizer 结论。
+
+Runtime Core 消息映射仍未实现，CoreAppThread 诊断 drain 也没有变成权威合并。跨连接共享的是 immutable snapshot，不是 live `World *`；共享 live World、多写入者仲裁、权威 simulation 合并、自动资产选择/加载和完整资产链继续开放。本节不预写远端结果。

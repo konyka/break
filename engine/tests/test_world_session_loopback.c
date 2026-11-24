@@ -62,11 +62,16 @@ typedef struct {
     BreakSessionManager *manager;
     BreakNetMessageRegistry registry;
     BreakConnectionKey connection;
+    BreakConnectionKey inactive_connection;
+    World *remote_secondary;
     u64 now;
     u64 epoch;
     u32 sequence;
+    u32 inactive_sequence;
     usize auth_calls;
     int client_fd;
+    int inactive_client_fd;
+    bool active_secondary;
 } SocketFixture;
 
 static u64 test_clock(void *user)
@@ -152,16 +157,43 @@ static bool pump(SocketFixture *fixture)
     return stepped;
 }
 
+static void socket_select_peer(SocketFixture *fixture, bool secondary)
+{
+    BreakConnectionKey connection;
+    u32 sequence;
+    int client_fd;
+    if (fixture->active_secondary == secondary) return;
+    connection = fixture->connection;
+    sequence = fixture->sequence;
+    client_fd = fixture->client_fd;
+    fixture->connection = fixture->inactive_connection;
+    fixture->sequence = fixture->inactive_sequence;
+    fixture->client_fd = fixture->inactive_client_fd;
+    fixture->inactive_connection = connection;
+    fixture->inactive_sequence = sequence;
+    fixture->inactive_client_fd = client_fd;
+    fixture->active_secondary = secondary;
+}
+
 static void socket_dispose(SocketFixture *fixture)
 {
     if (fixture->client_fd >= 0) {
         close(fixture->client_fd);
         fixture->client_fd = -1;
     }
-    if (fixture->manager && fixture->reactor && fixture->connection != 0u) {
-        for (usize i = 0u; i < 1000u &&
-             break_session_manager_state(fixture->manager, fixture->connection) !=
-                 BREAK_SESSION_CLOSED; ++i) {
+    if (fixture->inactive_client_fd >= 0) {
+        close(fixture->inactive_client_fd);
+        fixture->inactive_client_fd = -1;
+    }
+    if (fixture->manager && fixture->reactor) {
+        for (usize i = 0u; i < 1000u; ++i) {
+            bool active_closed = fixture->connection == 0u ||
+                break_session_manager_state(fixture->manager, fixture->connection) ==
+                    BREAK_SESSION_CLOSED;
+            bool inactive_closed = fixture->inactive_connection == 0u ||
+                break_session_manager_state(fixture->manager, fixture->inactive_connection) ==
+                    BREAK_SESSION_CLOSED;
+            if (active_closed && inactive_closed) break;
             if (!pump(fixture)) break;
             usleep(1000u);
         }
@@ -174,20 +206,24 @@ static void socket_dispose(SocketFixture *fixture)
         break_net_reactor_destroy(fixture->reactor);
     }
     if (fixture->acceptor) SnowAcceptorDestroy(fixture->acceptor);
+    world_destroy(fixture->remote_secondary);
     world_destroy(fixture->remote);
     world_destroy(fixture->authoritative);
     break_schema_registry_destroy(fixture->schemas);
     memset(fixture, 0, sizeof(*fixture));
     fixture->client_fd = -1;
+    fixture->inactive_client_fd = -1;
 }
 
-static bool socket_start(SocketFixture *fixture, bool include_delta)
+static bool socket_start_with_connections(SocketFixture *fixture, bool include_delta,
+                                          usize max_connections)
 {
     BreakComponentSchema schema;
     BreakWorldSessionConfig world_config;
     BreakSessionConfig session_config;
     memset(fixture, 0, sizeof(*fixture));
     fixture->client_fd = -1;
+    fixture->inactive_client_fd = -1;
     memset(&schema, 0, sizeof(schema));
     schema.component_id = TEST_COMPONENT;
     schema.version = 1u;
@@ -197,13 +233,18 @@ static bool socket_start(SocketFixture *fixture, bool include_delta)
     fixture->schemas = break_schema_registry_create();
     fixture->authoritative = world_create();
     fixture->remote = world_create();
+    if (max_connections == 2u) fixture->remote_secondary = world_create();
     if (!fixture->schemas || !fixture->authoritative || !fixture->remote ||
+        (max_connections == 2u && !fixture->remote_secondary) ||
         break_schema_register(fixture->schemas, &schema) != BREAK_SCHEMA_OK ||
         !reactor_start(fixture)) {
         return false;
     }
     world_register_component(fixture->authoritative, TEST_COMPONENT, sizeof(Value));
     world_register_component(fixture->remote, TEST_COMPONENT, sizeof(Value));
+    if (fixture->remote_secondary) {
+        world_register_component(fixture->remote_secondary, TEST_COMPONENT, sizeof(Value));
+    }
 
     fixture->registry = *break_net_message_registry_default();
     if (!include_delta) {
@@ -230,10 +271,10 @@ static bool socket_start(SocketFixture *fixture, bool include_delta)
     world_config.protocol_version = TEST_PROTOCOL;
     world_config.level_generation = TEST_LEVEL;
     world_config.bridge.reactor = fixture->reactor;
-    world_config.bridge.max_connections = 1u;
+    world_config.bridge.max_connections = max_connections;
     world_config.bridge.stream_capacity = 8u;
     world_config.bridge.max_pending_bytes_per_connection = 8192u;
-    world_config.bridge.max_total_pending_bytes = 8192u;
+    world_config.bridge.max_total_pending_bytes = 8192u * max_connections;
     world_config.bridge.max_fragment_bytes = 64u;
     world_config.bridge.max_fragment_count = 64u;
     world_config.bridge.completion_capacity = 8u;
@@ -262,6 +303,11 @@ static bool socket_start(SocketFixture *fixture, bool include_delta)
         return false;
     }
     return true;
+}
+
+static bool socket_start(SocketFixture *fixture, bool include_delta)
+{
+    return socket_start_with_connections(fixture, include_delta, 1u);
 }
 
 static bool write_frame_version(SocketFixture *fixture, u16 message_id, u16 protocol_version,
@@ -394,7 +440,7 @@ static bool connect_authenticate(SocketFixture *fixture)
         return false;
     }
     for (usize i = 0u; i < 5000u; ++i) {
-        if (fixture->auth_calls == 1u && fixture->connection != 0u &&
+        if (fixture->auth_calls != 0u && fixture->connection != 0u &&
             break_session_manager_state(fixture->manager, fixture->connection) ==
                 BREAK_SESSION_AUTHENTICATED) {
             return break_world_session_open(fixture->session, fixture->connection);
@@ -444,50 +490,98 @@ static bool write_shuffled_payload(SocketFixture *fixture, u64 delta_id,
                                              payload, payload_size);
 }
 
+typedef struct {
+    BreakReplicationReassembler *reassembler;
+    SocketAttempt attempt;
+    u8 *payload;
+    usize payload_size;
+    bool complete;
+} SocketReceive;
+
+static bool socket_receive_init(SocketReceive *receive, u64 epoch)
+{
+    memset(receive, 0, sizeof(*receive));
+    receive->reassembler = break_replication_reassembler_create(epoch);
+    return receive->reassembler != NULL;
+}
+
+static void socket_receive_clear(SocketReceive *receive)
+{
+    break_replication_reassembly_free(receive->payload);
+    break_replication_reassembler_destroy(receive->reassembler);
+    memset(receive, 0, sizeof(*receive));
+}
+
+static bool socket_receive_push(SocketFixture *fixture, SocketReceive *receive)
+{
+    SocketFrame frame;
+    BreakReplicationFragment fragment;
+    BreakReplicationReassemblyResult result;
+    BreakWorldDeltaWire decoded;
+    if (receive->complete || !read_frame(fixture, &frame) ||
+        frame.message_id != BREAK_NET_MESSAGE_ID_WORLD_DELTA ||
+        frame.protocol_version != BREAK_REPLICATION_WIRE_VERSION ||
+        break_replication_wire_decode(frame.payload, frame.payload_size, &fragment) !=
+            BREAK_REPLICATION_FRAGMENT_OK ||
+        (receive->attempt.delta_id != 0u &&
+         receive->attempt.delta_id != fragment.delta_id)) {
+        return false;
+    }
+    receive->attempt.delta_id = fragment.delta_id;
+    receive->attempt.fragment_count++;
+    result = break_replication_reassembler_push(receive->reassembler, &fragment,
+                                                &receive->payload,
+                                                &receive->payload_size);
+    if (result == BREAK_REPLICATION_REASSEMBLY_INCOMPLETE) return true;
+    if (result != BREAK_REPLICATION_REASSEMBLY_COMPLETE || !receive->payload ||
+        break_world_delta_wire_decode(receive->payload, receive->payload_size, &decoded) !=
+            BREAK_WORLD_DELTA_WIRE_OK) {
+        return false;
+    }
+    receive->attempt.kind = decoded.kind;
+    receive->attempt.base_snapshot_id = decoded.base_snapshot_id;
+    receive->attempt.target_snapshot_id = decoded.target_snapshot_id;
+    receive->attempt.target_tick = decoded.target_tick;
+    receive->attempt.level_generation = decoded.level_generation;
+    receive->complete = true;
+    break_world_delta_wire_clear(&decoded);
+    return true;
+}
+
 static bool collect_published(SocketFixture *fixture, SocketAttempt *attempt)
 {
-    BreakReplicationReassembler *reassembler =
-        break_replication_reassembler_create(fixture->epoch);
-    BreakWorldDeltaWire decoded;
-    u8 *payload = NULL;
-    usize payload_size = 0u;
-    bool complete = false;
-    bool ok = reassembler != NULL;
-    memset(attempt, 0, sizeof(*attempt));
-    while (ok && !complete) {
-        SocketFrame frame;
-        BreakReplicationFragment fragment;
-        BreakReplicationReassemblyResult result;
-        if (!read_frame(fixture, &frame) ||
-            frame.message_id != BREAK_NET_MESSAGE_ID_WORLD_DELTA ||
-            frame.protocol_version != BREAK_REPLICATION_WIRE_VERSION ||
-            break_replication_wire_decode(frame.payload, frame.payload_size, &fragment) !=
-                BREAK_REPLICATION_FRAGMENT_OK ||
-            (attempt->delta_id != 0u && attempt->delta_id != fragment.delta_id)) {
-            ok = false;
-            break;
-        }
-        attempt->delta_id = fragment.delta_id;
-        attempt->fragment_count++;
-        result = break_replication_reassembler_push(reassembler, &fragment,
-                                                    &payload, &payload_size);
-        complete = result == BREAK_REPLICATION_REASSEMBLY_COMPLETE;
-        if (!complete && result != BREAK_REPLICATION_REASSEMBLY_INCOMPLETE) ok = false;
+    SocketReceive receive;
+    bool ok = socket_receive_init(&receive, fixture->epoch);
+    while (ok && !receive.complete) ok = socket_receive_push(fixture, &receive);
+    if (ok) *attempt = receive.attempt;
+    socket_receive_clear(&receive);
+    return ok;
+}
+
+static bool collect_published_pair_interleaved(SocketFixture *fixture,
+                                               SocketAttempt *first,
+                                               SocketAttempt *second)
+{
+    SocketReceive receives[2];
+    bool ok;
+    usize turn = 0u;
+    memset(receives, 0, sizeof(receives));
+    ok = socket_receive_init(&receives[0], fixture->epoch) &&
+         socket_receive_init(&receives[1], fixture->epoch);
+    while (ok && !(receives[0].complete && receives[1].complete) && turn < 128u) {
+        usize index = turn & 1u;
+        if (receives[index].complete) index ^= 1u;
+        socket_select_peer(fixture, index == 1u);
+        ok = socket_receive_push(fixture, &receives[index]);
+        ++turn;
     }
-    if (ok && complete && payload &&
-        break_world_delta_wire_decode(payload, payload_size, &decoded) ==
-            BREAK_WORLD_DELTA_WIRE_OK) {
-        attempt->kind = decoded.kind;
-        attempt->base_snapshot_id = decoded.base_snapshot_id;
-        attempt->target_snapshot_id = decoded.target_snapshot_id;
-        attempt->target_tick = decoded.target_tick;
-        attempt->level_generation = decoded.level_generation;
-        break_world_delta_wire_clear(&decoded);
-    } else {
-        ok = false;
+    ok = ok && receives[0].complete && receives[1].complete;
+    if (ok) {
+        *first = receives[0].attempt;
+        *second = receives[1].attempt;
     }
-    break_replication_reassembly_free(payload);
-    break_replication_reassembler_destroy(reassembler);
+    socket_receive_clear(&receives[1]);
+    socket_receive_clear(&receives[0]);
     return ok;
 }
 
@@ -519,11 +613,13 @@ static bool wait_session_dispatched(SocketFixture *fixture, u64 expected)
     return false;
 }
 
-static bool wait_sender_confirmed(SocketFixture *fixture, u64 expected_id)
+static bool wait_sender_confirmed_for_connection(SocketFixture *fixture,
+                                                 BreakConnectionKey connection,
+                                                 u64 expected_id)
 {
     for (usize i = 0u; i < 5000u; ++i) {
         BreakWorldSessionSenderState state;
-        if (break_world_session_sender_state(fixture->session, fixture->connection, &state) &&
+        if (break_world_session_sender_state(fixture->session, connection, &state) &&
             state.history_count == 0u && state.confirmed_snapshot_id == expected_id) {
             return true;
         }
@@ -531,6 +627,11 @@ static bool wait_sender_confirmed(SocketFixture *fixture, u64 expected_id)
         usleep(1000u);
     }
     return false;
+}
+
+static bool wait_sender_confirmed(SocketFixture *fixture, u64 expected_id)
+{
+    return wait_sender_confirmed_for_connection(fixture, fixture->connection, expected_id);
 }
 
 static bool add_value(World *world, Entity entity, u32 value)
@@ -673,15 +774,20 @@ static bool encode_delta(const BreakWorldSnapshot *base, const BreakWorldSnapsho
     return encode_delta_at_level(base, target, TEST_LEVEL, out_wire, out_size);
 }
 
-static bool remote_matches(SocketFixture *fixture, u64 tick, u64 expected_id)
+static bool world_matches(World *world, BreakComponentSchemaRegistry *schemas,
+                          u64 tick, u64 expected_id)
 {
-    BreakWorldSnapshot *snapshot = break_world_snapshot_build(
-        fixture->remote, fixture->schemas, tick);
+    BreakWorldSnapshot *snapshot = break_world_snapshot_build(world, schemas, tick);
     bool matches;
     if (!snapshot) return false;
     matches = break_world_snapshot_id(snapshot) == expected_id;
     break_world_snapshot_release(snapshot);
     return matches;
+}
+
+static bool remote_matches(SocketFixture *fixture, u64 tick, u64 expected_id)
+{
+    return world_matches(fixture->remote, fixture->schemas, tick, expected_id);
 }
 
 TEST(world_session_real_socket_reorders_duplicates_and_recovers_with_full)
@@ -1033,6 +1139,291 @@ cleanup:
     socket_dispose(&fixture);
 }
 
+TEST(world_session_two_sockets_share_snapshots_with_independent_recovery)
+{
+    SocketFixture fixture;
+    BreakWorldSnapshot *first = NULL;
+    BreakWorldSnapshot *second = NULL;
+    BreakWorldSnapshot *third = NULL;
+    BreakWorldSnapshot *current = NULL;
+    SocketAttempt a_first;
+    SocketAttempt b_first;
+    SocketAttempt a_second;
+    SocketAttempt b_second;
+    SocketAttempt a_third;
+    SocketAttempt b_third;
+    SocketAttempt a_current;
+    SocketAttempt b_current;
+    BreakWorldSessionSenderState a_state;
+    BreakWorldSessionSenderState b_state;
+    BreakWorldSessionControl control;
+    BreakWorldSessionStats stats;
+    BreakSessionApplyStats session_stats;
+    BreakConnectionKey a_key;
+    BreakConnectionKey b_key;
+    Entity entity;
+    Value *value;
+    Value old_value;
+    const void *bytes = NULL;
+    usize value_size = 0u;
+    u64 first_id;
+    u64 second_id;
+    u64 third_id;
+    u64 current_id;
+    u64 baseline_id = 99u;
+    u64 baseline_tick = 99u;
+    u64 expected_dispatches;
+    u8 *wire = NULL;
+    usize size = 0u;
+
+    memset(&fixture, 0, sizeof(fixture));
+    fixture.client_fd = -1;
+    fixture.inactive_client_fd = -1;
+    LOOPBACK_CHECK(socket_start_with_connections(&fixture, true, 2u));
+    LOOPBACK_CHECK(connect_authenticate(&fixture));
+    a_key = fixture.connection;
+    socket_select_peer(&fixture, true);
+    LOOPBACK_CHECK(connect_authenticate(&fixture));
+    b_key = fixture.connection;
+    LOOPBACK_CHECK(fixture.auth_calls == 2u);
+    LOOPBACK_CHECK(a_key != 0u && b_key != 0u && a_key != b_key);
+    LOOPBACK_CHECK(break_session_manager_state(fixture.manager, a_key) ==
+                   BREAK_SESSION_AUTHENTICATED);
+    LOOPBACK_CHECK(break_session_manager_state(fixture.manager, b_key) ==
+                   BREAK_SESSION_AUTHENTICATED);
+
+    entity = world_create_entity(fixture.authoritative);
+    LOOPBACK_CHECK(add_value(fixture.authoritative, entity, 42u));
+    first = break_world_snapshot_build(fixture.authoritative, fixture.schemas, 10u);
+    LOOPBACK_CHECK(first != NULL);
+    first_id = break_world_snapshot_id(first);
+
+    socket_select_peer(&fixture, false);
+    for (usize i = 0u; i < BREAK_NET_OUTBOUND_QUEUE_CAPACITY; ++i) {
+        LOOPBACK_CHECK(break_net_reactor_send(fixture.reactor, a_key,
+                                             BREAK_NET_MESSAGE_ID_PING, 1u, "x", 1u) ==
+                       BREAK_NET_SEND_OK);
+    }
+    LOOPBACK_CHECK(break_world_session_publish_snapshot(fixture.session, a_key, first,
+                                                        TEST_LEVEL) ==
+                   BREAK_NET_SEND_OVERLOAD);
+    LOOPBACK_CHECK(break_world_session_sender_state(fixture.session, a_key, &a_state));
+    LOOPBACK_CHECK(break_world_session_sender_state(fixture.session, b_key, &b_state));
+    LOOPBACK_CHECK(a_state.attempt_pending && a_state.history_count == 0u &&
+                   a_state.next_delta_id == 2u);
+    LOOPBACK_CHECK(!b_state.attempt_pending && b_state.history_count == 0u &&
+                   b_state.next_delta_id == 1u);
+    for (usize i = 0u; i < BREAK_NET_OUTBOUND_QUEUE_CAPACITY; ++i) {
+        SocketFrame frame;
+        LOOPBACK_CHECK(read_frame(&fixture, &frame));
+        LOOPBACK_CHECK(frame.message_id == BREAK_NET_MESSAGE_ID_PING &&
+                       frame.protocol_version == 1u && frame.payload_size == 1u &&
+                       frame.payload[0] == (u8)'x');
+    }
+    LOOPBACK_CHECK(break_world_session_publish_snapshot(fixture.session, b_key, first,
+                                                        TEST_LEVEL) == BREAK_NET_SEND_OK);
+    LOOPBACK_CHECK(break_world_session_sender_state(fixture.session, a_key, &a_state));
+    LOOPBACK_CHECK(break_world_session_sender_state(fixture.session, b_key, &b_state));
+    LOOPBACK_CHECK(a_state.attempt_pending && a_state.history_count == 0u);
+    LOOPBACK_CHECK(!b_state.attempt_pending && b_state.history_count == 1u);
+    LOOPBACK_CHECK(break_world_session_publish_snapshot(fixture.session, a_key, first,
+                                                        TEST_LEVEL) == BREAK_NET_SEND_OK);
+    LOOPBACK_CHECK(collect_published_pair_interleaved(&fixture, &a_first, &b_first));
+    LOOPBACK_CHECK(a_first.kind == BREAK_WORLD_DELTA_WIRE_FULL &&
+                   b_first.kind == BREAK_WORLD_DELTA_WIRE_FULL);
+    LOOPBACK_CHECK(a_first.target_snapshot_id == first_id &&
+                   b_first.target_snapshot_id == first_id);
+    LOOPBACK_CHECK(a_first.target_tick == 10u && b_first.target_tick == 10u);
+    LOOPBACK_CHECK(a_first.level_generation == TEST_LEVEL &&
+                   b_first.level_generation == TEST_LEVEL);
+    LOOPBACK_CHECK(a_first.fragment_count >= 2u && b_first.fragment_count >= 2u);
+
+    LOOPBACK_CHECK(encode_full(first, &wire, &size));
+    socket_select_peer(&fixture, false);
+    LOOPBACK_CHECK(write_shuffled_payload(&fixture, 100u, wire, size));
+    socket_select_peer(&fixture, true);
+    LOOPBACK_CHECK(write_shuffled_payload(&fixture, 100u, wire, size));
+    free(wire);
+    wire = NULL;
+    LOOPBACK_CHECK(wait_completed(&fixture, 2u));
+    LOOPBACK_CHECK(break_world_entity_count(fixture.remote) == 0u);
+    LOOPBACK_CHECK(break_world_entity_count(fixture.remote_secondary) == 0u);
+    LOOPBACK_CHECK(break_world_session_baseline(fixture.session, a_key,
+                                                &baseline_id, &baseline_tick));
+    LOOPBACK_CHECK(baseline_id == 0u && baseline_tick == 0u);
+    LOOPBACK_CHECK(break_world_session_baseline(fixture.session, b_key,
+                                                &baseline_id, &baseline_tick));
+    LOOPBACK_CHECK(baseline_id == 0u && baseline_tick == 0u);
+    LOOPBACK_CHECK(break_world_session_drain(fixture.session, a_key,
+                                             fixture.remote, 1u) == 1u);
+    LOOPBACK_CHECK(remote_matches(&fixture, 10u, first_id));
+    LOOPBACK_CHECK(break_world_entity_count(fixture.remote_secondary) == 0u);
+    LOOPBACK_CHECK(break_world_session_poll_control(fixture.session, a_key, &control));
+    LOOPBACK_CHECK(control.kind == BREAK_WORLD_SESSION_CONTROL_ACK &&
+                   control.delta_id == 100u && control.target_snapshot_id == first_id &&
+                   control.target_tick == 10u);
+    LOOPBACK_CHECK(!break_world_session_poll_control(fixture.session, b_key, &control));
+    LOOPBACK_CHECK(break_world_session_drain(fixture.session, b_key,
+                                             fixture.remote_secondary, 1u) == 1u);
+    LOOPBACK_CHECK(world_matches(fixture.remote_secondary, fixture.schemas, 10u, first_id));
+    LOOPBACK_CHECK(break_world_session_poll_control(fixture.session, b_key, &control));
+    LOOPBACK_CHECK(control.kind == BREAK_WORLD_SESSION_CONTROL_ACK &&
+                   control.delta_id == 100u && control.target_snapshot_id == first_id &&
+                   control.target_tick == 10u);
+
+    socket_select_peer(&fixture, true);
+    LOOPBACK_CHECK(write_attempt_ack(&fixture, &b_first, 1u, 0u));
+    LOOPBACK_CHECK(wait_sender_confirmed_for_connection(&fixture, b_key, first_id));
+    LOOPBACK_CHECK(break_world_session_sender_state(fixture.session, a_key, &a_state));
+    LOOPBACK_CHECK(a_state.history_count == 1u && a_state.confirmed_snapshot_id == 0u);
+
+    socket_select_peer(&fixture, false);
+    break_session_manager_apply_stats(fixture.manager, &session_stats);
+    expected_dispatches = session_stats.applied + session_stats.handler_failed + 2u;
+    LOOPBACK_CHECK(write_attempt_ack(&fixture, &a_first, 1u, 0u));
+    memset(&control, 0, sizeof(control));
+    control.kind = BREAK_WORLD_SESSION_CONTROL_NEED_FULL;
+    control.target_snapshot_id = first_id;
+    control.target_tick = 10u;
+    LOOPBACK_CHECK(write_control(&fixture, 1u, 0u, &control));
+    LOOPBACK_CHECK(wait_session_dispatched(&fixture, expected_dispatches));
+    LOOPBACK_CHECK(wait_sender_confirmed_for_connection(&fixture, a_key, first_id));
+    LOOPBACK_CHECK(break_world_session_sender_state(fixture.session, b_key, &b_state));
+    LOOPBACK_CHECK(b_state.history_count == 0u && b_state.confirmed_snapshot_id == first_id);
+
+    value = (Value *)world_get_component(fixture.authoritative, entity, TEST_COMPONENT);
+    LOOPBACK_CHECK(value != NULL);
+    value->value = 43u;
+    second = break_world_snapshot_build(fixture.authoritative, fixture.schemas, 20u);
+    LOOPBACK_CHECK(second != NULL);
+    second_id = break_world_snapshot_id(second);
+    LOOPBACK_CHECK(break_world_session_publish_snapshot(fixture.session, a_key, second,
+                                                        TEST_LEVEL) == BREAK_NET_SEND_OK);
+    LOOPBACK_CHECK(break_world_session_publish_snapshot(fixture.session, b_key, second,
+                                                        TEST_LEVEL) == BREAK_NET_SEND_OK);
+    LOOPBACK_CHECK(collect_published_pair_interleaved(&fixture, &a_second, &b_second));
+    LOOPBACK_CHECK(a_second.kind == BREAK_WORLD_DELTA_WIRE_FULL);
+    LOOPBACK_CHECK(a_second.base_snapshot_id == 0u);
+    LOOPBACK_CHECK(b_second.kind == BREAK_WORLD_DELTA_WIRE_DELTA);
+    LOOPBACK_CHECK(b_second.base_snapshot_id == first_id);
+    LOOPBACK_CHECK(a_second.target_snapshot_id == second_id &&
+                   b_second.target_snapshot_id == second_id);
+    LOOPBACK_CHECK(a_second.target_tick == 20u && b_second.target_tick == 20u);
+    LOOPBACK_CHECK(break_world_session_sender_state(fixture.session, a_key, &a_state));
+    LOOPBACK_CHECK(break_world_session_sender_state(fixture.session, b_key, &b_state));
+    LOOPBACK_CHECK(a_state.history_count == 1u && a_state.confirmed_snapshot_id == 0u);
+    LOOPBACK_CHECK(b_state.history_count == 1u && b_state.confirmed_snapshot_id == first_id);
+
+    socket_select_peer(&fixture, false);
+    LOOPBACK_CHECK(write_attempt_ack(&fixture, &a_second, 1u, 0u));
+    LOOPBACK_CHECK(wait_sender_confirmed_for_connection(&fixture, a_key, second_id));
+    LOOPBACK_CHECK(break_world_session_sender_state(fixture.session, b_key, &b_state));
+    LOOPBACK_CHECK(b_state.history_count == 1u && b_state.confirmed_snapshot_id == first_id);
+    break_world_snapshot_release(second);
+    second = NULL;
+
+    value->value = 44u;
+    third = break_world_snapshot_build(fixture.authoritative, fixture.schemas, 30u);
+    LOOPBACK_CHECK(third != NULL);
+    third_id = break_world_snapshot_id(third);
+    LOOPBACK_CHECK(break_world_session_publish_snapshot(fixture.session, a_key, third,
+                                                        TEST_LEVEL) == BREAK_NET_SEND_OK);
+    LOOPBACK_CHECK(break_world_session_publish_snapshot(fixture.session, b_key, third,
+                                                        TEST_LEVEL) == BREAK_NET_SEND_OK);
+    LOOPBACK_CHECK(collect_published_pair_interleaved(&fixture, &a_third, &b_third));
+    LOOPBACK_CHECK(a_third.kind == BREAK_WORLD_DELTA_WIRE_DELTA &&
+                   b_third.kind == BREAK_WORLD_DELTA_WIRE_DELTA);
+    LOOPBACK_CHECK(a_third.base_snapshot_id == second_id &&
+                   b_third.base_snapshot_id == second_id);
+    LOOPBACK_CHECK(a_third.target_snapshot_id == third_id &&
+                   b_third.target_snapshot_id == third_id);
+    LOOPBACK_CHECK(a_third.target_tick == 30u && b_third.target_tick == 30u);
+    LOOPBACK_CHECK(break_world_session_sender_state(fixture.session, a_key, &a_state));
+    LOOPBACK_CHECK(break_world_session_sender_state(fixture.session, b_key, &b_state));
+    LOOPBACK_CHECK(a_state.history_count == 1u &&
+                   a_state.confirmed_snapshot_id == second_id);
+    LOOPBACK_CHECK(b_state.history_count == 2u &&
+                   b_state.confirmed_snapshot_id == first_id);
+    break_world_snapshot_release(third);
+    third = NULL;
+
+    socket_select_peer(&fixture, true);
+    LOOPBACK_CHECK(write_attempt_ack(&fixture, &b_third, 1u, 0u));
+    LOOPBACK_CHECK(wait_sender_confirmed_for_connection(&fixture, b_key, third_id));
+    LOOPBACK_CHECK(break_world_session_sender_state(fixture.session, a_key, &a_state));
+    LOOPBACK_CHECK(a_state.history_count == 1u &&
+                   a_state.confirmed_snapshot_id == second_id);
+
+    LOOPBACK_CHECK(break_world_session_rebaseline(fixture.session, 8u));
+    fixture.epoch = break_world_session_stream_epoch(
+        TEST_PROTOCOL, break_schema_hash(fixture.schemas), 8u);
+    LOOPBACK_CHECK(break_world_session_sender_state(fixture.session, a_key, &a_state));
+    LOOPBACK_CHECK(break_world_session_sender_state(fixture.session, b_key, &b_state));
+    LOOPBACK_CHECK(a_state.history_count == 0u && a_state.confirmed_snapshot_id == 0u &&
+                   a_state.next_delta_id == 1u && !a_state.attempt_pending);
+    LOOPBACK_CHECK(b_state.history_count == 0u && b_state.confirmed_snapshot_id == 0u &&
+                   b_state.next_delta_id == 1u && !b_state.attempt_pending);
+    LOOPBACK_CHECK(break_world_snapshot_component_bytes(first, entity, TEST_COMPONENT,
+                                                        &bytes, &value_size));
+    LOOPBACK_CHECK(value_size == sizeof(old_value));
+    memcpy(&old_value, bytes, sizeof(old_value));
+    LOOPBACK_CHECK(old_value.value == 42u);
+    LOOPBACK_CHECK(break_world_snapshot_id(first) == first_id &&
+                   break_world_snapshot_tick(first) == 10u);
+    LOOPBACK_CHECK(break_world_session_publish_snapshot(fixture.session, a_key, first,
+                                                        TEST_LEVEL) == BREAK_NET_SEND_INVALID);
+    LOOPBACK_CHECK(break_world_session_sender_state(fixture.session, a_key, &a_state));
+    LOOPBACK_CHECK(break_world_session_sender_state(fixture.session, b_key, &b_state));
+    LOOPBACK_CHECK(b_state.history_count == 0u && b_state.confirmed_snapshot_id == 0u &&
+                   b_state.next_delta_id == 1u);
+    LOOPBACK_CHECK(a_state.history_count == 0u && a_state.confirmed_snapshot_id == 0u &&
+                   a_state.next_delta_id == 1u && !a_state.attempt_pending);
+
+    value->value = 45u;
+    current = break_world_snapshot_build(fixture.authoritative, fixture.schemas, 5u);
+    LOOPBACK_CHECK(current != NULL);
+    current_id = break_world_snapshot_id(current);
+    LOOPBACK_CHECK(break_world_session_publish_snapshot(fixture.session, a_key, current, 8u) ==
+                   BREAK_NET_SEND_OK);
+    LOOPBACK_CHECK(break_world_session_publish_snapshot(fixture.session, b_key, current, 8u) ==
+                   BREAK_NET_SEND_OK);
+    LOOPBACK_CHECK(collect_published_pair_interleaved(&fixture, &a_current, &b_current));
+    LOOPBACK_CHECK(a_current.kind == BREAK_WORLD_DELTA_WIRE_FULL &&
+                   b_current.kind == BREAK_WORLD_DELTA_WIRE_FULL);
+    LOOPBACK_CHECK(a_current.target_snapshot_id == current_id &&
+                   b_current.target_snapshot_id == current_id);
+    LOOPBACK_CHECK(a_current.target_tick == 5u && b_current.target_tick == 5u);
+    LOOPBACK_CHECK(a_current.level_generation == 8u && b_current.level_generation == 8u);
+    LOOPBACK_CHECK(a_current.delta_id == 1u && b_current.delta_id == 1u);
+    break_world_snapshot_release(current);
+    current = NULL;
+
+    socket_select_peer(&fixture, false);
+    LOOPBACK_CHECK(write_attempt_ack(&fixture, &a_current, 2u, 8u));
+    LOOPBACK_CHECK(wait_sender_confirmed_for_connection(&fixture, a_key, current_id));
+    LOOPBACK_CHECK(break_world_session_sender_state(fixture.session, b_key, &b_state));
+    LOOPBACK_CHECK(b_state.history_count == 1u && b_state.confirmed_snapshot_id == 0u);
+    socket_select_peer(&fixture, true);
+    LOOPBACK_CHECK(write_attempt_ack(&fixture, &b_current, 2u, 8u));
+    LOOPBACK_CHECK(wait_sender_confirmed_for_connection(&fixture, b_key, current_id));
+
+    break_world_session_stats(fixture.session, &stats);
+    LOOPBACK_CHECK(stats.applied_packets == 2u && stats.drained_packets == 2u);
+    LOOPBACK_CHECK(stats.published_full_packets == 5u &&
+                   stats.published_delta_packets == 3u);
+    LOOPBACK_CHECK(stats.acknowledged_packets == 6u);
+    LOOPBACK_CHECK(stats.bridge.completed_packets == 2u &&
+                   stats.bridge.duplicate_fragments >= 2u);
+
+cleanup:
+    free(wire);
+    break_world_snapshot_release(current);
+    break_world_snapshot_release(third);
+    break_world_snapshot_release(second);
+    break_world_snapshot_release(first);
+    socket_dispose(&fixture);
+}
+
 static void check_registry_control(bool include_delta)
 {
     SocketFixture fixture;
@@ -1089,5 +1480,6 @@ TEST(world_session_registry_without_delta_fails_then_restores)
 TEST_MAIN_BEGIN()
     RUN_TEST(world_session_real_socket_reorders_duplicates_and_recovers_with_full);
     RUN_TEST(world_session_same_socket_rebaselines_and_rejects_late_traffic);
+    RUN_TEST(world_session_two_sockets_share_snapshots_with_independent_recovery);
     RUN_TEST(world_session_registry_without_delta_fails_then_restores);
 TEST_MAIN_END()

@@ -301,3 +301,14 @@ normal、ASan+UBSan（显式 `detect_leaks=1`）和 TSan focused 均为 **6/6、
 真实 loopback 在同一 AUTH/TCP 连接完成 7→8，旧 epoch 反序/重复片及旧 v1/v2 控制不推进 World、baseline 或 history；新 full 前 delta 被拒绝并请求 full，新 full drain 后 snapshot id 等于新 target，当前 ACK 后才发布 delta。断言同时保留旧 World 到成功 drain 的边界和连接 key/session/TCP 身份连续性，不直接注入 completion。
 
 本项不选择或加载资产，不做自动换级、schema online migration 或混合 level，也不实现共享 live World、Runtime Core 映射、权威 simulation 合并、跨 World 持久身份和完整资产链。AOI/BRA1 语义不变；既有集成复验收据不重复，本补充不预写远端结果。
+
+
+## 补充（2026-11-25）：immutable snapshot 短锁 publication 与逐连接 delta 链
+
+新增 publication 只发布 ECS structural barrier 后构建的 immutable snapshot。acquire/replace/close 的短锁不包裹 build、diff、AOI、编码、分片、发送、drain 或回调；acquire 在锁内 retain，replace 先完成准入再交换 current，旧 publication 引用在锁外 release。publish/close 是 single-owner 操作；destroy 前先 close 并停止并发 publication API。lease 不保存 publication 指针，依靠 snapshot refcount 在 replace/close/destroy 后保持旧字节可读，并由 lease release 最终释放、清零。
+
+准入要求 target/schema/tick/level/closed/epoch 全部有效，失败保持 current 与元数据原子不变；同 level tick 严格递增，高 level 可复用同一 snapshot 并重置 tick。session 发布 borrowed target 时再检查当前 level，每个连接的 attempt/history 独立 retain。于是一次 S1/S2/S3 构建可以 fan-out 到多个连接，而 AOI/diff 使用各连接自己的 confirmed/newest-unacknowledged base；ACK、NEED_FULL、history、OVERLOAD 与 rebaseline 不跨连接传播。active OVERLOAD attempt 保留原 target、BRWD bytes 和 fragment cursor，优先于任何新输入。
+
+真实双连接 socket/AUTH 用例同时验证交错收片、A 背压不妨碍 B、A NEED_FULL 不强迫 B full、B 的未确认 S2 作为 S3 base，以及两个 World 在各自 drain 前不变。释放调用方 S2/S3 lease 后 diff/ACK 仍有效；level 7→8 后旧 S1 lease 可读但不能发布，新代两连接均 full。普通和 ASan+UBSan/LSan focused 均 39/39，TSan library/server-socket 13/13；完整 core_app TSan 仍受既有 Lua longjmp 限制，混合客户端运行不冒充服务端覆盖。
+
+这里共享的是只读 snapshot，不是可变 World，也不是通用 epoch/hazard 回收框架。跨连接共享 live World、跨 World 持久身份、权威 simulation 合并、Runtime Core 映射、预测回滚、自动换级与完整资产链仍未实现；AOI/BRA1 语义不变，不预写远端结果。

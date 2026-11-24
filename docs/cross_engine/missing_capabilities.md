@@ -893,3 +893,17 @@ pool/bridge 现在能在不重新分配固定存储的情况下复位 World stre
 远端 CI `45449211965`、windows-d3d12 `45449211975`、Proton `45451294974` 均 success；CI 为 24 success、3 条件 skip、0 cancelled、0 failed。Proton 上游 run-id=`45449211975`，device/pipeline contract 均为 77，仅表示兼容通道；QUIC 未触发，不补写结论。
 
 本节只关闭库级显式 level rebaseline，不关闭自动换级、资产链、混合 level、共享 live World、Runtime Core 映射或权威 simulation 合并。条件 skip、Proton 77 与混合 TSan 不升级为原生 GPU 或完整 sanitizer 验收；本收据提交自身的工作流结果不在此预写。
+
+
+## 第 17 节（大世界/流式）补充（2026-11-25）：仅关闭 immutable publication 与共享 target fan-out 缺口
+
+只读 publication 现在允许 owner 在结构屏障后构建一次 snapshot，并由多个连接复用同一 immutable target。短锁仅保护 acquire/replace/close 的准入、retain 和 current/元数据替换；build、diff、AOI、编码、发送、drain 和回调均在锁外。publish/close 为 single-owner，destroy 前必须 close 并停止并发 publication 调用。lease 通过 refcount 独立拥有 snapshot，replace/close/destroy 后仍可读并延迟 release；schema/tick/level/closed/epoch 准入失败保持 current 原子不变，同代 tick 递增，更高代可重置 tick。
+
+World session 对每连接 retain borrowed target，full/delta、confirmed/history、ACK/NEED_FULL、OVERLOAD 与 rebaseline 仍独立。delta base 是该连接 newest-unacknowledged target 或 confirmed，不是 publisher current。真实双 socket/AUTH 证据覆盖交错收片、A 背压与 NEED_FULL 隔离、B 未 ACK S2 时 S3 以 S2 为 base、drain 前 World 不变，以及 level 7→8 后旧 lease 可读但不可发布、新代双 full；移除 level 校验的反向控制会失败，恢复后通过。
+
+以下能力明确仍然缺失，不能因上述切片而关闭：
+
+- **共享 live World**：跨连接共享的是 immutable snapshot，不是 live `World *`；没有多写入者共享、通用 hazard/epoch 回收或 inbound 合并到同一 World。
+- **权威与 Runtime 集成**：权威 simulation 合并、Runtime Core 消息映射、跨 World 持久身份、预测回滚和 authority handoff 未实现。
+- **流式与资产链**：自动换级、资产选择/加载、schema online migration 和完整资产依赖链未实现；publication_epoch 不进入 BRWD/BRWC。
+- **验收边界**：focused normal/ASan+UBSan 各 39/39，TSan library/server-socket 13/13；core_app 的既有 Lua longjmp 与混合 TSan 不覆盖服务端的限制不变。完整 sanitizer suite、远端和其他平台结果不在本追加中预写。

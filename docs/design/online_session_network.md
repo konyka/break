@@ -206,3 +206,14 @@ World session 可在不关闭认证传输的情况下显式提升 level generati
 新增真实 socket/AUTH 验收从 level 7 的 full、精确 ACK 和 delta 开始，在同一 TCP 连接换到 8。旧 epoch 反序/重复片与四种旧 v1/v2 ACK/NEED_FULL 均经真实 Session handler；World/baseline/history 不变，新代 delta 先触发 NEED_FULL，full drain 命中新 target，当前 v2 ACK 后才接受 delta。临时移除 v2 level 校验会使旧 ACK 碰撞并让该用例失败，恢复后通过；未使用 completion 直注。
 
 这里只交付显式库级换代，不做自动换级、资产加载/迁移、混合 level、跨连接共享 live World、Runtime Core 映射、权威 simulation 合并或完整资产链。既有在线与集成复验收据原样保留，不预写本节的推送、CI、Windows 或 Proton 结论。
+
+
+## 补充（2026-11-25）：认证 Session 共享只读 target 的恢复隔离
+
+`BreakWorldSnapshotPublication` 用短锁同步只读 acquire 与 owner 的 replace/close，锁内仅做状态检查、retain 和指针/元数据变更；snapshot 构建、diff、编码、发送和回调保持在锁外。publish/close 同属一个 owner，destroy 前必须 close 并停止并发 API。lease 自己持有 snapshot 引用，旧 lease 在 replace、close 和 publication destroy 后仍可读，最后独立 release。schema/tick/level/closed/epoch 准入失败不改变 current；同代 tick 递增，更高代允许 tick 回退。
+
+认证 Session 的新发送入口复用 borrowed immutable target，不为每个连接重建 World snapshot。每个连接的 attempt/history 各自 retain，ACK/NEED_FULL、confirmed/history、full/delta、背压续发和 rebaseline 不共享。publisher 已前进不会迫使连接跳过自己的 base：newest-unacknowledged target 优先于 confirmed，因此未 ACK 的 S2 是后续 S3 delta 的 base；NEED_FULL 只影响收到该控制的连接。0x400A/0x400B、BRFG/BRWD/BRWC 格式和认证 phase 均未扩展。
+
+新增两个真实 raw TCP/AUTH 连接交错接收同一 S1/S2/S3 的分片。A 先因真实 outbound queue 饱和进入 OVERLOAD，B 仍能发布；A 延迟 ACK 并发送 NEED_FULL 后只有 A 收到 full，B 正常收到 S1→S2 delta。B 不 ACK S2 时，S3 明确以 S2 为 base；独立 inbound completion 在 drain 前不改变两个 World。level 7→8 后旧 S1 lease 可读且发布被拒，新代两连接都 full。临时删除 target level 校验使该真实用例降为 3/4，恢复后为 4/4且生产源码无残留 diff。
+
+普通与 ASan+UBSan（`detect_leaks=1`）的 library/core_app focused 各为 13/13、26/26；TSan library 13/13。core_app 进程组仍有既有 Lua longjmp 环境失败，normal server + TSan client 的混合 loopback 不覆盖 TSan server。共享 live World、权威 simulation 合并、Runtime Core 映射和完整资产链仍未交付，本追加不预写远端或其他平台验收。

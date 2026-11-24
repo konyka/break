@@ -368,3 +368,14 @@ World snapshot/delta 现在有独立 BRWD/v1 canonical codec。消息头为 60 �
 真实 raw TCP/AUTH 用例在同一连接内完成 level 7 full/ACK/delta，双方显式切到 8，并注入旧 epoch 反序/重复片及旧 v1/v2 ACK/NEED_FULL。旧流量不改变 World、baseline 或 sender history；新代 delta 在 full 前产生 NEED_FULL，新 full drain 后达到新 target id，只有当前 v2 ACK 后才发布新 delta。测试同时核对 transport key、session id、AUTH 次数和 TCP endpoint 未变，没有直接注入 completion。
 
 本节不实现自动换级、资产选择/加载或 schema online migration，不允许混合 level，也不提供跨连接共享 live World、Runtime Core 映射、权威 simulation 合并或完整资产链。现有集成复验收据保持原记录，本节不预写推送、CI 或其他平台结果。
+
+
+## 补充（2026-11-25）：共享 immutable snapshot publication 与双连接 fan-out
+
+`BreakWorldSnapshotPublication` 以短锁保护 current 的 acquire/replace/close：acquire 在锁内检查状态并 retain，publish 在锁内完成准入、retain 和指针/元数据替换，旧 publication 引用在解锁后 release。snapshot build、diff、AOI、BRWD 编码、分片、网络发送、drain 和用户回调均在锁外。publish/close 仅由同一 owner 调用；destroy 前必须 close 并停止并发 publication API。lease 持有独立 snapshot 引用，不指向 publication，因此 replace、close 乃至 destroy 后仍可读取，最后由 `break_world_snapshot_lease_release` 清零释放。
+
+publication 准入要求非空 snapshot、非零 tick、匹配 schema、未关闭和 epoch 不溢出；level 不得倒退，同 level tick 严格递增，更高 level 可重置 tick。失败原子保留 current/level/tick/epoch。session 的 `break_world_session_publish_snapshot` 另要求 target level 等于当前 session level，并由每个连接的 attempt/history 独立 retain borrowed target。一次构建的 S1/S2/S3 可发送给多个连接，但 full/delta、ACK/NEED_FULL、confirmed/history、OVERLOAD 游标和 rebaseline 仍逐连接独立；delta base 取该连接 newest-unacknowledged target，否则取 confirmed，绝不取 publisher 的全局 current。
+
+新增真实 raw TCP/AUTH 用例交错读取两个连接的 BRFG 分片，覆盖 A OVERLOAD 时 B 继续、A 延迟 ACK 后 NEED_FULL 只令 A full、B 未 ACK S2 时 S3 仍以 S2 为 base，以及 drain 前两个 World 均不变。level 7→8 后旧 S1 lease 字节仍可读但发布返回 INVALID，新代两连接都重新 full。普通与 ASan+UBSan（显式 leak 检测）focused 均为 library 13/13、core_app 26/26；TSan library 13/13。core_app 的既有 Lua longjmp 与 normal-server/TSan-client 混合运行不冒充 TSan 服务端验收。
+
+本项不新增消息或线格式，也不实现跨连接共享 live World、权威 simulation 合并、Runtime Core 映射、自动换级或完整资产链；publication_epoch 不进入 BRWD/BRWC，也不是持久身份。本补充不预写推送、CI 或其他平台结果。
