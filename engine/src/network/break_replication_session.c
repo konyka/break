@@ -391,3 +391,11 @@ void break_replication_session_bridge_stats(
     out_stats->dropped_completions = bridge->dropped_completions;
     out_stats->expired_streams = bridge->expired_streams;
 }
+
+#ifdef BREAK_NET_TESTING
+size_t break_replication_session_completion_head_for_test(
+    const BreakReplicationSessionBridge *bridge)
+{
+    return bridge ? bridge->completion_head : 0u;
+}
+#endif

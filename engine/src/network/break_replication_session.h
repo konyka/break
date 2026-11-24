@@ -133,6 +133,11 @@ void break_replication_session_completion_release(
 void break_replication_session_bridge_stats(
     const BreakReplicationSessionBridge *bridge,
     BreakReplicationSessionBridgeStats *out_stats);
+#ifdef BREAK_NET_TESTING
+/* Test-only logical-ring head observation; the shipped break_net omits it. */
+size_t break_replication_session_completion_head_for_test(
+    const BreakReplicationSessionBridge *bridge);
+#endif
 
 #ifdef __cplusplus
 }
