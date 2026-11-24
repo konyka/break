@@ -1754,6 +1754,24 @@ TEST(reassembly_pool_expiry_schedule_zero_disable_and_reenable)
     ASSERT_EQ(break_replication_reassembly_pool_pending_streams(pool), 0u);
     ASSERT_EQ(break_replication_reassembly_pool_pending_bytes(pool), 0u);
 
+    {
+        BreakReplicationReassemblyPool *replacement_pool =
+            break_replication_reassembly_pool_create(7u, 1u, 64u);
+        ASSERT_NOT_NULL(replacement_pool);
+        break_replication_reassembly_pool_set_expiry_schedule(replacement_pool, 100u, 100u);
+        ASSERT_EQ(break_replication_reassembly_pool_push_at(
+                      replacement_pool, &fragments[0], 200u,
+                      &completed_id, &assembled, &assembled_size),
+                  BREAK_REPLICATION_REASSEMBLY_INCOMPLETE);
+        ASSERT_EQ(break_replication_reassembly_pool_tick(replacement_pool, 201u), 0u);
+        ASSERT_EQ(break_replication_reassembly_pool_pending_streams(replacement_pool), 1u);
+        break_replication_reassembly_pool_set_expiry_schedule(replacement_pool, 100u, 5u);
+        ASSERT_EQ(break_replication_reassembly_pool_tick(replacement_pool, 210u), 1u);
+        ASSERT_EQ(break_replication_reassembly_pool_pending_streams(replacement_pool), 0u);
+        ASSERT_EQ(break_replication_reassembly_pool_pending_bytes(replacement_pool), 0u);
+        break_replication_reassembly_pool_destroy(replacement_pool);
+    }
+
     break_replication_reassembly_pool_destroy(pool);
     break_replication_fragments_free(fragments, count);
 }
