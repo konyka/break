@@ -748,3 +748,7 @@ fix 后 normal、ASan+UBSan/LSan、TSan focused 均为 wire **9/9**、旧 fragme
 真实 loopback 覆盖 AUTH、两个 delta 的乱序与相同 BRFG bytes 重复、expected base 拒绝、FIFO/connection/delta/payload、poll 前 consumer=0，以及同 connection key 真实重连后的 high-water 重置。normal focused 为 bridge **19/19**、Session **43/43**、wire **9/9**、fragment **28/28**；完整 Vulkan **464 通过 + 4 条件 skip/468，0 失败**，OpenGL **455 通过 + 4 条件 skip/459，0 失败**。ASan+UBSan（显式 leak 检测）与 TSan focused 均 **4/4**，直接 case 计数与 normal 相同，无诊断；条件 skip 不计执行通过。
 
 以下缺口仍然开放：**生产 core_app/editor 接线、aspect drain、World delta、可靠恢复和完整资产链**。此外，完整 sanitizer suite、远端和其他平台验收不在本项证据内，不能以库级 loopback 代替这些工作。
+
+#### session bridge 远端收据（2026-11-24）
+
+`3b775bd2` 的 CI `45332414619`、windows-d3d12 `45332414595`、QUIC `45332414708` 均 success。Proton `45333934438` 在安装 Wine 时 20 分钟超时，未进入构建，不计为通过；Proton 仅为兼容参考通道。生产 core_app/editor 接线、World delta 与可靠恢复仍未实现，aspect drain 由后续子项目接入。

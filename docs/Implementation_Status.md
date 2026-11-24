@@ -13605,3 +13605,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **完整套件**：Vulkan 注册 **468**，**464 执行通过、4 条件 skip、0 失败**；OpenGL 注册 **459**，**455 执行通过、4 条件 skip、0 失败**。两者 skip 均为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计执行通过。
 - **Sanitizer**：`ENGINE_USE_ASAN=ON + ENGINE_USE_UBSAN=ON` 且 `ASAN_OPTIONS=detect_leaks=1`，以及独立 `ENGINE_USE_TSAN=ON`，focused CTest 均 **4/4**；直接运行分别确认 bridge **19/19**、Session **43/43**、wire **9/9**、fragment **28/28**，无 sanitizer、leak 或 race 诊断。所有 configure 均显式启用 Snowflake 并使用 pin `4ab761fc58a9d15970f295e231003c99a7d44df8`。
 - **仍未完成**：**生产 core_app/editor 接线、aspect drain、World delta、可靠恢复和完整资产链**。本记录不包含远端、Windows、Proton 或完整 sanitizer suite 验收，不预写推送结论。
+
+### 复制分片 session bridge 验证收据（2026-11-24）
+
+- 最终推送 `3b775bd2ad807b3ac917d216aa92c8c672a5393c`，包含 `ac4d96f0` 设计、`ec6cf06e` 桥接实现、`1b699877` 入站过期计数修复、`3a3f3fda` 真实 loopback 与文档、`3b775bd2` 评审加固。
+- 本地最终证据：bridge **19/19**、session **43/43**、wire **9/9**、fragment **28/28**，公共 C++20 头门禁通过；完整 Vulkan **468** 项注册 **464 通过、4 条件 skip、0 失败**，OpenGL **459** 项注册 **455 通过、4 条件 skip、0 失败**。focused ASan+UBSan（detect_leaks=1）与 TSan 均 4/4，无诊断。
+- 独立评审：Task 1 初审发现入站过期未计数并修复后 approve；整分支初审发现无 crypto 头文件自包含、消费计数空断言、断言失败清理三项问题，`3b775bd2` 修复后复审 approve。消费计数变异（handler 直接递增）产生 17 通过 2 失败，证明前置零断言有效；移除 0x4009 注册项产生 16 通过 3 失败，证明 loopback 依赖真实注册。
+- 远端：CI run `45332414619` success，windows-d3d12 run `45332414595` success，QUIC run `45332414708` success。Proton run `45333934438` 为 failure：job 的 `Install Wine + vkd3d-proton` 步骤下载 i386 软件包时再次达到 20 分钟超时，未进入构建与测试，因此本次没有 device/pipeline contract 证据，不计为 Proton 通过。令牌无权重跑；上一次成功 Proton run `45323313612`（`59e5c96e`）证明兼容通道本身可用。
+- 边界：生产 core_app/editor 接线、aspect drain、World delta、可靠恢复与完整资产链仍未完成；aspect drain 在后续子项目实现。
