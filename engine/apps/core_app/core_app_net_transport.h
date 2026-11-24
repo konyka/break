@@ -24,6 +24,7 @@ typedef struct CoreAppNetTransportConfig {
     u32 poll_ms;           /* per-tick socket wait, 0..100; 0 never blocks the tick */
     bool voice_relay;      /* forward accepted peer voice to every other peer */
     bool aspect_replication;
+    bool world_replication;
 } CoreAppNetTransportConfig;
 
 /* Validates the configuration shape (every field present, bind parses).
@@ -77,6 +78,7 @@ BreakRuntimeError core_app_net_transport_event_stats(CoreAppNetTransport *transp
 bool core_app_net_event_notice_decode(const void *data, usize size, CoreAppNetEventNotice *out);
 
 #ifdef CORE_APP_NET_TRANSPORT_TESTING
+#include <ecs/world_session.h>
 #include <network/break_online_types.h>
 
 typedef struct BreakNetReactor BreakNetReactor;
@@ -105,6 +107,29 @@ bool core_app_net_transport_aspect_for_test(CoreAppNetTransport *transport,
                                             CoreAppNetAspectTestView *out);
 BreakRuntimeError core_app_net_transport_aspect_sync_for_test(CoreAppNetTransport *transport,
                                                               u64 key);
+
+typedef struct CoreAppNetWorldTestView {
+    bool enabled;
+    bool created;
+    BreakComponentSchemaRegistry *schemas;
+    World *authoritative;
+    World *diagnostic;
+    BreakWorldSession *session;
+    Entity objects[2];
+    u64 level_generation;
+    u32 open_count;
+    u64 opened;
+    u64 closed;
+    u64 sent_fragments;
+    u64 terminal_errors;
+} CoreAppNetWorldTestView;
+
+bool core_app_net_transport_world_for_test(CoreAppNetTransport *transport,
+                                           CoreAppNetWorldTestView *out);
+BreakNetSendResult core_app_net_transport_world_publish_for_test(CoreAppNetTransport *transport,
+                                                                 u64 key);
+bool core_app_net_transport_world_control_for_test(CoreAppNetTransport *transport, u64 key,
+                                                   const BreakNetOwnedMessage *message);
 /* Test-only (test_core_app_net_transport): the live reactor, or NULL. */
 BreakNetReactor *core_app_net_transport_reactor_for_test(CoreAppNetTransport *transport);
 /* Test-only: after the step that blocked the stop has returned, stops and

@@ -1822,7 +1822,7 @@ if(CORE_APP_ENABLE_NETWORK AND BREAK_ENABLE_SNOWFLAKE)
     endif()
     target_sources(core_app PRIVATE apps/core_app/core_app_net_transport.c
         src/core/clock_offset.c)
-    target_link_libraries(core_app PRIVATE break_net break_online)
+    target_link_libraries(core_app PRIVATE break_net break_online break_ecs_replication)
     target_compile_definitions(core_app PRIVATE CORE_APP_NET_TRANSPORT=1)
     set(_core_app_net_transport ON)
 else()
@@ -5757,7 +5757,7 @@ endif()
         # runtime_core: the transport publishes reactor events on the bus,
         # and the bus records drops through the engine profiler.
         target_link_libraries(test_core_app_net_transport PRIVATE
-            core_app_network break_net_test break_online runtime_core m Threads::Threads)
+            core_app_network break_net_test break_online break_ecs_replication runtime_core m Threads::Threads)
         add_test(NAME test_core_app_net_transport COMMAND test_core_app_net_transport)
         set_tests_properties(test_core_app_net_transport PROPERTIES
             LABELS "network;snowflake;core_app" TIMEOUT 30)

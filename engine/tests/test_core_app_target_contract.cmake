@@ -218,6 +218,17 @@ if(NETWORK_ENABLED AND NETWORK_TRANSPORT)
     if(NOT help_out MATCHES "--aspect-replication")
         record_error("help does not list --aspect-replication: ${help_out}")
     endif()
+    expect_exit(world_replication_without_network 2 --world-replication)
+    expect_last_error(world_replication_without_network "network options require --network")
+    if(NOT help_out MATCHES "--world-replication")
+        record_error("help does not list --world-replication: ${help_out}")
+    endif()
+    expect_runtime_failed(world_replication_reaches_runtime
+        --network --world-replication --bind 127.0.0.1:0 --tls-cert c.pem
+        --tls-key k.pem --psk-env CORE_APP_CONTRACT_PSK --port-file port.txt)
+    expect_runtime_failed(world_and_aspect_replication_reach_runtime
+        --network --world-replication --aspect-replication --bind 127.0.0.1:0
+        --tls-cert c.pem --tls-key k.pem --psk-env CORE_APP_CONTRACT_PSK --port-file port.txt)
     expect_exit(network_bad_bind 2 --network --bind localhost:0 --tls-cert c.pem
         --tls-key k.pem --psk-env CORE_APP_CONTRACT_PSK --port-file port.txt)
     expect_last_error(network_bad_bind "invalid --bind value")

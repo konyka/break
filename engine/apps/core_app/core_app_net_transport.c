@@ -1,5 +1,6 @@
 #include "core_app_net_transport.h"
 
+#include <ecs/world_session.h>
 #include <network/break_net_adapter.h>
 #include <network/break_net_events.h>
 #include <network/break_net_message_registry.h>
@@ -114,6 +115,14 @@ _Static_assert(CORE_APP_VOICE_MUTE_BYTES == BREAK_NET_CORE_VOICE_MUTE_PAYLOAD,
 #define CORE_APP_ASPECT_COMPLETION_CAPACITY 64u
 #define CORE_APP_ASPECT_EXPIRY_INTERVAL_MS 10u
 #define CORE_APP_ASPECT_EXPIRY_IDLE_MS 50u
+#define CORE_APP_WORLD_OBJECT_COUNT 2u
+#define CORE_APP_WORLD_PACKET_BYTES 16384u
+#define CORE_APP_WORLD_FRAGMENT_BYTES 64u
+#define CORE_APP_WORLD_MAX_FRAGMENTS 64u
+#define CORE_APP_WORLD_DRAIN_BUDGET 1u
+#define CORE_APP_WORLD_STREAM_CAPACITY 16u
+#define CORE_APP_WORLD_PENDING_BYTES 16384u
+#define CORE_APP_WORLD_COMPLETION_CAPACITY 64u
 
 static const u8 k_core_app_net_key_id[8] = {'c', 'o', 'r', 'e', 'a', 'p', 'p', '1'};
 
@@ -164,6 +173,13 @@ typedef struct CoreAppNetAspectStats {
     u64 closed;
     u64 sent_fragments;
 } CoreAppNetAspectStats;
+
+typedef struct CoreAppNetWorldStats {
+    u64 opened;
+    u64 closed;
+    u64 sent_fragments;
+    u64 terminal_errors;
+} CoreAppNetWorldStats;
 
 typedef struct CoreAppNetRelayFrame {
     BreakSessionId source;
@@ -246,6 +262,19 @@ struct CoreAppNetTransport {
     BreakAoIScope aspect_scopes[CORE_APP_NET_MAX_CONNECTIONS];
     BreakAoIResult aspect_aoi[CORE_APP_NET_MAX_CONNECTIONS];
     CoreAppNetAspectStats aspect_stats;
+    bool world_replication;
+    BreakComponentSchemaRegistry *world_schemas;
+    World *world_authoritative;
+    World *world_diagnostic;
+    BreakWorldSession *world_session;
+    Entity world_objects[CORE_APP_WORLD_OBJECT_COUNT];
+    bool world_open[CORE_APP_NET_MAX_CONNECTIONS];
+    bool world_control_pending[CORE_APP_NET_MAX_CONNECTIONS];
+    BreakWorldSessionControl world_controls[CORE_APP_NET_MAX_CONNECTIONS];
+    bool world_force_full[CORE_APP_NET_MAX_CONNECTIONS];
+    bool world_level_initialized;
+    u64 world_level_generation;
+    CoreAppNetWorldStats world_stats;
     CoreAppNetStats stats;
 };
 
@@ -557,11 +586,251 @@ static bool net_aspect_open(CoreAppNetTransport *t, u32 slot, BreakConnectionKey
     return true;
 }
 
+static bool net_world_on_control(BreakConnectionKey connection,
+                                 const BreakNetOwnedMessage *message, void *user);
+
+static BreakWorldSession *net_world_session_create(CoreAppNetTransport *t,
+                                                   u64 level_generation) {
+    BreakWorldSessionConfig config;
+    memset(&config, 0, sizeof(config));
+    config.schemas = t->world_schemas;
+    config.protocol_version = 1u;
+    config.level_generation = level_generation;
+    config.bridge.reactor = t->reactor;
+    config.bridge.max_connections = CORE_APP_NET_MAX_CONNECTIONS;
+    config.bridge.stream_capacity = CORE_APP_WORLD_STREAM_CAPACITY;
+    config.bridge.max_pending_bytes_per_connection = CORE_APP_WORLD_PENDING_BYTES;
+    config.bridge.max_total_pending_bytes =
+        CORE_APP_NET_MAX_CONNECTIONS * CORE_APP_WORLD_PENDING_BYTES;
+    config.bridge.max_fragment_bytes = CORE_APP_WORLD_FRAGMENT_BYTES;
+    config.bridge.max_fragment_count = CORE_APP_WORLD_MAX_FRAGMENTS;
+    config.bridge.completion_capacity = CORE_APP_WORLD_COMPLETION_CAPACITY;
+    config.bridge.max_completion_packet_bytes = CORE_APP_WORLD_PACKET_BYTES;
+    config.bridge.max_completion_queue_bytes =
+        CORE_APP_WORLD_COMPLETION_CAPACITY * CORE_APP_WORLD_PACKET_BYTES;
+    config.bridge.expiry_enabled = true;
+    config.bridge.expiry_interval = CORE_APP_ASPECT_EXPIRY_INTERVAL_MS;
+    config.bridge.expiry_max_idle = CORE_APP_ASPECT_EXPIRY_IDLE_MS;
+    config.bridge.clock = net_aspect_clock;
+    config.bridge.clock_user = t;
+    config.packet_byte_limit = CORE_APP_WORLD_PACKET_BYTES;
+    return break_world_session_create(&config);
+}
+
+static bool net_world_register_handlers(CoreAppNetTransport *t) {
+    return break_session_manager_set_message_handler(
+               t->manager, BREAK_NET_MESSAGE_ID_WORLD_DELTA,
+               break_replication_session_handle_message,
+               break_world_session_bridge(t->world_session)) &&
+           break_session_manager_set_message_handler(
+               t->manager, BREAK_NET_MESSAGE_ID_WORLD_CONTROL,
+               net_world_on_control, t);
+}
+
+static bool net_world_create(CoreAppNetTransport *t) {
+    static const BreakComponentSchema schemas[] = {
+        {1u, 1u, sizeof(u32), _Alignof(u32),
+         BREAK_SCHEMA_FLAG_DETERMINISTIC_POD | BREAK_SCHEMA_FLAG_RAW_BYTES, NULL, NULL},
+        {2u, 1u, sizeof(u32), _Alignof(u32),
+         BREAK_SCHEMA_FLAG_DETERMINISTIC_POD | BREAK_SCHEMA_FLAG_RAW_BYTES, NULL, NULL},
+        {3u, 1u, sizeof(f32), _Alignof(f32),
+         BREAK_SCHEMA_FLAG_DETERMINISTIC_POD | BREAK_SCHEMA_FLAG_RAW_BYTES, NULL, NULL},
+        {4u, 1u, sizeof(f32), _Alignof(f32),
+         BREAK_SCHEMA_FLAG_DETERMINISTIC_POD | BREAK_SCHEMA_FLAG_RAW_BYTES, NULL, NULL},
+        {5u, 1u, sizeof(f32), _Alignof(f32),
+         BREAK_SCHEMA_FLAG_DETERMINISTIC_POD | BREAK_SCHEMA_FLAG_RAW_BYTES, NULL, NULL},
+        {6u, 1u, sizeof(u32), _Alignof(u32),
+         BREAK_SCHEMA_FLAG_DETERMINISTIC_POD | BREAK_SCHEMA_FLAG_RAW_BYTES, NULL, NULL},
+    };
+    t->world_schemas = break_schema_registry_create();
+    t->world_authoritative = world_create();
+    t->world_diagnostic = world_create();
+    if (!t->world_schemas || !t->world_authoritative || !t->world_diagnostic) return false;
+    for (u32 i = 0u; i < sizeof(schemas) / sizeof(schemas[0]); ++i) {
+        if (break_schema_register(t->world_schemas, &schemas[i]) != BREAK_SCHEMA_OK) return false;
+        world_register_component(t->world_authoritative, schemas[i].component_id,
+                                 (u32)schemas[i].size);
+        world_register_component(t->world_diagnostic, schemas[i].component_id,
+                                 (u32)schemas[i].size);
+    }
+    for (u32 i = 0u; i < CORE_APP_WORLD_OBJECT_COUNT; ++i) {
+        t->world_objects[i] = world_create_entity(t->world_authoritative);
+        if (t->world_objects[i].index != i + 1u || t->world_objects[i].generation != 1u) {
+            return false;
+        }
+    }
+    t->world_session = net_world_session_create(t, 0u);
+    return t->world_session != NULL;
+}
+
+static bool net_world_initialize_level(CoreAppNetTransport *t, u64 level_generation) {
+    BreakWorldSession *previous;
+    BreakWorldSession *replacement;
+    if (!t->world_replication || t->world_level_initialized) return true;
+    replacement = net_world_session_create(t, level_generation);
+    if (!replacement) return false;
+    previous = t->world_session;
+    t->world_session = replacement;
+    if (!net_world_register_handlers(t)) {
+        t->world_session = previous;
+        break_world_session_destroy(replacement);
+        (void)net_world_register_handlers(t);
+        return false;
+    }
+    break_world_session_destroy(previous);
+    t->world_level_generation = level_generation;
+    t->world_level_initialized = true;
+    return true;
+}
+
+static void net_world_close(CoreAppNetTransport *t, u32 slot) {
+    if (t->world_open[slot]) {
+        (void)break_world_session_close(t->world_session, t->keys[slot]);
+        t->world_open[slot] = false;
+        t->world_stats.closed++;
+    }
+    t->world_control_pending[slot] = false;
+    t->world_force_full[slot] = false;
+    memset(&t->world_controls[slot], 0, sizeof(t->world_controls[slot]));
+}
+
+static void net_world_close_all(CoreAppNetTransport *t) {
+    for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) net_world_close(t, i);
+}
+
+static void net_world_destroy(CoreAppNetTransport *t) {
+    net_world_close_all(t);
+    break_world_session_destroy(t->world_session);
+    world_destroy(t->world_diagnostic);
+    world_destroy(t->world_authoritative);
+    break_schema_registry_destroy(t->world_schemas);
+    t->world_session = NULL;
+    t->world_diagnostic = NULL;
+    t->world_authoritative = NULL;
+    t->world_schemas = NULL;
+    t->world_level_initialized = false;
+    t->world_level_generation = 0u;
+    memset(t->world_objects, 0, sizeof(t->world_objects));
+}
+
+static bool net_world_set_component(World *world, Entity entity, ComponentType component,
+                                    const void *bytes) {
+    void *value = world_add_component(world, entity, component);
+    if (!value) return false;
+    memcpy(value, bytes, sizeof(u32));
+    return true;
+}
+
+static void net_world_update(CoreAppNetTransport *t, const CoreAppSnapshotEntity *entities,
+                             u32 entity_count) {
+    if (!t->world_authoritative || !entities || entity_count != CORE_APP_WORLD_OBJECT_COUNT) {
+        return;
+    }
+    for (u32 i = 0u; i < CORE_APP_WORLD_OBJECT_COUNT; ++i) {
+        const CoreAppSnapshotEntity *entity = &entities[i];
+        Entity handle = t->world_objects[i];
+        if (!net_world_set_component(t->world_authoritative, handle, 1u, &entity->index) ||
+            !net_world_set_component(t->world_authoritative, handle, 2u, &entity->generation) ||
+            !net_world_set_component(t->world_authoritative, handle, 3u, &entity->x) ||
+            !net_world_set_component(t->world_authoritative, handle, 4u, &entity->y) ||
+            !net_world_set_component(t->world_authoritative, handle, 5u, &entity->z) ||
+            !net_world_set_component(t->world_authoritative, handle, 6u, &entity->flags)) {
+            return;
+        }
+    }
+}
+
+static bool net_world_open(CoreAppNetTransport *t, u32 slot, BreakConnectionKey key) {
+    if (!t->world_replication) return true;
+    if (!t->world_level_initialized || !break_world_session_open(t->world_session, key)) {
+        return false;
+    }
+    t->world_open[slot] = true;
+    t->world_stats.opened++;
+    return true;
+}
+
+static BreakNetSendResult net_world_publish_slot(CoreAppNetTransport *t, u32 slot) {
+    BreakWorldSessionSenderState state;
+    BreakWorldSessionStats before;
+    BreakWorldSessionStats after;
+    BreakNetSendResult result;
+    usize outbound_before;
+    usize outbound_after;
+    if (!t->world_open[slot] || !t->world_level_initialized) return BREAK_NET_SEND_CLOSED;
+    if (!break_world_session_sender_state(t->world_session, t->keys[slot], &state)) {
+        return BREAK_NET_SEND_CLOSED;
+    }
+    if (!state.attempt_pending && state.history_count != 0u && !t->world_force_full[slot]) {
+        return BREAK_NET_SEND_OK;
+    }
+    break_world_session_stats(t->world_session, &before);
+    outbound_before = break_net_reactor_outbound_count(t->reactor);
+    result = break_world_session_publish(t->world_session, t->keys[slot],
+                                         t->world_authoritative, t->current_tick);
+    outbound_after = break_net_reactor_outbound_count(t->reactor);
+    if (outbound_after >= outbound_before) {
+        t->world_stats.sent_fragments += outbound_after - outbound_before;
+    }
+    break_world_session_stats(t->world_session, &after);
+    if (result == BREAK_NET_SEND_OK &&
+        after.published_full_packets > before.published_full_packets) {
+        t->world_force_full[slot] = false;
+    } else if (result != BREAK_NET_SEND_OK && result != BREAK_NET_SEND_OVERLOAD) {
+        t->world_stats.terminal_errors++;
+    }
+    return result;
+}
+
+static void net_world_tick_drain(CoreAppNetTransport *t, u64 now_ms) {
+    if (!t->world_session || !t->world_level_initialized) return;
+    (void)break_replication_session_bridge_tick(break_world_session_bridge(t->world_session),
+                                                now_ms);
+    for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
+        BreakNetSendResult sent;
+        if (!t->world_open[i]) continue;
+        (void)break_world_session_drain(t->world_session, t->keys[i], t->world_diagnostic,
+                                        CORE_APP_WORLD_DRAIN_BUDGET);
+        if (!t->world_control_pending[i]) {
+            t->world_control_pending[i] = break_world_session_poll_control(
+                t->world_session, t->keys[i], &t->world_controls[i]);
+        }
+        if (!t->world_control_pending[i]) continue;
+        sent = break_world_session_send_control(t->world_session, t->keys[i],
+                                                &t->world_controls[i]);
+        if (sent == BREAK_NET_SEND_OK) {
+            t->world_control_pending[i] = false;
+        } else if (sent != BREAK_NET_SEND_OVERLOAD) {
+            t->world_control_pending[i] = false;
+            t->world_stats.terminal_errors++;
+        }
+    }
+}
+
 static int net_slot_find(const CoreAppNetTransport *t, BreakConnectionKey key) {
     for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
         if (t->keys[i] == key && key != 0u) return (int)i;
     }
     return -1;
+}
+
+static bool net_world_on_control(BreakConnectionKey connection,
+                                 const BreakNetOwnedMessage *message, void *user) {
+    CoreAppNetTransport *t = (CoreAppNetTransport *)user;
+    BreakWorldSessionStats before;
+    BreakWorldSessionStats after;
+    bool handled;
+    int slot;
+    if (!t || !t->world_session) return false;
+    break_world_session_stats(t->world_session, &before);
+    handled = break_world_session_handle_control(connection, message, t->world_session);
+    if (!handled) return false;
+    break_world_session_stats(t->world_session, &after);
+    if (after.acknowledged_packets == before.acknowledged_packets) {
+        slot = net_slot_find(t, connection);
+        if (slot >= 0) t->world_force_full[slot] = true;
+    }
+    return true;
 }
 
 static int net_slot_add(CoreAppNetTransport *t, BreakConnectionKey key) {
@@ -697,6 +966,7 @@ static void net_close_slot(CoreAppNetTransport *t, u32 i) {
     t->authenticated[i] = false;
     if (t->closing[i]) return;
     net_aspect_close(t, i);
+    net_world_close(t, i);
     t->closing[i] = true;
     (void)break_session_manager_close(t->manager, t->keys[i], 0u);
     (void)break_net_reactor_close(t->reactor, t->keys[i]);
@@ -748,7 +1018,9 @@ static void net_pump(CoreAppNetTransport *t, int timeout_ms, u32 *budget, u32 ti
                 break_net_event_release(&event);
                 continue;
             }
-            if (!net_aspect_open(t, (u32)slot, event.connection_key)) {
+            if (!net_aspect_open(t, (u32)slot, event.connection_key) ||
+                !net_world_open(t, (u32)slot, event.connection_key)) {
+                net_world_close(t, (u32)slot);
                 net_aspect_close(t, (u32)slot);
                 t->keys[slot] = 0u;
                 t->closing[slot] = false;
@@ -767,6 +1039,7 @@ static void net_pump(CoreAppNetTransport *t, int timeout_ms, u32 *budget, u32 ti
             if (slot >= 0) {
                 net_voice_release(t, (u32)slot);
                 net_aspect_close(t, (u32)slot);
+                net_world_close(t, (u32)slot);
                 t->keys[slot] = 0u;
                 t->authenticated[slot] = false;
                 t->welcomed[slot] = false;
@@ -1251,6 +1524,10 @@ static BreakRuntimeError net_start(void *user, FILE *trace) {
              break_aspect_session_bridge(t->aspect_session)))) {
         goto fail;
     }
+    stage = "world";
+    if (t->world_replication && (!net_world_create(t) || !net_world_register_handlers(t))) {
+        goto fail;
+    }
     stage = "bind";
     if (SnowEndpointCreate(&endpoint) != SNOW_OK) goto fail;
     status = SnowEndpointSetHost(endpoint, t->host);
@@ -1298,8 +1575,13 @@ static void net_tick(void *user, u32 tick, u64 level_generation,
     if (!t || !t->started) return;
     t->live_generation = level_generation;
     t->current_tick = tick;
+    if (t->world_replication && !t->world_level_initialized &&
+        !net_world_initialize_level(t, level_generation)) {
+        t->world_stats.terminal_errors++;
+    }
     if (t->producing) {
         net_aspect_update(t, entities, entity_count);
+        net_world_update(t, entities, entity_count);
         /* A level reload may restart ticks; start a fresh history then. */
         if (!physics_sync_record(&t->physics, tick, physics_hash)) {
             physics_sync_init(&t->physics);
@@ -1320,6 +1602,14 @@ static void net_tick(void *user, u32 tick, u64 level_generation,
     net_pump(t, (int)t->poll_ms, &budget, tick);
     const u64 now_ms = time_microseconds() / 1000u;
     net_aspect_tick_drain(t, now_ms);
+    net_world_tick_drain(t, now_ms);
+    if (t->producing && break_net_reactor_event_queue_empty(t->reactor)) {
+        for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
+            if (t->world_open[i] && net_slot_sendable(t, i)) {
+                (void)net_world_publish_slot(t, i);
+            }
+        }
+    }
     for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
         net_voice_play(t, i, now_ms, CORE_APP_NET_VOICE_POPS_PER_TICK);
     }
@@ -1346,6 +1636,7 @@ static BreakRuntimeError net_drain(void *user) {
     if (!t->started) return BREAK_RUNTIME_OK;
     net_send_pending(t);
     net_aspect_tick_drain(t, time_microseconds() / 1000u);
+    net_world_tick_drain(t, time_microseconds() / 1000u);
     for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
         if (t->keys[i] != 0u) net_close_slot(t, i);
     }
@@ -1353,6 +1644,7 @@ static BreakRuntimeError net_drain(void *user) {
         u32 budget = CORE_APP_NET_EVENTS_PER_TICK;
         net_pump(t, CORE_APP_NET_DRAIN_STEP_MS, &budget, t->current_tick);
         net_aspect_tick_drain(t, time_microseconds() / 1000u);
+        net_world_tick_drain(t, time_microseconds() / 1000u);
         bool open = false;
         for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) open = open || t->keys[i] != 0u;
         if (!open && break_net_reactor_event_queue_empty(t->reactor)) break;
@@ -1374,6 +1666,24 @@ static void net_trace_aspect_stats(CoreAppNetTransport *t) {
              aspect.rejected_packets, aspect.drained_packets, t->aspect_stats.sent_fragments,
              aspect.bridge.completion_count, aspect.bridge.dropped_completions,
              aspect.bridge.duplicate_fragments, aspect.bridge.pending_bytes);
+    net_trace(t, line);
+}
+
+static void net_trace_world_stats(CoreAppNetTransport *t) {
+    BreakWorldSessionStats world;
+    char line[512];
+    if (!t->world_replication || !t->world_session) return;
+    break_world_session_stats(t->world_session, &world);
+    snprintf(line, sizeof(line),
+             "COREAPPTRACE version=1 event=network_world_stats opened=%" PRIu64
+             " closed=%" PRIu64 " applied=%zu need_full=%zu rejected=%zu"
+             " full_publishes=%zu delta_publishes=%zu sent_fragments=%" PRIu64
+             " queue_depth=%zu dropped=%" PRIu64 "\n",
+             t->world_stats.opened, t->world_stats.closed, world.applied_packets,
+             world.need_full_packets, world.rejected_packets, world.published_full_packets,
+             world.published_delta_packets, t->world_stats.sent_fragments,
+             world.bridge.completion_count,
+             t->world_stats.terminal_errors + world.bridge.dropped_completions);
     net_trace(t, line);
 }
 
@@ -1429,6 +1739,7 @@ static void net_trace_stats(CoreAppNetTransport *t) {
              t->stats.voice_frames_rate_limited);
     net_trace(t, line);
     net_trace_aspect_stats(t);
+    net_trace_world_stats(t);
     if (t->bus) {
         snprintf(line, sizeof(line),
                  "COREAPPTRACE version=1 event=network_bus net_events_published=%" PRIu64
@@ -1451,6 +1762,7 @@ static BreakRuntimeError net_destroy(void *user) {
     if (t->leaked) return BREAK_RUNTIME_TIMEOUT;
     net_voice_release_all(t);
     net_aspect_close_all(t);
+    net_world_close_all(t);
     t->stats.voice_relay_dropped += t->relay_count;
     t->relay_count = 0u;
     if (t->listening) net_trace_stats(t);
@@ -1462,6 +1774,7 @@ static BreakRuntimeError net_destroy(void *user) {
     if (t->manager) break_session_manager_destroy(t->manager);
     t->manager = NULL;
     net_aspect_destroy(t);
+    net_world_destroy(t);
     if (reactor_stopped) {
         if (t->reactor) break_net_reactor_destroy(t->reactor);
         if (t->acceptor) SnowAcceptorDestroy(t->acceptor);
@@ -1516,6 +1829,7 @@ CoreAppNetTransport *core_app_net_transport_create(const CoreAppNetTransportConf
     t->poll_ms = config->poll_ms;
     t->voice_relay = config->voice_relay;
     t->aspect_replication = config->aspect_replication;
+    t->world_replication = config->world_replication;
     return t;
 }
 
@@ -1563,6 +1877,46 @@ BreakRuntimeError core_app_net_transport_aspect_sync_for_test(CoreAppNetTranspor
     return net_aspect_sync_slot(transport, (u32)slot);
 }
 
+bool core_app_net_transport_world_for_test(CoreAppNetTransport *transport,
+                                           CoreAppNetWorldTestView *out) {
+    if (!out) return false;
+    memset(out, 0, sizeof(*out));
+    if (!transport) return false;
+    out->enabled = transport->world_replication;
+    out->schemas = transport->world_schemas;
+    out->authoritative = transport->world_authoritative;
+    out->diagnostic = transport->world_diagnostic;
+    out->session = transport->world_session;
+    out->created = out->schemas && out->authoritative && out->diagnostic && out->session;
+    memcpy(out->objects, transport->world_objects, sizeof(out->objects));
+    out->level_generation = transport->world_level_generation;
+    out->opened = transport->world_stats.opened;
+    out->closed = transport->world_stats.closed;
+    out->sent_fragments = transport->world_stats.sent_fragments;
+    out->terminal_errors = transport->world_stats.terminal_errors;
+    for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
+        if (transport->world_open[i]) out->open_count++;
+    }
+    return true;
+}
+
+BreakNetSendResult core_app_net_transport_world_publish_for_test(CoreAppNetTransport *transport,
+                                                                 u64 key) {
+    int slot;
+    if (!transport || !transport->world_replication || !transport->world_session) {
+        return BREAK_NET_SEND_INVALID;
+    }
+    slot = net_slot_find(transport, key);
+    if (slot < 0) return BREAK_NET_SEND_CLOSED;
+    return net_world_publish_slot(transport, (u32)slot);
+}
+
+bool core_app_net_transport_world_control_for_test(CoreAppNetTransport *transport, u64 key,
+                                                   const BreakNetOwnedMessage *message) {
+    if (!transport || !transport->world_replication || !transport->world_session) return false;
+    return net_world_on_control(key, message, transport);
+}
+
 BreakNetReactor *core_app_net_transport_reactor_for_test(CoreAppNetTransport *transport) {
     return transport ? transport->reactor : NULL;
 }
@@ -1573,6 +1927,7 @@ bool core_app_net_transport_reclaim_for_test(CoreAppNetTransport *transport) {
     if (transport->reactor) break_net_reactor_destroy(transport->reactor);
     if (transport->acceptor) SnowAcceptorDestroy(transport->acceptor);
     net_aspect_destroy(transport);
+    net_world_destroy(transport);
     net_release_baselines(transport);
     free(transport);
     return true;
