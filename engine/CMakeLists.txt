@@ -5618,6 +5618,19 @@ endif()
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_network.cmake)
         set_tests_properties(test_core_app_network_loopback PROPERTIES
             LABELS "network;snowflake;core_app" TIMEOUT 180)
+        add_test(NAME test_core_app_network_aspect
+            COMMAND ${CMAKE_COMMAND}
+                -DMODE=aspect
+                -DCORE_APP=$<TARGET_FILE:core_app>
+                -DNET_CLIENT=$<TARGET_FILE:test_core_app_net_client>
+                -DASSET_DIR=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app
+                -DSCENARIO=${CMAKE_CURRENT_SOURCE_DIR}/tests/data/core_app_network_loopback.scenario
+                -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/core_app_network_aspect
+                -DTLS_CERT=${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl/snow_test_cert.pem
+                -DTLS_KEY=${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl/snow_test_key.pem
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_network.cmake)
+        set_tests_properties(test_core_app_network_aspect PROPERTIES
+            LABELS "network;snowflake;core_app;aspect" TIMEOUT 180)
         # one connection, one session: the peer document names exactly one,
         # so trace_merge aligns the two traces with no --session
         add_test(NAME test_core_app_network_single_session

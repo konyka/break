@@ -239,3 +239,14 @@ TDD 先新增四组测试，三个缺失 API 的隐式声明在 `-Werror` 下构
 normal、ASan+UBSan（显式 `detect_leaks=1`）和 TSan focused 均为 **6/6、112/112**；aspect session/link/bridge/Session/wire/fragment 分别为 **12/12、1/1、19/19、43/43、9/9、28/28**。完整 Vulkan 注册 **463** 项，**459 执行通过、4 条件 skip、0 失败**；OpenGL 注册 **461** 项，**457 执行通过、4 条件 skip、0 失败**。四项为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计执行通过。
 
 **生产 core_app/editor 接线、World delta、可靠恢复和完整资产链仍未完成**。本项不改变 AOI、snapshot、delta 或 fragment/reassembly 的既有格式与高水位契约。
+
+
+## 补充（2026-11-24）：core_app 的固定 POD 对象 AOI 复制
+
+`core_app` 的可选 aspect transport 复用本节既有 AOI/fragment/session 组件，而不改变 ECS snapshot 或 World delta 格式。authoritative store 的槽 0 被保留，两个注册对象因此固定为 handle `{1,1}`、`{2,1}`，inbound store adopt 相同身份。schema 1..6 依次是 index、generation、x/y/z、flags；值只从现有两个 snapshot POD 实体读取。对象标记 `BREAK_AOI_OBJECT_ALWAYS_RELEVANT`，以零 witness 计算 AOI，scope 按连接保存且只在完整 sync 成功后推进。
+
+`BreakAspectReplication` 负责 baseline/dirty 发送，`BreakAspectSession` 负责接收重组；只有 CoreAppThread 的显式 drain 调 `break_aspect_apply`，目标仅是 diagnostic inbound store。网络输入不会改变 simulation/World，也没有把共享 inbound handle 命名空间解释为按客户端权威合并。
+
+真实 loopback 先验证两个固定 handle 的六类值与 snapshot 完全一致，再反序发送 3 个有效片及 1 个重复片，并发送 3 个 schema-mismatch 片。服务端 applied=1、rejected=1、drained=2、sent_fragments≥2、queue_depth=0、dropped=0；负对照移除 0x4009 handler 后为 **0/1**（0/0/0），恢复为 **1/1**。core_app network **12/12**、lifecycle **12/12**、ASan+UBSan **9/9**、TSan 直接目标 **7/7**、TSan 客户端 loopback **1/1**；两个 core_app TSan 场景受既有 Lua longjmp 环境限制。
+
+**World delta、inbound 到 simulation、level rebaseline、可靠恢复仍未完成**；本项没有分布式 cell、预测回滚或完整资产链结论。

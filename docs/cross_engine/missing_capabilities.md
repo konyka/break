@@ -771,3 +771,18 @@ fix 后 normal、ASan+UBSan/LSan、TSan focused 均为 wire **9/9**、旧 fragme
 #### aspect session drain 远端收据（2026-11-24）
 
 `c97c20c2` 的 CI `45340766116`、windows-d3d12 `45340765950`、QUIC `45340766073`、Proton `45342271652` 均 success，Proton device/pipeline contract 均为 77，上游 run-id `45340765950`。drain 只负责把完成包交给 aspect store，生产 core_app 接入、World delta 与可靠恢复仍未实现。
+
+
+## 第 17 节（大世界/流式）补充（2026-11-24）：仅关闭 core_app 诊断 aspect 接线缺口
+
+生产 `core_app` 现在可用默认关闭的 `--aspect-replication` 启用两个固定 POD 对象的 AOI 发送与 Session 接收。authoritative/inbound store 使用相同 schema 和固定 handle 1/2，owner-thread drain 才 apply；inbound 只用于诊断，不写 simulation/World。`network_aspect_stats` 提供 opened/closed、applied/rejected/drained、sent_fragments、queue_depth、dropped，默认关闭无该行。
+
+真实 loopback **1/1** 覆盖两个 handle 的值、本地 BRFG 重组、反序 3 个有效片、1 个重复片、3 个 schema-mismatch 片，以及服务端 1/1/2 的 applied/rejected/drained、至少 2 个发送片和零 queue/drop。0x4009 负对照 **0/1** 后恢复 **1/1**；network **12/12**、lifecycle **12/12**、ASan+UBSan **9/9**、TSan 直接目标 **7/7** 与 TSan 客户端 loopback **1/1**。两个 core_app TSan 场景保留既有 Lua longjmp 环境失败。
+
+以下缺口明确保留，不因生产 loopback 通过而关闭：
+
+- **World delta** 协议未定义或接入。
+- **inbound 到 simulation** 未实现，diagnostic store 不会反向修改权威状态。
+- **level rebaseline** 与跨 level 代际策略未实现。
+- **可靠恢复**（丢包重试、断线恢复、持久高水位）未实现。
+- editor 接线、完整资产链、远端和其他平台验收不在本项；core_app TSan 的 Lua 环境限制也未在本项修复。

@@ -310,3 +310,14 @@ Task 5 文档应与实际验证保持一致：adapter focused normal/ASan/TSan �
 focused normal、ASan+UBSan（`ASAN_OPTIONS=detect_leaks=1`）和 TSan 均为 **6/6 CTest、112/112 直接测试**：aspect session 12、link contract 1、bridge 19、Session 43、wire 9、fragment 28，无 sanitizer/leak/race 诊断。完整 Vulkan 注册 **463** 项，**459 执行通过、4 条件 skip、0 失败**；OpenGL 注册 **461** 项，**457 执行通过、4 条件 skip、0 失败**。四项为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计执行通过。
 
 本节只交付库级 aspect drain 和真实 loopback。**生产 core_app/editor 接线、World delta、可靠恢复和完整资产链仍未完成**；条件 skip 不计执行通过，也不据此预写远端或其他平台结论。
+
+
+## 补充（2026-11-24）：core_app 可选 aspect 复制传输
+
+生产 `core_app` 新增默认关闭的 `--aspect-replication`，只允许与 `--network` 同用。开启后 transport 在 CoreAppThread 持有 authoritative/inbound 两个同 schema 的 `BreakAspectStore`、`BreakAspectReplication` 与 `BreakAspectSession`，并以 bridge 作为 `0x4009` handler 的 `user_data`。两个 POD 对象固定为 `{index=1,generation=1}` 和 `{index=2,generation=1}`；authoritative 保留槽 0，inbound adopt 同两句柄。welcome 先于 AOI 分片，连接以 reactor connection key open/close，tick 和 shutdown drain 均先 session tick 再有界 drain。默认关闭不创建这些状态，也不写 aspect trace。
+
+网络 handler 仍只重组并入队，只有 `break_aspect_session_drain` 调 `break_aspect_apply`，且只写 diagnostic inbound store，不写 simulation/World。`event=network_aspect_stats` 字段为 opened、closed、applied、rejected、drained、sent_fragments、queue_depth、dropped；旧 `network_stats` 不变。
+
+真实 `test_core_app_network_aspect` 为 **1/1**：客户端 BRFG decode 后本地重组并应用两个固定句柄，六类字段与 snapshot 一致；随后反序发送 3 个有效分片及 1 个重复分片，再发送 3 个内部 schema mismatch 分片。服务端恰为 applied=1、rejected=1、drained=2、queue_depth=0、dropped=0，sent_fragments 合同要求至少 2（一次运行为 12）。临时移除 0x4009 handler 时用例 **0/1**，计数变为 0/0/0；恢复后重新 **1/1**。全部 core_app network/offline **12/12**、lifecycle **12/12**，默认关闭路径没有 aspect trace。ASan+UBSan（detect_leaks=1）focused **9/9**；TSan 直接目标 **7/7**，另以正常服务端 + TSan 客户端完成 aspect loopback **1/1**。两个 core_app TSan 进程场景仍命中既有 Lua `longjmp buf` 环境失败，未记为通过。
+
+**World delta、inbound 到 simulation、level rebaseline、可靠恢复仍未完成**；本节不包含远端或其他平台验收。

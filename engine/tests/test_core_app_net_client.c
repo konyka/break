@@ -9,10 +9,11 @@
  * --trace document names exactly one session; "voice" runs only the voice
  * peer;
  * "voice-relay" runs the two relay peers; "voice-mute" runs the two mute
- * peers; "voice-flood" runs the two rate-limit peers.
+ * peers; "voice-flood" runs the two rate-limit peers; "aspect" exchanges
+ * BRFG/BRA1 packets with the optional aspect transport.
  *
  * Usage: test_core_app_net_client PORT_FILE REPORT_FILE
- *        [late-auth|voice|voice-relay|voice-mute|voice-flood|single]
+ *        [late-auth|voice|voice-relay|voice-mute|voice-flood|single|aspect]
  *        [--trace PATH]
  * The PSK is read from CORE_APP_TEST_PSK (64 hex digits). With --trace the
  * peer writes its own core_app-format trace: one
@@ -27,7 +28,9 @@
 #include <crypto/break_crypto.h>
 #include <network/break_net_envelope.h>
 #include <network/break_net_message_registry.h>
+#include <network/break_online_aspect.h>
 #include <network/break_online_voice.h>
+#include <network/break_replication_wire.h>
 #include <physics/physics_sync.h>
 #include <snow/network_buffer.h>
 #include <snow/openssl.h>
@@ -430,6 +433,10 @@ static u32 le32(const u8 *p) {
     return (u32)p[0] | ((u32)p[1] << 8u) | ((u32)p[2] << 16u) | ((u32)p[3] << 24u);
 }
 
+static u64 le64(const u8 *p) {
+    return (u64)le32(p) | ((u64)le32(p + 4u) << 32u);
+}
+
 /* Waits for the next physics report and copies its raw bytes. */
 static int client_next_physics_report(NetClient *c, u8 out[NET_CLIENT_PHYSICS_REPORT_BYTES],
                                       u32 timeout_ms) {
@@ -775,6 +782,228 @@ static bool snapshot_shape_ok(const CoreAppSnapshot *s) {
            s->entities[1].generation > 0u &&
            (s->entities[0].index != s->entities[1].index ||
             s->entities[0].generation != s->entities[1].generation);
+}
+
+#define NET_CLIENT_ASPECT_PACKET_BYTES 2048u
+#define NET_CLIENT_ASPECT_FRAGMENT_BYTES 17u
+
+typedef struct AspectPeer {
+    BreakAspectStore *store;
+    BreakReplicationReassemblyPool *pool;
+    BreakOnlineHandle handles[2];
+    u64 schema_hash;
+    u32 applied;
+} AspectPeer;
+
+static void aspect_peer_dispose(AspectPeer *peer) {
+    break_replication_reassembly_pool_destroy(peer->pool);
+    break_aspect_store_destroy(peer->store);
+    memset(peer, 0, sizeof(*peer));
+}
+
+static bool aspect_peer_init(AspectPeer *peer) {
+    static const BreakAspectSchema schemas[] = {
+        {1u, 1u, BREAK_ASPECT_U32, 4u},
+        {2u, 1u, BREAK_ASPECT_U32, 4u},
+        {3u, 1u, BREAK_ASPECT_F32, 4u},
+        {4u, 1u, BREAK_ASPECT_F32, 4u},
+        {5u, 1u, BREAK_ASPECT_F32, 4u},
+        {6u, 1u, BREAK_ASPECT_U32, 4u},
+    };
+    BreakAspectStoreConfig config = {3u, 16u, NET_CLIENT_ASPECT_PACKET_BYTES};
+    memset(peer, 0, sizeof(*peer));
+    peer->handles[0] = (BreakOnlineHandle){1u, 1u};
+    peer->handles[1] = (BreakOnlineHandle){2u, 1u};
+    if (break_aspect_store_create(&config, &peer->store) != BREAK_RUNTIME_OK) return false;
+    for (u32 i = 0u; i < sizeof(schemas) / sizeof(schemas[0]); ++i) {
+        if (break_aspect_schema_register(peer->store, &schemas[i]) != BREAK_RUNTIME_OK) {
+            aspect_peer_dispose(peer);
+            return false;
+        }
+    }
+    if (break_aspect_object_adopt(peer->store, peer->handles[0]) != BREAK_RUNTIME_OK ||
+        break_aspect_object_adopt(peer->store, peer->handles[1]) != BREAK_RUNTIME_OK) {
+        aspect_peer_dispose(peer);
+        return false;
+    }
+    peer->schema_hash = break_aspect_schema_hash(peer->store);
+    peer->pool = break_replication_reassembly_pool_create(peer->schema_hash, 8u, 8192u);
+    if (!peer->schema_hash || !peer->pool) {
+        aspect_peer_dispose(peer);
+        return false;
+    }
+    return true;
+}
+
+static bool aspect_peer_accept(AspectPeer *peer, const BreakNetEnvelope *env) {
+    BreakReplicationFragment fragment;
+    BreakReplicationReassemblyResult result;
+    u64 completed_delta = 0u;
+    u8 *payload = NULL;
+    size_t payload_size = 0u;
+    bool applied = false;
+    if (env->protocol_version != BREAK_REPLICATION_WIRE_VERSION ||
+        break_replication_wire_decode(env->payload, env->payload_size, &fragment) !=
+            BREAK_REPLICATION_FRAGMENT_OK ||
+        fragment.base_id != peer->schema_hash) {
+        return false;
+    }
+    result = break_replication_reassembly_pool_push_at(
+        peer->pool, &fragment, now_ms(), &completed_delta, &payload, &payload_size);
+    if (result == BREAK_REPLICATION_REASSEMBLY_INCOMPLETE ||
+        result == BREAK_REPLICATION_REASSEMBLY_DUPLICATE) {
+        return true;
+    }
+    if (result != BREAK_REPLICATION_REASSEMBLY_COMPLETE) return false;
+    applied = payload && payload_size >= 12u && memcmp(payload, "BRA1", 4u) == 0 &&
+              le64(payload + 4u) == peer->schema_hash &&
+              break_aspect_apply(peer->store, payload, payload_size) == BREAK_RUNTIME_OK;
+    break_replication_reassembly_free(payload);
+    if (applied) peer->applied++;
+    return applied;
+}
+
+static bool aspect_peer_values_match(const AspectPeer *peer, const CoreAppSnapshot *snapshot) {
+    if (!snapshot_shape_ok(snapshot) || peer->handles[0].index != 1u ||
+        peer->handles[0].generation != 1u || peer->handles[1].index != 2u ||
+        peer->handles[1].generation != 1u) {
+        return false;
+    }
+    for (u32 i = 0u; i < 2u; ++i) {
+        const CoreAppSnapshotEntity *entity = &snapshot->entities[i];
+        u32 unsigned_value = 0u;
+        f32 float_value = 0.0f;
+        if (break_aspect_get_u32(peer->store, peer->handles[i], 1u, &unsigned_value) !=
+                BREAK_RUNTIME_OK ||
+            unsigned_value != entity->index ||
+            break_aspect_get_u32(peer->store, peer->handles[i], 2u, &unsigned_value) !=
+                BREAK_RUNTIME_OK ||
+            unsigned_value != entity->generation ||
+            break_aspect_get_f32(peer->store, peer->handles[i], 3u, &float_value) !=
+                BREAK_RUNTIME_OK ||
+            float_value != entity->x ||
+            break_aspect_get_f32(peer->store, peer->handles[i], 4u, &float_value) !=
+                BREAK_RUNTIME_OK ||
+            float_value != entity->y ||
+            break_aspect_get_f32(peer->store, peer->handles[i], 5u, &float_value) !=
+                BREAK_RUNTIME_OK ||
+            float_value != entity->z ||
+            break_aspect_get_u32(peer->store, peer->handles[i], 6u, &unsigned_value) !=
+                BREAK_RUNTIME_OK ||
+            unsigned_value != entity->flags) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool aspect_peer_send_packet(NetClient *c, AspectPeer *peer, u64 delta_id, u64 epoch,
+                                    bool mismatch, u32 *sent_fragments, u32 *duplicates) {
+    u8 packet[NET_CLIENT_ASPECT_PACKET_BYTES];
+    size_t packet_size = 0u;
+    BreakReplicationFragment *fragments = NULL;
+    size_t fragment_count = 0u;
+    bool sent = true;
+    if (break_aspect_encode_with_epoch(
+            peer->store, peer->handles[0],
+            break_aspect_active_mask(peer->store, peer->handles[0]), BREAK_ASPECT_BASELINE,
+            epoch, packet, sizeof(packet), &packet_size) != BREAK_RUNTIME_OK) {
+        return false;
+    }
+    if (mismatch && packet_size >= 12u) packet[4] ^= 1u;
+    if (break_replication_fragment_payload(
+            delta_id, peer->schema_hash, packet, packet_size, NET_CLIENT_ASPECT_FRAGMENT_BYTES,
+            &fragments, &fragment_count) != BREAK_REPLICATION_FRAGMENT_OK) {
+        return false;
+    }
+    for (size_t i = fragment_count; i-- > 0u && sent;) {
+        u8 wire[BREAK_REPLICATION_WIRE_HEADER_SIZE + NET_CLIENT_ASPECT_FRAGMENT_BYTES];
+        size_t wire_size = 0u;
+        sent = break_replication_wire_encode(&fragments[i], wire, sizeof(wire), &wire_size) ==
+                   BREAK_REPLICATION_FRAGMENT_OK &&
+               client_send(c, BREAK_NET_MESSAGE_ID_REPLICATION_FRAGMENT,
+                           BREAK_REPLICATION_WIRE_VERSION, wire, wire_size);
+        if (sent) (*sent_fragments)++;
+    }
+    if (sent && !mismatch && fragment_count > 0u) {
+        u8 wire[BREAK_REPLICATION_WIRE_HEADER_SIZE + NET_CLIENT_ASPECT_FRAGMENT_BYTES];
+        size_t wire_size = 0u;
+        sent = break_replication_wire_encode(&fragments[0], wire, sizeof(wire), &wire_size) ==
+                   BREAK_REPLICATION_FRAGMENT_OK &&
+               client_send(c, BREAK_NET_MESSAGE_ID_REPLICATION_FRAGMENT,
+                           BREAK_REPLICATION_WIRE_VERSION, wire, wire_size);
+        if (sent) (*duplicates)++;
+    }
+    break_replication_fragments_free(fragments, fragment_count);
+    return sent;
+}
+
+static void scenario_aspect(void) {
+    NetClient a;
+    AspectPeer peer;
+    CoreAppSnapshot snapshot;
+    bool values_match = false;
+    bool decode_ok = true;
+    u32 valid_fragments = 0u;
+    u32 mismatch_fragments = 0u;
+    u32 duplicates = 0u;
+    memset(&peer, 0, sizeof(peer));
+    check(aspect_peer_init(&peer), "aspect_local_store_and_reassembler");
+    check(client_open(&a), "aspect_tls_challenge");
+    check(client_auth(&a, g_psk), "aspect_auth_sent");
+    if (peer.store && peer.pool) {
+        u64 deadline = now_ms() + 15000u;
+        while (peer.applied < 2u || !values_match) {
+            BreakNetEnvelope env;
+            int got;
+            if (now_ms() >= deadline) break;
+            got = client_recv(&a, &env, (u32)(deadline - now_ms()) + 1u);
+            if (got < 0) {
+                decode_ok = false;
+                break;
+            }
+            if (got == 0) continue;
+            if (env.message_id == BREAK_NET_MESSAGE_ID_REPLICATION_FRAGMENT) {
+                if (!aspect_peer_accept(&peer, &env)) {
+                    decode_ok = false;
+                    break;
+                }
+            } else if (env.message_id == CORE_APP_SNAPSHOT_MESSAGE_ID && peer.applied >= 2u &&
+                       env.protocol_version == CORE_APP_SNAPSHOT_PROTOCOL_VERSION &&
+                       core_app_snapshot_decode((const u8 *)env.payload, env.payload_size,
+                                                &snapshot) == CORE_APP_SNAPSHOT_OK) {
+                values_match = aspect_peer_values_match(&peer, &snapshot);
+            }
+        }
+    }
+    check(decode_ok, "aspect_brfg_wire_and_bra1_schema");
+    check(peer.applied == 2u, "aspect_received_and_applied_fixed_handles");
+    check(values_match, "aspect_applied_values_match_snapshot");
+    check_welcome(&a, "aspect");
+    if (peer.applied == 2u && values_match) {
+        CoreAppClockProbe probe = {CORE_APP_CLOCK_PROBE_REQUEST, 0u, 0u, 0u};
+        CoreAppClockProbe reply;
+        u64 t3 = 0u;
+        check(break_aspect_set_f32(peer.store, peer.handles[0], 3u, 123.5f) == BREAK_RUNTIME_OK,
+              "aspect_prepared_inbound_baseline");
+        check(aspect_peer_send_packet(&a, &peer, 100u, 2u, false, &valid_fragments,
+                                      &duplicates),
+              "aspect_sent_out_of_order_and_duplicate_fragments");
+        check(aspect_peer_send_packet(&a, &peer, 101u, 3u, true, &mismatch_fragments,
+                                      &duplicates),
+              "aspect_sent_schema_mismatch_packet");
+        probe.t0 = now_us();
+        check(send_clock_probe(&a, &probe, CORE_APP_CLOCK_PROBE_BYTES) &&
+                  client_next_clock_reply(&a, probe.t0, &reply, &t3, 10000u) == 1,
+              "aspect_server_drained_before_close");
+    }
+    fprintf(g_report,
+            "aspect applied=%u values=%d valid_fragments=%u duplicates=%u"
+            " mismatch_fragments=%u\n",
+            peer.applied, values_match ? 1 : 0, valid_fragments, duplicates,
+            mismatch_fragments);
+    client_close(&a);
+    aspect_peer_dispose(&peer);
 }
 
 /* A: authenticated peer. Receives snapshots, then sends hostile snapshots
@@ -1405,6 +1634,7 @@ int main(int argc, char **argv) {
     bool voice_mute = argc == 4 && strcmp(argv[3], "voice-mute") == 0;
     bool voice_flood = argc == 4 && strcmp(argv[3], "voice-flood") == 0;
     bool single = argc == 4 && strcmp(argv[3], "single") == 0;
+    bool aspect = argc == 4 && strcmp(argv[3], "aspect") == 0;
     const char *trace_path = NULL;
     /* --trace PATH may follow the arguments above */
     for (int i = 3; i + 1 < argc; ++i) {
@@ -1421,10 +1651,11 @@ int main(int argc, char **argv) {
         voice_mute = argc > 4 && strcmp(argv[3], "voice-mute") == 0;
         voice_flood = argc > 4 && strcmp(argv[3], "voice-flood") == 0;
         single = argc > 4 && strcmp(argv[3], "single") == 0;
+        aspect = argc > 4 && strcmp(argv[3], "aspect") == 0;
     } else if (argc != 3 && !late_auth && !voice && !voice_relay && !voice_mute &&
-               !voice_flood && !single) {
+               !voice_flood && !single && !aspect) {
         fprintf(stderr, "usage: test_core_app_net_client PORT_FILE REPORT_FILE"
-                        " [late-auth|voice|voice-relay|voice-mute|voice-flood|single]"
+                        " [late-auth|voice|voice-relay|voice-mute|voice-flood|single|aspect]"
                         " [--trace PATH]\n");
         return 2;
     }
@@ -1451,6 +1682,8 @@ int main(int argc, char **argv) {
         scenario_voice_flood();
     } else if (g_failures == 0 && single) {
         scenario_single();
+    } else if (g_failures == 0 && aspect) {
+        scenario_aspect();
     } else if (g_failures == 0) {
         scenario_authenticated();
         scenario_unauthenticated();

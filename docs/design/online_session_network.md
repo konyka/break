@@ -161,3 +161,12 @@ fix 后 normal、ASan+UBSan/LSan、TSan focused 均为 wire **9/9**、旧 fragme
 normal、ASan+UBSan（显式 leak 检测）和 TSan focused 均为 **6/6、112/112**：aspect session **12/12**、link **1/1**、bridge **19/19**、Session **43/43**、wire **9/9**、fragment **28/28**。完整 Vulkan 注册 **463** 项，**459 执行通过、4 条件 skip、0 失败**；OpenGL 注册 **461** 项，**457 执行通过、4 条件 skip、0 失败**。四项为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计执行通过。
 
 **生产 core_app/editor 接线、World delta、可靠恢复和完整资产链保持未完成**。本证据不表示已有可靠传输、自动重连恢复或资产依赖解析。
+
+
+## 补充（2026-11-24）：core_app 使用 AOI aspect 与 Session drain
+
+`BreakAspectSession` 现已接入生产 `core_app` 的可选网络 transport。默认关闭 `--aspect-replication` 时没有 aspect 状态或新增 trace；开启后两个同 schema store 使用固定 handle 1/2，authoritative 只从现有两个 snapshot POD 实体复制 index、generation、x/y/z、flags。AOI enter/stay 产生 BRA1，经 BRFG/v1 和认证后的 0x4009 发送；接收端 owner-thread drain 才 apply 到 diagnostic inbound store。连接回滚、断开、AOI scope 清理和 shutdown drain 都在同一线程完成，未新增锁。
+
+真实 loopback 在 AUTH/welcome 后验证两个句柄的全部值，再反序发送 3 个有效片、1 个重复片和 3 个 schema-mismatch 片。服务端 `network_aspect_stats` 精确要求 applied=1、rejected=1、drained=2、queue_depth=0、dropped=0，发送分片至少 2；重复片没有产生第二次 apply。移除 0x4009 handler 的负对照为 **0/1**（0/0/0），恢复为 **1/1**。core_app network **12/12**、lifecycle **12/12**、ASan+UBSan focused **9/9**；TSan library/transport **7/7**，TSan 客户端 loopback **1/1**。core_app 自身在 TSan 下的两个场景受既有 Lua longjmp 环境限制，未掩饰为成功。
+
+本项不定义新消息或 World delta，也不把 inbound 数据合并进 simulation。level 切换 rebaseline、可靠恢复、远端和其他平台验收保持未做。

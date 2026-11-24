@@ -46,6 +46,10 @@
 # refuse some before decoding them, keep the session open, and relay only
 # frames it accepted; B must receive exactly the relayed count.
 #
+# MODE=aspect: --aspect-replication server. The peer applies both fixed-handle
+# baselines through BRFG reassembly, then returns reversed/duplicate fragments
+# and a BRA1 schema mismatch. The server must drain one apply and one reject.
+#
 # MODE=offline: the same scenario twice without --network must give
 # byte-identical traces with no network line. In a build without the
 # transport, nm must find no break_net_/break_session_/snow_/Snow symbol.
@@ -186,7 +190,7 @@ endif()
 if(NOT MODE STREQUAL "loopback" AND NOT MODE STREQUAL "late_auth" AND NOT MODE STREQUAL "voice"
    AND NOT MODE STREQUAL "voice_relay" AND NOT MODE STREQUAL "voice_relay_off"
    AND NOT MODE STREQUAL "voice_mute" AND NOT MODE STREQUAL "voice_flood"
-   AND NOT MODE STREQUAL "single")
+   AND NOT MODE STREQUAL "single" AND NOT MODE STREQUAL "aspect")
     message(FATAL_ERROR "unknown MODE=${MODE}")
 endif()
 foreach(var NET_CLIENT TLS_CERT TLS_KEY)
@@ -213,16 +217,22 @@ elseif(MODE STREQUAL "voice_flood")
     set(client_mode voice-flood)
 elseif(MODE STREQUAL "single")
     set(client_mode single)
+elseif(MODE STREQUAL "aspect")
+    set(client_mode aspect)
 endif()
 set(relay_args "")
 if(MODE STREQUAL "voice_relay" OR MODE STREQUAL "voice_mute" OR MODE STREQUAL "voice_flood")
     set(relay_args --voice-relay)
 endif()
+set(aspect_args "")
+if(MODE STREQUAL "aspect")
+    set(aspect_args --aspect-replication)
+endif()
 execute_process(
     COMMAND ${CORE_APP_RUNNER} "${CORE_APP}" ${common_args} --trace "${WORK_DIR}/network.trace"
         --network --bind 127.0.0.1:0 --tls-cert "${TLS_CERT}" --tls-key "${TLS_KEY}"
         --psk-env CORE_APP_TEST_PSK --port-file "${WORK_DIR}/server.port"
-        --net-poll-ms ${poll_ms} ${relay_args}
+        --net-poll-ms ${poll_ms} ${relay_args} ${aspect_args}
     COMMAND "${NET_CLIENT}" "${WORK_DIR}/server.port" "${WORK_DIR}/client.report"
         ${client_mode} --trace "${WORK_DIR}/peer.trace"
     RESULTS_VARIABLE results
@@ -383,6 +393,40 @@ foreach(welcome_line IN LISTS welcome_lines)
     endif()
     list(APPEND welcome_sessions "${CMAKE_MATCH_1}")
 endforeach()
+if(NOT MODE STREQUAL "aspect" AND trace MATCHES "event=network_aspect_stats")
+    message(FATAL_ERROR "default-off run emitted aspect statistics")
+endif()
+if(MODE STREQUAL "aspect")
+    stat_value("${stats}" authenticated authenticated)
+    if(NOT authenticated EQUAL 1)
+        message(FATAL_ERROR "only the aspect peer connects in MODE=aspect: ${stats}")
+    endif()
+    if(NOT trace MATCHES "COREAPPTRACE version=1 event=network_aspect_stats[^\n]*")
+        message(FATAL_ERROR "the enabled server did not report network_aspect_stats")
+    endif()
+    set(aspect_stats "${CMAKE_MATCH_0}")
+    message(STATUS "${aspect_stats}")
+    foreach(pair opened=1 closed=1 applied=1 rejected=1 drained=2 queue_depth=0 dropped=0)
+        if(NOT aspect_stats MATCHES " ${pair}( |$)")
+            message(FATAL_ERROR "expected ${pair}: ${aspect_stats}")
+        endif()
+    endforeach()
+    expect_at_least("${aspect_stats}" sent_fragments 2)
+    if(NOT report MATCHES "aspect applied=2 values=1 valid_fragments=([0-9]+) duplicates=1 mismatch_fragments=([0-9]+)\n")
+        message(FATAL_ERROR "aspect peer did not complete its wire checks:\n${report}")
+    endif()
+    if(CMAKE_MATCH_1 LESS 2 OR CMAKE_MATCH_2 LESS 2)
+        message(FATAL_ERROR "aspect packets must exercise multiple fragments: ${report}")
+    endif()
+    run_offline(offline)
+    read_core_lines("${WORK_DIR}/network.trace" networked)
+    read_core_lines("${WORK_DIR}/offline.trace" offline)
+    if(NOT networked STREQUAL offline)
+        message(FATAL_ERROR "aspect input changed the non-network trace")
+    endif()
+    message(STATUS "core_app aspect replication loopback contract passed")
+    return()
+endif()
 if(MODE STREQUAL "late_auth")
     stat_value("${stats}" authenticated authenticated)
     stat_value("${stats}" auth_timeouts auth_timeouts)
