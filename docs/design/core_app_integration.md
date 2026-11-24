@@ -1819,3 +1819,13 @@ arm64 lane 新增 `test_core_app_network`（25/25）和 `test_core_app_network_o
 负对照临时移除 0x4009 handler，case **0/1** 且 applied/rejected/drained=0/0/0；恢复后 **1/1**。所有默认关闭的 network 模式显式禁止 aspect trace，network/offline **12/12**、lifecycle **12/12**。ASan+UBSan（detect_leaks=1）focused **9/9**；TSan 直接目标 **7/7**，正常服务端 + TSan 客户端 loopback **1/1**。core_app 自身在 TSan 下的 target/aspect 两个场景命中既有 Lua `longjmp buf` 环境失败，未计为通过。
 
 仍未完成：**World delta、inbound 到 simulation、level rebaseline、可靠恢复**；本项不预写远端或其他平台结果。
+
+
+## 补充（2026-11-24）：可选 World replication 的真实 loopback
+
+- **配置与范围**：`core_app --network ... --world-replication` 默认关闭，单独使用仍走 network-option 依赖错误。两个固定 POD 实体只进入 transport 的 authoritative World 表示；每连接 diagnostic World 独立，drain 不写 simulation。默认关闭不创建 World session 状态，也不输出 `network_world_stats`。
+- **真实验收**：新增 `test_core_app_net_client world` 和 `test_core_app_network_world`。客户端重建服务端 full/delta target，验证 drain 前不变和 drain 后 snapshot id；首个 ACK 后的 delta 由真实 `hooks.tick` 自动发布。客户端再回传 full、base mismatch delta、恢复 full，服务端以 ACK、NEED_FULL、ACK 应答。一次通过运行的接收计数为 target_matches=2、pre_drain=2、duplicates=2，发送计数为 full=2、delta=1、fragments=36、duplicates=1、need_full=1、recovered=1；服务端 sent_fragments=9，其余统计为 applied=2、need_full=1、rejected=1、full_publishes=1、delta_publishes=1、queue_depth=0、dropped=0。
+- **负对照**：临时移除 0x400A 注册后，客户端在首个入站 full 的 ACK 处失败，服务端 applied/need_full/rejected=0/0/0；恢复后重新通过且 transport diff 为空。首次完整用例还暴露了测试把既有故意时钟错误回复计入 World handler 失败的错误断言，修正该测试断言后才形成 GREEN，没有为此修改生产代码。
+- **回归与限制**：普通 network/offline **13/13**、lifecycle **12/12**、相关 focused **13/13**；ASan+UBSan/LSan **14/14**。TSan 相关库 **12/12** 与正常服务端 + TSan 客户端 **1/1** 通过；TSan core_app target/离线 record 的既有 Lua longjmp 环境问题仍失败，不声称 TSan 服务端真实 loopback 通过。
+
+仍未完成：**生产 level rebaseline、跨连接共享 live World、Runtime Core 映射、权威 simulation 合并、完整资产链**。本项不预写远端或其他平台验收。

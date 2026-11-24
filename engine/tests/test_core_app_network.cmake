@@ -50,6 +50,10 @@
 # baselines through BRFG reassembly, then returns reversed/duplicate fragments
 # and a BRA1 schema mismatch. The server must drain one apply and one reject.
 #
+# MODE=world: --world-replication server. The peer rebuilds the server's full
+# and delta BRWD targets only at drain, then returns a full, a base-mismatched
+# delta and a recovery full. BRWC ACK/NEED_FULL controls barrier server drain.
+#
 # MODE=offline: the same scenario twice without --network must give
 # byte-identical traces with no network line. In a build without the
 # transport, nm must find no break_net_/break_session_/snow_/Snow symbol.
@@ -190,7 +194,7 @@ endif()
 if(NOT MODE STREQUAL "loopback" AND NOT MODE STREQUAL "late_auth" AND NOT MODE STREQUAL "voice"
    AND NOT MODE STREQUAL "voice_relay" AND NOT MODE STREQUAL "voice_relay_off"
    AND NOT MODE STREQUAL "voice_mute" AND NOT MODE STREQUAL "voice_flood"
-   AND NOT MODE STREQUAL "single" AND NOT MODE STREQUAL "aspect")
+   AND NOT MODE STREQUAL "single" AND NOT MODE STREQUAL "aspect" AND NOT MODE STREQUAL "world")
     message(FATAL_ERROR "unknown MODE=${MODE}")
 endif()
 foreach(var NET_CLIENT TLS_CERT TLS_KEY)
@@ -219,6 +223,8 @@ elseif(MODE STREQUAL "single")
     set(client_mode single)
 elseif(MODE STREQUAL "aspect")
     set(client_mode aspect)
+elseif(MODE STREQUAL "world")
+    set(client_mode world)
 endif()
 set(relay_args "")
 if(MODE STREQUAL "voice_relay" OR MODE STREQUAL "voice_mute" OR MODE STREQUAL "voice_flood")
@@ -228,11 +234,15 @@ set(aspect_args "")
 if(MODE STREQUAL "aspect")
     set(aspect_args --aspect-replication)
 endif()
+set(world_args "")
+if(MODE STREQUAL "world")
+    set(world_args --world-replication)
+endif()
 execute_process(
     COMMAND ${CORE_APP_RUNNER} "${CORE_APP}" ${common_args} --trace "${WORK_DIR}/network.trace"
         --network --bind 127.0.0.1:0 --tls-cert "${TLS_CERT}" --tls-key "${TLS_KEY}"
         --psk-env CORE_APP_TEST_PSK --port-file "${WORK_DIR}/server.port"
-        --net-poll-ms ${poll_ms} ${relay_args} ${aspect_args}
+        --net-poll-ms ${poll_ms} ${relay_args} ${aspect_args} ${world_args}
     COMMAND "${NET_CLIENT}" "${WORK_DIR}/server.port" "${WORK_DIR}/client.report"
         ${client_mode} --trace "${WORK_DIR}/peer.trace"
     RESULTS_VARIABLE results
@@ -395,6 +405,47 @@ foreach(welcome_line IN LISTS welcome_lines)
 endforeach()
 if(NOT MODE STREQUAL "aspect" AND trace MATCHES "event=network_aspect_stats")
     message(FATAL_ERROR "default-off run emitted aspect statistics")
+endif()
+if(NOT MODE STREQUAL "world" AND trace MATCHES "event=network_world_stats")
+    message(FATAL_ERROR "default-off run emitted World statistics")
+endif()
+if(MODE STREQUAL "world")
+    stat_value("${stats}" authenticated authenticated)
+    if(NOT authenticated EQUAL 1)
+        message(FATAL_ERROR "only the World peer connects in MODE=world: ${stats}")
+    endif()
+    if(NOT trace MATCHES "COREAPPTRACE version=1 event=network_world_stats[^\n]*")
+        message(FATAL_ERROR "the enabled server did not report network_world_stats")
+    endif()
+    set(world_stats "${CMAKE_MATCH_0}")
+    message(STATUS "${world_stats}")
+    foreach(pair opened=1 closed=1 applied=2 need_full=1 rejected=1
+                 full_publishes=1 delta_publishes=1 queue_depth=0 dropped=0)
+        if(NOT world_stats MATCHES " ${pair}( |$)")
+            message(FATAL_ERROR "expected ${pair}: ${world_stats}")
+        endif()
+    endforeach()
+    expect_at_least("${world_stats}" sent_fragments 2)
+    if(NOT report MATCHES "world_receiver attempts=2 full=1 delta=1 target_matches=2 pre_drain=2 duplicates=2 reversed=([0-9]+)\n")
+        message(FATAL_ERROR "World peer did not rebuild both server targets at drain:\n${report}")
+    endif()
+    if(CMAKE_MATCH_1 LESS 2)
+        message(FATAL_ERROR "World receive path did not reverse multiple fragments: ${report}")
+    endif()
+    if(NOT report MATCHES "world_sender full=2 delta=1 fragments=([0-9]+) duplicates=1 need_full=1 recovered=1\n")
+        message(FATAL_ERROR "World peer did not complete base recovery:\n${report}")
+    endif()
+    if(CMAKE_MATCH_1 LESS 3)
+        message(FATAL_ERROR "World outbound packets must exercise multiple fragments: ${report}")
+    endif()
+    run_offline(offline)
+    read_core_lines("${WORK_DIR}/network.trace" networked)
+    read_core_lines("${WORK_DIR}/offline.trace" offline)
+    if(NOT networked STREQUAL offline)
+        message(FATAL_ERROR "World input changed the non-network trace")
+    endif()
+    message(STATUS "core_app World replication loopback contract passed")
+    return()
 endif()
 if(MODE STREQUAL "aspect")
     stat_value("${stats}" authenticated authenticated)

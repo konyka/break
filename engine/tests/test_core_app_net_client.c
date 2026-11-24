@@ -10,10 +10,11 @@
  * peer;
  * "voice-relay" runs the two relay peers; "voice-mute" runs the two mute
  * peers; "voice-flood" runs the two rate-limit peers; "aspect" exchanges
- * BRFG/BRA1 packets with the optional aspect transport.
+ * BRFG/BRA1 packets with the optional aspect transport; "world" exchanges
+ * BRWD/BRWC packets with the optional World transport.
  *
  * Usage: test_core_app_net_client PORT_FILE REPORT_FILE
- *        [late-auth|voice|voice-relay|voice-mute|voice-flood|single|aspect]
+ *        [late-auth|voice|voice-relay|voice-mute|voice-flood|single|aspect|world]
  *        [--trace PATH]
  * The PSK is read from CORE_APP_TEST_PSK (64 hex digits). With --trace the
  * peer writes its own core_app-format trace: one
@@ -26,6 +27,7 @@
 #include <core/clock_offset.h>
 #include <core/trace_core_app.h>
 #include <crypto/break_crypto.h>
+#include <ecs/world_session.h>
 #include <network/break_net_envelope.h>
 #include <network/break_net_message_registry.h>
 #include <network/break_online_aspect.h>
@@ -1006,6 +1008,597 @@ static void scenario_aspect(void) {
     aspect_peer_dispose(&peer);
 }
 
+#define NET_CLIENT_WORLD_PACKET_BYTES 16384u
+#define NET_CLIENT_WORLD_FRAGMENT_BYTES 23u
+#define NET_CLIENT_WORLD_MAX_FRAGMENTS 64u
+#define NET_CLIENT_WORLD_SERVER_WIRE_BYTES (BREAK_REPLICATION_WIRE_HEADER_SIZE + 64u)
+#define NET_CLIENT_WORLD_CONNECTION 1u
+
+typedef struct WorldPeer {
+    BreakComponentSchemaRegistry *schemas;
+    World *world;
+    BreakWorldSession *session;
+    u64 level_generation;
+    u64 epoch;
+    u64 attempts;
+    u64 full_attempts;
+    u64 delta_attempts;
+    u64 target_matches;
+    u64 pre_drain_unchanged;
+    u64 reversed_fragments;
+    u64 duplicate_fragments;
+    u64 outbound_full;
+    u64 outbound_delta;
+    u64 outbound_fragments;
+    u64 outbound_duplicates;
+    u64 need_full;
+    u64 recovered;
+} WorldPeer;
+
+typedef struct WorldAttempt {
+    u64 delta_id;
+    u64 base_snapshot_id;
+    u64 target_snapshot_id;
+    u64 target_tick;
+    BreakWorldDeltaWireKind kind;
+    usize fragment_count;
+    usize wire_sizes[NET_CLIENT_WORLD_MAX_FRAGMENTS];
+    u8 wires[NET_CLIENT_WORLD_MAX_FRAGMENTS][NET_CLIENT_WORLD_SERVER_WIRE_BYTES];
+} WorldAttempt;
+
+static u64 world_clock(void *user) {
+    (void)user;
+    return now_ms();
+}
+
+static void world_peer_dispose(WorldPeer *peer) {
+    break_world_session_destroy(peer->session);
+    world_destroy(peer->world);
+    break_schema_registry_destroy(peer->schemas);
+    peer->session = NULL;
+    peer->world = NULL;
+    peer->schemas = NULL;
+}
+
+static bool world_peer_init(WorldPeer *peer, u64 level_generation) {
+    static const BreakComponentSchema schemas[] = {
+        {1u, 1u, sizeof(u32), _Alignof(u32),
+         BREAK_SCHEMA_FLAG_DETERMINISTIC_POD | BREAK_SCHEMA_FLAG_RAW_BYTES, NULL, NULL},
+        {2u, 1u, sizeof(u32), _Alignof(u32),
+         BREAK_SCHEMA_FLAG_DETERMINISTIC_POD | BREAK_SCHEMA_FLAG_RAW_BYTES, NULL, NULL},
+        {3u, 1u, sizeof(f32), _Alignof(f32),
+         BREAK_SCHEMA_FLAG_DETERMINISTIC_POD | BREAK_SCHEMA_FLAG_RAW_BYTES, NULL, NULL},
+        {4u, 1u, sizeof(f32), _Alignof(f32),
+         BREAK_SCHEMA_FLAG_DETERMINISTIC_POD | BREAK_SCHEMA_FLAG_RAW_BYTES, NULL, NULL},
+        {5u, 1u, sizeof(f32), _Alignof(f32),
+         BREAK_SCHEMA_FLAG_DETERMINISTIC_POD | BREAK_SCHEMA_FLAG_RAW_BYTES, NULL, NULL},
+        {6u, 1u, sizeof(u32), _Alignof(u32),
+         BREAK_SCHEMA_FLAG_DETERMINISTIC_POD | BREAK_SCHEMA_FLAG_RAW_BYTES, NULL, NULL},
+    };
+    BreakWorldSessionConfig config;
+    memset(peer, 0, sizeof(*peer));
+    peer->level_generation = level_generation;
+    peer->schemas = break_schema_registry_create();
+    peer->world = world_create();
+    if (!peer->schemas || !peer->world) {
+        world_peer_dispose(peer);
+        return false;
+    }
+    for (u32 i = 0u; i < sizeof(schemas) / sizeof(schemas[0]); ++i) {
+        if (break_schema_register(peer->schemas, &schemas[i]) != BREAK_SCHEMA_OK) {
+            world_peer_dispose(peer);
+            return false;
+        }
+        world_register_component(peer->world, schemas[i].component_id, (u32)schemas[i].size);
+    }
+    memset(&config, 0, sizeof(config));
+    config.schemas = peer->schemas;
+    config.protocol_version = 1u;
+    config.level_generation = level_generation;
+    config.bridge.max_connections = 1u;
+    config.bridge.stream_capacity = 16u;
+    config.bridge.max_pending_bytes_per_connection = NET_CLIENT_WORLD_PACKET_BYTES;
+    config.bridge.max_total_pending_bytes = NET_CLIENT_WORLD_PACKET_BYTES;
+    config.bridge.max_fragment_bytes = 64u;
+    config.bridge.max_fragment_count = NET_CLIENT_WORLD_MAX_FRAGMENTS;
+    config.bridge.completion_capacity = 64u;
+    config.bridge.max_completion_packet_bytes = NET_CLIENT_WORLD_PACKET_BYTES;
+    config.bridge.max_completion_queue_bytes = 64u * NET_CLIENT_WORLD_PACKET_BYTES;
+    config.bridge.clock = world_clock;
+    config.packet_byte_limit = NET_CLIENT_WORLD_PACKET_BYTES;
+    config.need_full_tick_interval = 1u;
+    peer->session = break_world_session_create(&config);
+    peer->epoch = break_world_session_stream_epoch(1u, break_schema_hash(peer->schemas),
+                                                   level_generation);
+    if (!peer->session || !peer->epoch ||
+        !break_world_session_open(peer->session, NET_CLIENT_WORLD_CONNECTION)) {
+        world_peer_dispose(peer);
+        return false;
+    }
+    return true;
+}
+
+static void world_put16(u8 *out, u16 value) {
+    out[0] = (u8)value;
+    out[1] = (u8)(value >> 8u);
+}
+
+static void world_put64(u8 *out, u64 value) {
+    for (u32 i = 0u; i < 8u; ++i) out[i] = (u8)(value >> (8u * i));
+}
+
+static bool world_send_control(NetClient *c, BreakWorldSessionControlKind kind,
+                               const WorldAttempt *attempt) {
+    u8 payload[BREAK_WORLD_SESSION_CONTROL_WIRE_SIZE];
+    memset(payload, 0, sizeof(payload));
+    memcpy(payload, "BRWC", 4u);
+    world_put16(payload + 4u, 1u);
+    world_put16(payload + 6u, (u16)kind);
+    if (kind == BREAK_WORLD_SESSION_CONTROL_ACK) world_put64(payload + 8u, attempt->delta_id);
+    world_put64(payload + 16u, attempt->target_snapshot_id);
+    world_put64(payload + 24u, attempt->target_tick);
+    return client_send(c, BREAK_NET_MESSAGE_ID_WORLD_CONTROL, 1u, payload, sizeof(payload));
+}
+
+static bool world_decode_control(const BreakNetEnvelope *env, BreakWorldSessionControl *control) {
+    const u8 *payload;
+    if (env->message_id != BREAK_NET_MESSAGE_ID_WORLD_CONTROL || env->protocol_version != 1u ||
+        env->payload_size != BREAK_WORLD_SESSION_CONTROL_WIRE_SIZE) {
+        return false;
+    }
+    payload = (const u8 *)env->payload;
+    if (memcmp(payload, "BRWC", 4u) != 0 || payload[4] != 1u || payload[5] != 0u) return false;
+    memset(control, 0, sizeof(*control));
+    control->kind = (BreakWorldSessionControlKind)((u16)payload[6] | ((u16)payload[7] << 8u));
+    control->delta_id = le64(payload + 8u);
+    control->target_snapshot_id = le64(payload + 16u);
+    control->target_tick = le64(payload + 24u);
+    if (control->kind == BREAK_WORLD_SESSION_CONTROL_NEED_FULL) return control->delta_id == 0u;
+    return control->kind == BREAK_WORLD_SESSION_CONTROL_ACK && control->delta_id != 0u &&
+           control->target_snapshot_id != 0u;
+}
+
+static bool world_wait_control(NetClient *c, BreakWorldSessionControlKind kind, u64 delta_id,
+                               u64 target_snapshot_id, u64 target_tick) {
+    u64 deadline = now_ms() + 10000u;
+    while (now_ms() < deadline) {
+        BreakNetEnvelope env;
+        BreakWorldSessionControl control;
+        int got = client_recv(c, &env, (u32)(deadline - now_ms()) + 1u);
+        if (got < 0) return false;
+        if (got == 0 || env.message_id != BREAK_NET_MESSAGE_ID_WORLD_CONTROL) continue;
+        if (!world_decode_control(&env, &control)) return false;
+        if (control.kind == kind && control.delta_id == delta_id &&
+            control.target_snapshot_id == target_snapshot_id && control.target_tick == target_tick) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool world_accept_wire(WorldPeer *peer, const u8 *wire, usize wire_size) {
+    BreakNetOwnedMessage message;
+    memset(&message, 0, sizeof(message));
+    message.message_id = BREAK_NET_MESSAGE_ID_WORLD_DELTA;
+    message.protocol_version = BREAK_REPLICATION_WIRE_VERSION;
+    message.sequence = 1u;
+    message.data = (void *)wire;
+    message.size = wire_size;
+    return break_replication_session_handle_message(
+        NET_CLIENT_WORLD_CONNECTION, &message, break_world_session_bridge(peer->session));
+}
+
+static bool world_receive_attempt(NetClient *c, WorldPeer *peer, WorldAttempt *attempt) {
+    BreakReplicationReassembler *inspector = NULL;
+    BreakWorldSnapshot *before = NULL;
+    BreakWorldSnapshot *queued = NULL;
+    BreakWorldSnapshot *rebuilt = NULL;
+    BreakWorldSessionStats stats_before;
+    BreakWorldSessionStats stats_after;
+    bool seen[NET_CLIENT_WORLD_MAX_FRAGMENTS] = {false};
+    u8 *payload = NULL;
+    usize payload_size = 0u;
+    usize seen_count = 0u;
+    u64 baseline_id = 0u;
+    u64 baseline_tick = 0u;
+    bool complete = false;
+    bool ok = true;
+    memset(attempt, 0, sizeof(*attempt));
+    inspector = break_replication_reassembler_create(peer->epoch);
+    ok = inspector != NULL;
+    u64 deadline = now_ms() + 15000u;
+    while (ok && !complete && now_ms() < deadline) {
+        BreakNetEnvelope env;
+        BreakReplicationFragment fragment;
+        BreakReplicationReassemblyResult result;
+        int got = client_recv(c, &env, (u32)(deadline - now_ms()) + 1u);
+        if (got < 0) {
+            ok = false;
+            break;
+        }
+        if (got == 0 || env.message_id != BREAK_NET_MESSAGE_ID_WORLD_DELTA) continue;
+        if (env.protocol_version != BREAK_REPLICATION_WIRE_VERSION ||
+            break_replication_wire_decode(env.payload, env.payload_size, &fragment) !=
+                BREAK_REPLICATION_FRAGMENT_OK ||
+            fragment.base_id != peer->epoch || fragment.fragment_count == 0u ||
+            fragment.fragment_count > NET_CLIENT_WORLD_MAX_FRAGMENTS ||
+            fragment.fragment_index >= fragment.fragment_count ||
+            env.payload_size > NET_CLIENT_WORLD_SERVER_WIRE_BYTES ||
+            (attempt->fragment_count != 0u &&
+             (attempt->delta_id != fragment.delta_id ||
+              attempt->fragment_count != fragment.fragment_count)) ||
+            seen[fragment.fragment_index]) {
+            ok = false;
+            break;
+        }
+        attempt->delta_id = fragment.delta_id;
+        attempt->fragment_count = fragment.fragment_count;
+        attempt->wire_sizes[fragment.fragment_index] = env.payload_size;
+        memcpy(attempt->wires[fragment.fragment_index], env.payload, env.payload_size);
+        seen[fragment.fragment_index] = true;
+        seen_count++;
+        result = break_replication_reassembler_push(inspector, &fragment, &payload, &payload_size);
+        if (result == BREAK_REPLICATION_REASSEMBLY_COMPLETE) {
+            complete = seen_count == attempt->fragment_count;
+            if (!complete) ok = false;
+        } else if (result != BREAK_REPLICATION_REASSEMBLY_INCOMPLETE) {
+            ok = false;
+        }
+    }
+    if (ok && complete) {
+        BreakWorldDeltaWire message;
+        ok = break_world_delta_wire_decode(payload, payload_size, &message) ==
+             BREAK_WORLD_DELTA_WIRE_OK;
+        if (ok) {
+            attempt->kind = message.kind;
+            attempt->base_snapshot_id = message.base_snapshot_id;
+            attempt->target_snapshot_id = message.target_snapshot_id;
+            attempt->target_tick = message.target_tick;
+            break_world_delta_wire_clear(&message);
+        }
+    } else {
+        ok = false;
+    }
+    break_replication_reassembly_free(payload);
+    break_replication_reassembler_destroy(inspector);
+    check(ok, "world_brwd_reassembly");
+    if (!ok) return false;
+
+    break_world_session_stats(peer->session, &stats_before);
+    ok = break_world_session_baseline(peer->session, NET_CLIENT_WORLD_CONNECTION, &baseline_id,
+                                      &baseline_tick);
+    before = break_world_snapshot_build(peer->world, peer->schemas, baseline_tick);
+    ok = ok && before != NULL;
+    for (usize i = attempt->fragment_count; i-- > 0u && ok;) {
+        ok = world_accept_wire(peer, attempt->wires[i], attempt->wire_sizes[i]);
+        if (ok && i == attempt->fragment_count - 1u) {
+            ok = world_accept_wire(peer, attempt->wires[i], attempt->wire_sizes[i]);
+        }
+    }
+    peer->reversed_fragments += attempt->fragment_count;
+    break_world_session_stats(peer->session, &stats_after);
+    queued = break_world_snapshot_build(peer->world, peer->schemas, baseline_tick);
+    {
+        u64 queued_baseline_id = 0u;
+        u64 queued_baseline_tick = 0u;
+        bool unchanged = ok && queued &&
+                         break_world_session_baseline(peer->session, NET_CLIENT_WORLD_CONNECTION,
+                                                      &queued_baseline_id,
+                                                      &queued_baseline_tick) &&
+                         queued_baseline_id == baseline_id && queued_baseline_tick == baseline_tick &&
+                         break_world_snapshot_id(queued) == break_world_snapshot_id(before) &&
+                         stats_after.applied_packets == stats_before.applied_packets &&
+                         stats_after.bridge.completion_count == stats_before.bridge.completion_count + 1u &&
+                         stats_after.bridge.duplicate_fragments ==
+                             stats_before.bridge.duplicate_fragments + 1u;
+        check(unchanged, "world_completion_waits_for_drain_without_mutating_world");
+        if (unchanged) peer->pre_drain_unchanged++;
+        ok = unchanged;
+    }
+    if (ok) {
+        usize drained = break_world_session_drain(peer->session, NET_CLIENT_WORLD_CONNECTION,
+                                                  peer->world, 1u);
+        u64 drained_id = 0u;
+        u64 drained_tick = 0u;
+        rebuilt = break_world_snapshot_build(peer->world, peer->schemas, attempt->target_tick);
+        break_world_session_stats(peer->session, &stats_after);
+        ok = drained == 1u && rebuilt &&
+             break_world_session_baseline(peer->session, NET_CLIENT_WORLD_CONNECTION, &drained_id,
+                                          &drained_tick) &&
+             drained_id == attempt->target_snapshot_id && drained_tick == attempt->target_tick &&
+             break_world_snapshot_id(rebuilt) == attempt->target_snapshot_id &&
+             stats_after.applied_packets == stats_before.applied_packets + 1u;
+    }
+    check(ok, "world_drain_rebuilds_server_target_snapshot");
+    if (ok) {
+        peer->attempts++;
+        peer->target_matches++;
+        if (attempt->kind == BREAK_WORLD_DELTA_WIRE_FULL) peer->full_attempts++;
+        if (attempt->kind == BREAK_WORLD_DELTA_WIRE_DELTA) peer->delta_attempts++;
+    }
+    peer->duplicate_fragments = stats_after.bridge.duplicate_fragments;
+    break_world_snapshot_release(rebuilt);
+    break_world_snapshot_release(queued);
+    break_world_snapshot_release(before);
+    return ok;
+}
+
+static bool world_encode_message(BreakWorldDeltaWire *message, u8 **out_wire, usize *out_size) {
+    usize size = 0u;
+    u8 *wire;
+    bool ok;
+    if (break_world_delta_wire_encoded_size(message, &size) != BREAK_WORLD_DELTA_WIRE_OK) {
+        free(message->records);
+        return false;
+    }
+    wire = (u8 *)malloc(size);
+    if (!wire) {
+        free(message->records);
+        return false;
+    }
+    ok = break_world_delta_wire_encode(message, wire, size, &size) == BREAK_WORLD_DELTA_WIRE_OK;
+    free(message->records);
+    if (!ok) {
+        free(wire);
+        return false;
+    }
+    *out_wire = wire;
+    *out_size = size;
+    return true;
+}
+
+static bool world_encode_full(const WorldPeer *peer, const BreakWorldSnapshot *snapshot,
+                              u8 **out_wire, usize *out_size) {
+    BreakWorldDeltaWire message;
+    usize entity_count = break_world_snapshot_entity_count(snapshot);
+    usize count = 0u;
+    usize slot = 0u;
+    memset(&message, 0, sizeof(message));
+    for (usize i = 0u; i < entity_count; ++i) {
+        Entity entity = break_world_snapshot_entity_at(snapshot, i);
+        count++;
+        for (u32 component = 0u; component < ECS_MAX_COMPONENTS; ++component) {
+            const void *bytes = NULL;
+            usize size = 0u;
+            if (break_world_snapshot_component_bytes(snapshot, entity, component, &bytes, &size)) {
+                count++;
+            }
+        }
+    }
+    if (count > UINT32_MAX) return false;
+    message.kind = BREAK_WORLD_DELTA_WIRE_FULL;
+    message.schema_hash = break_world_snapshot_schema_hash(snapshot);
+    message.level_generation = peer->level_generation;
+    message.target_snapshot_id = break_world_snapshot_id(snapshot);
+    message.target_tick = break_world_snapshot_tick(snapshot);
+    message.record_count = (u32)count;
+    message.records = (BreakWorldDeltaRecord *)calloc(count, sizeof(*message.records));
+    if (count != 0u && !message.records) return false;
+    for (usize i = 0u; i < entity_count; ++i) {
+        Entity entity = break_world_snapshot_entity_at(snapshot, i);
+        message.records[slot].kind = BREAK_DELTA_ENTITY_CREATE;
+        message.records[slot].entity = entity;
+        slot++;
+        for (u32 component = 0u; component < ECS_MAX_COMPONENTS; ++component) {
+            const void *bytes = NULL;
+            usize size = 0u;
+            if (break_world_snapshot_component_bytes(snapshot, entity, component, &bytes, &size)) {
+                message.records[slot].kind = BREAK_DELTA_COMPONENT_ADD;
+                message.records[slot].entity = entity;
+                message.records[slot].component = component;
+                message.records[slot].bytes = bytes;
+                message.records[slot].size = size;
+                slot++;
+            }
+        }
+    }
+    return world_encode_message(&message, out_wire, out_size);
+}
+
+static bool world_encode_delta(const WorldPeer *peer, const BreakWorldSnapshot *base,
+                               const BreakWorldSnapshot *target, u8 **out_wire, usize *out_size) {
+    BreakWorldDelta *delta = break_world_delta_diff(base, target);
+    BreakWorldDeltaWire message;
+    usize count;
+    bool ok;
+    if (!delta) return false;
+    count = break_world_delta_record_count(delta);
+    if (count > UINT32_MAX) {
+        break_world_delta_release(delta);
+        return false;
+    }
+    memset(&message, 0, sizeof(message));
+    message.kind = BREAK_WORLD_DELTA_WIRE_DELTA;
+    message.schema_hash = break_world_delta_target_schema_hash(delta);
+    message.level_generation = peer->level_generation;
+    message.base_snapshot_id = break_world_delta_base_id(delta);
+    message.target_snapshot_id = break_world_delta_target_id(delta);
+    message.base_tick = break_world_delta_base_tick(delta);
+    message.target_tick = break_world_delta_target_tick(delta);
+    message.record_count = (u32)count;
+    message.records = (BreakWorldDeltaRecord *)calloc(count, sizeof(*message.records));
+    if (count != 0u && !message.records) {
+        break_world_delta_release(delta);
+        return false;
+    }
+    for (usize i = 0u; i < count; ++i) {
+        if (!break_world_delta_record_at(delta, i, &message.records[i])) {
+            free(message.records);
+            break_world_delta_release(delta);
+            return false;
+        }
+    }
+    ok = world_encode_message(&message, out_wire, out_size);
+    break_world_delta_release(delta);
+    return ok;
+}
+
+static bool world_send_packet(NetClient *c, WorldPeer *peer, u64 delta_id,
+                              const u8 *payload, usize payload_size, bool duplicate) {
+    BreakReplicationFragment *fragments = NULL;
+    usize fragment_count = 0u;
+    bool sent = true;
+    if (break_replication_fragment_payload(delta_id, peer->epoch, payload, payload_size,
+                                           NET_CLIENT_WORLD_FRAGMENT_BYTES, &fragments,
+                                           &fragment_count) != BREAK_REPLICATION_FRAGMENT_OK ||
+        fragment_count < 2u || fragment_count > NET_CLIENT_WORLD_MAX_FRAGMENTS) {
+        break_replication_fragments_free(fragments, fragment_count);
+        return false;
+    }
+    for (usize i = fragment_count; i-- > 0u && sent;) {
+        u8 wire[BREAK_REPLICATION_WIRE_HEADER_SIZE + NET_CLIENT_WORLD_FRAGMENT_BYTES];
+        usize wire_size = 0u;
+        sent = break_replication_wire_encode(&fragments[i], wire, sizeof(wire), &wire_size) ==
+                   BREAK_REPLICATION_FRAGMENT_OK &&
+               client_send(c, BREAK_NET_MESSAGE_ID_WORLD_DELTA, BREAK_REPLICATION_WIRE_VERSION,
+                           wire, wire_size);
+        if (sent) peer->outbound_fragments++;
+        if (sent && duplicate && i == fragment_count - 1u) {
+            wire_size = 0u;
+            sent = break_replication_wire_encode(&fragments[i], wire, sizeof(wire), &wire_size) ==
+                       BREAK_REPLICATION_FRAGMENT_OK &&
+                   client_send(c, BREAK_NET_MESSAGE_ID_WORLD_DELTA,
+                               BREAK_REPLICATION_WIRE_VERSION, wire, wire_size);
+            if (sent) peer->outbound_duplicates++;
+        }
+    }
+    break_replication_fragments_free(fragments, fragment_count);
+    return sent;
+}
+
+static void scenario_world(void) {
+    NetClient a;
+    WorldPeer peer;
+    CoreAppSnapshot snapshot;
+    WorldAttempt full;
+    WorldAttempt delta;
+    BreakWorldSnapshot *base = NULL;
+    BreakWorldSnapshot *target = NULL;
+    u8 *wire = NULL;
+    usize wire_size = 0u;
+    bool connected;
+    bool authenticated = false;
+    bool initialized = false;
+    bool got_full = false;
+    bool got_delta = false;
+    int got = -1;
+    memset(&a, 0, sizeof(a));
+    memset(&peer, 0, sizeof(peer));
+    a.fd = -1;
+    connected = client_open(&a);
+    check(connected, "world_tls_challenge");
+    if (connected) authenticated = client_auth(&a, g_psk);
+    check(authenticated, "world_auth_sent");
+    if (authenticated) got = client_next_snapshot(&a, &snapshot, 15000u);
+    check(got == 1, "world_received_snapshot");
+    if (got == 1) {
+        check(snapshot_shape_ok(&snapshot), "world_snapshot_fields");
+        check_welcome(&a, "world");
+        initialized = world_peer_init(&peer, snapshot.level_generation);
+    }
+    check(initialized, "world_local_session_and_diagnostic_world");
+    if (initialized && g_failures == 0) {
+        got_full = world_receive_attempt(&a, &peer, &full);
+        check(got_full && full.kind == BREAK_WORLD_DELTA_WIRE_FULL,
+              "world_received_server_full");
+        if (got_full) {
+            check(world_send_control(&a, BREAK_WORLD_SESSION_CONTROL_ACK, &full),
+                  "world_acknowledged_server_full");
+            got_delta = world_receive_attempt(&a, &peer, &delta);
+            check(got_delta && delta.kind == BREAK_WORLD_DELTA_WIRE_DELTA &&
+                      delta.base_snapshot_id == full.target_snapshot_id,
+                  "world_tick_published_delta_from_acknowledged_baseline");
+        }
+    }
+    if (got_delta && g_failures == 0) {
+        bool sent;
+        base = break_world_snapshot_build(peer.world, peer.schemas, delta.target_tick + 10u);
+        check(base != NULL, "world_prepared_inbound_full_target");
+        sent = base && world_encode_full(&peer, base, &wire, &wire_size);
+        check(sent, "world_encoded_inbound_full");
+        if (sent) {
+            sent = world_send_packet(&a, &peer, 100u, wire, wire_size, true);
+            if (sent) peer.outbound_full++;
+        }
+        check(sent, "world_sent_reversed_duplicate_inbound_full");
+        free(wire);
+        wire = NULL;
+        if (sent) {
+            sent = world_wait_control(&a, BREAK_WORLD_SESSION_CONTROL_ACK, 100u,
+                                      break_world_snapshot_id(base),
+                                      break_world_snapshot_tick(base));
+            check(sent, "world_server_drained_inbound_full_to_diagnostic_target");
+        }
+        if (!sent) goto report;
+    }
+    if (got_delta && g_failures == 0) {
+        u32 *index = (u32 *)world_get_component(peer.world, (Entity){1u, 1u}, 1u);
+        bool sent;
+        check(index != NULL, "world_prepared_changed_diagnostic_target");
+        if (!index) goto report;
+        *index += 1000u;
+        target = break_world_snapshot_build(peer.world, peer.schemas,
+                                            break_world_snapshot_tick(base) + 10u);
+        check(target != NULL, "world_built_changed_target");
+        sent = target && world_encode_delta(&peer, base, target, &wire, &wire_size);
+        if (sent && wire_size > 24u) wire[24] ^= 1u;
+        check(sent && wire_size > 24u, "world_encoded_base_mismatch_delta");
+        if (sent) {
+            sent = world_send_packet(&a, &peer, 101u, wire, wire_size, false);
+            if (sent) peer.outbound_delta++;
+        }
+        check(sent, "world_sent_base_mismatch_delta");
+        free(wire);
+        wire = NULL;
+        if (sent) {
+            sent = world_wait_control(&a, BREAK_WORLD_SESSION_CONTROL_NEED_FULL, 0u,
+                                      break_world_snapshot_id(base),
+                                      break_world_snapshot_tick(base));
+            check(sent, "world_base_mismatch_requested_full_with_last_good_baseline");
+            if (sent) peer.need_full++;
+        }
+        if (!sent) goto report;
+        sent = world_encode_full(&peer, target, &wire, &wire_size);
+        check(sent, "world_encoded_recovery_full");
+        if (sent) {
+            sent = world_send_packet(&a, &peer, 102u, wire, wire_size, false);
+            if (sent) peer.outbound_full++;
+        }
+        check(sent, "world_sent_recovery_full");
+        free(wire);
+        wire = NULL;
+        if (sent) {
+            sent = world_wait_control(&a, BREAK_WORLD_SESSION_CONTROL_ACK, 102u,
+                                      break_world_snapshot_id(target),
+                                      break_world_snapshot_tick(target));
+            check(sent, "world_recovery_full_rebuilt_diagnostic_target");
+            if (sent) peer.recovered++;
+        }
+    }
+
+report:
+    free(wire);
+    break_world_snapshot_release(target);
+    break_world_snapshot_release(base);
+    fprintf(g_report,
+            "world_receiver attempts=%llu full=%llu delta=%llu target_matches=%llu pre_drain=%llu"
+            " duplicates=%llu reversed=%llu\n",
+            (unsigned long long)peer.attempts, (unsigned long long)peer.full_attempts,
+            (unsigned long long)peer.delta_attempts, (unsigned long long)peer.target_matches,
+            (unsigned long long)peer.pre_drain_unchanged,
+            (unsigned long long)peer.duplicate_fragments,
+            (unsigned long long)peer.reversed_fragments);
+    fprintf(g_report,
+            "world_sender full=%llu delta=%llu fragments=%llu duplicates=%llu need_full=%llu"
+            " recovered=%llu\n",
+            (unsigned long long)peer.outbound_full, (unsigned long long)peer.outbound_delta,
+            (unsigned long long)peer.outbound_fragments,
+            (unsigned long long)peer.outbound_duplicates, (unsigned long long)peer.need_full,
+            (unsigned long long)peer.recovered);
+    client_close(&a);
+    world_peer_dispose(&peer);
+}
+
 /* A: authenticated peer. Receives snapshots, then sends hostile snapshots
  * that must only change counters and must not close the session. */
 static void scenario_authenticated(void) {
@@ -1635,6 +2228,7 @@ int main(int argc, char **argv) {
     bool voice_flood = argc == 4 && strcmp(argv[3], "voice-flood") == 0;
     bool single = argc == 4 && strcmp(argv[3], "single") == 0;
     bool aspect = argc == 4 && strcmp(argv[3], "aspect") == 0;
+    bool world = argc == 4 && strcmp(argv[3], "world") == 0;
     const char *trace_path = NULL;
     /* --trace PATH may follow the arguments above */
     for (int i = 3; i + 1 < argc; ++i) {
@@ -1652,10 +2246,11 @@ int main(int argc, char **argv) {
         voice_flood = argc > 4 && strcmp(argv[3], "voice-flood") == 0;
         single = argc > 4 && strcmp(argv[3], "single") == 0;
         aspect = argc > 4 && strcmp(argv[3], "aspect") == 0;
+        world = argc > 4 && strcmp(argv[3], "world") == 0;
     } else if (argc != 3 && !late_auth && !voice && !voice_relay && !voice_mute &&
-               !voice_flood && !single && !aspect) {
+               !voice_flood && !single && !aspect && !world) {
         fprintf(stderr, "usage: test_core_app_net_client PORT_FILE REPORT_FILE"
-                        " [late-auth|voice|voice-relay|voice-mute|voice-flood|single|aspect]"
+                        " [late-auth|voice|voice-relay|voice-mute|voice-flood|single|aspect|world]"
                         " [--trace PATH]\n");
         return 2;
     }
@@ -1684,6 +2279,8 @@ int main(int argc, char **argv) {
         scenario_single();
     } else if (g_failures == 0 && aspect) {
         scenario_aspect();
+    } else if (g_failures == 0 && world) {
+        scenario_world();
     } else if (g_failures == 0) {
         scenario_authenticated();
         scenario_unauthenticated();

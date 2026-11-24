@@ -446,3 +446,12 @@ World delta、inbound-to-simulation、level rebaseline、可靠恢复、Runtime 
 测试既覆盖这些状态机，也覆盖真实 AUTH/socket 的乱序重复、base mismatch/NEED_FULL/full，以及移除并恢复 0x400A 注册的负对照。直接测试 **189/189**，其中新增 recovery **6/6**、loopback **2/2**；normal focused CTest **11/11**。ASan+UBSan 显式 `detect_leaks=1` 与 TSan 九项 focused 均 **9/9**。八项定向变异（限速、ACK 字节、full 回退、history bytes、payload 生命周期、OVERLOAD 游标、重连序号、confirmed reset）均先判红再恢复。实现早期还由测试定位并修复了 fragment descriptor 借用 BRWD 缓冲而 attempt 提前释放的问题，最终 payload 存活到末片发送完成。
 
 完整 Vulkan **463/467 执行通过**，另有 **4 条件 skip、0 失败**；OpenGL **461/465 执行通过**，另有 **4 条件 skip、0 失败**。skip 名称与既有四项相同，不转为通过。**core_app 启用、生产 level 策略、跨连接共享 World 和 Runtime Core 消息映射仍未完成**，focused sanitizer 不等于完整 sanitizer suite。
+
+
+## 补充（2026-11-24）：CoreAppThread 的 World drain 与诊断所有权验收
+
+真实 loopback 现在穿过生产 `core_app` 的可选 `--world-replication` transport。0x400A handler 只重组并入队，CoreAppThread 在 tick/shutdown 有界 drain；每个连接使用独立 diagnostic World，network 输入不写生产 simulation。客户端本地也使用真实 `BreakWorldSession`，直接证明 completion 不改 World、只有 drain 才推进 target。服务端 ACK/NEED_FULL 中的 last-good/target id 与客户端构造的 snapshot 一致，且联网与离线运行的全部非 network trace 行一致。
+
+仅开启时输出的 `network_world_stats` 字段为 opened、closed、applied、need_full、rejected、full_publishes、delta_publishes、sent_fragments、queue_depth、dropped；默认关闭没有该行，既有 `network_stats` 格式不变。本次真实用例得到 2 次诊断 apply、1 次 base mismatch 拒绝与 NEED_FULL、1 次 full 和 1 次 delta 发布，queue/drop 均为 0。
+
+本项没有 Runtime Core 消息映射、跨连接共享 live World 或权威 simulation 合并；full/delta 的诊断重建不等于生产 World 已接入网络权威。

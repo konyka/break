@@ -13693,3 +13693,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 最终本地直接测试 **193/193**，其中 world session **13/13**、recovery **8/8**、真实 loopback **2/2**；focused ASan+UBSan（`detect_leaks=1`）与 TSan 均 **9/9**，无 sanitizer、leak 或 race 诊断。完整 Vulkan **467 项注册、463 执行通过、4 条件 skip、0 失败**；OpenGL **465 项注册、461 执行通过、4 条件 skip、0 失败**。四项 skip 均为既有条件跳过，不计执行通过，也不代表完整 sanitizer suite。
 - 远端 CI run `45391323592`、windows-d3d12 run `45391323870`、QUIC run `45391323798`、Proton run `45393974894` 均 completed/success；CI 为 **24 success、3 条件 skip、0 failure**。Proton 日志上游 run-id=`45391323870`，`device_contract=77`、`pipeline_contract=77`，仅表示兼容通道，不是原生 D3D12/GPU 通过。
 - core_app 启用、生产 level rebaseline、跨连接共享 World、Runtime Core 映射、权威 simulation 合并及完整资产链仍是独立后续工作。本收据提交自身触发的工作流结果不在此预写。
+
+
+## core_app 可选 World replication 真实 loopback（2026-11-24）
+
+- **交付**：`test_core_app_net_client` 新增 world 模式，CTest 新增 `test_core_app_network_world`。真实 TLS/AUTH 下，客户端以乱序/重复 BRFG 分片重建服务端 full/delta，两个 target snapshot id 均一致；completion 在 drain 前不改 World。反向 full→base-mismatch delta→recovery full 由服务端 ACK→NEED_FULL→ACK 确认，首个 ACK 后的 delta 覆盖真实 `hooks.tick` 自动发布。
+- **计数与负对照**：客户端 target_matches=2、pre_drain=2、duplicates=2，服务端 applied=2、need_full=1、rejected=1、full_publishes=1、delta_publishes=1、queue_depth=0、dropped=0。移除 0x400A handler 后真实用例 **0/1** 且 applied/need_full/rejected=0/0/0；恢复后 **1/1**，无 transport 残留 diff。非 world 模式均断言无 `network_world_stats`。
+- **普通与 sanitizer**：core_app network/offline **13/13**、lifecycle **12/12**、相关 focused **13/13**。ASan+UBSan 显式 `detect_leaks=1` **14/14**；TSan 相关库 **12/12**，正常服务端 + TSan 客户端真实 loopback **1/1**。TSan target/离线 record 在既有 Lua longjmp 路径退出 66，未写成通过；混合 loopback 不覆盖 TSan 服务端进程，focused sanitizer 不等于完整 sanitizer suite。
+- **边界**：只交付诊断复制与恢复验收。**生产 level rebaseline、跨连接共享 live World、Runtime Core 映射、权威 simulation 合并、完整资产链**仍是独立后续工作；本段不重复库级 World session 的既有远端收据，也不预写新的远端结果。

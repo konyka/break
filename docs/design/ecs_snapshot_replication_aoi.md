@@ -276,3 +276,12 @@ normal、ASan+UBSan（显式 `detect_leaks=1`）和 TSan focused 均为 **6/6、
 新增 recovery **6/6** 覆盖限速与控制线格式、ACK 裁剪、full/fresh id、entry/byte 上限、packet cap、OVERLOAD 字节一致性和重连清零；真实 loopback **2/2** 覆盖 AUTH、乱序重复、drain 后 snapshot id、base mismatch→NEED_FULL→full，以及移除/恢复 0x400A 的负对照。与 world session **11/11**、bridge **20/20**、aspect **12/12**、Session **43/43**、wire **9/9**、fragment **28/28**、ECS **35/35**、world delta wire **23/23** 合计 **189/189**。normal focused CTest **11/11**；ASan+UBSan（detect_leaks=1）与 TSan 九项 focused 均 **9/9**，八项变异均判红并恢复。
 
 完整 Vulkan **463/467 执行通过、4 条件 skip、0 失败**；OpenGL **461/465 执行通过、4 条件 skip、0 失败**，skip 不计通过。**core_app 启用、生产 level rebaseline 策略、跨连接共享 World、跨 World 持久身份和权威 simulation 合并仍未完成**。本节只建立库级 at-least-once/final-consistency 边界，不声明 exactly-once 或完整资产链。
+
+
+## 补充（2026-11-24）：core_app BRWD target 的 drain-only 重建证据
+
+真实 core_app loopback 将库级 World session 契约推进到应用边界：客户端收到服务端 BRWD full/delta 后，以反序分片和每包一个重复片驱动真实接收桥。两个 completion 都先保持 World snapshot id、entity 状态和 confirmed baseline 不变，只有 `break_world_session_drain` 后才用 target tick 重建 snapshot，并要求其确定性 id 等于线上服务端 target id。一次实际运行的接收侧计数为 full=1、delta=1、target_matches=2、pre_drain=2、duplicates=2、reversed=9。
+
+反向诊断输入先形成一个 full baseline，再发送篡改内部 base snapshot id 的 delta。服务端保留 last-good World 并返回 NEED_FULL；恢复 full 的 ACK 再次确认 diagnostic target id。服务端最终 applied=2、need_full=1、rejected=1，非 network trace 与离线运行一致，证明这些 apply 没有进入权威 simulation。移除 0x400A handler 时上述反向 apply 不发生，恢复 handler 后合同重新通过。
+
+本项不引入跨 World 持久身份、预测回滚或资产依赖解析。**生产 level rebaseline、跨连接共享 live World、Runtime Core 映射、权威 simulation 合并和完整资产链仍未完成**；库级 World session 的既有验证与远端收据保持原记录，不在本节重复。

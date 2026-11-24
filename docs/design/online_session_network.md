@@ -181,3 +181,12 @@ normal、ASan+UBSan（显式 leak 检测）和 TSan focused 均为 **6/6、112/1
 真实 socket 验收先 AUTH，再以不同 envelope sequence 反序发送并重复 BRWD 分片；接收 World 只在 drain 后与 target snapshot id 一致。注入内部 base mismatch 后产生 NEED_FULL，后续 full 使 World 达到恢复 target id。独立负对照从 manager registry 删除 0x400A，真实消息被分类 invalid 且 completion/World 都为零；恢复定义后新 socket 用例通过。新增 recovery **6/6**、loopback **2/2**，连同 world session/bridge/aspect/Session/wire/fragment/ECS/delta 直接计数共 **189/189**；normal focused **11/11**，ASan+UBSan（detect_leaks=1）和 TSan focused 均 **9/9**。
 
 完整 Vulkan 注册 **467**，**463 通过、4 条件 skip、0 失败**；OpenGL 注册 **465**，**461 通过、4 条件 skip、0 失败**。四项 skip 不计通过。**core_app 启用、生产 level rebaseline、跨连接共享 World、预测回滚及远端验收仍未完成**；本特性只承诺 at-least-once 和最终一致。
+
+
+## 补充（2026-11-24）：core_app 的 BRWD/BRWC 双向恢复验收
+
+`test_core_app_net_client world` 复用现有 TLS/AUTH、BRFG wire、真实 `BreakWorldSession` 接收桥和 32 字节 BRWC 控制，而不是用 handler 直调替代网络。服务端先发布 full，收到精确 ACK 后由既有 tick 发布 delta；客户端反序重组并重复分片，验证两个 target snapshot id。随后客户端发送带重复片的 full、base mismatch delta 和恢复 full，服务端依次返回 ACK、NEED_FULL、ACK，覆盖 last-good baseline 和 full 恢复。
+
+普通 focused 中 core_app network/offline 为 **13/13**、lifecycle 为 **12/12**，相关 transport/session/ECS 套件为 **13/13**。ASan+UBSan 且显式 `detect_leaks=1` 为 **14/14**；TSan 相关库为 **12/12**，正常服务端 + TSan 客户端的真实 world loopback 为 **1/1**。TSan 的 core_app target/离线 record 仍在既有 Lua protected-error 路径以 `can't find longjmp buf` 退出 66，未记为通过；混合 loopback 不覆盖 TSan 服务端 socket 进程。
+
+移除 0x400A 注册的真实负对照为 **0/1**，恢复后为 **1/1**，transport 无残留 diff。本项仍是 at-least-once/final-consistency 的诊断切片，不包含完整资产链、生产 level rebaseline 或权威合并。

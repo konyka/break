@@ -32,4 +32,4 @@ BRWD 并对独立诊断 World 做 drain，保持 simulation 权威边界与默�
       独立评审后 push master，核验 CI/Windows/QUIC/Proton 并补收据。
 
 所有 configure 使用 `-DBREAK_ENABLE_SNOWFLAKE=ON
--DSNOWFLAKE_SOURCE_DIR=<pin 4ab761fc 检出>`；禁止 cry/game 等命名。
+-DSNOWFLAKE_SOURCE_DIR=<pin 4ab761fc 检出>`；命名遵循仓库命名合同。

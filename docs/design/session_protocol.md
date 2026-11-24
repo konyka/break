@@ -343,3 +343,12 @@ World snapshot/delta 现在有独立 BRWD/v1 canonical codec。消息头为 60 �
 真实 raw TCP/AUTH 测试覆盖乱序和重复 0x400A 分片、drain 前 World 不变、drain 后 snapshot id 一致、base mismatch 触发携带 last-good id/tick 的 NEED_FULL，以及后续 full 恢复。移除 0x400A registry 项时真实 Session 记录 invalid 且 bridge/World 均无推进；恢复注册的新鲜 loopback 再次通过。直接计数为 recovery **6/6**、loopback **2/2**、world session **11/11**、bridge **20/20**、aspect session **12/12**、Session **43/43**、wire **9/9**、fragment **28/28**、ECS replication **35/35**、world delta wire **23/23**，合计 **189/189**；focused normal CTest 含 target contract **11/11**。ASan+UBSan（`detect_leaks=1`）与 TSan 的九项 focused 均 **9/9**，无诊断。
 
 完整 Vulkan 注册 **467** 项，**463 执行通过、4 条件 skip、0 失败**；OpenGL 注册 **465** 项，**461 执行通过、4 条件 skip、0 失败**。四项条件 skip 均为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计执行通过。**core_app 启用、生产 level rebaseline 策略与跨连接共享 World 仍未完成**；本段也不预写远端或其他平台验收。
+
+
+## 补充（2026-11-24）：core_app World replication 的真实 TLS/AUTH loopback
+
+`test_core_app_network_world` 使用真实 `core_app --network --world-replication` 与 TLS/AUTH-v2 客户端，不新增或修改 0x400A/0x400B 的协议定义。客户端把服务端 full 与 delta 的 BRFG 分片反序送入本地 `BreakWorldSession`，并在每个包完成前重复一个分片；两个包的 duplicate 计数各增加 1。completion 入队后、drain 前，World snapshot id 与 confirmed baseline 均不变；每次仅 drain 一包后，本地重建 snapshot id 与 BRWD 的服务端 target id 一致。首个 full 的 ACK 使后续 `hooks.tick` 自动发布以该 target 为 base 的 delta。
+
+同一连接随后回传 full、内部 base id 不匹配的 delta 和恢复 full。服务端分别以 ACK、携带 last-good id/tick 的 NEED_FULL、ACK 应答，最终 `network_world_stats` 为 opened/closed=1/1、applied=2、need_full=1、rejected=1、full_publishes=1、delta_publishes=1、queue_depth=0、dropped=0，sent_fragments≥2。临时只移除服务端 0x400A handler 后，真实用例在首个入站 ACK 前失败，服务端 applied/need_full/rejected 均为 0；恢复注册后用例重新通过。
+
+所有非 world 网络模式都断言没有 `network_world_stats` 行。该验收不表示 exactly-once，也不改变诊断 World 与权威 simulation 的边界。
