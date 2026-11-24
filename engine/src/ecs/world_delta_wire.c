@@ -297,24 +297,59 @@ static Entity create_full_entity(World *world, Entity expected,
     return created;
 }
 
+static void sort_creates_by_index(Entity *creates, u32 count) {
+    for (u32 i = 1u; i < count; ++i) {
+        Entity value = creates[i];
+        u32 j = i;
+        while (j > 0u && creates[j - 1u].index > value.index) {
+            creates[j] = creates[j - 1u];
+            --j;
+        }
+        creates[j] = value;
+    }
+}
+
 static bool create_entities(World *world, const BreakWorldDeltaWire *message, bool full) {
     Entity *placeholders = NULL;
+    Entity *creates = NULL;
+    u32 create_count = 0u;
+    u32 create_pos = 0u;
     u32 count = 0u;
     u32 capacity = 0u;
     bool ok = true;
+    if (full) {
+        creates = (Entity *)calloc(message->record_count == 0u ? 1u
+                                                               : message->record_count,
+                                   sizeof(*creates));
+        if (!creates) return false;
+        for (u32 i = 0u; i < message->record_count; ++i) {
+            if (message->records[i].kind == BREAK_DELTA_ENTITY_CREATE) {
+                creates[create_count++] = message->records[i].entity;
+            }
+        }
+        sort_creates_by_index(creates, create_count);
+        for (u32 i = 1u; i < create_count; ++i) {
+            if (creates[i - 1u].index == creates[i].index) {
+                free(creates);
+                return false;
+            }
+        }
+    }
     for (u32 i = 0u; i < message->record_count && ok; ++i) {
         const BreakWorldDeltaRecord *record = &message->records[i];
+        Entity expected;
         Entity created;
         if (record->kind != BREAK_DELTA_ENTITY_CREATE) continue;
         if (record->entity.index == 0u || record->entity.generation == 0u) {
             ok = false;
             break;
         }
-        created = full ? create_full_entity(world, record->entity, &placeholders,
+        expected = full ? creates[create_pos++] : record->entity;
+        created = full ? create_full_entity(world, expected, &placeholders,
                                             &count, &capacity)
                        : world_create_entity(world);
-        if (created.index != record->entity.index ||
-            created.generation != record->entity.generation) {
+        if (created.index != expected.index ||
+            created.generation != expected.generation) {
             ok = false;
         }
     }
@@ -322,6 +357,7 @@ static bool create_entities(World *world, const BreakWorldDeltaWire *message, bo
         world_destroy_entity(world, placeholders[i]);
     }
     free(placeholders);
+    free(creates);
     return ok;
 }
 

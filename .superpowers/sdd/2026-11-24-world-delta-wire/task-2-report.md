@@ -11,7 +11,7 @@ Task 2 adds edge/fuzz coverage, five design/status supplements, full renderer ve
 `engine/tests/test_world_delta_wire.c` increased from 17 to **21 tests; 21/21 passed**:
 
 - `world_delta_wire_multi_entity_component_full_delta_are_canonical`: four entities and three component types; full has 14 records, delta has 10 records and all five record kinds; both rebuild to the expected target ID and complete eight canonical re-encodings.
-- `world_delta_wire_wide_u64_fields_survive_repeated_round_trips`: high-bit-set schema/level/base/target IDs and ticks with explicit little-endian byte assertions and 16 canonical re-encodings.
+- `world_delta_wire_wide_u64_fields_survive_repeated_round_trips`: wide schema/level values and high-bit-set base/target IDs and ticks, with explicit little-endian byte assertions and 16 canonical re-encodings; schema/level byte layout is pinned by the earlier golden test.
 - `world_delta_wire_empty_record_full_message_rebuilds_empty_snapshot`: zero records, exact 60-byte message, empty target rebuild, and eight canonical re-encodings.
 - `world_delta_wire_maximum_size_record_round_trips_exactly`: payload of `67,108,864 - 60 - 17 = 67,108,787` bytes; exact 67,108,864-byte message accepted and canonically re-encoded three times, while one payload byte more is rejected as OVER_LIMIT without writing output.
 
@@ -52,3 +52,18 @@ Failures were:
 With the new fuzz source and naming correction in HEAD, the final post-commit Vulkan rerun passed all archive and naming contracts: **471 registered, 467 executed passes, 4 conditional skips, 0 failures** (368.76 s). This supersedes the intermediate three-failure result above and completes **471/471 accounted tests**.
 
 OpenGL (`engine/build-gl`, `ENGINE_RHI_BACKEND=opengl`) completed its final committed-source run with **462 registered, 458 executed passes, 4 conditional skips, 0 failures** (355.76 s), completing **462/462 accounted tests**. Its skips are the same four named above (`test_d3d12_dependency_gate`, `test_core_app_nm_missing`, `test_core_app_nm_unsupported`, and `test_core_app_nm_symbol_missing_unsupported`). Neither backend counts the four conditional skips as executed passes; both final suites have zero failures.
+
+## Final branch review (agent-429) fixes
+
+Verdict was needs changes for a create-ordering defect, plus two minor items.
+
+- Full rebuild now collects CREATE records, sorts them by entity index and
+  rejects duplicate indices before reconstructing, so a shuffled full message
+  describing the same target world rebuilds identically. New test
+  world_delta_wire_full_rebuilds_shuffled_create_order swaps the two CREATE
+  records and asserts the rebuilt snapshot id matches; making the sort a no-op
+  turns it red (21/22), restored to 22/22.
+- canonical_reencoding no longer copies the initial message, and the max-size
+  test frees its payload right after the exact-size encode, reducing peak
+  memory while keeping byte-for-byte comparisons.
+- The wide-field description above was narrowed as suggested by review.
