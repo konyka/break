@@ -1,6 +1,7 @@
 #include <network/break_online_aspect_replication.h>
 
 #include <network/break_net_message.h>
+#include <network/break_replication_wire.h>
 #include <core/platform_thread.h>
 
 #include <stdlib.h>
@@ -210,7 +211,9 @@ BreakRuntimeError break_aspect_connection_open(
     u32 i;
     if (!replication_owner(replication)) return BREAK_RUNTIME_REJECTED;
     if (!connection_id || !fragment_size ||
-        fragment_size > BREAK_NET_MAX_PAYLOAD_SIZE) return BREAK_RUNTIME_INVALID;
+        fragment_size > BREAK_REPLICATION_WIRE_MAX_FRAGMENT_DATA_SIZE) {
+        return BREAK_RUNTIME_INVALID;
+    }
     if (find_connection(replication, connection_id, NULL, NULL) == BREAK_RUNTIME_OK) {
         return BREAK_RUNTIME_REJECTED;
     }

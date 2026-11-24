@@ -708,7 +708,21 @@ TEST(aspect_replication_budget_failure_keeps_value_dirty_without_attempt)
     fixture_dispose(&fixture);
 }
 
+TEST(aspect_replication_fragment_size_is_brfg_v1_bounded)
+{
+    ReplFixture fixture;
+    ASSERT_TRUE(fixture_init(&fixture));
+    ASSERT_EQ(break_aspect_connection_open(fixture.replication, 1u, 1024u, 65536u),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_aspect_replication_connection_count(fixture.replication), 0u);
+    ASSERT_EQ(break_aspect_connection_open(fixture.replication, 1u, 1024u, 65496u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_aspect_replication_connection_count(fixture.replication), 1u);
+    fixture_dispose(&fixture);
+}
+
 TEST_MAIN_BEGIN()
+    RUN_TEST(aspect_replication_fragment_size_is_brfg_v1_bounded);
     RUN_TEST(aspect_replication_baselines_and_per_connection_dirty_masks);
     RUN_TEST(aspect_replication_budget_priority_and_send_failure_retry);
     RUN_TEST(aspect_replication_fragments_leave_and_disconnect);
