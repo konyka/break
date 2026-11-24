@@ -1190,6 +1190,16 @@ static BreakReplicationFragment test_outbound_fragment(void)
     return fragment;
 }
 
+static uint32_t test_outbound_checksum(const uint8_t *data, size_t size)
+{
+    uint32_t hash = 2166136261u;
+    for (size_t i = 0u; i < size; ++i) {
+        hash ^= data[i];
+        hash *= 16777619u;
+    }
+    return hash;
+}
+
 TEST(bridge_send_validates_and_encodes_through_real_reactor)
 {
     static const uint8_t expected[] = {
@@ -1206,6 +1216,7 @@ TEST(bridge_send_validates_and_encodes_through_real_reactor)
     BreakReplicationFragment fragment = test_outbound_fragment();
     TestReactorFixture fixture;
     BreakNetOwnedMessage outbound;
+    BreakReplicationSessionCompletion completion;
     uint64_t outbound_connection = 0u;
 
     config.max_fragment_bytes = 4u;
@@ -1264,6 +1275,28 @@ TEST(bridge_send_validates_and_encodes_through_real_reactor)
     ASSERT_EQ(outbound.protocol_version, BREAK_REPLICATION_WIRE_VERSION);
     ASSERT_EQ(outbound.size, sizeof(expected));
     ASSERT_TRUE(memcmp(outbound.data, expected, sizeof(expected)) == 0);
+    break_net_message_release(&outbound);
+    break_replication_session_bridge_destroy(bridge);
+
+    config.message_id = 0x4100u;
+    fragment.checksum = test_outbound_checksum(fragment.data, fragment.size);
+    bridge = break_replication_session_bridge_create(&config);
+    ASSERT_NOT_NULL(bridge);
+    ASSERT_TRUE(break_replication_session_connection_open(bridge, 0x123u, 2u));
+    ASSERT_EQ(break_replication_session_send_fragment(bridge, 0x123u, &fragment),
+              BREAK_NET_SEND_OK);
+    ASSERT_EQ(break_net_reactor_poll_outbound_for_test(
+                  fixture.reactor, &outbound_connection, &outbound),
+              BREAK_NET_EVENT_OK);
+    ASSERT_EQ(outbound.message_id, 0x4100u);
+    ASSERT_TRUE(break_replication_session_handle_message(0x123u, &outbound, bridge));
+    outbound.message_id = BREAK_NET_MESSAGE_ID_REPLICATION_FRAGMENT;
+    ASSERT_FALSE(break_replication_session_handle_message(0x123u, &outbound, bridge));
+    outbound.message_id = 0x4100u;
+    ASSERT_EQ(break_replication_session_poll_completed(bridge, &completion, 1u), 1u);
+    ASSERT_EQ(completion.connection, 0x123u);
+    ASSERT_EQ(completion.payload_size, 4u);
+    break_replication_session_completion_release(&completion);
     break_net_message_release(&outbound);
     break_replication_session_bridge_destroy(bridge);
     test_reactor_destroy(&fixture);

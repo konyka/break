@@ -13,7 +13,8 @@
 extern "C" {
 #endif
 
-/* Bridges BRFG fragments (message 0x4009, network/break_replication_wire.h)
+/* Bridges BRFG fragments (default message 0x4009,
+ * network/break_replication_wire.h)
  * between a BreakNetReactor/BreakSessionManager and one reassembly pool per
  * open connection. Every call is owner-thread only; the bridge adds no
  * thread, lock or atomic. The session handler only reassembles and queues:
@@ -38,6 +39,7 @@ typedef struct BreakReplicationSessionBridgeConfig {
     uint64_t expiry_max_idle;
     BreakReplicationSessionClockFn clock; /* required, owner thread only */
     void *clock_user;
+    uint16_t message_id; /* 0 selects BREAK_NET_MESSAGE_ID_REPLICATION_FRAGMENT */
 } BreakReplicationSessionBridgeConfig;
 
 typedef struct BreakReplicationSessionCompletion {
@@ -82,7 +84,7 @@ bool break_replication_session_connection_open(
 bool break_replication_session_connection_close(
     BreakReplicationSessionBridge *bridge, BreakConnectionKey connection);
 /* Encodes one fragment in the bridge's 64 KiB scratch and queues it with
- * break_net_reactor_send(..., 0x4009, 1, ...). CLOSED for a NULL bridge or an
+ * break_net_reactor_send using the configured message id. CLOSED for a NULL bridge or an
  * unopened key; INVALID for a NULL fragment or reactor, a base other than the
  * connection's expected base, a size or count above the bridge limits, or a
  * codec rejection. Reactor results (OVERLOAD, CLOSED) are returned unchanged
@@ -95,7 +97,8 @@ BreakNetSendResult break_replication_session_send_fragment(
  * the clock. Zero when expiry is disabled. */
 size_t break_replication_session_bridge_tick(BreakReplicationSessionBridge *bridge,
                                              uint64_t now);
-/* BreakSessionMessageHandler for 0x4009 with the bridge as user_data. False
+/* BreakSessionMessageHandler for the configured message id with the bridge as
+ * user_data. False
  * (the session records HANDLER_FAILED and keeps the connection open) for a
  * wrong id/version, an unopened key, malformed wire, a fragment above the
  * bridge limits or a pool rejection (base, checksum, conflict, high-water,
@@ -110,6 +113,12 @@ bool break_replication_session_handle_message(
  * each payload moves with it. 0 for NULL bridge/out or zero capacity. */
 size_t break_replication_session_poll_completed(
     BreakReplicationSessionBridge *bridge,
+    BreakReplicationSessionCompletion *out, size_t out_capacity);
+/* Moves up to out_capacity completions for one open or closed connection key,
+ * skipping other keys without changing their FIFO order. Ownership of each
+ * selected payload moves to out. */
+size_t break_replication_session_poll_completed_for_connection(
+    BreakReplicationSessionBridge *bridge, BreakConnectionKey connection,
     BreakReplicationSessionCompletion *out, size_t out_capacity);
 /* Frees the payload and zeroes the completion. NULL is a no-op. */
 void break_replication_session_completion_release(

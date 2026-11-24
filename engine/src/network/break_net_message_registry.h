@@ -53,6 +53,10 @@ extern "C" {
  * only: one BRFG v1 fragment (network/break_replication_wire.h), bounded by
  * the global payload cap. */
 #define BREAK_NET_MESSAGE_ID_REPLICATION_FRAGMENT 0x4009u
+/* World snapshot/delta BRFG payloads (BRWD) and their reserved control stream.
+ * Both are AUTHENTICATED only and bounded by the global payload cap. */
+#define BREAK_NET_MESSAGE_ID_WORLD_DELTA 0x400au
+#define BREAK_NET_MESSAGE_ID_WORLD_CONTROL 0x400bu
 #define BREAK_NET_MESSAGE_ID_MAX 65535u
 #define BREAK_NET_REGISTRY_MAX_MESSAGES 64u
 #define BREAK_NET_MAX_PAYLOAD_SIZE (64u * 1024u)

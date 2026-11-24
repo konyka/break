@@ -1040,9 +1040,9 @@ TEST(break_session_registry_has_physics_sync_messages)
     ASSERT_EQ(correction->phase, BREAK_NET_MESSAGE_PHASE_AUTHENTICATED);
     ASSERT_EQ(correction->duplicate_policy, BREAK_NET_DUPLICATE_IDEMPOTENT);
 #ifdef BREAK_ENABLE_CRYPTO
-    ASSERT_EQ(registry->count, 30u);
+    ASSERT_EQ(registry->count, 32u);
 #else
-    ASSERT_EQ(registry->count, 29u);
+    ASSERT_EQ(registry->count, 31u);
 #endif
     {
         const BreakNetMessageDefinition *replication = break_net_message_registry_lookup(
@@ -1054,6 +1054,24 @@ TEST(break_session_registry_has_physics_sync_messages)
         ASSERT_EQ(replication->payload_limit, (size_t)BREAK_NET_MAX_PAYLOAD_SIZE);
         ASSERT_EQ(replication->phase, BREAK_NET_MESSAGE_PHASE_AUTHENTICATED);
         ASSERT_EQ(replication->duplicate_policy, BREAK_NET_DUPLICATE_IDEMPOTENT);
+    }
+    {
+        const BreakNetMessageDefinition *delta = break_net_message_registry_lookup(
+            registry, 0x400au);
+        const BreakNetMessageDefinition *control = break_net_message_registry_lookup(
+            registry, 0x400bu);
+        ASSERT_NOT_NULL(delta);
+        ASSERT_NOT_NULL(control);
+        ASSERT_EQ(delta->minimum_version, 1u);
+        ASSERT_EQ(delta->maximum_version, 1u);
+        ASSERT_EQ(delta->payload_limit, (size_t)BREAK_NET_MAX_PAYLOAD_SIZE);
+        ASSERT_EQ(delta->phase, BREAK_NET_MESSAGE_PHASE_AUTHENTICATED);
+        ASSERT_EQ(delta->duplicate_policy, BREAK_NET_DUPLICATE_IDEMPOTENT);
+        ASSERT_EQ(control->minimum_version, 1u);
+        ASSERT_EQ(control->maximum_version, 1u);
+        ASSERT_EQ(control->payload_limit, (size_t)BREAK_NET_MAX_PAYLOAD_SIZE);
+        ASSERT_EQ(control->phase, BREAK_NET_MESSAGE_PHASE_AUTHENTICATED);
+        ASSERT_EQ(control->duplicate_policy, BREAK_NET_DUPLICATE_IDEMPOTENT);
     }
     {
         const BreakNetMessageDefinition *voice = break_net_message_registry_lookup(

@@ -68,6 +68,8 @@ BreakReplicationSessionBridge *break_replication_session_bridge_create(
     bridge = (BreakReplicationSessionBridge *)calloc(1u, sizeof(*bridge));
     if (!bridge) return NULL;
     bridge->config = *config;
+    if (bridge->config.message_id == 0u)
+        bridge->config.message_id = BREAK_NET_MESSAGE_ID_REPLICATION_FRAGMENT;
     bridge->connections = (BreakReplicationSessionConnection *)calloc(
         config->max_connections, sizeof(*bridge->connections));
     bridge->completions = (BreakReplicationSessionCompletion *)calloc(
@@ -199,7 +201,7 @@ BreakNetSendResult break_replication_session_send_fragment(
                                       &wire_size) != BREAK_REPLICATION_FRAGMENT_OK)
         return BREAK_NET_SEND_INVALID;
     return break_net_reactor_send(bridge->config.reactor, connection,
-                                  BREAK_NET_MESSAGE_ID_REPLICATION_FRAGMENT,
+                                  bridge->config.message_id,
                                   BREAK_REPLICATION_WIRE_VERSION, bridge->scratch, wire_size);
 }
 
@@ -252,7 +254,7 @@ bool break_replication_session_handle_message(
     if (!bridge) return false;
     slot = bridge_find(bridge, connection);
     if (!slot || !message ||
-        message->message_id != BREAK_NET_MESSAGE_ID_REPLICATION_FRAGMENT ||
+        message->message_id != bridge->config.message_id ||
         message->protocol_version != BREAK_REPLICATION_WIRE_VERSION ||
         break_replication_wire_decode(message->data, message->size, &fragment) !=
             BREAK_REPLICATION_FRAGMENT_OK ||
@@ -306,6 +308,34 @@ size_t break_replication_session_poll_completed(
             (bridge->completion_head + 1u) % bridge->config.completion_capacity;
         bridge->completion_count--;
     }
+    return moved;
+}
+
+size_t break_replication_session_poll_completed_for_connection(
+    BreakReplicationSessionBridge *bridge, BreakConnectionKey connection,
+    BreakReplicationSessionCompletion *out, size_t out_capacity)
+{
+    size_t original_count;
+    size_t kept = 0u;
+    size_t moved = 0u;
+    if (!bridge || connection == 0u || !out || out_capacity == 0u) return 0u;
+    original_count = bridge->completion_count;
+    for (size_t i = 0u; i < original_count; ++i) {
+        BreakReplicationSessionCompletion *entry = bridge_completion_at(bridge, i);
+        if (entry->connection == connection && moved < out_capacity) {
+            out[moved++] = *entry;
+            bridge->completion_bytes -= entry->payload_size;
+            memset(entry, 0, sizeof(*entry));
+            continue;
+        }
+        if (kept != i) {
+            BreakReplicationSessionCompletion *target = bridge_completion_at(bridge, kept);
+            *target = *entry;
+            memset(entry, 0, sizeof(*entry));
+        }
+        kept++;
+    }
+    bridge->completion_count = kept;
     return moved;
 }
 
