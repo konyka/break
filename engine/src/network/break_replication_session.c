@@ -177,6 +177,29 @@ bool break_replication_session_connection_close(
     bridge->connection_count--;
     return true;
 }
+
+void break_replication_session_rebaseline(
+    BreakReplicationSessionBridge *bridge, uint64_t expected_base_id)
+{
+    size_t i;
+    if (!bridge) return;
+    for (i = 0u; i < bridge->config.max_connections; ++i) {
+        if (!bridge->connections[i].pool) continue;
+        break_replication_reassembly_pool_rebaseline(
+            bridge->connections[i].pool, expected_base_id);
+        bridge->connections[i].expected_base_id = expected_base_id;
+    }
+    for (i = 0u; i < bridge->completion_count; ++i) {
+        BreakReplicationSessionCompletion *entry = bridge_completion_at(bridge, i);
+        break_replication_reassembly_free(entry->payload);
+        memset(entry, 0, sizeof(*entry));
+    }
+    bridge->dropped_completions += bridge->completion_count;
+    bridge->completion_head = 0u;
+    bridge->completion_count = 0u;
+    bridge->completion_bytes = 0u;
+}
+
 static bool bridge_fragment_within_limits(const BreakReplicationSessionBridge *bridge,
                                           const BreakReplicationFragment *fragment)
 {

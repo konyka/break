@@ -1513,6 +1513,94 @@ TEST(bridge_selective_poll_wraps_ring_and_preserves_survivor_order)
     break_replication_session_bridge_destroy(bridge);
 }
 
+TEST(bridge_rebaseline_preserves_keys_and_drops_old_completions)
+{
+    static const char pending_payload[] = "abcdefgh";
+    static const char new_payload[] = "new-data";
+    uint64_t now = 100u;
+    BreakReplicationSessionBridgeConfig config = test_bridge_config(&now);
+    BreakNetReactorConfig reactor_config = {BREAK_NET_DRIVE_STEP, 0, 4u, 0, 0u, 0u};
+    BreakNetReactor *reactor = break_net_reactor_create(&reactor_config);
+    BreakReplicationSessionBridge *bridge;
+    BreakReplicationFragment *pending = NULL;
+    BreakReplicationFragment *fresh = NULL;
+    size_t pending_count = 0u;
+    size_t fresh_count = 0u;
+    BreakReplicationSessionCompletion completions[2];
+    BreakReplicationSessionBridgeStats stats;
+    size_t i;
+
+    ASSERT_NOT_NULL(reactor);
+    config.reactor = reactor;
+    bridge = break_replication_session_bridge_create(&config);
+    ASSERT_NOT_NULL(bridge);
+    ASSERT_TRUE(break_replication_session_connection_open(bridge, 11u, 7u));
+    ASSERT_TRUE(break_replication_session_connection_open(bridge, 22u, 7u));
+    ASSERT_EQ(break_replication_fragment_payload(
+                  70u, 7u, pending_payload, sizeof(pending_payload) - 1u, 4u,
+                  &pending, &pending_count),
+              BREAK_REPLICATION_FRAGMENT_OK);
+    ASSERT_EQ(break_replication_fragment_payload(
+                  1u, 8u, new_payload, sizeof(new_payload) - 1u, 4u,
+                  &fresh, &fresh_count),
+              BREAK_REPLICATION_FRAGMENT_OK);
+    ASSERT_EQ(pending_count, 2u);
+    ASSERT_EQ(fresh_count, 2u);
+
+    ASSERT_TRUE(test_push_fragment(bridge, 11u, &pending[0]));
+    ASSERT_TRUE(test_push_fragment(bridge, 22u, &pending[0]));
+    ASSERT_TRUE(test_push_payload(bridge, 11u, 80u, 7u, "old-a", 5u));
+    ASSERT_TRUE(test_push_payload(bridge, 22u, 81u, 7u, "old-b", 5u));
+    break_replication_session_bridge_stats(bridge, &stats);
+    ASSERT_EQ(stats.connections, 2u);
+    ASSERT_EQ(stats.pending_bytes, 8u);
+    ASSERT_EQ(stats.completion_count, 2u);
+    ASSERT_EQ(stats.completion_bytes, 10u);
+    ASSERT_EQ(stats.dropped_completions, 0u);
+
+    break_replication_session_rebaseline(NULL, 8u);
+    break_replication_session_rebaseline(bridge, 8u);
+    break_replication_session_bridge_stats(bridge, &stats);
+    ASSERT_EQ(stats.connections, 2u);
+    ASSERT_EQ(stats.pending_bytes, 0u);
+    ASSERT_EQ(stats.completion_count, 0u);
+    ASSERT_EQ(stats.completion_bytes, 0u);
+    ASSERT_EQ(stats.dropped_completions, 2u);
+
+    ASSERT_FALSE(test_push_payload(bridge, 11u, 1u, 7u, "old", 3u));
+    ASSERT_EQ(break_replication_session_send_fragment(bridge, 11u, &pending[0]),
+              BREAK_NET_SEND_INVALID);
+    ASSERT_EQ(break_replication_session_send_fragment(bridge, 11u, &fresh[0]),
+              BREAK_NET_SEND_CLOSED);
+
+    ASSERT_TRUE(test_push_fragment(bridge, 11u, &fresh[0]));
+    ASSERT_TRUE(test_push_fragment(bridge, 22u, &fresh[0]));
+    ASSERT_TRUE(test_push_fragment(bridge, 11u, &fresh[1]));
+    ASSERT_TRUE(test_push_fragment(bridge, 22u, &fresh[1]));
+    ASSERT_EQ(break_replication_session_poll_completed(bridge, completions, 2u), 2u);
+    for (i = 0u; i < 2u; ++i) {
+        ASSERT_EQ(completions[i].connection, i == 0u ? 11u : 22u);
+        ASSERT_EQ(completions[i].delta_id, 1u);
+        ASSERT_EQ(completions[i].payload_size, sizeof(new_payload) - 1u);
+        ASSERT_TRUE(memcmp(completions[i].payload, new_payload,
+                           sizeof(new_payload) - 1u) == 0);
+        break_replication_session_completion_release(&completions[i]);
+    }
+    break_replication_session_bridge_stats(bridge, &stats);
+    ASSERT_EQ(stats.connections, 2u);
+    ASSERT_EQ(stats.pending_bytes, 0u);
+    ASSERT_EQ(stats.completion_count, 0u);
+    ASSERT_EQ(stats.completion_bytes, 0u);
+    ASSERT_EQ(stats.rejected_fragments, 1u);
+    ASSERT_EQ(stats.completed_packets, 4u);
+    ASSERT_EQ(stats.dropped_completions, 2u);
+
+    break_replication_fragments_free(fresh, fresh_count);
+    break_replication_fragments_free(pending, pending_count);
+    break_replication_session_bridge_destroy(bridge);
+    break_net_reactor_destroy(reactor);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(bridge_create_validates_ranges_products_and_null_calls);
     RUN_TEST(bridge_open_capacity_close_and_key_reuse_start_fresh);
@@ -1534,4 +1622,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(bridge_send_propagates_reactor_closed_overload_and_caller_retry);
     RUN_TEST(bridge_tick_expires_every_connection_without_traffic_and_honors_disable);
     RUN_TEST(bridge_non_auth_handler_failure_keeps_session_authenticated);
+    RUN_TEST(bridge_rebaseline_preserves_keys_and_drops_old_completions);
 TEST_MAIN_END()

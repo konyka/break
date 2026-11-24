@@ -83,6 +83,11 @@ bool break_replication_session_connection_open(
  * the same key starts with a fresh high-water. False for an unknown key. */
 bool break_replication_session_connection_close(
     BreakReplicationSessionBridge *bridge, BreakConnectionKey connection);
+/* Rebaseline every open pool without reallocating, preserving keys and expiry
+ * policy. All queued completions are freed and counted as dropped. NULL is a
+ * no-op. */
+void break_replication_session_rebaseline(
+    BreakReplicationSessionBridge *bridge, uint64_t expected_base_id);
 /* Encodes one fragment in the bridge's 64 KiB scratch and queues it with
  * break_net_reactor_send using the configured message id. CLOSED for a NULL bridge or an
  * unopened key; INVALID for a NULL fragment or reactor, a base other than the

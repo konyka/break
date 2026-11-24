@@ -119,6 +119,10 @@ size_t break_replication_reassembly_pool_pending_bytes(
 /* Restore fresh-pool stream state while preserving creation and expiry policy;
  * the expiry schedule epoch is cleared. */
 void break_replication_reassembly_pool_reset(BreakReplicationReassemblyPool *pool);
+/* Reset stream state and replace the expected base on the pool and every fixed
+ * slot without reallocating. NULL is a no-op. */
+void break_replication_reassembly_pool_rebaseline(
+    BreakReplicationReassemblyPool *pool, uint64_t expected_base_id);
 
 #ifdef __cplusplus
 }

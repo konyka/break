@@ -586,3 +586,14 @@ void break_replication_reassembly_pool_reset(BreakReplicationReassemblyPool *poo
     pool->last_tick = 0u;
     pool->tick_initialized = false;
 }
+
+void break_replication_reassembly_pool_rebaseline(
+    BreakReplicationReassemblyPool *pool, uint64_t expected_base_id)
+{
+    size_t i;
+    if (!pool) return;
+    break_replication_reassembly_pool_reset(pool);
+    pool->expected_base_id = expected_base_id;
+    for (i = 0u; i < pool->stream_capacity; ++i)
+        pool->slots[i].reassembler.expected_base_id = expected_base_id;
+}
