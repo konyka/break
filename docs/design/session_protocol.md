@@ -278,3 +278,22 @@ snow_status_t snow_net_thread_add_acceptor_with_handlers_ex(
 ## 验证与边界
 
 Task 5 文档应与实际验证保持一致：adapter focused normal/ASan/TSan 均为 38/38，Session focused normal/ASan/TSan 均为 34/34，TLS focused normal/ASan/TSan 均为 10/10；真实 loopback 覆盖 Snowflake acceptor registration、parser/open/message/send/close、AUTH 入站、Session poll/handler dispatch、PING response、18-byte wire envelope、client close 后 `CLOSED`/stale 语义和 bounded stop。默认 registry 下 AUTH/PING 均为 `ANY` phase；自定义 registry 的 phase/duplicate policy、duplicate 行为、lifetime capacity、borrowed registry/reactor/handler/payload contract 均已明确。仍不应把本切片写成已完成 player authentication backend、复制、Lua、editor、security、ECS/World 或 logic integration；Snowflake per-context completion/drop 通知不足、custom registry codec 当前仍使用 default registry 的真实 adapter codec 边界、LogicThread-only contract、full CTest 其他模块失败、fuzz 未运行以及 timeout/stop 的非 Linux 平台 lane 均保留为限制。
+
+
+## 补充（2026-11-24）：0x4009 复制分片 session bridge 与真实 loopback
+
+默认 registry 新增以下定义，crypto 开启/关闭时的总定义数由 29/28 变为 **30/29**；旧消息定义不变。
+
+| ID | Version | Payload limit | Phase | Duplicate policy |
+|---:|---:|---:|---|---|
+| `BREAK_NET_MESSAGE_ID_REPLICATION_FRAGMENT == 0x4009` | 1..1 | 64 KiB（`BREAK_NET_MAX_PAYLOAD_SIZE`） | `AUTHENTICATED` | `IDEMPOTENT` |
+
+`break_replication_session.{h,c}` 提供库级 `BreakReplicationSessionBridge`。API 分为 create/destroy、`connection_open`/`connection_close`（open 时绑定该连接的 expected base）、`send_fragment`、`bridge_tick`、可直接注册到 SessionManager 的 `handle_message`、`poll_completed`/`completion_release` 和 `bridge_stats`。每个 open key 有独立重组池与 expected base；`max_connections * max_pending_bytes_per_connection <= max_total_pending_bytes` 在 create 时静态保证，另受 stream、fragment size/count 配置约束。pending 只计池内分片负载；元数据、编码 scratch、完成暂存与已移交 payload 不在该预算内，completion queue 由独立的条数、单包和总字节上限约束。
+
+接收 handler 只做 decode、重组和入队，不调用 World/aspect。完成项按 FIFO 保存 connection、delta id 和 owned payload，**ownership-at-poll**：只有 `break_replication_session_poll_completed` 才把 payload 所有权交给调用者，随后由 `completion_release` 释放；队列溢出不会覆盖旧项，close 会释放该连接的池与未取完成项，同 key 再 open 不继承 retired high-water。stats 提供 connections、pending bytes、completion count/bytes，以及 rejected、duplicate、completed、dropped、expired 计数。全部 API 为所有者线程语义，没有新增线程或锁。
+
+真实 Snowflake 证据来自 `bridge_socket_loopback_reassembles_interleaved_duplicates_in_fifo` 和 `bridge_socket_reconnect_same_key_resets_completed_high_water`：raw TCP client 先完成 AUTH，reactor 使用 step 驱动，Session 事件全部由 `break_session_manager_poll_adapter` 消费；两个 delta 的分片乱序交织，相同 BRFG bytes 以不同 envelope sequence 重发，错误 expected base 被拒绝，完成按 delta 200、100 的 FIFO 次序交付，connection 与 payload 逐字节一致，consumer 计数在 poll 前为 0。随后真实 close/reconnect 复用同一 connection key，先完成 delta 40，再在重开池后完成 delta 1，证明 high-water 已重置。临时移除 registry 的 0x4009 项后两个新用例均失败，恢复后通过；没有用 handler 直调替代 socket 路径。
+
+最终 normal focused 为 bridge **19/19**、Session **43/43**、wire **9/9**、fragment **28/28**。完整 Vulkan 注册 **468** 项，**464 执行通过、4 条件 skip、0 失败**；OpenGL 注册 **459** 项，**455 执行通过、4 条件 skip、0 失败**。两套 skip 均为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计为执行通过。ASan+UBSan（`ASAN_OPTIONS=detect_leaks=1`）与 TSan 的上述 focused CTest 均为 **4/4**，直接运行也分别为 **19/19、43/43、9/9、28/28**，无 sanitizer、leak 或 race 诊断。
+
+本补充只关闭库级 Session/reactor 分片接线与真实 loopback 缺口。**生产 core_app/editor 接线、aspect drain、World delta、可靠恢复和完整资产链仍未完成**；本机结果也不预写远端或其他平台验收。

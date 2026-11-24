@@ -215,3 +215,14 @@ TDD 先新增四组测试，三个缺失 API 的隐式声明在 `-Werror` 下构
 最终完整 Vulkan CTest 注册 **462** 项，**458 通过、4 条件 skip、0 失败**；OpenGL 注册 **453** 项，**449 通过、4 条件 skip、0 失败**。两者 skip 均为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计为执行通过。`ENGINE_USE_ASAN=ON + ENGINE_USE_UBSAN=ON` 且显式 `detect_leaks=1` 的 focused 为 **28/28**，TSan focused 为 **28/28**，均无 sanitizer/leak 诊断；未运行完整 sanitizer suite。
 
 本项关闭“周期性调用 expire 的调度器”缺口，但应用仍必须在 owner tick/frame 调用 `pool_tick`，或由 `push_at` 触发维护；无流量且不 tick 时没有后台维护。session/网络接线、真实网络与生产服务验收仍未完成，FNV-1a 仍不是安全认证。
+
+
+## 补充（2026-11-24）：分片重组池接入认证 Session
+
+复制分片消息 `0x4009` 已注册为 v1、64 KiB、`AUTHENTICATED + IDEMPOTENT`，默认 registry count 在 crypto 开启/关闭时为 **30/29**。`BreakReplicationSessionBridge` 提供 create/destroy、open/close、send、tick、handler、poll/release 和 stats；它复用 `BreakReplicationReassemblyPool` 与 BRFG codec，不改变 snapshot、AOI 或 World delta 的线格式。
+
+每个 connection key 在 open 时获得独立 pool 和 expected base；每连接 pending 乘积不能超过创建时的总预算，完成 queue 另有条数、单包和总字节上限。完成项按 FIFO 保存 connection、delta id 和 owned payload，只有 `poll_completed` 才执行 ownership-at-poll；`completion_release` 释放已取项，close 释放未取项和池，同 key 再 open 使用全新 high-water。stats 提供连接/pending/completion 快照以及 rejected、duplicate、completed、dropped、expired 计数。网络 handler 只重组并入队，不调用 aspect/World，不新增线程或锁。
+
+两个真实 Snowflake loopback 用例验证 AUTH 后的乱序双 delta、相同 BRFG bytes 重复、错误 expected base 拒绝、FIFO/connection/delta/payload、poll 前 consumer 为 0，以及同 key 真实 close/reconnect 后不继承旧 high-water。bridge 现为 **19/19**，Session/wire/fragment 分别为 **43/43、9/9、28/28**。完整 Vulkan **464 通过 + 4 条件 skip/468，0 失败**，OpenGL **455 通过 + 4 条件 skip/459，0 失败**；skip 不计执行通过。ASan+UBSan（显式 `detect_leaks=1`）和 TSan focused 均 **4/4**，直接 case 计数同为 **19/19、43/43、9/9、28/28**，无诊断。
+
+本项没有完成 **生产 core_app/editor 接线、aspect drain、World delta、可靠恢复或完整资产链**。后续 drain 仍需校验 `BRA1.schema_hash == expected_base` 并在所有者线程显式 apply；本项真实 loopback 不等于上述集成已经交付。

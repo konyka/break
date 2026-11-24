@@ -137,3 +137,14 @@ focused 证据为新 wire **7/7**、旧 fragment/scheduler **28/28**，ASan+UBSa
 fix 后 normal、ASan+UBSan/LSan、TSan focused 均为 wire **9/9**、旧 fragment/scheduler **28/28**，累计 **14 项变异均判红并恢复**。上一段的 **7/7** 与首轮八项变异是 fix 前历史记录，最终为 **9/9、14 项**。
 
 这些结果不改变本文件的接入边界：完整 sanitizer suite、Session 收发、消息注册、aspect bridge、真实网络及远端验收仍未完成，不以 codec/CTest 证据代替，也不预写推送或 CI 结果。
+
+
+## 补充（2026-11-24）：BRFG/v1 接入认证 Session
+
+`0x4009` 现为 `BREAK_NET_MESSAGE_ID_REPLICATION_FRAGMENT`，定义是 BRFG/v1、payload 上限 64 KiB、`AUTHENTICATED + IDEMPOTENT`；默认 registry 在 crypto 开启/关闭时分别为 **30/29** 项。`BreakReplicationSessionBridge` 的 create/destroy、open/close、send、tick、handler、poll/release 与 stats API 已接入 `break_net`，但尚未接入 online aspect scheduler。
+
+每次 open 为 connection key 创建独立重组池并固定 expected base；每连接 pending 预算的乘积在 create 时受总预算约束。完成 queue 另受条数、单包与总字节限制，按 FIFO 交付 connection、delta id 和 owned bytes。只有 `poll_completed` 执行 ownership-at-poll 转移，`completion_release` 负责释放；close 清理该连接的池和未取项，同 key 重开从新高水位开始。stats 暴露连接/pending/completion 快照及 rejected、duplicate、completed、dropped、expired 计数。handler 不执行 aspect apply 或 World 变更，不新增线程或锁。
+
+两个真实 socket 用例覆盖 AUTH 后乱序交织两个 delta、相同 BRFG bytes 的重复片、错误 base 拒绝、完成 FIFO/connection/payload、poll 前 consumer 计数为 0，以及 close 后同 key 真实重连完成较低 delta。`test_break_replication_session` 现为 **19/19**； companion Session/wire/fragment 分别为 **43/43、9/9、28/28**。完整 Vulkan 为 **464 通过 + 4 条件 skip/468，0 失败**，OpenGL 为 **455 通过 + 4 条件 skip/459，0 失败**；skip 是 `test_d3d12_dependency_gate` 与三个 `test_core_app_nm_*`，不计执行通过。ASan+UBSan（显式 leak 检测）和 TSan focused 均 **4/4**，直接 case 计数同样为 **19/19、43/43、9/9、28/28**，无诊断。
+
+剩余边界明确保留：**生产 core_app/editor 接线、aspect drain、World delta、可靠恢复和完整资产链均未完成**。aspect 发送侧 fragment size 收窄、completion drain 中校验 `BRA1.schema_hash == expected_base` 后再 apply，仍属于后续独立工作。

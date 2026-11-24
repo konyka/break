@@ -13594,3 +13594,14 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 
 - 提交 `d79ef1cd6251c65e9f49a31cc0b03e8899d6ce9e`（含 `2f1c28d0`）：CI run `45316281060` success（24 success、3 条件 skip）；windows-d3d12 run `45316281126` success；QUIC run `45316280930` success。
 - Proton run `45317802330` 结论 failure：job `138188764226` 的 `Install Wine + vkd3d-proton` 步骤在下载 i386 软件包时达到 20 分钟超时，尚未进入构建与测试，因此本次没有 device/pipeline contract 证据。上一次 Proton run `45310896315`（`2a827dbb`）成功，contract 均为 77。Proton 只作兼容参考通道，令牌无权重跑，本次不计为 Proton 通过。
+
+
+## 复制分片 session bridge 真实 loopback（2026-11-24）
+
+- **消息与 API**：默认 registry 新增 `BREAK_NET_MESSAGE_ID_REPLICATION_FRAGMENT = 0x4009`（BRFG/v1、64 KiB、`AUTHENTICATED + IDEMPOTENT`），crypto 开启/关闭 count 为 **30/29**。`BreakReplicationSessionBridge` 已有 create/destroy、open/close、send、tick、handler、poll/release 与 stats API，本任务只增加真实 socket 验收和文档，没有新增公共签名。
+- **连接与所有权**：每连接独立 pool/expected base，连接 pending 乘积受总预算静态约束；完成 FIFO 另限条数、单包和总字节。只有 `poll_completed` 执行 ownership-at-poll，`completion_release` 释放；close 清理池与未取项，同 key 重开重置 high-water。stats 覆盖 connections、pending/completion 大小及 rejected/duplicate/completed/dropped/expired。handler 不修改 World/aspect，没有新增线程或锁。
+- **新增用例**：`bridge_socket_loopback_reassembles_interleaved_duplicates_in_fifo` 经真实 raw socket 先 AUTH，再发送两个 delta 的乱序 BRFG 分片与相同 bytes 重复片，断言错误 base 拒绝、FIFO（200 后 100）、connection/delta/payload 和 poll 前 consumer=0。`bridge_socket_reconnect_same_key_resets_completed_high_water` 先完成 delta 40，真实 close 后同 key 重连并完成 delta 1。服务端 reactor step 后全部由 `break_session_manager_poll_adapter` 消费事件，没有 handler 直调替代。
+- **TDD 负对照**：初跑即为 **19/19**。临时移除 0x4009 registry 项后，真实 manager 拒绝 handler 注册，结果为 **16 通过、3 失败**（两个新 socket 用例和既有 non-AUTH handler 用例）；恢复后重新为 **19/19**，Session **43/43**、wire **9/9**、fragment **28/28**。
+- **完整套件**：Vulkan 注册 **468**，**464 执行通过、4 条件 skip、0 失败**；OpenGL 注册 **459**，**455 执行通过、4 条件 skip、0 失败**。两者 skip 均为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计执行通过。
+- **Sanitizer**：`ENGINE_USE_ASAN=ON + ENGINE_USE_UBSAN=ON` 且 `ASAN_OPTIONS=detect_leaks=1`，以及独立 `ENGINE_USE_TSAN=ON`，focused CTest 均 **4/4**；直接运行分别确认 bridge **19/19**、Session **43/43**、wire **9/9**、fragment **28/28**，无 sanitizer、leak 或 race 诊断。所有 configure 均显式启用 Snowflake 并使用 pin `4ab761fc58a9d15970f295e231003c99a7d44df8`。
+- **仍未完成**：**生产 core_app/editor 接线、aspect drain、World delta、可靠恢复和完整资产链**。本记录不包含远端、Windows、Proton 或完整 sanitizer suite 验收，不预写推送结论。

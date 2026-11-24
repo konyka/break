@@ -1,15 +1,21 @@
 #include "test_framework.h"
 
 #include <network/break_net_adapter.h>
+#include <network/break_net_envelope.h>
 #include <network/break_replication_session.h>
 #include <network/break_replication_wire.h>
 #include <network/break_session.h>
 #include <snow/acceptor.h>
 #include <snow/endpoint.h>
 
+#include <arpa/inet.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+extern int usleep(unsigned int);
 
 #define TEST_MAX_PENDING_BYTES (16u * 1024u * 1024u)
 
@@ -748,6 +754,394 @@ static void test_reactor_destroy(TestReactorFixture *fixture)
     memset(fixture, 0, sizeof(*fixture));
 }
 
+typedef struct TestSessionSocketFixture {
+    TestReactorFixture transport;
+    BreakSessionManager *manager;
+    BreakReplicationSessionBridge *bridge;
+    BreakConnectionKey connection;
+    size_t auth_calls;
+    uint32_t sequence;
+    uint64_t now;
+    int client_fd;
+} TestSessionSocketFixture;
+
+static bool test_session_socket_auth_handler(BreakConnectionKey connection,
+                                             const BreakNetOwnedMessage *message,
+                                             void *user_data)
+{
+    TestSessionSocketFixture *fixture = (TestSessionSocketFixture *)user_data;
+    if (message == NULL || message->message_id != BREAK_NET_MESSAGE_ID_AUTH) return false;
+    fixture->connection = connection;
+    fixture->auth_calls++;
+    return true;
+}
+
+static bool test_session_socket_write_all(int fd, const void *data, size_t size)
+{
+    const uint8_t *bytes = (const uint8_t *)data;
+    size_t offset = 0u;
+    while (offset < size) {
+        ssize_t written = write(fd, bytes + offset, size - offset);
+        if (written <= 0) return false;
+        offset += (size_t)written;
+    }
+    return true;
+}
+
+static void test_session_socket_store_u16(uint8_t *out, uint16_t value)
+{
+    out[0] = (uint8_t)value;
+    out[1] = (uint8_t)(value >> 8u);
+}
+
+static void test_session_socket_store_u32(uint8_t *out, uint32_t value)
+{
+    out[0] = (uint8_t)value;
+    out[1] = (uint8_t)(value >> 8u);
+    out[2] = (uint8_t)(value >> 16u);
+    out[3] = (uint8_t)(value >> 24u);
+}
+
+static bool test_session_socket_write_frame(TestSessionSocketFixture *fixture,
+                                            uint16_t message_id, uint32_t sequence,
+                                            const void *payload, size_t payload_size)
+{
+    uint8_t wire[BREAK_NET_ENVELOPE_HEADER_SIZE + 128u];
+    if (payload_size > 128u || (payload_size != 0u && payload == NULL)) return false;
+    test_session_socket_store_u32(wire, BREAK_NET_ENVELOPE_MAGIC);
+    test_session_socket_store_u16(wire + 4u, BREAK_NET_PROTOCOL_VERSION);
+    test_session_socket_store_u16(wire + 6u, message_id);
+    test_session_socket_store_u16(wire + 8u, 0u);
+    test_session_socket_store_u32(wire + 10u, sequence);
+    test_session_socket_store_u32(wire + 14u, (uint32_t)payload_size);
+    if (payload_size != 0u) memcpy(wire + BREAK_NET_ENVELOPE_HEADER_SIZE, payload, payload_size);
+    return test_session_socket_write_all(fixture->client_fd, wire,
+                                         BREAK_NET_ENVELOPE_HEADER_SIZE + payload_size);
+}
+
+static bool test_session_socket_write_brfg(TestSessionSocketFixture *fixture,
+                                           const uint8_t *wire, size_t wire_size)
+{
+    fixture->sequence++;
+    return test_session_socket_write_frame(
+        fixture, BREAK_NET_MESSAGE_ID_REPLICATION_FRAGMENT, fixture->sequence,
+        wire, wire_size);
+}
+
+static bool test_session_socket_write_fragment(TestSessionSocketFixture *fixture,
+                                               const BreakReplicationFragment *fragment)
+{
+    uint8_t wire[128];
+    size_t wire_size = 0u;
+    if (break_replication_wire_encode(fragment, wire, sizeof(wire), &wire_size) !=
+        BREAK_REPLICATION_FRAGMENT_OK) {
+        return false;
+    }
+    return test_session_socket_write_brfg(fixture, wire, wire_size);
+}
+
+static bool test_session_socket_pump(TestSessionSocketFixture *fixture)
+{
+    bool stepped = break_net_reactor_step(fixture->transport.reactor, 1);
+    (void)break_session_manager_poll_adapter(fixture->manager, 64u);
+    return stepped;
+}
+
+static void test_session_socket_destroy(TestSessionSocketFixture *fixture)
+{
+    size_t i;
+    if (fixture->client_fd >= 0) {
+        close(fixture->client_fd);
+        fixture->client_fd = -1;
+    }
+    if (fixture->manager != NULL && fixture->transport.reactor != NULL &&
+        fixture->connection != 0u) {
+        for (i = 0u; i < 5000u &&
+             break_session_manager_state(fixture->manager, fixture->connection) !=
+                 BREAK_SESSION_CLOSED; ++i) {
+            if (!test_session_socket_pump(fixture)) break;
+            usleep(1000u);
+        }
+        (void)break_session_manager_poll(fixture->manager, 64u);
+    }
+    if (fixture->bridge != NULL && fixture->connection != 0u) {
+        (void)break_replication_session_connection_close(fixture->bridge,
+                                                         fixture->connection);
+    }
+    break_replication_session_bridge_destroy(fixture->bridge);
+    break_session_manager_destroy(fixture->manager);
+    test_reactor_destroy(&fixture->transport);
+    memset(fixture, 0, sizeof(*fixture));
+    fixture->client_fd = -1;
+}
+
+static bool test_session_socket_start(TestSessionSocketFixture *fixture)
+{
+    BreakSessionConfig session_config = {0};
+    BreakReplicationSessionBridgeConfig bridge_config;
+    memset(fixture, 0, sizeof(*fixture));
+    fixture->client_fd = -1;
+    if (!test_reactor_start(&fixture->transport)) return false;
+    fixture->manager = break_session_manager_create(&session_config);
+    bridge_config = test_bridge_config(&fixture->now);
+    bridge_config.reactor = fixture->transport.reactor;
+    bridge_config.max_connections = 1u;
+    bridge_config.max_total_pending_bytes = 64u;
+    fixture->bridge = break_replication_session_bridge_create(&bridge_config);
+    if (fixture->manager == NULL || fixture->bridge == NULL ||
+        !break_session_manager_attach_reactor(fixture->manager,
+                                              fixture->transport.reactor) ||
+        !break_session_manager_set_message_handler(
+            fixture->manager, BREAK_NET_MESSAGE_ID_AUTH,
+            test_session_socket_auth_handler, fixture) ||
+        !break_session_manager_set_message_handler(
+            fixture->manager, BREAK_NET_MESSAGE_ID_REPLICATION_FRAGMENT,
+            break_replication_session_handle_message, fixture->bridge)) {
+        test_session_socket_destroy(fixture);
+        return false;
+    }
+    return true;
+}
+
+static bool test_session_socket_connect(TestSessionSocketFixture *fixture)
+{
+    const SnowEndpoint *bound = SnowAcceptorEndpoint(fixture->transport.acceptor);
+    struct sockaddr_in address = {0};
+    fixture->client_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fixture->client_fd < 0) return false;
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = htons((uint16_t)SnowEndpointPort(bound));
+    if (connect(fixture->client_fd, (const struct sockaddr *)&address,
+                sizeof(address)) != 0) {
+        close(fixture->client_fd);
+        fixture->client_fd = -1;
+        return false;
+    }
+    return true;
+}
+
+static bool test_session_socket_authenticate(TestSessionSocketFixture *fixture,
+                                             uint64_t expected_base_id)
+{
+    static const uint8_t auth_payload[] = {'a', 'u', 't', 'h'};
+    size_t previous_calls = fixture->auth_calls;
+    size_t i;
+    if (!test_session_socket_connect(fixture)) return false;
+    fixture->connection = 0u;
+    fixture->sequence = 1u;
+    if (!test_session_socket_write_frame(fixture, BREAK_NET_MESSAGE_ID_AUTH,
+                                         fixture->sequence, auth_payload,
+                                         sizeof(auth_payload))) {
+        return false;
+    }
+    for (i = 0u; i < 5000u; ++i) {
+        if (fixture->auth_calls == previous_calls + 1u && fixture->connection != 0u &&
+            break_session_manager_state(fixture->manager, fixture->connection) ==
+                BREAK_SESSION_AUTHENTICATED) {
+            return break_replication_session_connection_open(
+                fixture->bridge, fixture->connection, expected_base_id);
+        }
+        if (!test_session_socket_pump(fixture)) return false;
+        usleep(1000u);
+    }
+    return false;
+}
+
+static bool test_session_socket_wait_stats(TestSessionSocketFixture *fixture,
+                                           uint64_t completed_packets,
+                                           uint64_t rejected_fragments)
+{
+    size_t i;
+    for (i = 0u; i < 5000u; ++i) {
+        BreakReplicationSessionBridgeStats stats;
+        break_replication_session_bridge_stats(fixture->bridge, &stats);
+        if (stats.completed_packets >= completed_packets &&
+            stats.rejected_fragments >= rejected_fragments) {
+            return true;
+        }
+        if (!test_session_socket_pump(fixture)) return false;
+        usleep(1000u);
+    }
+    return false;
+}
+
+static bool test_session_socket_disconnect(TestSessionSocketFixture *fixture)
+{
+    size_t i;
+    close(fixture->client_fd);
+    fixture->client_fd = -1;
+    for (i = 0u; i < 5000u; ++i) {
+        if (break_session_manager_state(fixture->manager, fixture->connection) ==
+            BREAK_SESSION_CLOSED) {
+            return true;
+        }
+        if (!test_session_socket_pump(fixture)) return false;
+        usleep(1000u);
+    }
+    return false;
+}
+
+TEST(bridge_socket_loopback_reassembles_interleaved_duplicates_in_fifo)
+{
+    static const uint8_t first_payload[] = "abcdefghij";
+    static const uint8_t second_payload[] = "KLMNOPQR";
+    static const uint64_t expected_base_id = 77u;
+    TestSessionSocketFixture fixture;
+    BreakReplicationFragment *first = NULL;
+    BreakReplicationFragment *second = NULL;
+    BreakReplicationFragment wrong_base;
+    BreakReplicationSessionCompletion completions[2] = {{0}};
+    BreakReplicationSessionBridgeStats stats;
+    BreakSessionApplyStats session_stats;
+    size_t first_count = 0u;
+    size_t second_count = 0u;
+    size_t consumer_count = 0u;
+    uint8_t duplicate[128];
+    size_t duplicate_size = 0u;
+    size_t i;
+
+    ASSERT_TRUE(test_session_socket_start(&fixture));
+    ASSERT_TRUE(test_session_socket_authenticate(&fixture, expected_base_id));
+    ASSERT_EQ(break_replication_fragment_payload(
+                  100u, expected_base_id, first_payload, sizeof(first_payload) - 1u,
+                  4u, &first, &first_count), BREAK_REPLICATION_FRAGMENT_OK);
+    ASSERT_EQ(break_replication_fragment_payload(
+                  200u, expected_base_id, second_payload, sizeof(second_payload) - 1u,
+                  4u, &second, &second_count), BREAK_REPLICATION_FRAGMENT_OK);
+    ASSERT_EQ(first_count, 3u);
+    ASSERT_EQ(second_count, 2u);
+
+    wrong_base = first[2];
+    wrong_base.base_id = expected_base_id + 1u;
+    ASSERT_TRUE(test_session_socket_write_fragment(&fixture, &wrong_base));
+    ASSERT_TRUE(test_session_socket_wait_stats(&fixture, 0u, 1u));
+    ASSERT_EQ(break_session_manager_state(fixture.manager, fixture.connection),
+              BREAK_SESSION_AUTHENTICATED);
+    break_session_manager_apply_stats(fixture.manager, &session_stats);
+    ASSERT_EQ(session_stats.handler_failed, 1u);
+
+    ASSERT_EQ(break_replication_wire_encode(&first[2], duplicate, sizeof(duplicate),
+                                             &duplicate_size),
+              BREAK_REPLICATION_FRAGMENT_OK);
+    ASSERT_TRUE(test_session_socket_write_brfg(&fixture, duplicate, duplicate_size));
+    ASSERT_TRUE(test_session_socket_write_brfg(&fixture, duplicate, duplicate_size));
+    ASSERT_EQ(break_replication_wire_encode(&second[1], duplicate, sizeof(duplicate),
+                                             &duplicate_size),
+              BREAK_REPLICATION_FRAGMENT_OK);
+    ASSERT_TRUE(test_session_socket_write_brfg(&fixture, duplicate, duplicate_size));
+    ASSERT_TRUE(test_session_socket_write_brfg(&fixture, duplicate, duplicate_size));
+    ASSERT_TRUE(test_session_socket_write_fragment(&fixture, &first[0]));
+    ASSERT_TRUE(test_session_socket_write_fragment(&fixture, &second[0]));
+    ASSERT_TRUE(test_session_socket_write_fragment(&fixture, &first[1]));
+    ASSERT_TRUE(test_session_socket_wait_stats(&fixture, 2u, 1u));
+
+    break_replication_session_bridge_stats(fixture.bridge, &stats);
+    ASSERT_EQ(stats.connections, 1u);
+    ASSERT_EQ(stats.pending_bytes, 0u);
+    ASSERT_EQ(stats.completion_count, 2u);
+    ASSERT_EQ(stats.completion_bytes, 18u);
+    ASSERT_EQ(stats.rejected_fragments, 1u);
+    ASSERT_EQ(stats.duplicate_fragments, 2u);
+    ASSERT_EQ(stats.completed_packets, 2u);
+    ASSERT_EQ(stats.dropped_completions, 0u);
+    ASSERT_EQ(consumer_count, 0u);
+
+    ASSERT_EQ(break_replication_session_poll_completed(fixture.bridge, completions, 2u), 2u);
+    ASSERT_EQ(completions[0].connection, fixture.connection);
+    ASSERT_EQ(completions[0].delta_id, 200u);
+    ASSERT_EQ(completions[0].payload_size, sizeof(second_payload) - 1u);
+    ASSERT_TRUE(memcmp(completions[0].payload, second_payload,
+                       sizeof(second_payload) - 1u) == 0);
+    ASSERT_EQ(completions[1].connection, fixture.connection);
+    ASSERT_EQ(completions[1].delta_id, 100u);
+    ASSERT_EQ(completions[1].payload_size, sizeof(first_payload) - 1u);
+    ASSERT_TRUE(memcmp(completions[1].payload, first_payload,
+                       sizeof(first_payload) - 1u) == 0);
+    for (i = 0u; i < 2u; ++i) {
+        consumer_count++;
+        break_replication_session_completion_release(&completions[i]);
+    }
+    ASSERT_EQ(consumer_count, 2u);
+    break_replication_session_bridge_stats(fixture.bridge, &stats);
+    ASSERT_EQ(stats.completion_count, 0u);
+    ASSERT_EQ(stats.completion_bytes, 0u);
+
+    break_replication_fragments_free(first, first_count);
+    break_replication_fragments_free(second, second_count);
+    test_session_socket_destroy(&fixture);
+}
+
+TEST(bridge_socket_reconnect_same_key_resets_completed_high_water)
+{
+    static const uint8_t old_payload[] = "old";
+    static const uint8_t fresh_payload[] = "fresh";
+    static const uint64_t expected_base_id = 88u;
+    TestSessionSocketFixture fixture;
+    BreakReplicationFragment *old = NULL;
+    BreakReplicationFragment *fresh = NULL;
+    BreakReplicationSessionCompletion completion = {0};
+    BreakReplicationSessionBridgeStats stats;
+    BreakConnectionKey original_connection;
+    size_t old_count = 0u;
+    size_t fresh_count = 0u;
+    size_t consumer_count = 0u;
+
+    ASSERT_TRUE(test_session_socket_start(&fixture));
+    ASSERT_TRUE(test_session_socket_authenticate(&fixture, expected_base_id));
+    original_connection = fixture.connection;
+    ASSERT_EQ(break_replication_fragment_payload(
+                  40u, expected_base_id, old_payload, sizeof(old_payload) - 1u,
+                  3u, &old, &old_count), BREAK_REPLICATION_FRAGMENT_OK);
+    ASSERT_EQ(break_replication_fragment_payload(
+                  1u, expected_base_id, fresh_payload, sizeof(fresh_payload) - 1u,
+                  3u, &fresh, &fresh_count), BREAK_REPLICATION_FRAGMENT_OK);
+    ASSERT_EQ(old_count, 1u);
+    ASSERT_EQ(fresh_count, 2u);
+    ASSERT_TRUE(test_session_socket_write_fragment(&fixture, &old[0]));
+    ASSERT_TRUE(test_session_socket_wait_stats(&fixture, 1u, 0u));
+    ASSERT_EQ(consumer_count, 0u);
+    ASSERT_EQ(break_replication_session_poll_completed(fixture.bridge, &completion, 1u), 1u);
+    ASSERT_EQ(completion.connection, original_connection);
+    ASSERT_EQ(completion.delta_id, 40u);
+    ASSERT_EQ(completion.payload_size, sizeof(old_payload) - 1u);
+    ASSERT_TRUE(memcmp(completion.payload, old_payload, sizeof(old_payload) - 1u) == 0);
+    consumer_count++;
+    break_replication_session_completion_release(&completion);
+
+    ASSERT_TRUE(test_session_socket_disconnect(&fixture));
+    ASSERT_TRUE(break_replication_session_connection_close(fixture.bridge,
+                                                            original_connection));
+    break_replication_session_bridge_stats(fixture.bridge, &stats);
+    ASSERT_EQ(stats.connections, 0u);
+    ASSERT_EQ(stats.pending_bytes, 0u);
+    ASSERT_EQ(stats.completion_count, 0u);
+
+    ASSERT_TRUE(test_session_socket_authenticate(&fixture, expected_base_id));
+    ASSERT_EQ(fixture.connection, original_connection);
+    consumer_count = 0u;
+    ASSERT_TRUE(test_session_socket_write_fragment(&fixture, &fresh[1]));
+    ASSERT_TRUE(test_session_socket_write_fragment(&fixture, &fresh[0]));
+    ASSERT_TRUE(test_session_socket_wait_stats(&fixture, 2u, 0u));
+    break_replication_session_bridge_stats(fixture.bridge, &stats);
+    ASSERT_EQ(stats.connections, 1u);
+    ASSERT_EQ(stats.completion_count, 1u);
+    ASSERT_EQ(stats.rejected_fragments, 0u);
+    ASSERT_EQ(consumer_count, 0u);
+    ASSERT_EQ(break_replication_session_poll_completed(fixture.bridge, &completion, 1u), 1u);
+    ASSERT_EQ(completion.connection, original_connection);
+    ASSERT_EQ(completion.delta_id, 1u);
+    ASSERT_EQ(completion.payload_size, sizeof(fresh_payload) - 1u);
+    ASSERT_TRUE(memcmp(completion.payload, fresh_payload, sizeof(fresh_payload) - 1u) == 0);
+    consumer_count++;
+    break_replication_session_completion_release(&completion);
+    ASSERT_EQ(consumer_count, 1u);
+
+    break_replication_fragments_free(old, old_count);
+    break_replication_fragments_free(fresh, fresh_count);
+    test_session_socket_destroy(&fixture);
+}
+
 static BreakReplicationFragment test_outbound_fragment(void)
 {
     static const uint8_t data[] = {0xaau, 0xbbu, 0xccu, 0xddu};
@@ -1002,6 +1396,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(bridge_handler_enforces_configured_fragment_size_and_count);
     RUN_TEST(bridge_inbound_fragment_expiration_is_counted_without_owner_tick);
     RUN_TEST(bridge_wrapped_fifo_close_compaction_preserves_survivor_order);
+    RUN_TEST(bridge_socket_loopback_reassembles_interleaved_duplicates_in_fifo);
+    RUN_TEST(bridge_socket_reconnect_same_key_resets_completed_high_water);
     RUN_TEST(bridge_send_validates_and_encodes_through_real_reactor);
     RUN_TEST(bridge_send_propagates_reactor_closed_overload_and_caller_retry);
     RUN_TEST(bridge_tick_expires_every_connection_without_traffic_and_honors_disable);

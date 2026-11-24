@@ -385,3 +385,14 @@ TDD 先取得缺少 wire 头的编译 RED，随后 focused 新测试 **7/7**、�
 fix 后 normal、ASan+UBSan/LSan、TSan focused 均为 wire **9/9**、旧 fragment/scheduler **28/28**；首轮八项加 fix 六项共 **14 项定向变异均判红并恢复**。此前 **7/7** 和八项变异仅是 fix 前历史记录，最终证据以 **9/9、14 项**为准。新增覆盖包括每个截断的独立精确可访问区域、仅高 32 位非零的 delta、宽 base、count/index 最大值，以及完整 magic/version/header/fragment_bytes 高位负例。
 
 完整 sanitizer suite、Session/真实网络与远端验收仍未完成；本补充不预写推送或 CI 结论。
+
+
+## 补充（2026-11-24）：复制分片的 Session/Runtime 所有权边界
+
+默认消息表新增 `BREAK_NET_MESSAGE_ID_REPLICATION_FRAGMENT = 0x4009`（v1、64 KiB、`AUTHENTICATED`、`IDEMPOTENT`），crypto 开启/关闭时 registry count 为 **30/29**。`BreakReplicationSessionBridge` 已提供 create/destroy、每连接 open/close、canonical send、owner tick、Session handler、completion poll/release 与 stats 的完整库级 API；它不依赖 Runtime Core，也不把 network callback 升级为 World/aspect 修改入口。
+
+open 的 connection key 各自持有 pool 与 expected base，连接数和每连接 pending 乘积受创建配置的总预算静态约束。完成 queue 独立限制条数、单包字节与队列总字节，采用 FIFO；只有所有者调用 `poll_completed` 才发生 ownership-at-poll，调用者随后用 `completion_release` 释放。close 释放该连接的 pool 和未取 completion，同 key 重开不继承 high-water。stats 包含 connections、pending/completion 大小和 rejected/duplicate/completed/dropped/expired 计数；tick 遍历所有已 open 连接，没有后台维护、线程或锁。
+
+真实 loopback 使用 raw TCP client 先 AUTH，再由 `break_net_reactor_step` 与 `break_session_manager_poll_adapter` 驱动真实 registry、envelope、Session、pool 和 completion queue。覆盖两个 delta 的乱序与逐字节重复片、expected base 拒绝、FIFO/connection/delta/payload、poll 前 consumer 为 0，以及真实 close 后同 key 重连时从 delta 40 到新 delta 1。最终 bridge **19/19**、Session **43/43**、wire **9/9**、fragment **28/28**；Vulkan **464 通过 + 4 skip/468**、OpenGL **455 通过 + 4 skip/459**，均 0 失败且 skip 不计通过。ASan+UBSan（`detect_leaks=1`）与 TSan focused 均 **4/4**，直接 case 计数与 normal 相同，无 sanitizer/leak/race 诊断。
+
+这只是 runtime 可消费的库级 ownership 边界。**生产 core_app/editor 接线、aspect drain、World delta、可靠恢复和完整资产链仍未完成**，也没有据此声明远端部署或完整 sanitizer suite 已验收。

@@ -737,3 +737,14 @@ fix 后 normal、ASan+UBSan/LSan、TSan focused 均为 wire **9/9**、旧 fragme
 #### wire codec 远端收据（2026-11-24）
 
 `d79ef1cd` 的 CI `45316281060`、windows-d3d12 `45316281126`、QUIC `45316280930` 均 success。Proton `45317802330` 在安装 Wine 时 20 分钟超时，未进入构建，不计为通过；Proton 仅为兼容参考通道。
+
+
+## 第 17 节（大世界/流式）补充（2026-11-24）：仅关闭库级 session fragment bridge 缺口
+
+`0x4009` 已作为 BRFG/v1 分片消息注册（64 KiB、`AUTHENTICATED + IDEMPOTENT`），默认 registry 在 crypto 开启/关闭时为 **30/29** 项。`BreakReplicationSessionBridge` 的 create/destroy、open/close、send、tick、handler、poll/release 与 stats 已交付，真实 Session/reactor/socket 路径不再属于“未接线”。
+
+每连接 pool 和 expected base 在 open 时建立；每连接 pending 乘积受总预算约束。完成 queue 有独立条数、单包和总字节上限，FIFO 中的 owned payload 只在 `poll_completed` 时按 ownership-at-poll 移交，release 由调用者显式执行；close 清理池与未取项，同 key 重开不继承 high-water。stats 提供连接/pending/completion 快照和 rejected/duplicate/completed/dropped/expired 计数。handler 不修改 World/aspect，也没有新增线程或锁。
+
+真实 loopback 覆盖 AUTH、两个 delta 的乱序与相同 BRFG bytes 重复、expected base 拒绝、FIFO/connection/delta/payload、poll 前 consumer=0，以及同 connection key 真实重连后的 high-water 重置。normal focused 为 bridge **19/19**、Session **43/43**、wire **9/9**、fragment **28/28**；完整 Vulkan **464 通过 + 4 条件 skip/468，0 失败**，OpenGL **455 通过 + 4 条件 skip/459，0 失败**。ASan+UBSan（显式 leak 检测）与 TSan focused 均 **4/4**，直接 case 计数与 normal 相同，无诊断；条件 skip 不计执行通过。
+
+以下缺口仍然开放：**生产 core_app/editor 接线、aspect drain、World delta、可靠恢复和完整资产链**。此外，完整 sanitizer suite、远端和其他平台验收不在本项证据内，不能以库级 loopback 代替这些工作。
