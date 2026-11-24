@@ -7198,6 +7198,7 @@ endif()
         set_property(TARGET runtime_world_session_test PROPERTY C_STANDARD 11)
         target_include_directories(runtime_world_session_test PUBLIC
             ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_compile_definitions(runtime_world_session_test PUBLIC BREAK_RUNTIME_TESTING=1)
         target_link_libraries(runtime_world_session_test PUBLIC
             runtime_core_test break_net_test break_ecs_replication_test)
         add_executable(test_runtime_world_session tests/test_runtime_world_session.c

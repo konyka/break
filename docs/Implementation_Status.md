@@ -13774,3 +13774,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **shutdown 与兼容**：close 后 submit=CLOSED，A1/B1/A2 和 pending 仍恰好一次 FIFO drain；pending 非零 destroy=false 且资源保留，清空后 destroy=true，session/publication 由调用方最后销毁。默认 `fair_outbound_admission=false` 保持全局 256，真实默认双 socket 用例和显式 true 的既有公平用例分别覆盖两种合同。
 - **验证与反向控制**：新增 queue 重试、NEED_FULL pending 镜像、shutdown 精确 cid/计数/资源存活和默认 admission 回归。临时 pending 新 correlation 与 destroy 忽略 pending 的变异均由测试判红后恢复，未保留生产 diff；详细命令、计数、sanitizer 环境和最终双后端结果见本地 `task-3-report.md` 及其日志。
 - **未关闭缺口**：本项没有 Runtime snapshot/BRWD 数据面、Coordinator 自动注册、core_app authoritative World 接线或权威 simulation 合并，也不处理 Task 2 deferred target-contract Minors。既有 core_app/editor Lua longjmp 限制单列，focused sanitizer 不等于完整 sanitizer suite；不预写推送、CI、Windows、QUIC、Proton 或其他远端结果。
+
+
+## Runtime World 外部 ingress 与 shutdown 修订（2026-11-25）
+
+- **修复范围**：direct submit 改为自有 message copy + queue enqueue，不再 Bus fan-out；外部同 kind publish 保留，且各 adapter 独立 pending/World/close。`submitted` 仅计 direct 成功，`drained` 包含 direct 与外部消息；stats.queued/pending 改用真实 queue `enqueued-dequeued`，pending 另加 control_pending。
+- **关停与终态**：destroy 先 closed/queue_close、退订并记录状态，再判断实际 pending。queued 或 transport pending 非零时返回 false，但新 direct/external ingress 已停止，drain 继续，清零后的重试跳过重复退订并成功。connection epoch 耗尽返回 REJECTED 且计 rejected，不再作为未计数 OVERLOAD。
+- **验证边界**：新增外部 publish、双 adapter、queued/pending shutdown、epoch 边界及真实线程 submit/publish/close/drain/destroy 交错；并发用例按 accepted cid/内容检查不丢失、不重复。公共头补充路由、线程和成功 destroy 的外部 quiesce 前置。World 调用仍只在 owner drain，未增加数据面、Coordinator 注册或其他 deferred 能力；最终命令和 sanitizer 计数见本地 `task-3-report.md` 追加记录。

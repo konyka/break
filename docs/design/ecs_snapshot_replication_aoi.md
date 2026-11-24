@@ -321,3 +321,10 @@ normal、ASan+UBSan（显式 `detect_leaks=1`）和 TSan focused 均为 **6/6、
 生产者只复制标量，只有 owner drain 能调用 World Session。control queue 满不改变 World，排空后同内容/cid 可重试；OUTBOUND 饱和保留原控制及 level/epoch/cid，下一次先重试再继续 FIFO，每次 OVERLOAD 计数且 applied 只一次。close 停止新提交但保留 FIFO/pending drain；pending 非零 destroy=false 且资源保留，清空后 destroy=true，调用方随后才销毁 session/publication。admission 默认 false 保持全局 256，显式 true 的既有双连接公平行为不变。
 
 **这里没有实现 Runtime snapshot/lease/BRWD/BRFG 数据面映射**，immutable publication、AOI、completion 和 authoritative World 不会因此自动接入 Runtime；Coordinator 自动注册、跨连接共享 live World、权威 simulation 合并与完整资产链也仍未完成。本节只追加本地控制面证据，不预写远端结果。
+
+
+## 修订（2026-11-25）：标量控制共享 Bus 的计数与生命周期
+
+Runtime 标量控制的 direct submit 不再 Bus fan-out，而是只 copy/enqueue 到目标 adapter；外部合法 `0x5753` publish 仍可到达每个订阅者，并仅在各自 drain 时改变对应 World Session。`submitted` 只计 direct 成功，`drained` 包括所有实际消费；pending 与 stats.queued 取 Runtime queue 的 `enqueued-dequeued`，pending 另加 transport control，避免外部消息造成无符号下溢。
+
+destroy 现在先 close/退订再判断真实 pending，false 后没有新 ingress，旧 FIFO/pending 继续由 owner drain，成功重试不重复退订；epoch 耗尽是计数的 REJECTED。该修复不涉及 snapshot/lease/BRWD/BRFG 数据面、AOI、publication epoch 或权威 World 合并，World Session 仍只能从 owner drain 调用。

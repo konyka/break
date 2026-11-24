@@ -42,17 +42,39 @@ typedef struct {
 } BreakRuntimeWorldSessionConfig;
 
 typedef struct {
-    u64 submitted;
-    u64 drained;
+    u64 submitted;       /* successful direct submit calls only */
+    u64 drained;         /* direct and external Bus messages actually consumed */
     u64 applied;
     u64 rejected;
     u64 stale_rejected;
     u64 transport_overloads;
     u64 next_sequence;
-    usize queued;
+    usize queued;        /* queue enqueued-dequeued; excludes control_pending */
     bool control_pending;
 } BreakRuntimeWorldSessionStats;
 
+/* submit() validates, copies and enqueues only into this adapter's owned
+ * queue; it never fans out through the bus. The registered kind/subscription
+ * remains available to external producers: a direct Bus publish delivers an
+ * independent copy to every adapter subscribed to that kind. Those external
+ * messages increase drained/applied as consumed, never submitted or the
+ * adapter-local Runtime sequence.
+ *
+ * submit(), close(), pending(), connection_epoch() and stats() may run on any
+ * thread. drain() is the single-owner entry point and is the only API that may
+ * call World Session. External Bus publishers use the bus' normal threading
+ * contract and race only with queue admission, never with World calls.
+ *
+ * pending() is queue enqueued-dequeued plus control_pending, not
+ * submitted-drained. destroy() first closes admission and unsubscribes, then
+ * checks that actual pending count. Even a false destroy attempt therefore
+ * prevents further direct or external ingress; drain/stats/epoch queries and
+ * a later destroy retry remain valid, and the retry does not unsubscribe
+ * twice. A fail-early destroy may overlap producers/drain only while pending
+ * is known to keep it false. Before any destroy call that can succeed, the
+ * caller must quiesce every other adapter API call and prevent new calls;
+ * success invalidates the adapter. The borrowed bus/session stay caller-owned.
+ */
 BreakRuntimeWorldSession *break_runtime_world_session_create(
     const BreakRuntimeWorldSessionConfig *config);
 bool break_runtime_world_session_destroy(
@@ -74,6 +96,11 @@ bool break_runtime_world_session_connection_epoch(
 void break_runtime_world_session_stats(
     const BreakRuntimeWorldSession *adapter,
     BreakRuntimeWorldSessionStats *out_stats);
+
+#ifdef BREAK_RUNTIME_TESTING
+void break_runtime_world_session_set_next_connection_epoch_for_test(
+    BreakRuntimeWorldSession *adapter, u64 next_epoch);
+#endif
 
 #ifdef __cplusplus
 }

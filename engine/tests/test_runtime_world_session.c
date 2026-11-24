@@ -1,10 +1,12 @@
 #include "test_framework.h"
 
+#include <core/platform_thread.h>
 #include <network/break_net_message_registry.h>
 #include <runtime/runtime_world_session.h>
 #include <snow/acceptor.h>
 #include <snow/endpoint.h>
 
+#include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -182,6 +184,21 @@ static BreakRuntimeWorldCommand command(u32 kind, u64 key, u64 epoch, u64 level)
     result.connection_epoch = epoch;
     result.level_generation = level;
     return result;
+}
+
+static BreakRuntimeError publish_external(BreakRuntimeBus *bus,
+                                          const BreakRuntimeWorldCommand *item,
+                                          u64 correlation_id, u32 *out_delivered)
+{
+    BreakRuntimeMessageView view;
+    memset(&view, 0, sizeof(view));
+    view.kind = BREAK_RUNTIME_WORLD_SESSION_CONTROL_KIND;
+    view.version = 1u;
+    view.sequence = UINT64_MAX;
+    view.correlation_id = correlation_id;
+    view.data = item;
+    view.size = sizeof(*item);
+    return break_runtime_bus_publish(bus, &view, out_delivered);
 }
 
 static bool open_connection(Fixture *fixture, u64 key, u64 level, u64 *out_epoch)
@@ -582,9 +599,7 @@ TEST(correlation_and_runtime_sequence_survive_bus_queue_and_brwc)
     BreakRuntimeQueueConfig queue_config = {8u, 0u};
     BreakRuntimeQueue *observer = NULL;
     BreakRuntimeOwnedMessage *message = NULL;
-    BreakRuntimeMessageView view;
     BreakRuntimeWorldCommand item;
-    BreakRuntimeWorldCommand *stored;
     BreakRuntimeWorldSessionStats stats;
     BreakNetOwnedMessage outbound;
     u64 epoch = 0u, key = 0u, fresh_cid;
@@ -616,39 +631,7 @@ TEST(correlation_and_runtime_sequence_survive_bus_queue_and_brwc)
     ASSERT_EQ(stats.next_sequence, 5u);
 
     ASSERT_EQ(break_runtime_queue_poll(observer, &message), BREAK_RUNTIME_OK);
-    ASSERT_NOT_NULL(message);
-    ASSERT_EQ(break_runtime_message_view(message, &view), BREAK_RUNTIME_OK);
-    ASSERT_EQ(view.kind, BREAK_RUNTIME_WORLD_SESSION_CONTROL_KIND);
-    ASSERT_EQ(view.version, 1u);
-    ASSERT_EQ(view.flags, BREAK_RUNTIME_MESSAGE_FLAG_CONTROL);
-    ASSERT_EQ(view.sequence, 1u);
-    ASSERT_EQ(view.correlation_id, 0u);
-    ASSERT_EQ(view.size, 56u);
-    stored = (BreakRuntimeWorldCommand *)view.data;
-    ASSERT_EQ(stored->kind, BREAK_RUNTIME_WORLD_COMMAND_OPEN);
-    break_runtime_message_release(message);
-
-    ASSERT_EQ(break_runtime_queue_poll(observer, &message), BREAK_RUNTIME_OK);
-    ASSERT_EQ(break_runtime_message_view(message, &view), BREAK_RUNTIME_OK);
-    ASSERT_EQ(view.sequence, 2u);
-    ASSERT_EQ(view.correlation_id, HIGH_CID);
-    ASSERT_EQ(view.size, 56u);
-    ASSERT_TRUE(view.data != &item);
-    stored = (BreakRuntimeWorldCommand *)view.data;
-    ASSERT_EQ(stored->connection_key, KEY_A);
-    ASSERT_EQ(stored->connection_epoch, epoch);
-    ASSERT_EQ(stored->delta_id, item.delta_id);
-    break_runtime_message_release(message);
-    ASSERT_EQ(break_runtime_queue_poll(observer, &message), BREAK_RUNTIME_OK);
-    ASSERT_EQ(break_runtime_message_view(message, &view), BREAK_RUNTIME_OK);
-    ASSERT_EQ(view.sequence, 3u);
-    ASSERT_EQ(view.correlation_id, 0u);
-    break_runtime_message_release(message);
-    ASSERT_EQ(break_runtime_queue_poll(observer, &message), BREAK_RUNTIME_OK);
-    ASSERT_EQ(break_runtime_message_view(message, &view), BREAK_RUNTIME_OK);
-    ASSERT_EQ(view.sequence, 4u);
-    ASSERT_EQ(view.correlation_id, fresh_cid);
-    break_runtime_message_release(message);
+    ASSERT_EQ(message, NULL);
     ASSERT_EQ(break_runtime_bus_unsubscribe(fixture.bus, observer_id), BREAK_RUNTIME_OK);
     break_runtime_queue_destroy(observer);
 
@@ -1035,6 +1018,13 @@ TEST(transport_overload_retries_need_full_before_later_ack)
     ASSERT_TRUE(stats.control_pending);
     ASSERT_EQ(break_runtime_world_session_pending(fixture.adapter), 2u);
     ASSERT_FALSE(break_runtime_world_session_destroy(fixture.adapter));
+    ASSERT_EQ(break_runtime_world_session_submit(fixture.adapter, &ack, HIGH_CID + 1u),
+              BREAK_RUNTIME_CLOSED);
+    {
+        u32 delivered = 99u;
+        (void)publish_external(fixture.bus, &ack, HIGH_CID + 2u, &delivered);
+        ASSERT_EQ(delivered, 0u);
+    }
     ASSERT_TRUE(break_runtime_world_session_connection_epoch(fixture.adapter, KEY_A,
                                                               &current_epoch));
     ASSERT_EQ(current_epoch, epoch_a);
@@ -1121,6 +1111,432 @@ TEST(terminal_pending_result_is_counted_and_released)
     fixture_dispose(&fixture);
 }
 
+#define CONCURRENT_ATTEMPTS 32u
+#define CONCURRENT_DIRECT_CID UINT64_C(0xD000)
+#define CONCURRENT_EXTERNAL_CID UINT64_C(0xE000)
+
+typedef struct {
+    _Atomic u32 go;
+    _Atomic u32 stop;
+    _Atomic u32 direct_accepted;
+    _Atomic u32 external_accepted;
+} ConcurrentShared;
+
+typedef struct {
+    Fixture *fixture;
+    BreakRuntimeWorldSession *adapter;
+    ConcurrentShared *shared;
+    u64 epoch;
+    bool external;
+    bool accepted[CONCURRENT_ATTEMPTS];
+} ConcurrentProducer;
+
+typedef struct {
+    BreakRuntimeWorldSession *adapter;
+    ConcurrentShared *shared;
+} ConcurrentDrain;
+
+typedef struct {
+    BreakRuntimeWorldSession *adapter;
+    bool result;
+} ConcurrentDestroy;
+
+static PLATFORM_THREAD_RET concurrent_producer_main(PLATFORM_THREAD_ARG argument)
+{
+    ConcurrentProducer *producer = (ConcurrentProducer *)argument;
+    while (!atomic_load_explicit(&producer->shared->go, memory_order_relaxed)) {
+        platform_thread_yield();
+    }
+    for (u32 i = 0u; i < CONCURRENT_ATTEMPTS; ++i) {
+        BreakRuntimeWorldCommand item = command(BREAK_RUNTIME_WORLD_COMMAND_ACK, KEY_A,
+                                                producer->epoch, 7u);
+        u64 cid = (producer->external ? CONCURRENT_EXTERNAL_CID : CONCURRENT_DIRECT_CID) + i;
+        bool accepted = false;
+        item.delta_id = (u64)i + 1u;
+        item.target_snapshot_id = (producer->external ? 2000u : 1000u) + (u64)i;
+        item.target_tick = 3000u + (u64)i;
+        if (producer->external) {
+            u32 delivered = 0u;
+            BreakRuntimeError result = publish_external(producer->fixture->bus, &item, cid,
+                                                        &delivered);
+            accepted = result == BREAK_RUNTIME_OK && delivered == 1u;
+            if (accepted) {
+                atomic_fetch_add_explicit(&producer->shared->external_accepted, 1u,
+                                          memory_order_relaxed);
+            }
+        } else {
+            accepted = break_runtime_world_session_submit(producer->adapter, &item, cid) ==
+                       BREAK_RUNTIME_OK;
+            if (accepted) {
+                atomic_fetch_add_explicit(&producer->shared->direct_accepted, 1u,
+                                          memory_order_relaxed);
+            }
+        }
+        producer->accepted[i] = accepted;
+        platform_thread_yield();
+    }
+    return PLATFORM_THREAD_RETURN;
+}
+
+static PLATFORM_THREAD_RET concurrent_drain_main(PLATFORM_THREAD_ARG argument)
+{
+    ConcurrentDrain *drain = (ConcurrentDrain *)argument;
+    while (!atomic_load_explicit(&drain->shared->go, memory_order_relaxed)) {
+        platform_thread_yield();
+    }
+    while (!atomic_load_explicit(&drain->shared->stop, memory_order_relaxed)) {
+        usize drained = 0u;
+        (void)break_runtime_world_session_drain(drain->adapter, 8u, &drained);
+        if (drained == 0u) platform_thread_yield();
+    }
+    return PLATFORM_THREAD_RETURN;
+}
+
+static PLATFORM_THREAD_RET concurrent_destroy_main(PLATFORM_THREAD_ARG argument)
+{
+    ConcurrentDestroy *destroy = (ConcurrentDestroy *)argument;
+    destroy->result = break_runtime_world_session_destroy(destroy->adapter);
+    return PLATFORM_THREAD_RETURN;
+}
+
+TEST(concurrent_ingress_close_drain_and_destroy_preserve_exactly_once)
+{
+    Fixture fixture;
+    ConcurrentShared shared;
+    ConcurrentProducer direct;
+    ConcurrentProducer external;
+    ConcurrentDrain drain;
+    ConcurrentDestroy destroy;
+    BreakRuntimeWorldCommand item;
+    BreakRuntimeWorldSessionStats stats;
+    BreakNetOwnedMessage outbound;
+    PlatformThread threads[3];
+    PlatformThread destroy_thread;
+    bool direct_seen[CONCURRENT_ATTEMPTS] = {false};
+    bool external_seen[CONCURRENT_ATTEMPTS] = {false};
+    u64 epoch = 0u, key = 0u;
+    u32 expected_direct;
+    u32 expected_external;
+    u32 output_count = 0u;
+    usize drained = 0u;
+    bool ready = false;
+    ASSERT_TRUE(fixture_init(&fixture, 7u, 2u));
+    ASSERT_TRUE(open_connection(&fixture, KEY_A, 7u, &epoch));
+    for (u32 i = 0u; i < BREAK_NET_OUTBOUND_QUEUE_CAPACITY; ++i) {
+        ASSERT_EQ(break_net_reactor_send(fixture.reactor, KEY_A, BREAK_NET_MESSAGE_ID_PING,
+                                         1u, "x", 1u), BREAK_NET_SEND_OK);
+    }
+    memset(&direct, 0, sizeof(direct));
+    memset(&external, 0, sizeof(external));
+    memset(&drain, 0, sizeof(drain));
+    memset(&destroy, 0, sizeof(destroy));
+    atomic_init(&shared.go, 0u);
+    atomic_init(&shared.stop, 0u);
+    atomic_init(&shared.direct_accepted, 0u);
+    atomic_init(&shared.external_accepted, 0u);
+    direct.fixture = &fixture;
+    direct.adapter = fixture.adapter;
+    direct.shared = &shared;
+    direct.epoch = epoch;
+    external = direct;
+    external.external = true;
+    drain.adapter = fixture.adapter;
+    drain.shared = &shared;
+    destroy.adapter = fixture.adapter;
+    ASSERT_TRUE(platform_thread_create(&threads[0], concurrent_producer_main, &direct));
+    ASSERT_TRUE(platform_thread_create(&threads[1], concurrent_producer_main, &external));
+    ASSERT_TRUE(platform_thread_create(&threads[2], concurrent_drain_main, &drain));
+    atomic_store_explicit(&shared.go, 1u, memory_order_relaxed);
+    for (u32 spin = 0u; spin < 1000000u && !ready; ++spin) {
+        break_runtime_world_session_stats(fixture.adapter, &stats);
+        ready = stats.control_pending &&
+                atomic_load_explicit(&shared.external_accepted, memory_order_relaxed) != 0u;
+        if (!ready) platform_thread_yield();
+    }
+    if (!ready) {
+        break_runtime_world_session_close(fixture.adapter);
+        atomic_store_explicit(&shared.stop, 1u, memory_order_relaxed);
+        for (u32 i = 0u; i < 3u; ++i) platform_thread_join(threads[i]);
+        clear_outbound(&fixture);
+        fixture_dispose(&fixture);
+        ASSERT_TRUE(ready);
+        return;
+    }
+    break_runtime_world_session_close(fixture.adapter);
+    ASSERT_TRUE(platform_thread_create(&destroy_thread, concurrent_destroy_main, &destroy));
+    platform_thread_join(destroy_thread);
+    ASSERT_FALSE(destroy.result);
+    item = command(BREAK_RUNTIME_WORLD_COMMAND_ACK, KEY_A, epoch, 7u);
+    item.delta_id = 99u;
+    item.target_snapshot_id = 99u;
+    {
+        u32 delivered = 99u;
+        (void)publish_external(fixture.bus, &item, HIGH_CID, &delivered);
+        ASSERT_EQ(delivered, 0u);
+    }
+    ASSERT_EQ(break_runtime_world_session_submit(fixture.adapter, &item, HIGH_CID),
+              BREAK_RUNTIME_CLOSED);
+    atomic_store_explicit(&shared.stop, 1u, memory_order_relaxed);
+    for (u32 i = 0u; i < 3u; ++i) platform_thread_join(threads[i]);
+    expected_direct = atomic_load_explicit(&shared.direct_accepted, memory_order_relaxed);
+    expected_external = atomic_load_explicit(&shared.external_accepted, memory_order_relaxed);
+    ASSERT_TRUE(expected_external != 0u);
+    clear_outbound(&fixture);
+
+    for (u32 round = 0u; round < 4u; ++round) {
+        (void)break_runtime_world_session_drain(fixture.adapter, 256u, &drained);
+        while (next_control(&fixture, &key, &outbound)) {
+            bool external_message = outbound.correlation_id >= CONCURRENT_EXTERNAL_CID &&
+                                    outbound.correlation_id < CONCURRENT_EXTERNAL_CID +
+                                        CONCURRENT_ATTEMPTS;
+            bool direct_message = outbound.correlation_id >= CONCURRENT_DIRECT_CID &&
+                                  outbound.correlation_id < CONCURRENT_DIRECT_CID +
+                                      CONCURRENT_ATTEMPTS;
+            u32 index = external_message
+                            ? (u32)(outbound.correlation_id - CONCURRENT_EXTERNAL_CID)
+                            : (u32)(outbound.correlation_id - CONCURRENT_DIRECT_CID);
+            bool valid = key == KEY_A && (external_message || direct_message) &&
+                         index < CONCURRENT_ATTEMPTS;
+            if (valid) {
+                ConcurrentProducer *producer = external_message ? &external : &direct;
+                bool *seen = external_message ? external_seen : direct_seen;
+                valid = producer->accepted[index] && !seen[index] &&
+                        control_payload_matches(&outbound, BREAK_WORLD_SESSION_CONTROL_ACK,
+                                                (u64)index + 1u,
+                                                (external_message ? 2000u : 1000u) + (u64)index,
+                                                3000u + (u64)index, 7u);
+                seen[index] = true;
+            }
+            break_net_message_release(&outbound);
+            ASSERT_TRUE(valid);
+            output_count++;
+        }
+        if (break_runtime_world_session_pending(fixture.adapter) == 0u) break;
+    }
+    ASSERT_EQ(output_count, expected_direct + expected_external);
+    for (u32 i = 0u; i < CONCURRENT_ATTEMPTS; ++i) {
+        ASSERT_EQ(direct_seen[i], direct.accepted[i]);
+        ASSERT_EQ(external_seen[i], external.accepted[i]);
+    }
+    break_runtime_world_session_stats(fixture.adapter, &stats);
+    ASSERT_EQ(stats.submitted, 1u + expected_direct);
+    ASSERT_EQ(stats.drained, 1u + expected_direct + expected_external);
+    ASSERT_EQ(stats.applied, 1u + expected_direct + expected_external);
+    ASSERT_EQ(stats.next_sequence, 2u + expected_direct);
+    ASSERT_EQ(stats.queued, 0u);
+    ASSERT_FALSE(stats.control_pending);
+    ASSERT_TRUE(stats.transport_overloads != 0u);
+    ASSERT_EQ(break_runtime_world_session_pending(fixture.adapter), 0u);
+    ASSERT_TRUE(break_runtime_world_session_destroy(fixture.adapter));
+    fixture.adapter = NULL;
+    fixture_dispose(&fixture);
+}
+
+TEST(external_bus_ingress_uses_actual_queue_accounting)
+{
+    Fixture fixture;
+    BreakRuntimeWorldCommand item;
+    BreakRuntimeWorldSessionStats stats;
+    BreakNetOwnedMessage outbound;
+    u64 epoch = 0u, key = 0u;
+    u32 delivered = 0u;
+    usize drained = 0u;
+    ASSERT_TRUE(fixture_init(&fixture, 7u, 2u));
+    item = command(BREAK_RUNTIME_WORLD_COMMAND_OPEN, KEY_A, 0u, 7u);
+    ASSERT_EQ(publish_external(fixture.bus, &item, 0u, &delivered), BREAK_RUNTIME_OK);
+    ASSERT_EQ(delivered, 1u);
+    break_runtime_world_session_stats(fixture.adapter, &stats);
+    ASSERT_EQ(stats.submitted, 0u);
+    ASSERT_EQ(stats.drained, 0u);
+    ASSERT_EQ(stats.queued, 1u);
+    ASSERT_EQ(break_runtime_world_session_pending(fixture.adapter), 1u);
+    ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 1u, &drained), BREAK_RUNTIME_OK);
+    ASSERT_EQ(drained, 1u);
+    ASSERT_TRUE(break_runtime_world_session_connection_epoch(fixture.adapter, KEY_A, &epoch));
+    break_runtime_world_session_stats(fixture.adapter, &stats);
+    ASSERT_EQ(stats.submitted, 0u);
+    ASSERT_EQ(stats.drained, 1u);
+    ASSERT_EQ(stats.queued, 0u);
+    ASSERT_EQ(break_runtime_world_session_pending(fixture.adapter), 0u);
+
+    item = command(BREAK_RUNTIME_WORLD_COMMAND_ACK, KEY_A, epoch, 7u);
+    item.delta_id = 11u;
+    item.target_snapshot_id = 22u;
+    item.target_tick = 33u;
+    ASSERT_EQ(publish_external(fixture.bus, &item, HIGH_CID, &delivered), BREAK_RUNTIME_OK);
+    ASSERT_EQ(delivered, 1u);
+    ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 1u, &drained), BREAK_RUNTIME_OK);
+    ASSERT_EQ(drained, 1u);
+    ASSERT_TRUE(next_control(&fixture, &key, &outbound));
+    ASSERT_EQ(key, KEY_A);
+    ASSERT_EQ(outbound.correlation_id, HIGH_CID);
+    break_net_message_release(&outbound);
+    break_runtime_world_session_stats(fixture.adapter, &stats);
+    ASSERT_EQ(stats.submitted, 0u);
+    ASSERT_EQ(stats.drained, 2u);
+    ASSERT_EQ(stats.applied, 2u);
+    ASSERT_EQ(stats.queued, 0u);
+    ASSERT_EQ(break_runtime_world_session_pending(fixture.adapter), 0u);
+    ASSERT_TRUE(break_runtime_world_session_destroy(fixture.adapter));
+    fixture.adapter = NULL;
+    fixture_dispose(&fixture);
+}
+
+TEST(two_adapters_isolate_direct_submit_from_external_fanout)
+{
+    Fixture fixture;
+    BreakRuntimeWorldSessionConfig config;
+    BreakRuntimeWorldSession *second = NULL;
+    BreakRuntimeWorldCommand item;
+    BreakRuntimeWorldSessionStats first_stats;
+    BreakRuntimeWorldSessionStats second_stats;
+    BreakNetOwnedMessage outbound;
+    u64 epoch_a = 0u, epoch_b = 0u, key = 0u;
+    u32 delivered = 0u;
+    usize drained = 0u;
+    ASSERT_TRUE(fixture_init(&fixture, 7u, 2u));
+    memset(&config, 0, sizeof(config));
+    config.session = fixture.session;
+    config.bus = fixture.bus;
+    config.subscriber_name = "world_session.second";
+    config.max_connections = 2u;
+    second = break_runtime_world_session_create(&config);
+    ASSERT_NOT_NULL(second);
+
+    item = command(BREAK_RUNTIME_WORLD_COMMAND_OPEN, KEY_A, 0u, 7u);
+    ASSERT_EQ(break_runtime_world_session_submit(fixture.adapter, &item, 0u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_world_session_pending(fixture.adapter), 1u);
+    ASSERT_EQ(break_runtime_world_session_pending(second), 0u);
+    ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 1u, &drained), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(break_runtime_world_session_connection_epoch(fixture.adapter, KEY_A, &epoch_a));
+    item = command(BREAK_RUNTIME_WORLD_COMMAND_OPEN, KEY_B, 0u, 7u);
+    ASSERT_EQ(break_runtime_world_session_submit(second, &item, 0u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_world_session_pending(fixture.adapter), 0u);
+    ASSERT_EQ(break_runtime_world_session_pending(second), 1u);
+    ASSERT_EQ(break_runtime_world_session_drain(second, 1u, &drained), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(break_runtime_world_session_connection_epoch(second, KEY_B, &epoch_b));
+
+    item = command(BREAK_RUNTIME_WORLD_COMMAND_NEED_FULL, KEY_A, epoch_a, 7u);
+    item.target_snapshot_id = 41u;
+    item.target_tick = 51u;
+    ASSERT_EQ(publish_external(fixture.bus, &item, HIGH_CID, &delivered), BREAK_RUNTIME_OK);
+    ASSERT_EQ(delivered, 2u);
+    ASSERT_EQ(break_runtime_world_session_pending(fixture.adapter), 1u);
+    ASSERT_EQ(break_runtime_world_session_pending(second), 1u);
+    ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 1u, &drained), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(next_control(&fixture, &key, &outbound));
+    ASSERT_EQ(key, KEY_A);
+    ASSERT_EQ(outbound.correlation_id, HIGH_CID);
+    break_net_message_release(&outbound);
+    ASSERT_EQ(break_runtime_world_session_drain(second, 1u, &drained), BREAK_RUNTIME_STALE);
+    ASSERT_EQ(break_net_reactor_outbound_count(fixture.reactor), 0u);
+    ASSERT_TRUE(break_world_session_baseline(fixture.session, KEY_B, NULL, NULL));
+
+    item = command(BREAK_RUNTIME_WORLD_COMMAND_NEED_FULL, KEY_B, epoch_b, 7u);
+    item.target_snapshot_id = 42u;
+    item.target_tick = 52u;
+    ASSERT_EQ(break_runtime_world_session_submit(second, &item, HIGH_CID - 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_world_session_pending(fixture.adapter), 0u);
+    ASSERT_EQ(break_runtime_world_session_pending(second), 1u);
+    ASSERT_EQ(break_runtime_world_session_drain(second, 1u, &drained), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(next_control(&fixture, &key, &outbound));
+    ASSERT_EQ(key, KEY_B);
+    ASSERT_EQ(outbound.correlation_id, HIGH_CID - 1u);
+    break_net_message_release(&outbound);
+    ASSERT_EQ(break_net_reactor_outbound_count(fixture.reactor), 0u);
+
+    item = command(BREAK_RUNTIME_WORLD_COMMAND_CLOSE, KEY_A, epoch_a, 7u);
+    ASSERT_EQ(publish_external(fixture.bus, &item, 0u, &delivered), BREAK_RUNTIME_OK);
+    ASSERT_EQ(delivered, 2u);
+    ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 1u, &drained), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_world_session_drain(second, 1u, &drained), BREAK_RUNTIME_STALE);
+    ASSERT_FALSE(break_world_session_baseline(fixture.session, KEY_A, NULL, NULL));
+    ASSERT_TRUE(break_world_session_baseline(fixture.session, KEY_B, NULL, NULL));
+    break_runtime_world_session_stats(fixture.adapter, &first_stats);
+    break_runtime_world_session_stats(second, &second_stats);
+    ASSERT_EQ(first_stats.submitted, 1u);
+    ASSERT_EQ(first_stats.drained, 3u);
+    ASSERT_EQ(second_stats.submitted, 2u);
+    ASSERT_EQ(second_stats.drained, 4u);
+    ASSERT_EQ(break_runtime_world_session_pending(fixture.adapter), 0u);
+    ASSERT_EQ(break_runtime_world_session_pending(second), 0u);
+    ASSERT_TRUE(break_runtime_world_session_destroy(fixture.adapter));
+    fixture.adapter = NULL;
+    ASSERT_TRUE(break_runtime_world_session_destroy(second));
+    fixture_dispose(&fixture);
+}
+
+TEST(destroy_attempt_closes_ingress_before_pending_retry)
+{
+    Fixture fixture;
+    BreakRuntimeWorldCommand item;
+    BreakRuntimeWorldSessionStats stats;
+    BreakNetOwnedMessage outbound;
+    u64 epoch = 0u, key = 0u;
+    u32 delivered = 99u;
+    usize drained = 0u;
+    ASSERT_TRUE(fixture_init(&fixture, 7u, 2u));
+    ASSERT_TRUE(open_connection(&fixture, KEY_A, 7u, &epoch));
+    item = command(BREAK_RUNTIME_WORLD_COMMAND_ACK, KEY_A, epoch, 7u);
+    item.delta_id = 61u;
+    item.target_snapshot_id = 62u;
+    item.target_tick = 63u;
+    ASSERT_EQ(break_runtime_world_session_submit(fixture.adapter, &item, HIGH_CID), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_world_session_pending(fixture.adapter), 1u);
+    ASSERT_FALSE(break_runtime_world_session_destroy(fixture.adapter));
+    ASSERT_EQ(break_runtime_world_session_submit(fixture.adapter, &item, HIGH_CID + 1u),
+              BREAK_RUNTIME_CLOSED);
+    (void)publish_external(fixture.bus, &item, HIGH_CID + 2u, &delivered);
+    ASSERT_EQ(delivered, 0u);
+    break_runtime_world_session_stats(fixture.adapter, &stats);
+    ASSERT_EQ(stats.submitted, 2u);
+    ASSERT_EQ(stats.drained, 1u);
+    ASSERT_EQ(stats.queued, 1u);
+    ASSERT_EQ(break_runtime_world_session_pending(fixture.adapter), 1u);
+    ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 4u, &drained), BREAK_RUNTIME_OK);
+    ASSERT_EQ(drained, 1u);
+    ASSERT_TRUE(next_control(&fixture, &key, &outbound));
+    ASSERT_EQ(outbound.correlation_id, HIGH_CID);
+    ASSERT_TRUE(control_payload_matches(&outbound, BREAK_WORLD_SESSION_CONTROL_ACK,
+                                        61u, 62u, 63u, 7u));
+    break_net_message_release(&outbound);
+    ASSERT_EQ(break_net_reactor_outbound_count(fixture.reactor), 0u);
+    ASSERT_EQ(break_runtime_world_session_pending(fixture.adapter), 0u);
+    ASSERT_TRUE(break_runtime_world_session_destroy(fixture.adapter));
+    fixture.adapter = NULL;
+    fixture_dispose(&fixture);
+}
+
+TEST(connection_epoch_exhaustion_is_terminal_rejected)
+{
+    Fixture fixture;
+    BreakRuntimeWorldCommand item;
+    BreakRuntimeWorldSessionStats stats;
+    u64 epoch = 0u;
+    usize drained = 0u;
+    ASSERT_TRUE(fixture_init(&fixture, 7u, 2u));
+    break_runtime_world_session_set_next_connection_epoch_for_test(fixture.adapter, UINT64_MAX);
+    ASSERT_TRUE(open_connection(&fixture, KEY_A, 7u, &epoch));
+    ASSERT_EQ(epoch, UINT64_MAX);
+    item = command(BREAK_RUNTIME_WORLD_COMMAND_OPEN, KEY_B, 0u, 7u);
+    ASSERT_EQ(break_runtime_world_session_submit(fixture.adapter, &item, 0u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 1u, &drained),
+              BREAK_RUNTIME_REJECTED);
+    ASSERT_EQ(drained, 1u);
+    ASSERT_FALSE(break_world_session_baseline(fixture.session, KEY_B, NULL, NULL));
+    ASSERT_TRUE(break_world_session_baseline(fixture.session, KEY_A, NULL, NULL));
+    break_runtime_world_session_stats(fixture.adapter, &stats);
+    ASSERT_EQ(stats.submitted, 2u);
+    ASSERT_EQ(stats.drained, 2u);
+    ASSERT_EQ(stats.applied, 1u);
+    ASSERT_EQ(stats.rejected, 1u);
+    ASSERT_EQ(stats.stale_rejected, 0u);
+    ASSERT_EQ(stats.transport_overloads, 0u);
+    ASSERT_EQ(stats.queued, 0u);
+    ASSERT_EQ(break_runtime_world_session_pending(fixture.adapter), 0u);
+    fixture_dispose(&fixture);
+}
+
 TEST_MAIN_BEGIN()
 RUN_TEST(layout_registry_defaults_and_invalid_configs);
 RUN_TEST(stateless_validation_defers_connection_and_level_state);
@@ -1134,4 +1550,9 @@ RUN_TEST(fifo_bounded_drain_close_and_destroy_preserve_world_lifetime);
 RUN_TEST(transport_overload_retries_same_control_before_fifo);
 RUN_TEST(transport_overload_retries_need_full_before_later_ack);
 RUN_TEST(terminal_pending_result_is_counted_and_released);
+RUN_TEST(external_bus_ingress_uses_actual_queue_accounting);
+RUN_TEST(two_adapters_isolate_direct_submit_from_external_fanout);
+RUN_TEST(destroy_attempt_closes_ingress_before_pending_retry);
+RUN_TEST(connection_epoch_exhaustion_is_terminal_rejected);
+RUN_TEST(concurrent_ingress_close_drain_and_destroy_preserve_exactly_once);
 TEST_MAIN_END()

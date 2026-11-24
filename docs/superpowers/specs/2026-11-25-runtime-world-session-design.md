@@ -185,3 +185,26 @@ bridge。调用方随后才安全销毁 session/publication。
 - 每项生产缺陷修复附定向变异判红并恢复，focused normal、ASan+UBSan
   （显式 leak 检测）、TSan 和完整 Vulkan/OpenGL；独立任务与整分支评审后
   推送并核验远端矩阵。
+
+
+## 修订（2026-11-25）：共享 Bus 外部 ingress 与 shutdown 竞态
+
+本修订替代前文关于 direct submit 经 Bus fan-out、`submitted-drained` pending
+以及“清空后才 unsubscribe”的三处实现描述，公共函数签名和 56 字节布局不变。
+
+- `break_runtime_world_session_submit` 现在只执行 `break_runtime_message_copy` 和
+  `break_runtime_queue_enqueue`，精确使用本次调用的结果，不再发布到 Bus，也不
+  观察 enqueued 差值。kind 注册与订阅继续服务合法外部生产者；直接 Bus publish
+  会向每个匹配 adapter 投递独立副本。`submitted` 只计自有 submit 成功，
+  `drained` 则包括自有和外部消息，二者不得相减作为 queue occupancy。
+- `stats.queued` 与 `pending()` 统一使用 Runtime queue 实际的
+  `enqueued-dequeued`；`pending()` 再加 `control_pending`。因此外部投递不会伪造
+  submitted，也不会在 drained 大于 submitted 时造成无符号下溢。
+- destroy 首先置 closed 并 `queue_close`，随后 unsubscribe 并记录
+  `unsubscribed`，最后才按实际 pending 判定。pending 非零仍返回 false，但此后
+  direct submit=CLOSED、外部 Bus 不再有该订阅者，drain 可继续；清零后的重试
+  跳过重复退订并释放资源。可能成功的 destroy 仍要求调用方外部 quiesce，World
+  调用依旧只能发生在 owner drain。
+- connection epoch 耗尽是终态 `BREAK_RUNTIME_REJECTED` 并计 rejected，不再是
+  未计数的 OVERLOAD。耗尽边界只通过 `BREAK_RUNTIME_TESTING` seam 覆盖，正式库
+  不包含该 seam。

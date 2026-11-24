@@ -940,3 +940,10 @@ submit 不调用 World，owner drain 是唯一应用入口。queue OVERLOAD 时 
 - **权威与共享状态**：没有 core_app authoritative World 接线、共享 live World、权威 simulation 合并、预测回滚或跨 World 持久身份。
 
 本地测试覆盖上述背压、shutdown、默认/opt-in admission 和反向变异，但没有因此关闭完整 sanitizer、原生 GPU 或远端矩阵；core_app/editor Lua longjmp 环境限制仍须独立记录，不预写远端结果。
+
+
+## 第 17 节修订（2026-11-25）：仅关闭 Runtime 外部 ingress 与 shutdown 竞态
+
+本次修复关闭的是一个既有控制桥缺陷，而不是新增数据面能力：direct submit 只进入自有 queue，外部同 kind Bus publish 保留独立 fan-out；submitted/drained 不再相减表示占用，pending 使用真实 queue 计数加 transport pending。destroy 在判定前关闭 admission 并退订，false 后可继续 drain，重试不重复退订；connection epoch 耗尽为计数的 REJECTED。并发测试覆盖真实 submit/publish/close/drain/destroy 交错及 accepted 控制恰好一次。
+
+以下边界保持开放：Runtime snapshot/lease/BRWD/BRFG 映射、Coordinator 自动注册、core_app authoritative World 接线、共享 live World、权威 simulation 合并、预测回滚和完整资产链均未因此实现。成功 destroy 仍要求调用方外部 quiesce 其他 adapter API，World 仍只允许 owner drain；本追加不预写完整 sanitizer、原生 GPU 或远端矩阵结果。

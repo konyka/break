@@ -169,3 +169,20 @@ ctest --test-dir engine/build-vulkan --output-on-failure -j2
 - [ ] **Step 6: 独立评审、推送与收据**
 
 完成任务与整分支评审并修复所有 Critical/Important。确认最终 HEAD 双后端、focused sanitizer 和工作树干净后推送 `HEAD:master`；核验 CI、Windows、QUIC（若触发）、Proton 和 contract，再追加远端收据。条件 skip、Proton 77 和混合 TSan 不升级为原生 GPU 或完整 sanitizer 验收。
+
+
+## 修订（2026-11-25）：最终整分支 fix wave
+
+仅处理共享 Bus 与 shutdown 审查发现，不加入其他 deferred 增强：
+
+1. 先以外部同 kind publish、双 adapter、queued/pending destroy、真实线程交错和
+   epoch 耗尽测试复现 RED。direct submit 改为自有 message copy + queue enqueue，
+   不再 fan-out 或依赖 Bus 回执/计数差分。
+2. pending 和 stats.queued 改用 queue 的 `enqueued-dequeued`，pending 另加
+   `control_pending`；submitted 只表示自有成功投递，drained 可合法大于它。
+3. destroy 固定执行 closed/queue_close→unsubscribe/记录状态→实际 pending 判定；
+   false 后只保留 drain/查询/重试路径，成功重试不重复退订。并发测试以 transport
+   pending 保证 destroy 先失败，再核对所有 accepted cid/内容恰好一次。
+4. epoch 耗尽改为 REJECTED 并计 rejected，使用 test-only seam 覆盖。公共头补充
+   路由、线程和 destroy 前置，六份事实文档同步追加修订。最后运行同一组
+   adapter/Runtime/World/Session/bridge normal、ASan+UBSan 与 TSan focused。

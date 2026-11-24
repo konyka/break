@@ -23,6 +23,7 @@ struct BreakRuntimeWorldSession {
     u32 subscriber_id;
     u32 max_connections;
     bool closed;
+    bool unsubscribed;
     u64 next_connection_epoch;
     u64 next_sequence;
     u64 submitted;
@@ -142,7 +143,7 @@ static BreakRuntimeError runtime_world_apply(BreakRuntimeWorldSession *adapter,
             if (adapter->connections[slot].key == 0u) break;
         }
         if (slot == adapter->max_connections) return BREAK_RUNTIME_REJECTED;
-        if (adapter->next_connection_epoch == 0u) return BREAK_RUNTIME_OVERLOAD;
+        if (adapter->next_connection_epoch == 0u) return BREAK_RUNTIME_REJECTED;
         epoch = adapter->next_connection_epoch;
         if (!break_world_session_open(adapter->session, command->connection_key)) {
             return BREAK_RUNTIME_REJECTED;
@@ -243,22 +244,39 @@ BreakRuntimeWorldSession *break_runtime_world_session_create(
     return adapter;
 }
 
+static usize runtime_world_queued_locked(const BreakRuntimeWorldSession *adapter)
+{
+    BreakRuntimeQueueStats stats;
+    if (break_runtime_queue_stats(adapter->queue, &stats) != BREAK_RUNTIME_OK) return 0u;
+    return (usize)(stats.enqueued - stats.dequeued);
+}
+
+static usize runtime_world_pending_locked(const BreakRuntimeWorldSession *adapter)
+{
+    return runtime_world_queued_locked(adapter) + (adapter->control_pending ? 1u : 0u);
+}
+
 bool break_runtime_world_session_destroy(BreakRuntimeWorldSession *adapter)
 {
     BreakRuntimeError result;
     if (!adapter) return true;
     platform_mutex_lock(&adapter->mutex);
-    if (adapter->submitted != adapter->drained || adapter->control_pending) {
+    if (!adapter->closed) {
+        adapter->closed = true;
+        break_runtime_queue_close(adapter->queue);
+    }
+    if (!adapter->unsubscribed) {
+        result = break_runtime_bus_unsubscribe(adapter->bus, adapter->subscriber_id);
+        if (result != BREAK_RUNTIME_OK && result != BREAK_RUNTIME_STALE) {
+            platform_mutex_unlock(&adapter->mutex);
+            return false;
+        }
+        adapter->unsubscribed = true;
+    }
+    if (runtime_world_pending_locked(adapter) != 0u) {
         platform_mutex_unlock(&adapter->mutex);
         return false;
     }
-    result = break_runtime_bus_unsubscribe(adapter->bus, adapter->subscriber_id);
-    if (result != BREAK_RUNTIME_OK) {
-        platform_mutex_unlock(&adapter->mutex);
-        return false;
-    }
-    adapter->closed = true;
-    break_runtime_queue_close(adapter->queue);
     platform_mutex_unlock(&adapter->mutex);
     break_runtime_queue_destroy(adapter->queue);
     platform_mutex_destroy(&adapter->mutex);
@@ -272,8 +290,7 @@ BreakRuntimeError break_runtime_world_session_submit(
     u64 correlation_id)
 {
     BreakRuntimeMessageView view;
-    BreakRuntimeQueueStats before;
-    BreakRuntimeQueueStats after;
+    BreakRuntimeOwnedMessage *message = NULL;
     BreakRuntimeError result;
     u64 sequence;
     if (!adapter) return BREAK_RUNTIME_INVALID;
@@ -300,17 +317,16 @@ BreakRuntimeError break_runtime_world_session_submit(
     view.correlation_id = correlation_id;
     view.data = command;
     view.size = sizeof(*command);
-    memset(&before, 0, sizeof(before));
-    memset(&after, 0, sizeof(after));
-    (void)break_runtime_queue_stats(adapter->queue, &before);
-    result = break_runtime_bus_publish(adapter->bus, &view, NULL);
-    (void)break_runtime_queue_stats(adapter->queue, &after);
-    if (after.enqueued == before.enqueued + 1u) {
-        adapter->submitted++;
-        adapter->next_sequence++;
-        result = BREAK_RUNTIME_OK;
-    } else if (result == BREAK_RUNTIME_OK) {
-        result = BREAK_RUNTIME_OVERLOAD;
+    result = break_runtime_message_copy(&view, &message);
+    if (result == BREAK_RUNTIME_OK) {
+        result = break_runtime_queue_enqueue(
+            adapter->queue, message, break_runtime_queue_generation(adapter->queue));
+        if (result == BREAK_RUNTIME_OK) {
+            adapter->submitted++;
+            adapter->next_sequence++;
+        } else {
+            break_runtime_message_release(message);
+        }
     }
     platform_mutex_unlock(&adapter->mutex);
     return result;
@@ -389,8 +405,7 @@ usize break_runtime_world_session_pending(const BreakRuntimeWorldSession *adapte
     usize pending;
     if (!adapter) return 0u;
     platform_mutex_lock((PlatformMutex *)(uintptr_t)&adapter->mutex);
-    pending = (usize)(adapter->submitted - adapter->drained) +
-              (adapter->control_pending ? 1u : 0u);
+    pending = runtime_world_pending_locked(adapter);
     platform_mutex_unlock((PlatformMutex *)(uintptr_t)&adapter->mutex);
     return pending;
 }
@@ -426,7 +441,18 @@ void break_runtime_world_session_stats(
     out_stats->stale_rejected = adapter->stale_rejected;
     out_stats->transport_overloads = adapter->transport_overloads;
     out_stats->next_sequence = adapter->next_sequence;
-    out_stats->queued = (usize)(adapter->submitted - adapter->drained);
+    out_stats->queued = runtime_world_queued_locked(adapter);
     out_stats->control_pending = adapter->control_pending;
     platform_mutex_unlock((PlatformMutex *)(uintptr_t)&adapter->mutex);
 }
+
+#ifdef BREAK_RUNTIME_TESTING
+void break_runtime_world_session_set_next_connection_epoch_for_test(
+    BreakRuntimeWorldSession *adapter, u64 next_epoch)
+{
+    if (!adapter) return;
+    platform_mutex_lock(&adapter->mutex);
+    adapter->next_connection_epoch = next_epoch;
+    platform_mutex_unlock(&adapter->mutex);
+}
+#endif

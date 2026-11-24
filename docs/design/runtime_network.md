@@ -502,3 +502,10 @@ Runtime 新增独立可选控制桥，kind `0x5753`/version 1 的 payload 固定
 submit 不触碰 World，只有 owner drain 执行 open/close/rebaseline/control。queue OVERLOAD 不改变 World，允许排空后以同内容和同 cid 重试；reactor OUTBOUND OVERLOAD 将原 control、level、epoch、cid 留在 pending，后续 drain 必须先成功重试该控制再处理下一命令。连续饱和每次都计 transport OVERLOAD，成功应用只计一次。close 后 submit=CLOSED，但已排队和 pending 控制仍按 FIFO 恰好一次排空；pending 非零拒绝 destroy 并保留资源，归零后才允许 adapter 销毁，再由调用方销毁 session/publication。
 
 真实 socket 回归同时固定 admission 兼容：零初始化 `fair_outbound_admission=false` 保持旧全局 256，A 占满后 B 同样 OVERLOAD；只有两个既有双连接公平用例显式 true，继续验证 A 达自身份额时 B 可推进。本项没有 snapshot/BRWD 数据面 Runtime 映射、Coordinator 自动注册、共享 live World 或权威合并，也不预写远端验收。
+
+
+## 修订（2026-11-25）：World 控制 ingress 隔离与关停竞态
+
+Runtime direct submit 改为自有 `message_copy + queue_enqueue`，不再经 Bus fan-out；合法外部生产者仍可直接 publish 已注册的 `0x5753`，每个 adapter 独立接收、drain 和关闭。统计上 submitted 只属于 direct 成功，外部消息只增加 drained/applied；queue occupancy 来自 `enqueued-dequeued`，所以共享 Bus 不再导致 pending 下溢或 destroy 永久拒绝。
+
+destroy 在任何 pending 判定之前先关闭 queue admission 并退订，且记录退订状态供后续重试跳过。false 返回后不会再接受 direct 或外部新命令，但已排队及 transport pending 仍由原 cid/内容 drain 清空，随后 destroy 重试成功。connection epoch 耗尽返回本地 `BREAK_RUNTIME_REJECTED` 并计 rejected，不进入网络重试，也不改变 BRWC/BRWD、correlation、wire sequence 或 admission 协议。

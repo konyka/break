@@ -484,3 +484,10 @@ producer 的 submit 只做无状态校验和 bounded copy；World Session 调用
 close 只停止 admission 并关闭 queue，已有 A1/B1/A2 仍可恰好一次 FIFO drain。`pending = queued + control_pending`；pending 非零时 destroy=false 且 bus、queue、连接代次和借用 session 保持可用，清空后 destroy=true，最后才由调用方销毁 session/publication。`fair_outbound_admission=false` 仍是默认全局 256 准入，显式 true 才启用逐 key 公平份额，既有双连接 opt-in 行为不变。
 
 本切片不搬运 snapshot/lease/BRWD/BRFG 数据面，不注册 Runtime Coordinator callback，也不做 core_app authoritative World 接线或权威 simulation 合并。上述验证是本地控制面契约，不预写推送、CI 或其他远端结果。
+
+
+### 修订（2026-11-25）：World 控制的外部 Bus ingress 与真实 queue pending
+
+`break_runtime_world_session_submit` 不再把自有命令 fan-out 到 Bus：它只复制消息并入队到该 adapter 的自有 queue，以 copy/enqueue 的实际结果推进 submitted 和 Runtime sequence。kind 注册及订阅仍允许外部生产者直接 publish `0x5753`；每个匹配 adapter 各收一份 copied bytes，direct submit 不会出现在其他 adapter 或 observer 中。`submitted` 只计 direct 成功，`drained` 同时计 direct 与外部消费，因此 drained 可以大于 submitted，不能再用二者差值表示占用。
+
+`stats.queued` 现在严格是 queue 的 `enqueued-dequeued`，`pending()` 是该 queued 加 `control_pending`。destroy 先 closed/queue_close，再 unsubscribe 并记录已退订，最后读取实际 pending；即使返回 false，后续 direct submit 也为 CLOSED、外部 Bus 不再投递到该 adapter，drain 和查询仍可继续，清零后的重试不会重复退订。可能成功的 destroy 必须由调用方先 quiesce 其他 adapter API；并发验收只让 destroy 在已知 pending 非零时与 submit/publish/drain 交错，并逐项核对 accepted cid 与内容的恰好一次输出。World 仍只有 owner drain 能调用。

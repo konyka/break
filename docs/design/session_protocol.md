@@ -397,3 +397,10 @@ publication 准入要求非空 snapshot、非零 tick、匹配 schema、未关�
 所有有状态 Session 操作只在 owner drain 调用。queue 满返回 OVERLOAD 且 World 不变；OUTBOUND 饱和时 ACK 与 NEED_FULL 都保存同一 control/level/epoch/cid，下一 drain 优先重试，后续命令不得越过，OVERLOAD 逐次计数而 applied 仅成功一次。close 后不再 admit，已有 A1/B1/A2 与 pending 仍可 FIFO drain 恰好一次；pending 非零时 destroy=false 且资源保持，清空后才 unsubscribe/destroy adapter，session/publication 最后由调用方销毁。
 
 默认 `fair_outbound_admission=false` 仍采用全局 256，显式 true 才启用逐 key share；新增默认真实双 socket 用例与原 opt-in 公平用例共同固定该边界。本补充不包含 snapshot/BRWD 数据面桥接、Runtime Coordinator 自动注册或权威 simulation 合并，不声明 exactly-once，也不预写远端结果。
+
+
+## 修订（2026-11-25）：Runtime 外部控制来源与 epoch 终态
+
+Runtime World 控制桥现在区分 direct submit 与外部 Bus publish：direct submit 只进入调用目标 adapter 的自有 queue，外部同 kind publish 才向各订阅 adapter fan-out。两者共用 56 字节命令和 owner-drain 状态校验，但只有 direct 成功增加 submitted/本地 Runtime sequence；外部消息可令 drained 大于 submitted。pending 使用真实 queue 计数加 control_pending，不再从这两个来源不同的累计值相减。
+
+destroy 先 close admission、退订再检查 pending；false 后 ingress 已关闭而 drain 保持可用，最终重试不会重复退订。bridge 本地 connection epoch 耗尽是 `BREAK_RUNTIME_REJECTED` 并计 rejected，而非可重试 OVERLOAD。该修订不改变 connection epoch 的非零单调分配、level 检查、32/40 字节 BRWC 或网络逐连接 sequence。
