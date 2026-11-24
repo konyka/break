@@ -5,6 +5,20 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef BREAK_WORLD_DELTA_TESTING
+static usize wire_test_fail_after_mutation;
+
+void break_world_delta_wire_test_fail_after_mutation(usize mutation_count) {
+    wire_test_fail_after_mutation = mutation_count;
+}
+
+static bool wire_test_mutation_fault(void) {
+    if (wire_test_fail_after_mutation == 0u) return false;
+    --wire_test_fail_after_mutation;
+    return wire_test_fail_after_mutation == 0u;
+}
+#endif
+
 static void put16(u8 *p, u16 value) {
     p[0] = (u8)value;
     p[1] = (u8)(value >> 8u);
@@ -372,6 +386,9 @@ static bool apply_records(World *world, const BreakWorldDeltaWire *message, bool
         world_destroy_entity(world, record->entity);
     }
     if (!create_entities(world, message, full)) return false;
+#ifdef BREAK_WORLD_DELTA_TESTING
+    if (wire_test_mutation_fault()) return false;
+#endif
     for (u32 i = 0u; i < message->record_count; ++i) {
         const BreakWorldDeltaRecord *record = &message->records[i];
         void *component;
@@ -472,6 +489,64 @@ BreakWorldDeltaWireResult break_world_delta_wire_rebuild(
 done:
     break_world_snapshot_release(target);
     break_world_snapshot_release(current);
+    world_destroy(staging);
+    return result;
+}
+
+
+BreakWorldDeltaWireResult break_world_delta_wire_apply_full(
+    const BreakWorldDeltaWire *message, const BreakComponentSchemaRegistry *schemas,
+    u64 level_generation, World *world, BreakWorldSnapshot **out_target) {
+    BreakWorldDeltaWireResult result;
+    BreakWorldSnapshot *target = NULL;
+    World *staging = NULL;
+    World *replacement = NULL;
+    if (out_target) *out_target = NULL;
+    if (!world || !out_target || !message ||
+        message->kind != BREAK_WORLD_DELTA_WIRE_FULL) {
+        return BREAK_WORLD_DELTA_WIRE_INVALID;
+    }
+    result = validate_message(message, NULL);
+    if (result != BREAK_WORLD_DELTA_WIRE_OK) return result;
+    if (!schemas) return BREAK_WORLD_DELTA_WIRE_INVALID;
+    if (message->level_generation != level_generation) {
+        return BREAK_WORLD_DELTA_WIRE_LEVEL_MISMATCH;
+    }
+    if (break_schema_hash(schemas) != message->schema_hash) {
+        return BREAK_WORLD_DELTA_WIRE_SCHEMA_MISMATCH;
+    }
+    staging = world_create();
+    if (!staging || !register_schema_components(staging, schemas)) {
+        result = BREAK_WORLD_DELTA_WIRE_APPLY_FAILED;
+        goto done;
+    }
+    if (!apply_records(staging, message, true)) {
+        result = BREAK_WORLD_DELTA_WIRE_APPLY_FAILED;
+        goto done;
+    }
+    target = break_world_snapshot_build(staging, schemas, message->target_tick);
+    if (!target) {
+        result = BREAK_WORLD_DELTA_WIRE_APPLY_FAILED;
+        goto done;
+    }
+    if (break_world_snapshot_id(target) != message->target_snapshot_id) {
+        result = BREAK_WORLD_DELTA_WIRE_TARGET_MISMATCH;
+        goto done;
+    }
+    replacement = world_clone_deep(staging);
+    if (!replacement || !world_replace_contents(world, replacement)) {
+        world_destroy(replacement);
+        replacement = NULL;
+        result = BREAK_WORLD_DELTA_WIRE_APPLY_FAILED;
+        goto done;
+    }
+    replacement = NULL;
+    *out_target = target;
+    target = NULL;
+    result = BREAK_WORLD_DELTA_WIRE_OK;
+
+done:
+    break_world_snapshot_release(target);
     world_destroy(staging);
     return result;
 }

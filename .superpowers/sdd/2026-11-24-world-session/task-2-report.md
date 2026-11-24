@@ -157,3 +157,38 @@ Each records 0x400A/0x400B, baseline/ACK semantics, full fallback, rate limiting
 - `engine/tests/test_world_session_recovery.c`
 
 Final checks before commit: `git diff --check`, direct 189/189, focused normal 11/11, focused sanitizer 9/9 in each lane, forbidden-name scan, and the complete backend summaries above.
+
+
+## Review fix: full replacement, control ordering, and terminal attempts
+
+Review base: `1059c951e71a916febe98a8f030cc34970108f75`.
+
+### RED evidence before fixes
+
+- `world_session_sparse_full_replaces_diverged_world` was changed from expecting the old allocator-history rejection to requiring a legal sparse full replacement. Together with the new stale-nonempty reconnect case, `test_world_session` was **10 passed / 2 failed / 12 total**: both left the stale entity in place.
+- `world_session_ack_after_need_full_does_not_reuse_unconfirmed_baseline` built sender history A,B and receiver last-good A, rejected B, then delivered NEED_FULL followed by ACK A. The next attempt was expected to be fresh-id full; it was a B-based delta. `world_session_fragment_count_invalid_releases_attempt` required two fragments with a configured count cap of one and found `attempt_pending=true`. `test_world_session_recovery` was **6 passed / 2 failed / 8 total**.
+- `world_session_full_fault_rolls_back_world_and_baseline` initially failed compilation because `break_world_delta_wire_test_fail_after_mutation` did not exist. This supplied the explicit fault-injection RED for full-apply rollback.
+- The first full-specific replacement implementation also exposed an integration failure: a directly created staging World has null query match pointers, which `world_replace_contents` rejects. The fix uses a deep clone of the validated empty-built staging World, whose query pointers satisfy the existing atomic-replacement invariant. Temporary diagnostics were removed before the green runs.
+
+### Fixes after RED
+
+- Added `break_world_delta_wire_apply_full`: BRWD_FULL is applied into an empty staging World, the target snapshot is rebuilt and hash-checked, and only then is the destination atomically replaced. `world_session` no longer converts full targets into deltas against the old World. Fault injection after staging mutation confirms that destination and confirmed baseline remain unchanged on failure.
+- ACK processing no longer clears `force_full`. Only successful completion of a full publish attempt clears it, so NEED_FULL followed by ACK A cannot produce a B-based delta while B is unconfirmed.
+- Publish now checks the generated fragment count against the bridge limit before advancing `next_delta_id`. `world_session_resume_attempt` retains attempts only for OVERLOAD and releases them for INVALID/CLOSED terminal results.
+- The reconnect test now establishes receiver and confirmed sender baselines, queues ACK and NEED_FULL, advances the NEED_FULL tick epoch, and retains an OVERLOAD attempt before close. Reopen verifies all state and queued controls are cleared.
+- Both loopback fixtures are initialized before use and have a single cleanup exit covering snapshots, wire buffers, sockets, partial `socket_start` failures, and every assertion path.
+- Packet-cap documentation now states that full is attempted under pressure, but an over-cap full is rejected without consuming history or a delta ID. The full-apply documentation was updated to describe empty-staging replacement rather than old-World delta application.
+
+### After-fix verification
+
+- `test_world_session`: **13/13** (sparse full success, explicit full-fault rollback, stale reconnect recovery).
+- `test_world_session_recovery`: **8/8** (ACK-after-NEED_FULL ordering and small fragment-count INVALID cleanup included).
+- `test_world_session_loopback`: **2/2** with unconditional cleanup.
+- Direct total across the original ten suites: **193/193**, up from 189. Sanitizer-selected direct cases: **181/181**, up from 177.
+- Focused normal CTest including replication target and naming contracts: **12/12**.
+- Focused ASan+UBSan (`detect_leaks=1`) and TSan: **9/9 each**, no diagnostics.
+- Full Vulkan: **467 registered, 463 executed/passed, 4 conditional skips, 0 failed**.
+- Full OpenGL: **465 registered, 461 executed/passed, 4 conditional skips, 0 failed**.
+- The conditional skips remain `test_d3d12_dependency_gate`, `test_core_app_nm_missing`, `test_core_app_nm_unsupported`, and `test_core_app_nm_symbol_missing_unsupported`.
+
+Review-fix files: `engine/src/ecs/world_delta_wire.{h,c}`, `engine/src/ecs/world_session.c`, `engine/tests/test_world_session.c`, `engine/tests/test_world_session_recovery.c`, `engine/tests/test_world_session_loopback.c`, `engine/CMakeLists.txt`, the three protocol/design documents above, and this report.

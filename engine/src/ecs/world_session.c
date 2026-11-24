@@ -62,6 +62,7 @@ struct BreakWorldSession {
     size_t history_byte_limit;
     size_t packet_byte_limit;
     size_t fragment_byte_limit;
+    size_t fragment_count_limit;
     u64 need_full_tick_interval;
     size_t applied_packets;
     size_t need_full_packets;
@@ -187,6 +188,7 @@ BreakWorldSession *break_world_session_create(const BreakWorldSessionConfig *con
     session->history_byte_limit = history_bytes;
     session->packet_byte_limit = packet_bytes;
     session->fragment_byte_limit = config->bridge.max_fragment_bytes;
+    session->fragment_count_limit = config->bridge.max_fragment_count;
     session->need_full_tick_interval = config->need_full_tick_interval != 0u
                                            ? config->need_full_tick_interval
                                            : WORLD_SESSION_DEFAULT_NEED_FULL_INTERVAL;
@@ -325,7 +327,6 @@ static void world_session_apply_completion(BreakWorldSession *session,
     BreakWorldSnapshot *target = NULL;
     BreakWorldDelta *delta = NULL;
     BreakDeltaApplyResult apply_result;
-    bool base_owned = false;
 
     session->drained_packets++;
     if (break_world_delta_wire_decode(completion->payload, completion->payload_size,
@@ -341,34 +342,37 @@ static void world_session_apply_completion(BreakWorldSession *session,
         break_world_delta_wire_clear(&message);
         return;
     }
-    rebuild_result = break_world_delta_wire_rebuild(
-        &message,
-        message.kind == BREAK_WORLD_DELTA_WIRE_DELTA ? world : NULL,
-        message.kind == BREAK_WORLD_DELTA_WIRE_DELTA ? connection->baseline : NULL,
-        session->schemas, session->level_generation, &target);
-    if (rebuild_result != BREAK_WORLD_DELTA_WIRE_OK) {
-        world_session_reject(session, connection, true, message.target_tick);
-        goto done;
-    }
     if (message.kind == BREAK_WORLD_DELTA_WIRE_FULL) {
-        base = break_world_snapshot_build(world, session->schemas, 0u);
-        base_owned = true;
+        rebuild_result = break_world_delta_wire_apply_full(
+            &message, session->schemas, session->level_generation, world, &target);
+        if (rebuild_result != BREAK_WORLD_DELTA_WIRE_OK) {
+            world_session_reject(session, connection, true, message.target_tick);
+            goto done;
+        }
     } else {
+        rebuild_result = break_world_delta_wire_rebuild(
+            &message, world, connection->baseline,
+            session->schemas, session->level_generation, &target);
+        if (rebuild_result != BREAK_WORLD_DELTA_WIRE_OK) {
+            world_session_reject(session, connection, true, message.target_tick);
+            goto done;
+        }
         base = connection->baseline;
-    }
-    if (!base) {
-        world_session_reject(session, connection, true, message.target_tick);
-        goto done;
-    }
-    delta = break_world_delta_diff(base, target);
-    if (!delta) {
-        world_session_reject(session, connection, true, message.target_tick);
-        goto done;
-    }
-    apply_result = break_world_delta_apply(world, delta);
-    if (apply_result != BREAK_DELTA_OK && apply_result != BREAK_DELTA_ALREADY_APPLIED) {
-        world_session_reject(session, connection, true, message.target_tick);
-        goto done;
+        if (!base) {
+            world_session_reject(session, connection, true, message.target_tick);
+            goto done;
+        }
+        delta = break_world_delta_diff(base, target);
+        if (!delta) {
+            world_session_reject(session, connection, true, message.target_tick);
+            goto done;
+        }
+        apply_result = break_world_delta_apply(world, delta);
+        if (apply_result != BREAK_DELTA_OK &&
+            apply_result != BREAK_DELTA_ALREADY_APPLIED) {
+            world_session_reject(session, connection, true, message.target_tick);
+            goto done;
+        }
     }
     break_world_snapshot_release(connection->baseline);
     connection->baseline = target;
@@ -383,7 +387,6 @@ static void world_session_apply_completion(BreakWorldSession *session,
 
 done:
     break_world_delta_release(delta);
-    if (base_owned) break_world_snapshot_release(base);
     break_world_snapshot_release(target);
     break_world_delta_wire_clear(&message);
 }
@@ -517,7 +520,6 @@ bool break_world_session_handle_control(BreakConnectionKey connection,
     state->history_bytes -= released_bytes;
     memset(state->history + state->history_count, 0,
            (ack_index + 1u) * sizeof(state->history[0]));
-    state->force_full = false;
     session->acknowledged_packets++;
     return true;
 }
@@ -706,7 +708,9 @@ static bool world_session_build_attempt(BreakWorldSession *session,
         wire, wire_size, session->fragment_byte_limit,
         &attempt->fragments, &attempt->fragment_count);
     attempt->payload = wire;
-    if (fragment_result != BREAK_REPLICATION_FRAGMENT_OK) {
+    if (fragment_result != BREAK_REPLICATION_FRAGMENT_OK ||
+        attempt->fragment_count == 0u ||
+        attempt->fragment_count > session->fragment_count_limit) {
         world_session_clear_attempt(attempt);
         return false;
     }
@@ -721,7 +725,10 @@ static BreakNetSendResult world_session_resume_attempt(
     while (attempt->next_fragment < attempt->fragment_count) {
         BreakNetSendResult result = break_replication_session_send_fragment(
             session->bridge, connection->key, &attempt->fragments[attempt->next_fragment]);
-        if (result != BREAK_NET_SEND_OK) return result;
+        if (result != BREAK_NET_SEND_OK) {
+            if (result != BREAK_NET_SEND_OVERLOAD) world_session_clear_attempt(attempt);
+            return result;
+        }
         attempt->next_fragment++;
     }
     if (attempt->full) {

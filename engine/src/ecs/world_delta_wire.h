@@ -57,6 +57,17 @@ BreakWorldDeltaWireResult break_world_delta_wire_rebuild(
     const BreakComponentSchemaRegistry *schemas, u64 level_generation,
     BreakWorldSnapshot **out_target);
 
+/* Applies only BRWD_FULL into a new empty staging World, validates the target
+ * snapshot, then atomically replaces world. The old destination is preserved on
+ * every failure. On success out_target is owned by the caller. */
+BreakWorldDeltaWireResult break_world_delta_wire_apply_full(
+    const BreakWorldDeltaWire *message, const BreakComponentSchemaRegistry *schemas,
+    u64 level_generation, World *world, BreakWorldSnapshot **out_target);
+
+#ifdef BREAK_WORLD_DELTA_TESTING
+void break_world_delta_wire_test_fail_after_mutation(usize mutation_count);
+#endif
+
 #ifdef __cplusplus
 }
 #endif

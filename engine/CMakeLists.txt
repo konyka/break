@@ -7135,6 +7135,7 @@ endif()
         add_executable(test_world_session tests/test_world_session.c)
         target_include_directories(test_world_session PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+        target_compile_definitions(test_world_session PRIVATE BREAK_WORLD_DELTA_TESTING=1)
         target_link_libraries(test_world_session PRIVATE
             break_net_test break_ecs_replication_test)
         add_test(NAME test_world_session COMMAND test_world_session)

@@ -21,6 +21,14 @@ extern int usleep(unsigned int);
 #define TEST_PROTOCOL 1u
 #define TEST_LEVEL 7u
 
+#define LOOPBACK_CHECK(x) do { \
+    if (!(x)) { \
+        printf("  FAIL: %s:%d: %s\n", __FILE__, __LINE__, #x); \
+        g_test_fail++; \
+        goto cleanup; \
+    } \
+} while (0)
+
 typedef struct {
     u32 value;
 } Value;
@@ -457,9 +465,9 @@ static bool remote_matches(SocketFixture *fixture, u64 tick, u64 expected_id)
 TEST(world_session_real_socket_reorders_duplicates_and_recovers_with_full)
 {
     SocketFixture fixture;
-    BreakWorldSnapshot *base;
-    BreakWorldSnapshot *target;
-    BreakWorldSnapshot *recovered;
+    BreakWorldSnapshot *base = NULL;
+    BreakWorldSnapshot *target = NULL;
+    BreakWorldSnapshot *recovered = NULL;
     BreakWorldSessionControl control;
     BreakWorldSessionStats stats;
     Value *value;
@@ -467,68 +475,74 @@ TEST(world_session_real_socket_reorders_duplicates_and_recovers_with_full)
     u8 *wire = NULL;
     usize size = 0u;
 
-    ASSERT_TRUE(socket_start(&fixture, true));
-    ASSERT_TRUE(connect_authenticate(&fixture));
-    ASSERT_EQ(fixture.auth_calls, 1u);
+    memset(&fixture, 0, sizeof(fixture));
+    fixture.client_fd = -1;
+    LOOPBACK_CHECK(socket_start(&fixture, true));
+    LOOPBACK_CHECK(connect_authenticate(&fixture));
+    LOOPBACK_CHECK(fixture.auth_calls == 1u);
     entity = world_create_entity(fixture.authoritative);
-    ASSERT_TRUE(add_value(fixture.authoritative, entity, 42u));
+    LOOPBACK_CHECK(add_value(fixture.authoritative, entity, 42u));
     base = break_world_snapshot_build(fixture.authoritative, fixture.schemas, 10u);
-    ASSERT_NOT_NULL(base);
-    ASSERT_TRUE(encode_full(base, &wire, &size));
-    ASSERT_TRUE(write_shuffled_payload(&fixture, 100u, wire, size));
+    LOOPBACK_CHECK(base != NULL);
+    LOOPBACK_CHECK(encode_full(base, &wire, &size));
+    LOOPBACK_CHECK(write_shuffled_payload(&fixture, 100u, wire, size));
     free(wire);
-    ASSERT_TRUE(wait_completed(&fixture, 1u));
-    ASSERT_EQ(break_world_entity_count(fixture.remote), 0u);
+    wire = NULL;
+    LOOPBACK_CHECK(wait_completed(&fixture, 1u));
+    LOOPBACK_CHECK(break_world_entity_count(fixture.remote) == 0u);
     break_world_session_stats(fixture.session, &stats);
-    ASSERT_TRUE(stats.bridge.duplicate_fragments >= 1u);
-    ASSERT_EQ(break_world_session_drain(fixture.session, fixture.connection,
-                                        fixture.remote, 1u), 1u);
-    ASSERT_TRUE(remote_matches(&fixture, 10u, break_world_snapshot_id(base)));
-    ASSERT_TRUE(break_world_session_poll_control(fixture.session, fixture.connection,
-                                                 &control));
-    ASSERT_EQ(control.kind, BREAK_WORLD_SESSION_CONTROL_ACK);
-    ASSERT_EQ(control.delta_id, 100u);
-    ASSERT_EQ(control.target_snapshot_id, break_world_snapshot_id(base));
-    ASSERT_EQ(control.target_tick, 10u);
+    LOOPBACK_CHECK(stats.bridge.duplicate_fragments >= 1u);
+    LOOPBACK_CHECK(break_world_session_drain(fixture.session, fixture.connection,
+                                             fixture.remote, 1u) == 1u);
+    LOOPBACK_CHECK(remote_matches(&fixture, 10u, break_world_snapshot_id(base)));
+    LOOPBACK_CHECK(break_world_session_poll_control(fixture.session, fixture.connection,
+                                                    &control));
+    LOOPBACK_CHECK(control.kind == BREAK_WORLD_SESSION_CONTROL_ACK);
+    LOOPBACK_CHECK(control.delta_id == 100u);
+    LOOPBACK_CHECK(control.target_snapshot_id == break_world_snapshot_id(base));
+    LOOPBACK_CHECK(control.target_tick == 10u);
 
     value = (Value *)world_get_component(fixture.authoritative, entity, TEST_COMPONENT);
-    ASSERT_NOT_NULL(value);
+    LOOPBACK_CHECK(value != NULL);
     value->value = 43u;
     target = break_world_snapshot_build(fixture.authoritative, fixture.schemas, 20u);
-    ASSERT_NOT_NULL(target);
-    wire = NULL;
+    LOOPBACK_CHECK(target != NULL);
     size = 0u;
-    ASSERT_TRUE(encode_delta(base, target, &wire, &size));
+    LOOPBACK_CHECK(encode_delta(base, target, &wire, &size));
     wire[24] ^= 1u;
-    ASSERT_TRUE(write_shuffled_payload(&fixture, 101u, wire, size));
+    LOOPBACK_CHECK(write_shuffled_payload(&fixture, 101u, wire, size));
     free(wire);
-    ASSERT_TRUE(wait_completed(&fixture, 2u));
-    ASSERT_EQ(break_world_session_drain(fixture.session, fixture.connection,
-                                        fixture.remote, 1u), 1u);
-    ASSERT_TRUE(remote_matches(&fixture, 10u, break_world_snapshot_id(base)));
-    ASSERT_TRUE(break_world_session_poll_control(fixture.session, fixture.connection,
-                                                 &control));
-    ASSERT_EQ(control.kind, BREAK_WORLD_SESSION_CONTROL_NEED_FULL);
-    ASSERT_EQ(control.target_snapshot_id, break_world_snapshot_id(base));
-    ASSERT_EQ(control.target_tick, 10u);
+    wire = NULL;
+    LOOPBACK_CHECK(wait_completed(&fixture, 2u));
+    LOOPBACK_CHECK(break_world_session_drain(fixture.session, fixture.connection,
+                                             fixture.remote, 1u) == 1u);
+    LOOPBACK_CHECK(remote_matches(&fixture, 10u, break_world_snapshot_id(base)));
+    LOOPBACK_CHECK(break_world_session_poll_control(fixture.session, fixture.connection,
+                                                    &control));
+    LOOPBACK_CHECK(control.kind == BREAK_WORLD_SESSION_CONTROL_NEED_FULL);
+    LOOPBACK_CHECK(control.target_snapshot_id == break_world_snapshot_id(base));
+    LOOPBACK_CHECK(control.target_tick == 10u);
 
     value->value = 44u;
     recovered = break_world_snapshot_build(fixture.authoritative, fixture.schemas, 30u);
-    ASSERT_NOT_NULL(recovered);
-    wire = NULL;
+    LOOPBACK_CHECK(recovered != NULL);
     size = 0u;
-    ASSERT_TRUE(encode_full(recovered, &wire, &size));
-    ASSERT_TRUE(write_shuffled_payload(&fixture, 102u, wire, size));
+    LOOPBACK_CHECK(encode_full(recovered, &wire, &size));
+    LOOPBACK_CHECK(write_shuffled_payload(&fixture, 102u, wire, size));
     free(wire);
-    ASSERT_TRUE(wait_completed(&fixture, 3u));
-    ASSERT_EQ(break_world_session_drain(fixture.session, fixture.connection,
-                                        fixture.remote, 1u), 1u);
-    ASSERT_TRUE(remote_matches(&fixture, 30u, break_world_snapshot_id(recovered)));
+    wire = NULL;
+    LOOPBACK_CHECK(wait_completed(&fixture, 3u));
+    LOOPBACK_CHECK(break_world_session_drain(fixture.session, fixture.connection,
+                                             fixture.remote, 1u) == 1u);
+    LOOPBACK_CHECK(remote_matches(&fixture, 30u, break_world_snapshot_id(recovered)));
     break_world_session_stats(fixture.session, &stats);
-    ASSERT_EQ(stats.applied_packets, 2u);
-    ASSERT_EQ(stats.need_full_packets, 1u);
-    ASSERT_EQ(stats.rejected_packets, 1u);
-    ASSERT_EQ(stats.drained_packets, 3u);
+    LOOPBACK_CHECK(stats.applied_packets == 2u);
+    LOOPBACK_CHECK(stats.need_full_packets == 1u);
+    LOOPBACK_CHECK(stats.rejected_packets == 1u);
+    LOOPBACK_CHECK(stats.drained_packets == 3u);
+
+cleanup:
+    free(wire);
     break_world_snapshot_release(recovered);
     break_world_snapshot_release(target);
     break_world_snapshot_release(base);
@@ -538,40 +552,46 @@ TEST(world_session_real_socket_reorders_duplicates_and_recovers_with_full)
 static void check_registry_control(bool include_delta)
 {
     SocketFixture fixture;
-    BreakWorldSnapshot *target;
+    BreakWorldSnapshot *target = NULL;
     BreakSessionApplyStats session_stats;
     BreakWorldSessionStats world_stats;
     Entity entity;
     u8 *wire = NULL;
     usize size = 0u;
 
-    ASSERT_TRUE(socket_start(&fixture, include_delta));
-    ASSERT_TRUE(connect_authenticate(&fixture));
+    memset(&fixture, 0, sizeof(fixture));
+    fixture.client_fd = -1;
+    LOOPBACK_CHECK(socket_start(&fixture, include_delta));
+    LOOPBACK_CHECK(connect_authenticate(&fixture));
     entity = world_create_entity(fixture.authoritative);
-    ASSERT_TRUE(add_value(fixture.authoritative, entity, 5u));
+    LOOPBACK_CHECK(add_value(fixture.authoritative, entity, 5u));
     target = break_world_snapshot_build(fixture.authoritative, fixture.schemas, 5u);
-    ASSERT_NOT_NULL(target);
-    ASSERT_TRUE(encode_full(target, &wire, &size));
-    ASSERT_TRUE(write_shuffled_payload(&fixture, 1u, wire, size));
+    LOOPBACK_CHECK(target != NULL);
+    LOOPBACK_CHECK(encode_full(target, &wire, &size));
+    LOOPBACK_CHECK(write_shuffled_payload(&fixture, 1u, wire, size));
     free(wire);
+    wire = NULL;
     if (include_delta) {
-        ASSERT_TRUE(wait_completed(&fixture, 1u));
-        ASSERT_EQ(break_world_session_drain(fixture.session, fixture.connection,
-                                            fixture.remote, 1u), 1u);
-        ASSERT_TRUE(remote_matches(&fixture, 5u, break_world_snapshot_id(target)));
+        LOOPBACK_CHECK(wait_completed(&fixture, 1u));
+        LOOPBACK_CHECK(break_world_session_drain(fixture.session, fixture.connection,
+                                                 fixture.remote, 1u) == 1u);
+        LOOPBACK_CHECK(remote_matches(&fixture, 5u, break_world_snapshot_id(target)));
     } else {
         for (usize i = 0u; i < 5000u; ++i) {
             break_session_manager_apply_stats(fixture.manager, &session_stats);
             if (session_stats.invalid != 0u) break;
-            ASSERT_TRUE(pump(&fixture));
+            LOOPBACK_CHECK(pump(&fixture));
             usleep(1000u);
         }
         break_session_manager_apply_stats(fixture.manager, &session_stats);
-        ASSERT_EQ(session_stats.invalid, 1u);
+        LOOPBACK_CHECK(session_stats.invalid == 1u);
         break_world_session_stats(fixture.session, &world_stats);
-        ASSERT_EQ(world_stats.bridge.completed_packets, 0u);
-        ASSERT_EQ(break_world_entity_count(fixture.remote), 0u);
+        LOOPBACK_CHECK(world_stats.bridge.completed_packets == 0u);
+        LOOPBACK_CHECK(break_world_entity_count(fixture.remote) == 0u);
     }
+
+cleanup:
+    free(wire);
     break_world_snapshot_release(target);
     socket_dispose(&fixture);
 }

@@ -439,7 +439,7 @@ World delta、inbound-to-simulation、level rebaseline、可靠恢复、Runtime 
 
 ## 补充（2026-11-24）：World session 的 owner 基线与恢复边界
 
-`BreakWorldSession` 把接收 World、发送 confirmed baseline、未确认历史、不可变 publish attempt 和控制事件全部限定在 owner-thread。网络 callback 只做 BRFG decode/reassembly/completion queue；`break_world_session_drain(connection, world, max)` 才执行 BRWD decode、base 检查、staging rebuild/target hash 校验和 `break_world_delta_apply`。因此网络线程不会借 ACK 或恢复路径直接修改 World，其他连接的 completion FIFO 也不会被当前 drain 消耗。
+`BreakWorldSession` 把接收 World、发送 confirmed baseline、未确认历史、不可变 publish attempt 和控制事件全部限定在 owner-thread。网络 callback 只做 BRFG decode/reassembly/completion queue；`break_world_session_drain(connection, world, max)` 才执行 BRWD decode、base 检查和 target hash 校验；delta 通过 `break_world_delta_apply` staging 提交，full 则在空 staging World 重建后原子替换 destination，不经过旧 World 的 allocator-history delta。因此网络线程不会借 ACK 或恢复路径直接修改 World，其他连接的 completion FIFO 也不会被当前 drain 消耗。
 
 0x400A 用于 BRWD 分片，0x400B 用于 32 字节 BRWC 控制。接收方 ACK 合并到最后成功 target；NEED_FULL 携带 last-good id/tick，并按连接每 N tick 限流。发送方只把精确 `(delta_id,target_id,tick)` ACK 当作 confirmed baseline 推进，裁剪对应历史。没有 ACK 或需要恢复时发送 full；历史 entry/byte/packet 限制退化为 full，fresh delta id 防止把新 full 与旧 attempt 混淆。OVERLOAD 后 World 可以已经变化，但重试仍使用原 BRWD bytes、snapshot、delta id 和未发分片位置，不重新生成部分内容。重连清空所有接收/发送状态。
 

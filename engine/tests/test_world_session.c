@@ -610,15 +610,13 @@ TEST(world_session_malformed_packet_is_rejected_without_need_full)
     fixture_dispose(&fixture);
 }
 
-TEST(world_session_apply_failure_rolls_back_world_and_empty_baseline)
+TEST(world_session_sparse_full_replaces_diverged_world)
 {
     Fixture fixture;
     BreakWorldSnapshot *target;
     BreakWorldSessionStats stats;
     Entity first;
     Entity second;
-    u64 id = 99u;
-    u64 tick = 99u;
     u8 *wire = NULL;
     usize size = 0u;
 
@@ -636,19 +634,93 @@ TEST(world_session_apply_failure_rolls_back_world_and_empty_baseline)
     ASSERT_TRUE(break_world_session_open(fixture.session, 11u));
     ASSERT_TRUE(push_bytes(&fixture, 11u, 1u, wire, size));
     ASSERT_EQ(break_world_session_drain(fixture.session, 11u, fixture.remote, 1u), 1u);
-    ASSERT_TRUE(world_entity_exists(fixture.remote, (Entity){1u, 1u}));
-    ASSERT_FALSE(world_entity_exists(fixture.remote, (Entity){2u, 1u}));
+    ASSERT_FALSE(world_entity_exists(fixture.remote, (Entity){1u, 1u}));
+    ASSERT_TRUE(world_entity_exists(fixture.remote, (Entity){2u, 1u}));
     ASSERT_EQ(break_world_entity_count(fixture.remote), 1u);
-    ASSERT_TRUE(break_world_session_baseline(fixture.session, 11u, &id, &tick));
-    ASSERT_EQ(id, 0u);
-    ASSERT_EQ(tick, 0u);
+    ASSERT_TRUE(baseline_matches(&fixture, 11u, break_world_snapshot_id(target), 5u));
     break_world_session_stats(fixture.session, &stats);
-    ASSERT_EQ(stats.applied_packets, 0u);
-    ASSERT_EQ(stats.need_full_packets, 1u);
-    ASSERT_EQ(stats.rejected_packets, 1u);
+    ASSERT_EQ(stats.applied_packets, 1u);
+    ASSERT_EQ(stats.need_full_packets, 0u);
+    ASSERT_EQ(stats.rejected_packets, 0u);
     ASSERT_EQ(stats.drained_packets, 1u);
     free(wire);
     break_world_snapshot_release(target);
+    fixture_dispose(&fixture);
+}
+
+TEST(world_session_full_fault_rolls_back_world_and_baseline)
+{
+    Fixture fixture;
+    BreakWorldSnapshot *base = NULL;
+    BreakWorldSnapshot *target;
+    BreakWorldSessionStats stats;
+    Value *value;
+    u8 *wire = NULL;
+    usize size = 0u;
+
+    ASSERT_TRUE(fixture_init(&fixture));
+    ASSERT_TRUE(break_world_session_open(fixture.session, 11u));
+    ASSERT_TRUE(establish_baseline(&fixture, 11u, 10u, &base));
+    value = (Value *)world_get_component(fixture.authoritative, (Entity){1u, 1u},
+                                         TEST_COMPONENT);
+    ASSERT_NOT_NULL(value);
+    value->value = 20u;
+    target = break_world_snapshot_build(fixture.authoritative, fixture.schemas, 20u);
+    ASSERT_NOT_NULL(target);
+    ASSERT_TRUE(encode_full(target, &wire, &size));
+    break_world_delta_wire_test_fail_after_mutation(1u);
+    ASSERT_TRUE(push_bytes(&fixture, 11u, 2u, wire, size));
+    ASSERT_EQ(break_world_session_drain(fixture.session, 11u, fixture.remote, 1u), 1u);
+    break_world_delta_wire_test_fail_after_mutation(0u);
+    ASSERT_TRUE(remote_matches(&fixture, 10u, break_world_snapshot_id(base)));
+    ASSERT_TRUE(baseline_matches(&fixture, 11u, break_world_snapshot_id(base), 10u));
+    break_world_session_stats(fixture.session, &stats);
+    ASSERT_EQ(stats.applied_packets, 1u);
+    ASSERT_EQ(stats.need_full_packets, 1u);
+    ASSERT_EQ(stats.rejected_packets, 1u);
+    ASSERT_EQ(stats.drained_packets, 2u);
+    free(wire);
+    break_world_snapshot_release(target);
+    break_world_snapshot_release(base);
+    fixture_dispose(&fixture);
+}
+
+TEST(world_session_reconnect_full_replaces_stale_nonempty_world)
+{
+    Fixture fixture;
+    BreakWorldSnapshot *base = NULL;
+    BreakWorldSnapshot *target;
+    BreakWorldSessionStats stats;
+    Entity second;
+    u8 *wire = NULL;
+    usize size = 0u;
+
+    ASSERT_TRUE(fixture_init(&fixture));
+    ASSERT_TRUE(break_world_session_open(fixture.session, 11u));
+    ASSERT_TRUE(establish_baseline(&fixture, 11u, 10u, &base));
+    ASSERT_TRUE(break_world_session_close(fixture.session, 11u));
+    ASSERT_TRUE(break_world_session_open(fixture.session, 11u));
+    second = world_create_entity(fixture.authoritative);
+    ASSERT_EQ(second.index, 2u);
+    world_destroy_entity(fixture.authoritative, (Entity){1u, 1u});
+    target = break_world_snapshot_build(fixture.authoritative, fixture.schemas, 20u);
+    ASSERT_NOT_NULL(target);
+    ASSERT_TRUE(encode_full(target, &wire, &size));
+    ASSERT_TRUE(push_bytes(&fixture, 11u, 1u, wire, size));
+    ASSERT_EQ(remote_value(&fixture), 10u);
+    ASSERT_EQ(break_world_session_drain(fixture.session, 11u, fixture.remote, 1u), 1u);
+    ASSERT_FALSE(world_entity_exists(fixture.remote, (Entity){1u, 1u}));
+    ASSERT_TRUE(world_entity_exists(fixture.remote, (Entity){2u, 1u}));
+    ASSERT_EQ(remote_value(&fixture), 0u);
+    ASSERT_TRUE(remote_matches(&fixture, 20u, break_world_snapshot_id(target)));
+    ASSERT_TRUE(baseline_matches(&fixture, 11u, break_world_snapshot_id(target), 20u));
+    break_world_session_stats(fixture.session, &stats);
+    ASSERT_EQ(stats.applied_packets, 2u);
+    ASSERT_EQ(stats.need_full_packets, 0u);
+    ASSERT_EQ(stats.rejected_packets, 0u);
+    free(wire);
+    break_world_snapshot_release(target);
+    break_world_snapshot_release(base);
     fixture_dispose(&fixture);
 }
 
@@ -701,6 +773,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(world_session_level_mismatch_preserves_world_and_baseline);
     RUN_TEST(world_session_target_hash_mismatch_preserves_world_and_baseline);
     RUN_TEST(world_session_malformed_packet_is_rejected_without_need_full);
-    RUN_TEST(world_session_apply_failure_rolls_back_world_and_empty_baseline);
+    RUN_TEST(world_session_sparse_full_replaces_diverged_world);
+    RUN_TEST(world_session_full_fault_rolls_back_world_and_baseline);
+    RUN_TEST(world_session_reconnect_full_replaces_stale_nonempty_world);
     RUN_TEST(world_session_close_releases_confirmed_baseline);
 TEST_MAIN_END()
