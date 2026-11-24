@@ -826,3 +826,12 @@ BRWD 不再只是独立 codec：0x400A 已把 full/delta 接入认证 Session，
 - **跨连接共享 World**尚未实现；每个 drain 显式接收 owner World，没有共享 publication、锁或 epoch reclamation。
 - 权威 simulation 合并、跨 World 持久身份、预测回滚和完整资产链不在本项；只提供 at-least-once/final-consistency，未承诺 exactly-once。
 - 完整 sanitizer suite、远端和其他平台验收不在本记录内，条件 skip 不转为执行通过。
+
+
+#### World session 最终验证与远端收据（2026-11-24）
+
+`7fe52ca3` 的独立复审已 approve。最终本地直接测试 **193/193**，world session **13/13**、recovery **8/8**、loopback **2/2**；ASan+UBSan（显式 leak 检测）与 TSan focused 均 **9/9**。完整 Vulkan **463/467 执行通过、4 条件 skip、0 失败**，OpenGL **461/465 执行通过、4 条件 skip、0 失败**。
+
+远端 CI `45391323592`、windows-d3d12 `45391323870`、QUIC `45391323798`、Proton `45393974894` 均 success；CI 为 24 success、3 条件 skip、0 failure。Proton 上游 run-id=`45391323870`，device/pipeline contract 均为 77，只表示兼容通道。
+
+本节只关闭库级 World session 与恢复切片。core_app 启用、生产 level rebaseline、跨连接共享 World、Runtime Core 映射、权威 simulation 合并和完整资产链仍未完成；条件 skip 与 Proton 77 不升级为原生 GPU 验收。本收据提交自身触发的工作流结果不在此预写。

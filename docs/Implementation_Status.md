@@ -13685,3 +13685,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **计数**：recovery 6、loopback 2、world session 11、bridge 20、aspect session 12、Session 43、wire 9、fragment 28、ECS replication 35、world delta wire 23，直接测试合计 **189/189**；normal focused CTest 含 replication target contract **11/11**。ASan+UBSan（`detect_leaks=1`）与 TSan 九项 focused 均 **9/9**，无 sanitizer/leak/race 诊断。
 - **完整套件**：Vulkan 注册 **467** 项，**463 执行通过、4 条件 skip、0 失败**；OpenGL 注册 **465** 项，**461 执行通过、4 条件 skip、0 失败**。skip 均为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计执行通过。
 - **边界**：**core_app 启用、生产 level rebaseline 策略、跨连接共享 World、Runtime Core 映射和权威 simulation 合并未完成**。只承诺 at-least-once 与最终一致；不包含 exactly-once、完整资产链、远端或其他平台验收。
+
+
+### World session 最终验证与远端收据（2026-11-24）
+
+- 最终推送 `7fe52ca353b4d2a05641b9a39976b6b6fb49edea`。独立评审发现的全量包依赖旧 World 分配历史、ACK 处理过早清除 `force_full`、终态发送错误仍保留 attempt 三项问题均已修复，复审 approve。全量包现在在空 staging World 重建后原子替换；只有成功全量发布才清除强制全量状态；仅 OVERLOAD 保留同一不可变尝试。
+- 最终本地直接测试 **193/193**，其中 world session **13/13**、recovery **8/8**、真实 loopback **2/2**；focused ASan+UBSan（`detect_leaks=1`）与 TSan 均 **9/9**，无 sanitizer、leak 或 race 诊断。完整 Vulkan **467 项注册、463 执行通过、4 条件 skip、0 失败**；OpenGL **465 项注册、461 执行通过、4 条件 skip、0 失败**。四项 skip 均为既有条件跳过，不计执行通过，也不代表完整 sanitizer suite。
+- 远端 CI run `45391323592`、windows-d3d12 run `45391323870`、QUIC run `45391323798`、Proton run `45393974894` 均 completed/success；CI 为 **24 success、3 条件 skip、0 failure**。Proton 日志上游 run-id=`45391323870`，`device_contract=77`、`pipeline_contract=77`，仅表示兼容通道，不是原生 D3D12/GPU 通过。
+- core_app 启用、生产 level rebaseline、跨连接共享 World、Runtime Core 映射、权威 simulation 合并及完整资产链仍是独立后续工作。本收据提交自身触发的工作流结果不在此预写。
