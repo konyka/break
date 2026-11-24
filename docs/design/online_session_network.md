@@ -201,7 +201,7 @@ normal、ASan+UBSan（显式 leak 检测）和 TSan focused 均为 **6/6、112/1
 
 World session 可在不关闭认证传输的情况下显式提升 level generation；新值必须非零且严格递增，不支持并行或混合 active level。重组 pool 与 Session bridge 在已分配存储内切换到新 stream epoch，清 pending/high-water/completion 并保留 key、容量和 expiry；World session 对每连接清接收 baseline、发送 confirmed/history/attempt 与控制纪元。换代本身不分配、不加锁，full/ACK 门控和 confirmed/history 仍为逐连接状态。
 
-BRWC/v1 的 32 字节初始代 wire 保持兼容，旧常量与 BRWD/v1 不变。换代后 0x400B 使用 outer/payload v2，载荷为 40 字节：0..3 `BRWC`、4..5 version=2、6..7 kind、8..15 delta id、16..23 target snapshot id、24..31 target tick、32..39 level generation，整数为 little-endian。初始代只接受 v1；新代只接受版本/长度精确且 level 等于当前值的 v2，迟到 v1/v2 控制不能确认新 history 或强制恢复。
+初始代发送保持 32 字节 BRWC/v1、outer/payload v1，旧常量与 BRWD/v1 不变；v1 接收仅限 current==initial。0x400B 的 v2 载荷为 40 字节：0..3 `BRWC`、4..5 version=2、6..7 kind、8..15 delta id、16..23 target snapshot id、24..31 target tick、32..39 level generation，整数为 little-endian。v2 接收的版本、长度和代际门槛为 outer/payload v2、40 字节且 level==current；初始代同样可接收满足条件的 v2，包括 current=0 时的 level=0。换代后 v1 拒绝；v2 的旧、零或未来 level 均按 current 等值校验，不匹配的迟到控制不能确认新 history 或强制恢复。
 
 新增真实 socket/AUTH 验收从 level 7 的 full、精确 ACK 和 delta 开始，在同一 TCP 连接换到 8。旧 epoch 反序/重复片与四种旧 v1/v2 ACK/NEED_FULL 均经真实 Session handler；World/baseline/history 不变，新代 delta 先触发 NEED_FULL，full drain 命中新 target，当前 v2 ACK 后才接受 delta。临时移除 v2 level 校验会使旧 ACK 碰撞并让该用例失败，恢复后通过；未使用 completion 直注。
 

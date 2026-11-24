@@ -875,7 +875,7 @@ windows-d3d12 `45414002947`、QUIC `45414003043`、Proton `45417162209` 均 succ
 
 pool/bridge 现在能在不重新分配固定存储的情况下复位 World stream epoch；World session 的新 level 必须非零且严格递增，每连接独立清旧 baseline/history/attempt 并经过新 full、当前 ACK 后才恢复 delta。连接 key、容量、expiry 和单调统计保留，旧 completion/high-water 不进入新代。full 成功 drain 前 caller World 不变，full 仍在 staging 重建并校验 target 后原子提交。
 
-初始代保持 32 字节 BRWC/v1；新代改用 40 字节 BRWC/v2，outer/payload version 2 在 offset 32 携带当前 level。错误版本/长度及零、旧、未来 level 均在状态变更前拒绝，防止 delta id/target/tick 跨代相同时的旧 ACK 碰撞。BRWD/v1 不变。真实同一 TCP/AUTH 用例覆盖 level 7→8、旧 epoch 反序重复片、旧 v1/v2 ACK/NEED_FULL、新代 NEED_FULL/full/target/ACK/delta，并证明连接身份连续且没有直接 completion 注入；移除 v2 level 校验的临时负对照真实失败，恢复后通过。
+初始代发送保持 32 字节 BRWC/v1、outer/payload v1；v1 接收仅限 current==initial。v2 接收要求 outer/payload v2、40 字节且 offset 32 的 level==current，包括初始 current=0 时的 level=0。换代后 v1 拒绝；v2 的旧、零或未来 level 均按 current 等值校验，错误版本、长度或不匹配 level 均在状态变更前拒绝，防止 delta id/target/tick 跨代相同时的旧 ACK 碰撞。BRWD/v1 不变。真实同一 TCP/AUTH 用例覆盖 level 7→8、旧 epoch 反序重复片、旧 v1/v2 ACK/NEED_FULL、新代 NEED_FULL/full/target/ACK/delta，并证明连接身份连续且没有直接 completion 注入；移除 v2 level 校验的临时负对照真实失败，恢复后通过。
 
 以下能力明确仍未交付，不能把显式库级 rebaseline 扩大解释为生产大世界流式系统：
 

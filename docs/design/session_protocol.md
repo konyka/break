@@ -363,7 +363,7 @@ World snapshot/delta 现在有独立 BRWD/v1 canonical codec。消息头为 60 �
 
 `BreakWorldSession` 新增 owner 显式 `break_world_session_rebaseline` 与 level getter。新 generation 必须非零且严格递增；同一 session 只有一个 active level。pool/bridge 在固定存储上原地更新由 protocol/schema/level 派生的 stream epoch，清掉 pending、retired high-water、旧 completion 和发送侧 expected base，保留连接 key、容量及 expiry 配置；该复位路径不分配、不加锁。每个打开连接另清 baseline、confirmed、未确认 history、attempt 和 pending 控制，重置 delta id，并独立执行“新 full→当前 ACK→delta”。session/bridge 单调统计不因换代清零。
 
-0x400B 初始代继续 outer/payload v1 和 32 字节 BRWC/v1；换代后使用 outer/payload v2 和 40 字节 BRWC/v2。v2 在 offset 32 增加 u64 little-endian `level_generation`，其余 `BRWC`、version/kind、delta id、target snapshot id/tick 布局保持原偏移。v1 仅限初始代；v2 要求精确版本、40 字节长度和当前 level，旧/零/未来 level 在修改 history、confirmed 或 force_full 前拒绝。0x400A 与 BRWD/v1 不变，registry 仅把 0x400B 的 outer version 上限扩为 2。
+0x400B 初始代发送继续 outer/payload v1 和 32 字节 BRWC/v1；v1 接收仅限 current==initial。v2 使用 outer/payload v2 和 40 字节 BRWC/v2，在 offset 32 增加 u64 little-endian `level_generation`，其余 `BRWC`、version/kind、delta id、target snapshot id/tick 布局保持原偏移。v2 接收要求精确版本、40 字节长度且 level==current，包括初始 current=0 时的 level=0。换代后 v1 拒绝；v2 的旧、零或未来 level 均按 current 等值校验，不匹配时在修改 history、confirmed 或 force_full 前拒绝。0x400A 与 BRWD/v1 不变，registry 仅把 0x400B 的 outer version 上限扩为 2。
 
 真实 raw TCP/AUTH 用例在同一连接内完成 level 7 full/ACK/delta，双方显式切到 8，并注入旧 epoch 反序/重复片及旧 v1/v2 ACK/NEED_FULL。旧流量不改变 World、baseline 或 sender history；新代 delta 在 full 前产生 NEED_FULL，新 full drain 后达到新 target id，只有当前 v2 ACK 后才发布新 delta。测试同时核对 transport key、session id、AUTH 次数和 TCP endpoint 未变，没有直接注入 completion。
 
