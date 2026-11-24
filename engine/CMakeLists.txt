@@ -800,12 +800,14 @@ add_library(break_ecs_replication STATIC
     src/ecs/ecs.c
     src/ecs/replication_schema.c
     src/ecs/world_snapshot.c
+    src/ecs/world_snapshot_publication.c
     src/ecs/world_delta.c
     src/ecs/world_delta_wire.c
     src/core/log.c)
 set_property(TARGET break_ecs_replication PROPERTY C_STANDARD 11)
 target_include_directories(break_ecs_replication PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(break_ecs_replication PUBLIC Threads::Threads)
 if(NOT ENGINE_PLATFORM STREQUAL "windows")
     target_link_libraries(break_ecs_replication PUBLIC m)
 endif()
@@ -6089,6 +6091,7 @@ endif()
         src/ecs/ecs.c
         src/ecs/replication_schema.c
         src/ecs/world_snapshot.c
+        src/ecs/world_snapshot_publication.c
         src/ecs/world_delta.c
         src/ecs/world_delta_wire.c
         src/network/break_aoi.c
@@ -6097,10 +6100,18 @@ endif()
     set_property(TARGET break_ecs_replication_test PROPERTY C_STANDARD 11)
     target_include_directories(break_ecs_replication_test PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(break_ecs_replication_test PUBLIC Threads::Threads)
     target_compile_definitions(break_ecs_replication_test PRIVATE BREAK_WORLD_DELTA_TESTING=1)
     if(NOT ENGINE_PLATFORM STREQUAL "windows")
         target_link_libraries(break_ecs_replication_test PUBLIC m)
     endif()
+
+    add_executable(test_world_snapshot_publication tests/test_world_snapshot_publication.c)
+    target_include_directories(test_world_snapshot_publication PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_world_snapshot_publication PRIVATE break_ecs_replication)
+    add_test(NAME test_world_snapshot_publication COMMAND test_world_snapshot_publication)
+    set_tests_properties(test_world_snapshot_publication PROPERTIES
+        TIMEOUT 30 LABELS "headless;ecs;replication")
 
     add_executable(test_ecs_replication tests/test_ecs_replication.c)
     target_include_directories(test_ecs_replication PRIVATE ${TEST_INCLUDE_DIRS})
