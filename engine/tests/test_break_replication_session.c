@@ -265,8 +265,6 @@ TEST(bridge_routes_connections_and_enforces_expected_base)
     break_replication_session_bridge_destroy(bridge);
 }
 
-static size_t test_apply_count;
-
 TEST(bridge_interleaves_deltas_connections_duplicates_and_conflicts)
 {
     static const char first[] = "abcdefghij";
@@ -319,7 +317,6 @@ TEST(bridge_interleaves_deltas_connections_duplicates_and_conflicts)
     ASSERT_TRUE(test_push_fragment(bridge, 2u, &other_fragments[1]));
     ASSERT_TRUE(test_push_fragment(bridge, 1u, &first_fragments[2]));
     ASSERT_TRUE(test_push_fragment(bridge, 1u, &first_fragments[1]));
-    ASSERT_EQ(test_apply_count, 0u);
     break_replication_session_bridge_stats(bridge, &stats);
     ASSERT_EQ(stats.rejected_fragments, 1u);
     ASSERT_EQ(stats.duplicate_fragments, 1u);
@@ -327,7 +324,6 @@ TEST(bridge_interleaves_deltas_connections_duplicates_and_conflicts)
     ASSERT_EQ(stats.pending_bytes, 0u);
     ASSERT_EQ(stats.completion_count, 3u);
     ASSERT_EQ(stats.completion_bytes, 24u);
-    ASSERT_EQ(test_apply_count, 0u);
 
     ASSERT_EQ(break_replication_session_poll_completed(bridge, completions, 3u), 3u);
     ASSERT_EQ(completions[0].connection, 1u);
@@ -342,11 +338,8 @@ TEST(bridge_interleaves_deltas_connections_duplicates_and_conflicts)
     ASSERT_EQ(completions[2].delta_id, 10u);
     ASSERT_EQ(completions[2].payload_size, 10u);
     ASSERT_TRUE(memcmp(completions[2].payload, first, 10u) == 0);
-    for (i = 0u; i < 3u; ++i) {
-        ++test_apply_count;
+    for (i = 0u; i < 3u; ++i)
         break_replication_session_completion_release(&completions[i]);
-    }
-    ASSERT_EQ(test_apply_count, 3u);
     break_replication_fragments_free(first_fragments, first_count);
     break_replication_fragments_free(second_fragments, second_count);
     break_replication_fragments_free(other_fragments, other_count);
@@ -632,6 +625,82 @@ TEST(bridge_handler_enforces_configured_fragment_size_and_count)
     ASSERT_EQ(stats.pending_bytes, 32u);
     break_replication_session_bridge_destroy(bridge);
     break_replication_fragments_free(fragments, fragment_count);
+}
+
+TEST(bridge_inbound_fragment_expiration_is_counted_without_owner_tick)
+{
+    static const char payload[] = "0123456789abcdef";
+    uint64_t now = 0u;
+    BreakReplicationSessionBridgeConfig config = test_bridge_config(&now);
+    BreakReplicationSessionBridge *bridge;
+    BreakReplicationFragment *fragments = NULL;
+    size_t fragment_count = 0u;
+    BreakReplicationSessionBridgeStats stats;
+
+    config.expiry_enabled = true;
+    bridge = break_replication_session_bridge_create(&config);
+    ASSERT_NOT_NULL(bridge);
+    ASSERT_TRUE(break_replication_session_connection_open(bridge, 1u, 7u));
+    ASSERT_EQ(break_replication_fragment_payload(10u, 7u, payload, sizeof(payload) - 1u,
+                                                 8u, &fragments, &fragment_count),
+              BREAK_REPLICATION_FRAGMENT_OK);
+    ASSERT_EQ(fragment_count, 2u);
+    ASSERT_TRUE(test_push_fragment(bridge, 1u, &fragments[0]));
+    break_replication_session_bridge_stats(bridge, &stats);
+    ASSERT_EQ(stats.pending_bytes, 8u);
+    ASSERT_EQ(stats.expired_streams, 0u);
+    now = config.expiry_interval + config.expiry_max_idle + 1u;
+    ASSERT_TRUE(test_push_payload(bridge, 1u, 20u, 7u, "later", 5u));
+    break_replication_session_bridge_stats(bridge, &stats);
+    ASSERT_EQ(stats.expired_streams, 1u);
+    break_replication_session_bridge_destroy(bridge);
+    break_replication_fragments_free(fragments, fragment_count);
+}
+
+TEST(bridge_wrapped_fifo_close_compaction_preserves_survivor_order)
+{
+    uint64_t now = 0u;
+    BreakReplicationSessionBridgeConfig config = test_bridge_config(&now);
+    BreakReplicationSessionBridge *bridge =
+        break_replication_session_bridge_create(&config);
+    BreakReplicationSessionCompletion completions[4];
+    BreakReplicationSessionBridgeStats stats;
+    size_t i;
+
+    ASSERT_NOT_NULL(bridge);
+    ASSERT_TRUE(break_replication_session_connection_open(bridge, 1u, 7u));
+    ASSERT_TRUE(break_replication_session_connection_open(bridge, 2u, 7u));
+    ASSERT_TRUE(test_push_payload(bridge, 1u, 11u, 7u, "a1", 2u));
+    ASSERT_TRUE(test_push_payload(bridge, 2u, 21u, 7u, "b1", 2u));
+    ASSERT_TRUE(test_push_payload(bridge, 1u, 12u, 7u, "a2", 2u));
+    ASSERT_TRUE(test_push_payload(bridge, 2u, 22u, 7u, "b2", 2u));
+    ASSERT_EQ(break_replication_session_poll_completed(bridge, completions, 2u), 2u);
+    break_replication_session_completion_release(&completions[0]);
+    break_replication_session_completion_release(&completions[1]);
+    ASSERT_TRUE(test_push_payload(bridge, 1u, 13u, 7u, "a3", 2u));
+    ASSERT_TRUE(test_push_payload(bridge, 2u, 23u, 7u, "b3", 2u));
+    break_replication_session_bridge_stats(bridge, &stats);
+    ASSERT_EQ(stats.completion_count, 4u);
+    ASSERT_EQ(stats.completion_bytes, 8u);
+    ASSERT_TRUE(break_replication_session_connection_close(bridge, 2u));
+    break_replication_session_bridge_stats(bridge, &stats);
+    ASSERT_EQ(stats.completion_count, 2u);
+    ASSERT_EQ(stats.completion_bytes, 4u);
+    ASSERT_EQ(stats.dropped_completions, 2u);
+    ASSERT_TRUE(test_push_payload(bridge, 1u, 14u, 7u, "a4", 2u));
+    ASSERT_EQ(break_replication_session_poll_completed(bridge, completions, 4u), 3u);
+    for (i = 0u; i < 3u; ++i) {
+        char expected[3] = {'a', (char)('2' + i), '\0'};
+        ASSERT_EQ(completions[i].connection, 1u);
+        ASSERT_EQ(completions[i].delta_id, 12u + i);
+        ASSERT_EQ(completions[i].payload_size, 2u);
+        ASSERT_TRUE(memcmp(completions[i].payload, expected, 2u) == 0);
+        break_replication_session_completion_release(&completions[i]);
+    }
+    break_replication_session_bridge_stats(bridge, &stats);
+    ASSERT_EQ(stats.completion_count, 0u);
+    ASSERT_EQ(stats.completion_bytes, 0u);
+    break_replication_session_bridge_destroy(bridge);
 }
 
 typedef struct TestReactorFixture {
@@ -931,6 +1000,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(bridge_static_pending_budget_is_per_connection_and_duplicate_safe);
     RUN_TEST(bridge_handler_rejects_wrong_envelope_malformed_wire_and_bad_fragments);
     RUN_TEST(bridge_handler_enforces_configured_fragment_size_and_count);
+    RUN_TEST(bridge_inbound_fragment_expiration_is_counted_without_owner_tick);
+    RUN_TEST(bridge_wrapped_fifo_close_compaction_preserves_survivor_order);
     RUN_TEST(bridge_send_validates_and_encodes_through_real_reactor);
     RUN_TEST(bridge_send_propagates_reactor_closed_overload_and_caller_retry);
     RUN_TEST(bridge_tick_expires_every_connection_without_traffic_and_honors_disable);

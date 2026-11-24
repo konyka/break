@@ -260,9 +260,14 @@ bool break_replication_session_handle_message(
         bridge->rejected_fragments++;
         return false;
     }
-    result = break_replication_reassembly_pool_push_at(
-        slot->pool, &fragment, bridge->config.clock(bridge->config.clock_user),
-        &completed_delta_id, &payload, &payload_size);
+    {
+        const uint64_t now = bridge->config.clock(bridge->config.clock_user);
+        bridge->expired_streams +=
+            break_replication_reassembly_pool_tick(slot->pool, now);
+        result = break_replication_reassembly_pool_push_at(
+            slot->pool, &fragment, now,
+            &completed_delta_id, &payload, &payload_size);
+    }
     switch (result) {
     case BREAK_REPLICATION_REASSEMBLY_INCOMPLETE:
         return true;
