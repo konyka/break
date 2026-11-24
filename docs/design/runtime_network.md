@@ -360,3 +360,19 @@ QUIC 勘察保留独立边界：当前 arm64 multiarch OpenSSL 为 3.0.13，且�
 统一 arm64 选择新增 `test_break_online_aspect`（12/12）、`test_break_online_aspect_replication`（9/9）和 `test_break_replication_fragment`（12/12），总计达到三十一项。未修改 emulator 树的 focused CTest 为 0.26 秒，三项均为直接目标进程，无嵌套工具或新 skip。
 
 覆盖原子变更与 epoch 冲突、预算/重试、分片重组、离开/重入、乱序与重复分片、校验和、容量边界及 supersession。Snowflake 适配器/会话/TLS、core_app 网络驱动、QUIC 和生产部署仍未纳入；QUIC 依赖门控不变。
+
+
+## 补充（2026-11-24）：复制分片 BRFG/v1 canonical wire codec
+
+`break_replication_core` 新增传输无关的 `break_replication_wire_{encoded_size,encode,decode}`。线格式为 40 字节显式 little-endian 头加非空数据：`BRFG`、version=1、header_bytes=40，随后依次是 delta/base（各 8 字节）、index/count/checksum/fragment_bytes（各 4 字节）。数据最多 65496 字节，完整 payload 最多 65536 字节；delta 非零，count 为 1..1048576 且 index<count，声明长度必须精确等于实际剩余长度。
+
+`encoded_size` 可独立查询容量。非法结构返回 `INVALID`，超上限或容量不足返回 `OVER_LIMIT`；三个 API 都在入口清零可写输出，encode 失败不写输出缓冲。decode 不做未对齐整数读取、不分配，也不重新计算 FNV-1a；成功输出的 data 恰好借用输入+40，checksum/base/high-water 仍由重组池校验。调用者必须让输入至少存活到重组池接收并复制该分片。
+
+TDD 先取得缺少 wire 头的编译 RED，随后 focused 新测试 **7/7**、既有 fragment/scheduler **28/28**。delta 端序、magic、非 40 header、容量差一、尾随、delta0、borrowed 偏移和 count/index 八项可构建变异均由行为测试判红并恢复。项目选项 ASan+UBSan 与独立 TSan 的 focused 也分别为 **7/7、28/28**，无 sanitizer/leak 诊断；这不是完整 sanitizer suite。
+
+提交前完整 Vulkan/OpenGL 各注册 463/454 项，新增与既有功能测试通过，但两个 core_app contract 因其 `git archive HEAD` 尚不含未提交新文件而失败；另有 4 个既有条件 skip。该中间结果不记为完整通过，最终提交后复跑结果另段追加。消息 ID 注册、session/reactor/aspect 接线、真实网络、认证、可靠传输和 World delta 协议仍未实现。
+
+
+### 最终 HEAD 完整验证（2026-11-24）
+
+新文件进入 HEAD 后复跑完整构建与 CTest，上一段的两个 archive contract 均通过。Vulkan 注册 **463** 项，**459 执行通过、4 条件 skip、0 失败**；OpenGL 注册 **454** 项，**450 执行通过、4 条件 skip、0 失败**。两套 skip 均为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计为执行通过。该结果仍不构成真实 session/网络或完整 sanitizer suite 验收。

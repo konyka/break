@@ -13549,3 +13549,21 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **完整验证**：Vulkan CTest 注册 **462** 项，**458 通过、4 条件 skip、0 失败**；OpenGL 注册 **453** 项，**449 通过、4 条件 skip、0 失败**。skip 均为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计为执行通过。
 - **Sanitizer**：项目选项 `ENGINE_USE_ASAN=ON + ENGINE_USE_UBSAN=ON` 并以 `ASAN_OPTIONS=detect_leaks=1` 运行 focused **28/28**；`ENGINE_USE_TSAN=ON` focused **28/28**。均无 sanitizer/leak 诊断，只运行 focused 目标，不是完整 sanitizer suite。
 - **剩余边界**：周期调度器不再列为本项未实现项；应用仍必须在 owner tick/frame 调用 `pool_tick` 或经 `push_at` 驱动，没有后台维护。session/网络接线、真实网络和生产服务验收未做；本记录不包含远端 CI、Windows 或 Proton 新收据。
+
+
+## 复制分片 canonical wire codec（2026-11-24）
+
+- **交付**：`break_replication_wire_encoded_size`、`_encode`、`_decode` 加入 `break_replication_core`。BRFG/v1 使用 40 字节显式小端头，数据 1..65496 字节，总 payload 至多 65536；网络 delta 非零，count 1..1048576 且 index<count，长度字段精确匹配。复用既有 fragment 结果枚举，不新增分配、线程、锁、消息 ID 或 session/aspect 接线。
+- **失败与生命周期**：所有失败清零可写输出，encode 校验/容量失败保持缓冲不变。decode 逐字节读取，不使用 packed struct 或未对齐整数访问；成功借用输入+40，且不重新计算 FNV-1a，重组池继续校验 checksum/base/high-water。
+- **TDD**：先创建 7 组测试及 CTest 目标；regenerate 后因缺少 `network/break_replication_wire.h` 编译 RED。最小实现后新 wire **7/7**、旧 fragment/scheduler **28/28**。canonical 44 字节逐字节比对、fragmenter→wire→pool 重组、65496/65497 边界、NULL/空/非法字段、容量差一、0..43 截断、尾随、未对齐 borrowed 指针及不验 FNV 均有直接断言。
+- **变异**：delta 端序反转、错误 magic、接受 39 字节 header、容量检查差一、接受尾随、接受 delta0、data 偏移 +1、漏 count/index 校验八项均先成功构建再行为判红，并逐项恢复；恢复后 **7/7、28/28**。没有以 build failure 充当变异判红。
+- **Sanitizer**：`ENGINE_USE_ASAN=ON + ENGINE_USE_UBSAN=ON`（显式 `detect_leaks=1`、`halt_on_error=1`）与 `ENGINE_USE_TSAN=ON` 分别运行新 wire **7/7** 和旧 fragment **28/28**，无 sanitizer/leak 诊断。仅 focused 目标，不是完整 sanitizer suite。
+- **完整套件中间证据**：提交前 Vulkan 463 项、OpenGL 454 项均只有 `test_core_app_contract_compat` 与 `test_core_app_ctest_config_contract` 失败；根因是它们从 `git archive HEAD` 建树，而当前 CMake 覆盖了尚未进入 HEAD 的三个新文件引用。两者不是 codec 行为失败，但中间结果也不称完整通过；最终提交后复跑另段记录。两套均有 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported` 4 个既有条件 skip。
+- **边界**：消息注册、session/reactor/aspect、真实网络、认证、可靠传输与 World delta 协议保持未实现。远端 CI、Windows、Proton 由 controller 评审推送后核验，本记录不预写结论。
+
+
+### 复制分片 wire codec 完整验证收据（2026-11-24）
+
+- 新文件进入 HEAD 后，完整构建成功，`test_core_app_contract_compat` 与 `test_core_app_ctest_config_contract` 均实际通过；上一追加段的中间 archive 缺源失败已关闭。
+- Vulkan CTest 注册 **463** 项：**459 通过、4 条件 skip、0 失败**；OpenGL 注册 **454** 项：**450 通过、4 条件 skip、0 失败**。skip 均为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计为执行通过。
+- 完整 normal 结果与上述 focused sanitizer 结果分别成立；未运行完整 ASan/UBSan/TSan suite，未完成真实 session/网络、Windows、Proton 或远端 CI 验收。

@@ -119,3 +119,12 @@ apply 要求相同 schema hash、live generation 和递增的每对象 record ep
 ## 补充（2026-11-16）：语音接收器 fuzz
 
 `fuzz_break_online_voice`（`engine/tests/fuzz_break_online_voice.c`）对 `BRV1`/`BRV2` 帧做字节变异（随机写、位翻转、头部边界值、magic 互换、ADPCM 步长索引 88/89/255、保留字节、截断、多一字节、只错样本数的完整帧），再推入同一个接收器。harness 自带独立的 PCM 与 IMA ADPCM 解码器（标准 16 项索引表）和影子抖动缓冲：每个数据报必须恰好使 accepted/invalid/duplicate/stale/overload 之一加一，且与模型一致；播放序号、样本（等于被接受数据报的参考解码）和补偿帧（静音）都按模型检查。接收器每 64 次重建，格式在 8–48 kHz、单/双声道间轮换。冒烟测试 `fuzz_break_online_voice_smoke`（2000 次，seed 43，`fuzz` 标签）进入三条 CI fuzz 构建列表。设计与验证见 `docs/superpowers/plans/2026-11-16-voice-fuzz.md`。
+
+
+## 补充（2026-11-24）：复制分片 wire codec 的 session 边界
+
+`break_replication_wire.{h,c}` 现在为 `BreakReplicationFragment` 提供 BRFG/v1 canonical 编码，属于 `break_replication_core`，没有新增消息 ID，也没有接入 `break_online`、Session 或 reactor。后续独立 bridge 才能注册预留的 `0x4009` 并把 decode 后的 borrowed data 在同一输入生命周期内交给重组池；网络接收队列若要复用或释放缓冲，必须先完成这次复制。
+
+aspect 接入仍有一个明确发送侧缺口：现有 fragmenter 的通用片长上限是 65536，而 BRFG 数据片必须收窄到 65496，才能给 40 字节头留出空间。bridge 还必须另设完成队列、每连接和全 manager 预算，不能把 count 的绝对上限 1048576 当成生产准入配置。decode 不验 FNV-1a 是有意分层，重组池继续负责 checksum/base/high-water；FNV 仍不是认证。
+
+focused 证据为新 wire **7/7**、旧 fragment/scheduler **28/28**，ASan+UBSan/TSan 亦通过相同两组测试。真实 session 收发、消息注册、aspect 发送上限调整、可靠传输、认证和 World delta 协议均不在本切片，不以 codec 往返测试冒充真实网络验收。

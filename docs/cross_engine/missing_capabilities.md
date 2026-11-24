@@ -701,3 +701,15 @@ core_app 新增 `--voice-bypass`，可从命令行关闭语音处理链的任意
 完整 Vulkan **458/462**、OpenGL **449/453** 实际通过，各 **4 条件 skip、0 失败**；跳过 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`。ASan+UBSan（显式 leak 检测）与 TSan focused 均 **28/28**、无诊断，不构成完整 sanitizer suite。
 
 剩余边界是调用与集成责任：应用必须在 owner tick/frame 显式 `pool_tick`，或由 `push_at` 触发；无后台线程。session/网络接线、真实网络和生产服务验收仍未完成，FNV-1a 仍不是认证。
+
+
+## 第 17 节（大世界/流式）补充（2026-11-24）：仅关闭分片 wire 表达缺口
+
+复制分片现在具有独立 BRFG/v1 canonical codec：40 字节显式小端头、最多 65496 字节非空数据、精确长度与字段准入、失败输出清零，以及不分配的 borrowed decode。它消除的是“内存中的指针/size_t fragment 没有稳定跨端表达”这一局部缺口，不改变旧 fragmenter、重组池或调度器语义。
+
+以下缺口明确保留：
+
+- 尚未注册复制分片消息 ID（预留 `0x4009` 仍属后续独立工作），未接 Session、reactor、online aspect 或 Runtime Core 消息路径。
+- aspect 发送侧仍须把 fragment_size 收窄到 65496，并另设完成队列、每连接与全 manager 预算；1048576 只是 codec 绝对 count 上限，不是生产配置。
+- decode 的输入生命周期由调用者管理，FNV-1a 由重组池验证且不提供认证。可靠性、拥塞控制、安全传输、World delta 协议与生产服务均未因此交付。
+- 本机证据只覆盖 focused normal/ASan+UBSan/TSan 与另行记录的完整 CTest，不代表 Windows、Proton、远端 CI 或真实网络验收。

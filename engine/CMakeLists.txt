@@ -870,6 +870,7 @@ add_library(break_replication_core STATIC
     src/network/break_aoi.c
     src/network/break_replication.c
     src/network/break_replication_fragment.c
+    src/network/break_replication_wire.c
     src/network/break_cell_handoff.c
     src/network/break_cell_partition.c
     src/network/break_cell_balance.c
@@ -6991,6 +6992,14 @@ endif()
     target_link_libraries(test_break_replication_fragment PRIVATE break_replication_core)
     add_test(NAME test_break_replication_fragment COMMAND test_break_replication_fragment)
     set_tests_properties(test_break_replication_fragment PROPERTIES
+        TIMEOUT 20 LABELS "network;replication;fragmentation")
+
+    add_executable(test_break_replication_wire tests/test_break_replication_wire.c)
+    target_include_directories(test_break_replication_wire PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_break_replication_wire PRIVATE break_replication_core)
+    add_test(NAME test_break_replication_wire COMMAND test_break_replication_wire)
+    set_tests_properties(test_break_replication_wire PROPERTIES
         TIMEOUT 20 LABELS "network;replication;fragmentation")
 
     add_executable(test_break_cell_handoff tests/test_break_cell_handoff.c)
