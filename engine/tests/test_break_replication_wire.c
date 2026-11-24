@@ -84,6 +84,77 @@ TEST(wire_canonical_layout_and_borrowed_decode)
     ASSERT_TRUE(memcmp(decoded.data, canonical_data, sizeof(canonical_data)) == 0);
 }
 
+TEST(wire_wide_delta_and_base_canonical_round_trip)
+{
+    static const uint8_t expected[] = {
+        0x42u, 0x52u, 0x46u, 0x47u, 0x01u, 0x00u, 0x28u, 0x00u,
+        0x00u, 0x00u, 0x00u, 0x00u, 0x01u, 0x00u, 0x00u, 0x00u,
+        0x88u, 0x77u, 0x66u, 0x55u, 0x44u, 0x33u, 0x22u, 0x11u,
+        0x03u, 0x00u, 0x00u, 0x00u, 0x04u, 0x00u, 0x00u, 0x00u,
+        0x44u, 0x33u, 0x22u, 0x11u, 0x04u, 0x00u, 0x00u, 0x00u,
+        0xaau, 0xbbu, 0xccu, 0xddu
+    };
+    BreakReplicationFragment fragment = {
+        UINT64_C(0x0000000100000000), UINT64_C(0x1122334455667788),
+        3u, 4u, 0x11223344u, canonical_data, sizeof(canonical_data)
+    };
+    BreakReplicationFragment decoded;
+    uint8_t out[sizeof(expected)];
+    size_t size = 99u;
+
+    ASSERT_EQ(break_replication_wire_encoded_size(&fragment, &size),
+              BREAK_REPLICATION_FRAGMENT_OK);
+    ASSERT_EQ(size, sizeof(expected));
+    size = 99u;
+    ASSERT_EQ(break_replication_wire_encode(&fragment, out, sizeof(out), &size),
+              BREAK_REPLICATION_FRAGMENT_OK);
+    ASSERT_EQ(size, sizeof(expected));
+    ASSERT_TRUE(memcmp(out, expected, sizeof(expected)) == 0);
+    ASSERT_EQ(break_replication_wire_decode(out, size, &decoded),
+              BREAK_REPLICATION_FRAGMENT_OK);
+    ASSERT_EQ(decoded.delta_id, UINT64_C(0x0000000100000000));
+    ASSERT_EQ(decoded.base_id, UINT64_C(0x1122334455667788));
+    ASSERT_EQ(decoded.fragment_index, 3u);
+    ASSERT_EQ(decoded.fragment_count, 4u);
+    ASSERT_EQ(decoded.checksum, 0x11223344u);
+    ASSERT_EQ(decoded.size, sizeof(canonical_data));
+    ASSERT_EQ(decoded.data, out + BREAK_REPLICATION_WIRE_HEADER_SIZE);
+}
+
+TEST(wire_max_fragment_count_round_trip)
+{
+    uint8_t data = 0x5au;
+    BreakReplicationFragment fragment = {
+        1u, 2u, BREAK_REPLICATION_WIRE_MAX_FRAGMENT_COUNT - 1u,
+        BREAK_REPLICATION_WIRE_MAX_FRAGMENT_COUNT, 3u, &data, 1u
+    };
+    BreakReplicationFragment decoded;
+    uint8_t out[BREAK_REPLICATION_WIRE_HEADER_SIZE + 1u];
+    size_t size = 99u;
+
+    ASSERT_EQ(break_replication_wire_encoded_size(&fragment, &size),
+              BREAK_REPLICATION_FRAGMENT_OK);
+    ASSERT_EQ(size, sizeof(out));
+    size = 99u;
+    ASSERT_EQ(break_replication_wire_encode(&fragment, out, sizeof(out), &size),
+              BREAK_REPLICATION_FRAGMENT_OK);
+    ASSERT_EQ(size, sizeof(out));
+    ASSERT_EQ(out[24], 0xffu);
+    ASSERT_EQ(out[25], 0xffu);
+    ASSERT_EQ(out[26], 0x0fu);
+    ASSERT_EQ(out[27], 0x00u);
+    ASSERT_EQ(out[28], 0x00u);
+    ASSERT_EQ(out[29], 0x00u);
+    ASSERT_EQ(out[30], 0x10u);
+    ASSERT_EQ(out[31], 0x00u);
+    ASSERT_EQ(break_replication_wire_decode(out, size, &decoded),
+              BREAK_REPLICATION_FRAGMENT_OK);
+    ASSERT_EQ(decoded.fragment_index, BREAK_REPLICATION_WIRE_MAX_FRAGMENT_COUNT - 1u);
+    ASSERT_EQ(decoded.fragment_count, BREAK_REPLICATION_WIRE_MAX_FRAGMENT_COUNT);
+    ASSERT_EQ(decoded.size, 1u);
+    ASSERT_EQ(decoded.data, out + BREAK_REPLICATION_WIRE_HEADER_SIZE);
+}
+
 TEST(wire_fragmenter_pool_round_trip)
 {
     const uint8_t payload[] = "abcdefghijklmnopqrstuvwxyz";
@@ -246,7 +317,11 @@ TEST(wire_decode_rejects_every_truncation_and_clears_output)
 {
     size_t size;
     for (size = 0u; size < sizeof(canonical_wire); ++size) {
-        check_decode_rejection(canonical_wire, size, BREAK_REPLICATION_FRAGMENT_INVALID);
+        uint8_t *input = (uint8_t *)malloc(size ? size : 1u);
+        ASSERT_NOT_NULL(input);
+        if (size != 0u) memcpy(input, canonical_wire, size);
+        check_decode_rejection(input, size, BREAK_REPLICATION_FRAGMENT_INVALID);
+        free(input);
     }
     check_decode_rejection(NULL, sizeof(canonical_wire), BREAK_REPLICATION_FRAGMENT_INVALID);
     ASSERT_EQ(break_replication_wire_decode(canonical_wire, sizeof(canonical_wire), NULL),
@@ -256,15 +331,28 @@ TEST(wire_decode_rejects_every_truncation_and_clears_output)
 TEST(wire_decode_rejects_noncanonical_and_invalid_fields)
 {
     uint8_t wire[sizeof(canonical_wire) + 1u];
+    size_t offset;
 
     memcpy(wire, canonical_wire, sizeof(canonical_wire));
     wire[0] = 0x58u;
     check_decode_rejection(wire, sizeof(canonical_wire), BREAK_REPLICATION_FRAGMENT_INVALID);
+    for (offset = 1u; offset < 4u; ++offset) {
+        memcpy(wire, canonical_wire, sizeof(canonical_wire));
+        wire[offset] ^= 1u;
+        check_decode_rejection(wire, sizeof(canonical_wire),
+                               BREAK_REPLICATION_FRAGMENT_INVALID);
+    }
     memcpy(wire, canonical_wire, sizeof(canonical_wire));
     wire[4] = 0x02u;
     check_decode_rejection(wire, sizeof(canonical_wire), BREAK_REPLICATION_FRAGMENT_INVALID);
     memcpy(wire, canonical_wire, sizeof(canonical_wire));
+    wire[5] = 0x01u;
+    check_decode_rejection(wire, sizeof(canonical_wire), BREAK_REPLICATION_FRAGMENT_INVALID);
+    memcpy(wire, canonical_wire, sizeof(canonical_wire));
     wire[6] = 0x27u;
+    check_decode_rejection(wire, sizeof(canonical_wire), BREAK_REPLICATION_FRAGMENT_INVALID);
+    memcpy(wire, canonical_wire, sizeof(canonical_wire));
+    wire[7] = 0x01u;
     check_decode_rejection(wire, sizeof(canonical_wire), BREAK_REPLICATION_FRAGMENT_INVALID);
     memcpy(wire, canonical_wire, sizeof(canonical_wire));
     memset(wire + 36u, 0, 4u);
@@ -300,6 +388,12 @@ TEST(wire_decode_rejects_noncanonical_and_invalid_fields)
     wire[38] = 0x00u;
     wire[39] = 0x00u;
     check_decode_rejection(wire, sizeof(canonical_wire), BREAK_REPLICATION_FRAGMENT_OVER_LIMIT);
+    memcpy(wire, canonical_wire, sizeof(canonical_wire));
+    wire[36] = 0x04u;
+    wire[37] = 0x00u;
+    wire[38] = 0x01u;
+    wire[39] = 0x00u;
+    check_decode_rejection(wire, sizeof(canonical_wire), BREAK_REPLICATION_FRAGMENT_OVER_LIMIT);
 }
 
 TEST(wire_decode_borrows_unaligned_data_without_fnv_validation)
@@ -328,6 +422,8 @@ TEST(wire_decode_borrows_unaligned_data_without_fnv_validation)
 
 TEST_MAIN_BEGIN()
     RUN_TEST(wire_canonical_layout_and_borrowed_decode);
+    RUN_TEST(wire_wide_delta_and_base_canonical_round_trip);
+    RUN_TEST(wire_max_fragment_count_round_trip);
     RUN_TEST(wire_fragmenter_pool_round_trip);
     RUN_TEST(wire_fragment_size_boundaries);
     RUN_TEST(wire_encode_validation_clears_outputs_and_preserves_buffer);
