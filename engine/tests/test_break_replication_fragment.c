@@ -1629,6 +1629,7 @@ TEST(reassembly_pool_expiry_schedule_runs_before_admission_and_survives_reset)
     size_t count10 = 0u;
     size_t count11 = 0u;
     BreakReplicationFragment delta12;
+    BreakReplicationFragment rejected;
     BreakReplicationReassemblyPool *pool;
     uint64_t completed_id = 0u;
     uint8_t *assembled = NULL;
@@ -1645,6 +1646,8 @@ TEST(reassembly_pool_expiry_schedule_runs_before_admission_and_survives_reset)
     ASSERT_EQ(count11, 1u);
     delta12 = fragments10[0];
     delta12.delta_id = 12u;
+    rejected = fragments11[0];
+    rejected.checksum++;
     pool = break_replication_reassembly_pool_create(7u, 1u, 64u);
     ASSERT_NOT_NULL(pool);
     break_replication_reassembly_pool_set_expiry_schedule(pool, 10u, 5u);
@@ -1656,6 +1659,12 @@ TEST(reassembly_pool_expiry_schedule_runs_before_admission_and_survives_reset)
                   pool, &fragments11[0], 105u, &completed_id, &assembled, &assembled_size),
               BREAK_REPLICATION_REASSEMBLY_OVER_LIMIT);
     ASSERT_EQ(break_replication_reassembly_pool_pending_streams(pool), 1u);
+    ASSERT_EQ(break_replication_reassembly_pool_push_at(
+                  pool, &rejected, 110u, &completed_id, &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_CHECKSUM_MISMATCH);
+    ASSERT_EQ(completed_id, 0u);
+    ASSERT_EQ(break_replication_reassembly_pool_pending_streams(pool), 0u);
+    ASSERT_EQ(break_replication_reassembly_pool_pending_bytes(pool), 0u);
     ASSERT_EQ(break_replication_reassembly_pool_push_at(
                   pool, &fragments11[0], 110u, &completed_id, &assembled, &assembled_size),
               BREAK_REPLICATION_REASSEMBLY_COMPLETE);
@@ -1676,11 +1685,20 @@ TEST(reassembly_pool_expiry_schedule_runs_before_admission_and_survives_reset)
     ASSERT_EQ(break_replication_reassembly_pool_pending_streams(pool), 0u);
     ASSERT_EQ(break_replication_reassembly_pool_pending_bytes(pool), 0u);
 
-    ASSERT_EQ(break_replication_reassembly_pool_tick(pool, 100u), 0u);
+    ASSERT_EQ(break_replication_reassembly_pool_tick(pool, 95u), 0u);
     ASSERT_EQ(break_replication_reassembly_pool_push_at(
-                  pool, &delta12, 100u, &completed_id, &assembled, &assembled_size),
+                  pool, &delta12, 95u, &completed_id, &assembled, &assembled_size),
               BREAK_REPLICATION_REASSEMBLY_INCOMPLETE);
-    ASSERT_EQ(break_replication_reassembly_pool_tick(pool, 110u), 1u);
+    ASSERT_EQ(break_replication_reassembly_pool_push_at(
+                  pool, &delta12, 104u, &completed_id, &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_DUPLICATE);
+    ASSERT_EQ(break_replication_reassembly_pool_tick(pool, 105u), 0u);
+    ASSERT_EQ(break_replication_reassembly_pool_pending_streams(pool), 1u);
+    ASSERT_EQ(break_replication_reassembly_pool_pending_bytes(pool), 2u);
+    ASSERT_EQ(break_replication_reassembly_pool_push_at(
+                  pool, &delta12, 110u, &completed_id, &assembled, &assembled_size),
+              BREAK_REPLICATION_REASSEMBLY_DUPLICATE);
+    ASSERT_EQ(break_replication_reassembly_pool_tick(pool, 115u), 1u);
     ASSERT_EQ(break_replication_reassembly_pool_pending_streams(pool), 0u);
     ASSERT_EQ(break_replication_reassembly_pool_pending_bytes(pool), 0u);
 
