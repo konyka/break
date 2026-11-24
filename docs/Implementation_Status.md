@@ -13715,3 +13715,8 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - windows-d3d12 run `45414002947`、QUIC run `45414003043`、Proton run `45417162209` 均 success。Proton 上游 run-id=`45414002947`，device/pipeline contract 均为 77，仅表示兼容通道。
 - CI run `45414003035` 的最终结论为 **failure**：22 success、3 条件 skip、2 cancelled、0 failed。`macOS + Clang (rule engine with native Redis provider)` job `138515134561` 与 `macOS native Metal (Clang)` job `138515134595` 在任何步骤开始前取消，没有编译或测试失败日志；`gh run rerun 45414003035 --failed` 被令牌以 `Resource not accessible by personal access token` 拒绝。因此本项不宣称首轮远端 CI 全绿，后续集成运行另行核验，不预写结果。
 - 生产 level rebaseline、跨连接共享 live World、Runtime Core 映射、权威 simulation 合并和完整资产链仍未完成。本收据提交自身触发的工作流结果不在此预写。
+
+
+#### core_app World replication 后续集成复验（2026-11-24）
+
+收据提交 `f5c0f44c` 的后续集成 CI run `45418377037` 最终为 **completed/success**：24 success、3 条件 skip、0 cancelled、0 failed；首轮两个步骤前取消的 macOS job 在本次均成功，因此上一轮基础设施取消已由包含相同代码的后续集成运行闭合，历史 failure 记录保持不改。windows-d3d12 run `45418377300` 与 Proton run `45420887374` 均 success，Proton 上游 run-id=`45418377300`，device/pipeline contract 均为 77，仅表示兼容通道。该提交未触发新的 QUIC run，不补写 QUIC 结论；本追加提交自身的工作流结果不在此预写。

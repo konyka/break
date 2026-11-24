@@ -864,3 +864,8 @@ TSan 的 core_app target/离线 record 仍有既有 Lua longjmp 环境失败；�
 windows-d3d12 `45414002947`、QUIC `45414003043`、Proton `45417162209` 均 success，Proton 上游 run-id=`45414002947`，两个 contract 均为 77。CI `45414003035` 为 **failure**：22 success、3 条件 skip、2 cancelled、0 failed；两个 macOS job 在步骤开始前取消，未产生代码或测试失败。令牌无权重跑，故不宣称首轮 CI 全绿。
 
 生产 level rebaseline、跨连接共享 live World、Runtime Core 映射、权威 simulation 合并和完整资产链仍未完成；条件 skip、Proton 77 与混合 TSan 不升级为原生 GPU 或完整 sanitizer 验收。本收据提交自身触发的工作流结果不在此预写。
+
+
+#### core_app World replication 后续集成复验（2026-11-24）
+
+`f5c0f44c` 的 CI `45418377037` 最终 success（24 success、3 条件 skip、0 cancelled、0 failed），首轮两个 macOS 取消未复现；windows-d3d12 `45418377300` 与 Proton `45420887374` 均 success，Proton 上游 run-id=`45418377300`，两个 contract 均为 77。该结果闭合首轮基础设施取消，不改变生产 level rebaseline、共享 live World、Runtime Core 映射、权威 simulation 合并与完整资产链缺口；本追加提交自身的工作流结果不在此预写。
