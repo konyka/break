@@ -1913,6 +1913,9 @@ BreakNetSendResult break_net_reactor_send_correlated(BreakNetReactor *reactor,
 {
     BreakNetMessageView view;
     size_t index;
+    size_t active_count = 0u;
+    size_t key_queued = 0u;
+    size_t share;
     if (reactor == NULL || (size != 0u && data == NULL)) return BREAK_NET_SEND_INVALID;
     if (break_net_message_view_init(&view, message_id, protocol_version, 0u,
                                     data, size) != BREAK_NET_MESSAGE_OK) return BREAK_NET_SEND_INVALID;
@@ -1932,7 +1935,22 @@ BreakNetSendResult break_net_reactor_send_correlated(BreakNetReactor *reactor,
             return BREAK_NET_SEND_CLOSED;
         }
     }
-    if (reactor->outbound_count == BREAK_NET_OUTBOUND_QUEUE_CAPACITY) {
+    /* A live key cannot consume another identity's share of the fixed queue.
+     * Closing identities still count until retired; unknown keys use the
+     * single-key share. */
+    for (index = 0u; index < BREAK_NET_CONNECTION_IDENTITY_CAPACITY; ++index) {
+        const BreakNetConnectionIdentity *identity = &reactor->identities[index];
+        if (identity->valid && identity->key != 0u && !identity->retired) active_count++;
+    }
+    for (index = 0u; index < reactor->outbound_count; ++index) {
+        size_t queued_index = (reactor->outbound_head + index) %
+                              BREAK_NET_OUTBOUND_QUEUE_CAPACITY;
+        if (reactor->outbound[queued_index].connection_key == connection_key) key_queued++;
+    }
+    share = BREAK_NET_OUTBOUND_QUEUE_CAPACITY / (active_count != 0u ? active_count : 1u);
+    if (share == 0u) share = 1u;
+    if (key_queued >= share ||
+        reactor->outbound_count == BREAK_NET_OUTBOUND_QUEUE_CAPACITY) {
         platform_mutex_unlock(&reactor->queue_mutex);
         return BREAK_NET_SEND_OVERLOAD;
     }

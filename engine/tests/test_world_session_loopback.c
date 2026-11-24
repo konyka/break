@@ -22,6 +22,7 @@ extern int usleep(unsigned int);
 #define TEST_COMPONENT 11u
 #define TEST_PROTOCOL 1u
 #define TEST_LEVEL 7u
+#define TEST_DUAL_OUTBOUND_SHARE (BREAK_NET_OUTBOUND_QUEUE_CAPACITY / 2u)
 
 #define LOOPBACK_CHECK(x) do { \
     if (!(x)) { \
@@ -1214,7 +1215,7 @@ TEST(world_session_two_sockets_share_snapshots_with_independent_recovery)
     first_id = break_world_snapshot_id(first);
 
     socket_select_peer(&fixture, false);
-    for (usize i = 0u; i < BREAK_NET_OUTBOUND_QUEUE_CAPACITY; ++i) {
+    for (usize i = 0u; i < TEST_DUAL_OUTBOUND_SHARE; ++i) {
         LOOPBACK_CHECK(break_net_reactor_send(fixture.reactor, a_key,
                                              BREAK_NET_MESSAGE_ID_PING, 1u, "x", 1u) ==
                        BREAK_NET_SEND_OK);
@@ -1234,7 +1235,7 @@ TEST(world_session_two_sockets_share_snapshots_with_independent_recovery)
     LOOPBACK_CHECK(break_world_session_sender_state(fixture.session, b_key, &b_state));
     LOOPBACK_CHECK(a_state.attempt_pending && a_state.history_count == 0u);
     LOOPBACK_CHECK(!b_state.attempt_pending && b_state.history_count == 1u);
-    for (usize i = 0u; i < BREAK_NET_OUTBOUND_QUEUE_CAPACITY; ++i) {
+    for (usize i = 0u; i < TEST_DUAL_OUTBOUND_SHARE; ++i) {
         SocketFrame frame;
         LOOPBACK_CHECK(read_frame(&fixture, &frame));
         LOOPBACK_CHECK(frame.message_id == BREAK_NET_MESSAGE_ID_PING &&
@@ -1477,7 +1478,7 @@ TEST(world_session_pending_snapshot_attempt_outlives_caller_lease)
     LOOPBACK_CHECK(encode_full(pending, &expected_payload, &expected_payload_size));
 
     socket_select_peer(&fixture, false);
-    for (usize i = 0u; i < BREAK_NET_OUTBOUND_QUEUE_CAPACITY; ++i) {
+    for (usize i = 0u; i < TEST_DUAL_OUTBOUND_SHARE; ++i) {
         LOOPBACK_CHECK(break_net_reactor_send(fixture.reactor, a_key,
                                              BREAK_NET_MESSAGE_ID_PING, 1u, "x", 1u) ==
                        BREAK_NET_SEND_OK);
@@ -1508,7 +1509,7 @@ TEST(world_session_pending_snapshot_attempt_outlives_caller_lease)
     LOOPBACK_CHECK(a_state.attempt_pending && a_state.history_count == 0u &&
                    a_state.next_delta_id == 2u);
 
-    for (usize i = 0u; i < BREAK_NET_OUTBOUND_QUEUE_CAPACITY; ++i) {
+    for (usize i = 0u; i < TEST_DUAL_OUTBOUND_SHARE; ++i) {
         SocketFrame frame;
         LOOPBACK_CHECK(read_frame(&fixture, &frame));
         LOOPBACK_CHECK(frame.message_id == BREAK_NET_MESSAGE_ID_PING &&
