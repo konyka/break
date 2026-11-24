@@ -13575,3 +13575,22 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **fix 后 focused**：normal、ASan+UBSan（显式 LSan `detect_leaks=1`）与 TSan 均为新 wire **9/9**、旧 fragment/scheduler **28/28**，恢复后无 sanitizer/leak/race 诊断。首轮 8 项与 fix round 1 的 6 项定向变异合计 **14 项均判红并恢复**。
 - **历史计数对齐**：上文 wire **7/7** 与八项变异是 fix 前历史记录；最终测试增加精确截断分配、宽 delta/base、count/index 最大值及高位/完整字段负例，最终计数以 **9/9、14 项变异**为准。
 - **边界**：只运行 focused sanitizer 目标，未验收完整 sanitizer suite；Session、真实网络和远端仍未验收。本补充不预写推送或 CI 结果。
+
+## 降噪多声道与复制分片重组池远端收据（2026-11-24）
+
+- `3638b5f4c296b06a0f9da72c4a868d56904ea22a`（`feat(audio): suppress noise per channel in interleaved PCM`）：CI run `45175673038` completed/success，27 个 job 中 **24 success、3 个按条件 skip**；windows-d3d12 run `45175672986` success；Proton run `45177986640` success，日志上游 run-id=`45175672986`，`device_contract=77`、`pipeline_contract=77`。
+- `6a00e90f8b2dc4385c989dee5fe9ba9b5658561f`（多 delta 并发重组池及最终评审补测）：CI run `45303490912` completed/success，**24 success、3 个同样的条件 skip**；windows-d3d12 run `45303490847` success；Proton run `45304823104` success，日志上游 run-id=`45303490847`，两个 contract 均为 77。CI 的 Linux arm64 cross-build + QEMU、Windows MSVC/Clang/MinGW、macOS Metal/MoltenVK、Linux ASan/UBSan/TSan、Vulkan/OpenGL 等 job 均 success。
+- 上述 3 个 skip 均为 Windows D3D12 GPU lane、Steam Deck 实机基准和 CI 内 Proton 参考 lane 的条件跳过，不计为执行通过。Proton contract 77 只表示兼容通道，不是原生 D3D12/GPU 通过。
+- `6a00e90f` 推送前最终树本地 Vulkan **458 通过 + 4 skip/462**、OpenGL **449 通过 + 4 skip/453**，均 0 失败；focused normal、ASan+UBSan/LSan、TSan 均 **24/24**。条件 skip 为 `test_d3d12_dependency_gate` 与三个 `test_core_app_nm_*`。
+
+
+### 重组池周期调度器验证记录（2026-11-24）
+
+- `2a827dbb63c44e0872f632b7f48ece7bf8163cab` 为变基整合后的最终提交。其本地 Vulkan **458 通过 + 4 skip/462**、OpenGL **449 通过 + 4 skip/453**，均 0 失败；focused normal、ASan+UBSan/LSan、TSan 均 **28/28**。原八项变异、评审补测两项变异和 active schedule 直接替换一项变异均成功构建并判红，合计 **11/11**。
+- 最终整分支与变基复审均无遗留代码/测试/文档问题；远端音频文档与调度器文档均保留。完整 sanitizer suite、session/真实网络与生产服务验收不在本项。
+- CI run `45308826810` 首轮的 `Linux + GCC (rule engine with native Redis provider)` job `138159168688` 在构建前失败：`apt-get update` 只取得 Microsoft 源，随后 Ubuntu 包全部 `Unable to locate`，退出码 100。相同 runner 镜像的上一成功 job 能取得 Ubuntu 源；日志指向 runner 软件源环境差异，不是测试或编译失败。该 run 最终结论为 failure（23 success、1 failure、3 条件 skip）。`gh run rerun 45308826810 --failed` 返回 `Resource not accessible by personal access token`，本地令牌无权重跑，因此没有重跑。后续提交 `d79ef1cd` 的 CI run `45316281060` 包含本调度器代码，结论 success（24 success、3 条件 skip，含同名 Redis job），作为调度器的后续集成证据。
+
+### wire codec 远端验证收据（2026-11-24）
+
+- 提交 `d79ef1cd6251c65e9f49a31cc0b03e8899d6ce9e`（含 `2f1c28d0`）：CI run `45316281060` success（24 success、3 条件 skip）；windows-d3d12 run `45316281126` success；QUIC run `45316280930` success。
+- Proton run `45317802330` 结论 failure：job `138188764226` 的 `Install Wine + vkd3d-proton` 步骤在下载 i386 软件包时达到 20 分钟超时，尚未进入构建与测试，因此本次没有 device/pipeline contract 证据。上一次 Proton run `45310896315`（`2a827dbb`）成功，contract 均为 77。Proton 只作兼容参考通道，令牌无权重跑，本次不计为 Proton 通过。

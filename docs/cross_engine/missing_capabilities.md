@@ -722,3 +722,18 @@ core_app 新增 `--voice-bypass`，可从命令行关闭语音处理链的任意
 fix 后 normal、ASan+UBSan/LSan、TSan focused 均为 wire **9/9**、旧 fragment/scheduler **28/28**，首轮与 fix 合计 **14 项定向变异均判红并恢复**。此前 **7/7** 和八项变异属于 fix 前历史记录，最终计数以 **9/9、14 项**为准。
 
 未关闭的边界保持不变：完整 sanitizer suite 未验收，Session/reactor/aspect 和真实网络未接线或验收，Windows/Proton/远端 CI 未由本补充验收；不预写推送或 CI 结果。
+
+## 降噪多声道与复制分片重组池远端收据（2026-11-24）
+
+- `3638b5f4c296b06a0f9da72c4a868d56904ea22a`：CI run `45175673038`、windows-d3d12 run `45175672986`、Proton run `45177986640` 均 completed/success；CI 为 24 success、3 条件 skip，Proton 上游 run-id=`45175672986`，两个 contract 均为 77。
+- `6a00e90f8b2dc4385c989dee5fe9ba9b5658561f`：CI run `45303490912`、windows-d3d12 run `45303490847`、Proton run `45304823104` 均 completed/success；CI 为 24 success、3 条件 skip，Proton 上游 run-id=`45303490847`，两个 contract 均为 77。arm64、Windows、macOS 和 Linux sanitizer/RHI 矩阵 job 均成功。
+- skip 与 Proton 77 均不升级为原生 GPU 验收。`6a00e90f` 的本地最终树 Vulkan/OpenGL 各 0 失败（462/453 项注册，各 4 条件 skip），focused normal/ASan+UBSan/LSan/TSan 均 24/24。
+
+
+### 重组池周期调度器验证记录（2026-11-24）
+
+`2a827dbb63c44e0872f632b7f48ece7bf8163cab` 的本地最终树 Vulkan/OpenGL 各 0 失败（462/453 项注册，各 4 条件 skip），focused normal/ASan+UBSan/LSan/TSan 均 28/28，11 项定向变异均判红。CI run `45308826810` 首轮有一个 job 在构建前因 runner 只取得 Microsoft apt 源、无法定位 Ubuntu 包而失败；这不是代码测试失败。该 run 最终结论为 failure；令牌无权重跑。后续 `d79ef1cd` 的 CI run `45316281060` 含本代码且为 success（24 success、3 条件 skip），作为后续集成证据。完整 sanitizer suite、session/真实网络与生产服务验收仍未完成。
+
+#### wire codec 远端收据（2026-11-24）
+
+`d79ef1cd` 的 CI `45316281060`、windows-d3d12 `45316281126`、QUIC `45316280930` 均 success。Proton `45317802330` 在安装 Wine 时 20 分钟超时，未进入构建，不计为通过；Proton 仅为兼容参考通道。
