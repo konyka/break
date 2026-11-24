@@ -54,6 +54,7 @@ static void print_help(void) {
          "  --port-file PATH\n"
          "  --net-poll-ms 0..100\n"
          "  --voice-relay\n"
+         "  --aspect-replication\n"
 #endif
          "  --help");
 }
@@ -323,6 +324,9 @@ static int core_app_main(int argc, char **argv) {
             net_option_seen = true;
         } else if (strcmp(argv[i], "--voice-relay") == 0) {
             net_config.voice_relay = true;
+            net_option_seen = true;
+        } else if (strcmp(argv[i], "--aspect-replication") == 0) {
+            net_config.aspect_replication = true;
             net_option_seen = true;
 #endif
         } else if (strcmp(argv[i], "--trace-timestamps") == 0) {

@@ -4,6 +4,8 @@
 #include <network/break_net_events.h>
 #include <network/break_net_message_registry.h>
 #include <network/break_msg_rate.h>
+#include <network/break_online_aspect_replication.h>
+#include <network/break_online_aspect_session.h>
 #include <network/break_online_voice.h>
 #include <network/break_session.h>
 #include <physics/physics_sync.h>
@@ -100,6 +102,18 @@ _Static_assert(CORE_APP_VOICE_MUTE_BYTES == BREAK_NET_CORE_VOICE_MUTE_PAYLOAD,
  * allows the same number of full BRV1 frames, so the frame bucket binds. */
 #define CORE_APP_NET_VOICE_RATE_PER_SEC 120u
 #define CORE_APP_NET_VOICE_RATE_BURST 64u
+#define CORE_APP_ASPECT_OBJECT_COUNT 2u
+#define CORE_APP_ASPECT_STORE_OBJECTS 3u
+#define CORE_APP_ASPECT_PACKET_BYTES 2048u
+#define CORE_APP_ASPECT_FRAGMENT_BYTES 512u
+#define CORE_APP_ASPECT_MAX_FRAGMENTS 16u
+#define CORE_APP_ASPECT_BANDWIDTH_BUDGET 16384u
+#define CORE_APP_ASPECT_DRAIN_BUDGET 64u
+#define CORE_APP_ASPECT_STREAM_CAPACITY 16u
+#define CORE_APP_ASPECT_PENDING_BYTES 16384u
+#define CORE_APP_ASPECT_COMPLETION_CAPACITY 64u
+#define CORE_APP_ASPECT_EXPIRY_INTERVAL_MS 10u
+#define CORE_APP_ASPECT_EXPIRY_IDLE_MS 50u
 
 static const u8 k_core_app_net_key_id[8] = {'c', 'o', 'r', 'e', 'a', 'p', 'p', '1'};
 
@@ -144,6 +158,12 @@ typedef struct CoreAppNetStats {
     u64 voice_frames_muted;
     u64 voice_frames_rate_limited;
 } CoreAppNetStats;
+
+typedef struct CoreAppNetAspectStats {
+    u64 opened;
+    u64 closed;
+    u64 sent_fragments;
+} CoreAppNetAspectStats;
 
 typedef struct CoreAppNetRelayFrame {
     BreakSessionId source;
@@ -215,6 +235,17 @@ struct CoreAppNetTransport {
     u8 physics_report[PHYSICS_SYNC_REPORT_BYTES];
     bool physics_report_pending;
     bool physics_desync_traced;
+    bool aspect_replication;
+    BreakAspectStore *aspect_authoritative;
+    BreakAspectStore *aspect_inbound;
+    BreakSpatialIndex *aspect_index;
+    BreakAspectReplication *aspect_replication_state;
+    BreakAspectSession *aspect_session;
+    BreakOnlineHandle aspect_objects[CORE_APP_ASPECT_OBJECT_COUNT];
+    bool aspect_open[CORE_APP_NET_MAX_CONNECTIONS];
+    BreakAoIScope aspect_scopes[CORE_APP_NET_MAX_CONNECTIONS];
+    BreakAoIResult aspect_aoi[CORE_APP_NET_MAX_CONNECTIONS];
+    CoreAppNetAspectStats aspect_stats;
     CoreAppNetStats stats;
 };
 
@@ -341,6 +372,189 @@ static void net_voice_release(CoreAppNetTransport *t, u32 slot) {
 
 static void net_voice_release_all(CoreAppNetTransport *t) {
     for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) net_voice_release(t, i);
+}
+
+static u64 net_aspect_clock(void *user) {
+    (void)user;
+    return time_microseconds() / 1000u;
+}
+
+static BreakRuntimeError net_aspect_send(void *user, u64 connection_id,
+                                         const BreakReplicationFragment *fragment) {
+    CoreAppNetTransport *t = (CoreAppNetTransport *)user;
+    BreakRuntimeError result = break_aspect_session_send(t->aspect_session, connection_id, fragment);
+    if (result == BREAK_RUNTIME_OK) t->aspect_stats.sent_fragments++;
+    return result;
+}
+
+static bool net_aspect_store_create(BreakAspectStore **out) {
+    static const BreakAspectSchema schemas[] = {
+        {1u, 1u, BREAK_ASPECT_U32, 4u},
+        {2u, 1u, BREAK_ASPECT_U32, 4u},
+        {3u, 1u, BREAK_ASPECT_F32, 4u},
+        {4u, 1u, BREAK_ASPECT_F32, 4u},
+        {5u, 1u, BREAK_ASPECT_F32, 4u},
+        {6u, 1u, BREAK_ASPECT_U32, 4u},
+    };
+    BreakAspectStoreConfig config = {
+        CORE_APP_ASPECT_STORE_OBJECTS, 16u, CORE_APP_ASPECT_PACKET_BYTES};
+    *out = NULL;
+    if (break_aspect_store_create(&config, out) != BREAK_RUNTIME_OK) return false;
+    for (u32 i = 0u; i < sizeof(schemas) / sizeof(schemas[0]); ++i) {
+        if (break_aspect_schema_register(*out, &schemas[i]) != BREAK_RUNTIME_OK) return false;
+    }
+    return true;
+}
+
+static bool net_aspect_create(CoreAppNetTransport *t) {
+    BreakAspectReplicationConfig replication_config;
+    BreakAspectSessionConfig session_config;
+    BreakReplicationObject desc;
+    BreakOnlineHandle reserved;
+    if (!net_aspect_store_create(&t->aspect_authoritative) ||
+        !net_aspect_store_create(&t->aspect_inbound)) {
+        return false;
+    }
+    t->aspect_index = break_spatial_index_create(16.0f);
+    if (!t->aspect_index ||
+        break_aspect_object_create(t->aspect_authoritative, &reserved) != BREAK_RUNTIME_OK ||
+        reserved.index != 0u) {
+        return false;
+    }
+    memset(&replication_config, 0, sizeof(replication_config));
+    replication_config.max_connections = CORE_APP_NET_MAX_CONNECTIONS;
+    replication_config.max_objects = CORE_APP_ASPECT_STORE_OBJECTS;
+    replication_config.max_packet_bytes = CORE_APP_ASPECT_PACKET_BYTES;
+    replication_config.max_fragments = CORE_APP_ASPECT_MAX_FRAGMENTS;
+    replication_config.send = net_aspect_send;
+    replication_config.send_user = t;
+    if (break_aspect_replication_create(&replication_config, t->aspect_authoritative,
+                                        t->aspect_index, &t->aspect_replication_state) !=
+        BREAK_RUNTIME_OK) {
+        return false;
+    }
+    memset(&desc, 0, sizeof(desc));
+    desc.flags = BREAK_AOI_OBJECT_ALWAYS_RELEVANT;
+    for (u32 i = 0u; i < CORE_APP_ASPECT_OBJECT_COUNT; ++i) {
+        desc.priority = i;
+        if (break_aspect_object_register(t->aspect_replication_state, &desc,
+                                         &t->aspect_objects[i]) != BREAK_RUNTIME_OK ||
+            t->aspect_objects[i].index != i + 1u || t->aspect_objects[i].generation != 1u ||
+            break_aspect_object_adopt(t->aspect_inbound, t->aspect_objects[i]) !=
+                BREAK_RUNTIME_OK) {
+            return false;
+        }
+    }
+    memset(&session_config, 0, sizeof(session_config));
+    session_config.store = t->aspect_inbound;
+    session_config.bridge.reactor = t->reactor;
+    session_config.bridge.max_connections = CORE_APP_NET_MAX_CONNECTIONS;
+    session_config.bridge.stream_capacity = CORE_APP_ASPECT_STREAM_CAPACITY;
+    session_config.bridge.max_pending_bytes_per_connection = CORE_APP_ASPECT_PENDING_BYTES;
+    session_config.bridge.max_total_pending_bytes =
+        CORE_APP_NET_MAX_CONNECTIONS * CORE_APP_ASPECT_PENDING_BYTES;
+    session_config.bridge.max_fragment_bytes = CORE_APP_ASPECT_FRAGMENT_BYTES;
+    session_config.bridge.max_fragment_count = CORE_APP_ASPECT_MAX_FRAGMENTS;
+    session_config.bridge.completion_capacity = CORE_APP_ASPECT_COMPLETION_CAPACITY;
+    session_config.bridge.max_completion_packet_bytes = CORE_APP_ASPECT_PACKET_BYTES;
+    session_config.bridge.max_completion_queue_bytes =
+        CORE_APP_ASPECT_COMPLETION_CAPACITY * CORE_APP_ASPECT_PACKET_BYTES;
+    session_config.bridge.expiry_enabled = true;
+    session_config.bridge.expiry_interval = CORE_APP_ASPECT_EXPIRY_INTERVAL_MS;
+    session_config.bridge.expiry_max_idle = CORE_APP_ASPECT_EXPIRY_IDLE_MS;
+    session_config.bridge.clock = net_aspect_clock;
+    session_config.bridge.clock_user = t;
+    t->aspect_session = break_aspect_session_create(&session_config);
+    return t->aspect_session != NULL;
+}
+
+static void net_aspect_close(CoreAppNetTransport *t, u32 slot) {
+    if (t->aspect_open[slot]) {
+        (void)break_aspect_replication_disconnect(t->aspect_replication_state, t->keys[slot]);
+        (void)break_aspect_session_close(t->aspect_session, t->keys[slot]);
+        t->aspect_open[slot] = false;
+        t->aspect_stats.closed++;
+    }
+    break_aoi_result_clear(&t->aspect_aoi[slot]);
+    break_aoi_scope_clear(&t->aspect_scopes[slot]);
+}
+
+static void net_aspect_close_all(CoreAppNetTransport *t) {
+    for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) net_aspect_close(t, i);
+}
+
+static void net_aspect_destroy(CoreAppNetTransport *t) {
+    net_aspect_close_all(t);
+    break_aspect_replication_destroy(t->aspect_replication_state);
+    break_aspect_session_destroy(t->aspect_session);
+    break_spatial_index_destroy(t->aspect_index);
+    break_aspect_store_destroy(t->aspect_inbound);
+    break_aspect_store_destroy(t->aspect_authoritative);
+    t->aspect_replication_state = NULL;
+    t->aspect_session = NULL;
+    t->aspect_index = NULL;
+    t->aspect_inbound = NULL;
+    t->aspect_authoritative = NULL;
+    memset(t->aspect_objects, 0, sizeof(t->aspect_objects));
+}
+
+static void net_aspect_tick_drain(CoreAppNetTransport *t, u64 now_ms) {
+    if (!t->aspect_session) return;
+    (void)break_aspect_session_tick(t->aspect_session, now_ms);
+    (void)break_aspect_session_drain(t->aspect_session, CORE_APP_ASPECT_DRAIN_BUDGET);
+}
+
+static bool net_aspect_update_object(CoreAppNetTransport *t, u32 index,
+                                     const CoreAppSnapshotEntity *entity) {
+    BreakOnlineHandle handle = t->aspect_objects[index];
+    BreakReplicationObject object;
+    if (break_aspect_replication_set_u32(t->aspect_replication_state, handle, 1u,
+                                         entity->index) != BREAK_RUNTIME_OK ||
+        break_aspect_replication_set_u32(t->aspect_replication_state, handle, 2u,
+                                         entity->generation) != BREAK_RUNTIME_OK ||
+        break_aspect_replication_set_f32(t->aspect_replication_state, handle, 3u,
+                                         entity->x) != BREAK_RUNTIME_OK ||
+        break_aspect_replication_set_f32(t->aspect_replication_state, handle, 4u,
+                                         entity->y) != BREAK_RUNTIME_OK ||
+        break_aspect_replication_set_f32(t->aspect_replication_state, handle, 5u,
+                                         entity->z) != BREAK_RUNTIME_OK ||
+        break_aspect_replication_set_u32(t->aspect_replication_state, handle, 6u,
+                                         entity->flags) != BREAK_RUNTIME_OK) {
+        return false;
+    }
+    memset(&object, 0, sizeof(object));
+    object.entity_id = break_aspect_aoi_id(handle);
+    object.position[0] = entity->x;
+    object.position[1] = entity->y;
+    object.position[2] = entity->z;
+    object.flags = BREAK_AOI_OBJECT_ALWAYS_RELEVANT;
+    object.priority = index;
+    return break_spatial_index_insert(t->aspect_index, &object);
+}
+
+static void net_aspect_update(CoreAppNetTransport *t, const CoreAppSnapshotEntity *entities,
+                              u32 entity_count) {
+    if (!t->aspect_replication_state || !entities || entity_count != CORE_APP_ASPECT_OBJECT_COUNT)
+        return;
+    for (u32 i = 0u; i < CORE_APP_ASPECT_OBJECT_COUNT; ++i) {
+        if (!net_aspect_update_object(t, i, &entities[i])) return;
+    }
+}
+
+static bool net_aspect_open(CoreAppNetTransport *t, u32 slot, BreakConnectionKey key) {
+    if (!t->aspect_replication) return true;
+    if (!break_aspect_session_open(t->aspect_session, key)) return false;
+    if (break_aspect_connection_open(t->aspect_replication_state, key,
+                                     CORE_APP_ASPECT_BANDWIDTH_BUDGET,
+                                     CORE_APP_ASPECT_FRAGMENT_BYTES) != BREAK_RUNTIME_OK) {
+        (void)break_aspect_session_close(t->aspect_session, key);
+        break_aoi_result_clear(&t->aspect_aoi[slot]);
+        break_aoi_scope_clear(&t->aspect_scopes[slot]);
+        return false;
+    }
+    t->aspect_open[slot] = true;
+    t->aspect_stats.opened++;
+    return true;
 }
 
 static int net_slot_find(const CoreAppNetTransport *t, BreakConnectionKey key) {
@@ -482,6 +696,7 @@ static bool net_on_clock_probe(BreakConnectionKey connection,
 static void net_close_slot(CoreAppNetTransport *t, u32 i) {
     t->authenticated[i] = false;
     if (t->closing[i]) return;
+    net_aspect_close(t, i);
     t->closing[i] = true;
     (void)break_session_manager_close(t->manager, t->keys[i], 0u);
     (void)break_net_reactor_close(t->reactor, t->keys[i]);
@@ -525,8 +740,19 @@ static void net_pump(CoreAppNetTransport *t, int timeout_ms, u32 *budget, u32 ti
             continue;
         }
         if (event.type == BREAK_NET_EVENT_CONNECTION_OPENED) {
+            int slot = -1;
             if (!t->admission_open || net_slot_find(t, event.connection_key) >= 0 ||
-                net_slot_add(t, event.connection_key) < 0) {
+                (slot = net_slot_add(t, event.connection_key)) < 0) {
+                t->stats.refused++;
+                (void)break_net_reactor_close(t->reactor, event.connection_key);
+                break_net_event_release(&event);
+                continue;
+            }
+            if (!net_aspect_open(t, (u32)slot, event.connection_key)) {
+                net_aspect_close(t, (u32)slot);
+                t->keys[slot] = 0u;
+                t->closing[slot] = false;
+                physics_sync_baseline_release(&t->physics_baselines[slot]);
                 t->stats.refused++;
                 (void)break_net_reactor_close(t->reactor, event.connection_key);
                 break_net_event_release(&event);
@@ -540,6 +766,7 @@ static void net_pump(CoreAppNetTransport *t, int timeout_ms, u32 *budget, u32 ti
             int slot = net_slot_find(t, event.connection_key);
             if (slot >= 0) {
                 net_voice_release(t, (u32)slot);
+                net_aspect_close(t, (u32)slot);
                 t->keys[slot] = 0u;
                 t->authenticated[slot] = false;
                 t->welcomed[slot] = false;
@@ -575,6 +802,30 @@ static bool net_slot_live(const CoreAppNetTransport *t, u32 i) {
  * message a peer receives after AUTH. */
 static bool net_slot_sendable(const CoreAppNetTransport *t, u32 i) {
     return t->welcomed[i] && net_slot_live(t, i);
+}
+
+static BreakRuntimeError net_aspect_sync_slot(CoreAppNetTransport *t, u32 slot) {
+    BreakAoIResult *aoi = &t->aspect_aoi[slot];
+    BreakAoIScope *scope = &t->aspect_scopes[slot];
+    BreakAoIEntityId ids[CORE_APP_ASPECT_OBJECT_COUNT];
+    usize count;
+    BreakRuntimeError result;
+    if (!break_aoi_compute(t->aspect_index, NULL, 0u, scope, aoi)) return BREAK_RUNTIME_FAILED;
+    result = break_aspect_replication_sync_default(t->aspect_replication_state, t->keys[slot], aoi);
+    if (result != BREAK_RUNTIME_OK) return result;
+    count = aoi->enter_count + aoi->stay_count;
+    if (count > CORE_APP_ASPECT_OBJECT_COUNT) return BREAK_RUNTIME_FAILED;
+    for (usize i = 0u; i < aoi->enter_count; ++i) ids[i] = aoi->enter[i];
+    for (usize i = 0u; i < aoi->stay_count; ++i) ids[aoi->enter_count + i] = aoi->stay[i];
+    if (!break_aoi_scope_assign(scope, ids, count)) return BREAK_RUNTIME_FAILED;
+    return BREAK_RUNTIME_OK;
+}
+
+static void net_aspect_sync_sendable(CoreAppNetTransport *t) {
+    if (!t->aspect_replication_state) return;
+    for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
+        if (t->aspect_open[i] && net_slot_sendable(t, i)) (void)net_aspect_sync_slot(t, i);
+    }
 }
 
 /* Copies a frame the receiver accepted so net_send_pending can relay it.
@@ -822,6 +1073,7 @@ static void net_send_pending(CoreAppNetTransport *t) {
      * connection already reuses; hold snapshots until the queue is empty. */
     if (!break_net_reactor_event_queue_empty(t->reactor)) return;
     net_send_welcomes(t);
+    net_aspect_sync_sendable(t);
     net_send_voice_relay(t);
     net_send_clock_replies(t);
     if (t->producing) net_send_clock_requests(t);
@@ -990,6 +1242,15 @@ static BreakRuntimeError net_start(void *user, FILE *trace) {
             t->manager, BREAK_NET_MESSAGE_ID_CORE_VOICE_MUTE, net_on_voice_mute, t)) {
         goto fail;
     }
+    stage = "aspect";
+    if (t->aspect_replication &&
+        (!net_aspect_create(t) ||
+         !break_session_manager_set_message_handler(
+             t->manager, BREAK_NET_MESSAGE_ID_REPLICATION_FRAGMENT,
+             break_replication_session_handle_message,
+             break_aspect_session_bridge(t->aspect_session)))) {
+        goto fail;
+    }
     stage = "bind";
     if (SnowEndpointCreate(&endpoint) != SNOW_OK) goto fail;
     status = SnowEndpointSetHost(endpoint, t->host);
@@ -1038,6 +1299,7 @@ static void net_tick(void *user, u32 tick, u64 level_generation,
     t->live_generation = level_generation;
     t->current_tick = tick;
     if (t->producing) {
+        net_aspect_update(t, entities, entity_count);
         /* A level reload may restart ticks; start a fresh history then. */
         if (!physics_sync_record(&t->physics, tick, physics_hash)) {
             physics_sync_init(&t->physics);
@@ -1057,6 +1319,7 @@ static void net_tick(void *user, u32 tick, u64 level_generation,
     u32 budget = CORE_APP_NET_EVENTS_PER_TICK;
     net_pump(t, (int)t->poll_ms, &budget, tick);
     const u64 now_ms = time_microseconds() / 1000u;
+    net_aspect_tick_drain(t, now_ms);
     for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
         net_voice_play(t, i, now_ms, CORE_APP_NET_VOICE_POPS_PER_TICK);
     }
@@ -1082,17 +1345,34 @@ static BreakRuntimeError net_drain(void *user) {
     if (!t) return BREAK_RUNTIME_INVALID;
     if (!t->started) return BREAK_RUNTIME_OK;
     net_send_pending(t);
+    net_aspect_tick_drain(t, time_microseconds() / 1000u);
     for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
         if (t->keys[i] != 0u) net_close_slot(t, i);
     }
     for (u32 round = 0u; round < 8u; ++round) {
         u32 budget = CORE_APP_NET_EVENTS_PER_TICK;
         net_pump(t, CORE_APP_NET_DRAIN_STEP_MS, &budget, t->current_tick);
+        net_aspect_tick_drain(t, time_microseconds() / 1000u);
         bool open = false;
         for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) open = open || t->keys[i] != 0u;
         if (!open && break_net_reactor_event_queue_empty(t->reactor)) break;
     }
     return BREAK_RUNTIME_OK;
+}
+
+static void net_trace_aspect_stats(CoreAppNetTransport *t) {
+    BreakAspectSessionStats aspect;
+    char line[512];
+    if (!t->aspect_replication || !t->aspect_session) return;
+    break_aspect_session_stats(t->aspect_session, &aspect);
+    snprintf(line, sizeof(line),
+             "COREAPPTRACE version=1 event=network_aspect_stats opened=%" PRIu64
+             " closed=%" PRIu64 " applied=%zu rejected=%zu drained=%zu"
+             " sent_fragments=%" PRIu64 " queue_depth=%zu dropped=%" PRIu64 "\n",
+             t->aspect_stats.opened, t->aspect_stats.closed, aspect.applied_packets,
+             aspect.rejected_packets, aspect.drained_packets, t->aspect_stats.sent_fragments,
+             aspect.bridge.completion_count, aspect.bridge.dropped_completions);
+    net_trace(t, line);
 }
 
 static void net_trace_stats(CoreAppNetTransport *t) {
@@ -1146,6 +1426,7 @@ static void net_trace_stats(CoreAppNetTransport *t) {
              t->stats.voice_mute_rejected, t->stats.voice_frames_muted,
              t->stats.voice_frames_rate_limited);
     net_trace(t, line);
+    net_trace_aspect_stats(t);
     if (t->bus) {
         snprintf(line, sizeof(line),
                  "COREAPPTRACE version=1 event=network_bus net_events_published=%" PRIu64
@@ -1167,6 +1448,7 @@ static BreakRuntimeError net_destroy(void *user) {
     if (!t) return BREAK_RUNTIME_INVALID;
     if (t->leaked) return BREAK_RUNTIME_TIMEOUT;
     net_voice_release_all(t);
+    net_aspect_close_all(t);
     t->stats.voice_relay_dropped += t->relay_count;
     t->relay_count = 0u;
     if (t->listening) net_trace_stats(t);
@@ -1177,6 +1459,7 @@ static BreakRuntimeError net_destroy(void *user) {
     bool reactor_stopped = !t->reactor || break_net_reactor_stop(t->reactor, 1000u);
     if (t->manager) break_session_manager_destroy(t->manager);
     t->manager = NULL;
+    net_aspect_destroy(t);
     if (reactor_stopped) {
         if (t->reactor) break_net_reactor_destroy(t->reactor);
         if (t->acceptor) SnowAcceptorDestroy(t->acceptor);
@@ -1230,6 +1513,7 @@ CoreAppNetTransport *core_app_net_transport_create(const CoreAppNetTransportConf
     physics_sync_init(&t->physics);
     t->poll_ms = config->poll_ms;
     t->voice_relay = config->voice_relay;
+    t->aspect_replication = config->aspect_replication;
     return t;
 }
 
@@ -1243,6 +1527,40 @@ void core_app_net_transport_free(CoreAppNetTransport *transport) {
 }
 
 #ifdef CORE_APP_NET_TRANSPORT_TESTING
+bool core_app_net_transport_aspect_for_test(CoreAppNetTransport *transport,
+                                            CoreAppNetAspectTestView *out) {
+    if (!out) return false;
+    memset(out, 0, sizeof(*out));
+    if (!transport) return false;
+    out->enabled = transport->aspect_replication;
+    out->authoritative = transport->aspect_authoritative;
+    out->inbound = transport->aspect_inbound;
+    out->spatial_index = transport->aspect_index;
+    out->replication = transport->aspect_replication_state;
+    out->session = transport->aspect_session;
+    out->created = out->authoritative && out->inbound && out->spatial_index &&
+                   out->replication && out->session;
+    memcpy(out->objects, transport->aspect_objects, sizeof(out->objects));
+    out->opened = transport->aspect_stats.opened;
+    out->closed = transport->aspect_stats.closed;
+    out->sent_fragments = transport->aspect_stats.sent_fragments;
+    for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
+        if (transport->aspect_open[i]) out->open_count++;
+        out->scope_count += transport->aspect_scopes[i].count;
+    }
+    return true;
+}
+
+BreakRuntimeError core_app_net_transport_aspect_sync_for_test(CoreAppNetTransport *transport,
+                                                              u64 key) {
+    int slot;
+    if (!transport || !transport->aspect_replication || !transport->aspect_session)
+        return BREAK_RUNTIME_INVALID;
+    slot = net_slot_find(transport, key);
+    if (slot < 0 || !transport->aspect_open[slot]) return BREAK_RUNTIME_CLOSED;
+    return net_aspect_sync_slot(transport, (u32)slot);
+}
+
 BreakNetReactor *core_app_net_transport_reactor_for_test(CoreAppNetTransport *transport) {
     return transport ? transport->reactor : NULL;
 }
@@ -1252,6 +1570,7 @@ bool core_app_net_transport_reclaim_for_test(CoreAppNetTransport *transport) {
     if (transport->reactor && !break_net_reactor_stop(transport->reactor, 1000u)) return false;
     if (transport->reactor) break_net_reactor_destroy(transport->reactor);
     if (transport->acceptor) SnowAcceptorDestroy(transport->acceptor);
+    net_aspect_destroy(transport);
     net_release_baselines(transport);
     free(transport);
     return true;

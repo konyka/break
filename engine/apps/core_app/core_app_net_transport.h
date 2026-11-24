@@ -23,6 +23,7 @@ typedef struct CoreAppNetTransportConfig {
     const char *port_file; /* receives the bound port after start; removed on exit */
     u32 poll_ms;           /* per-tick socket wait, 0..100; 0 never blocks the tick */
     bool voice_relay;      /* forward accepted peer voice to every other peer */
+    bool aspect_replication;
 } CoreAppNetTransportConfig;
 
 /* Validates the configuration shape (every field present, bind parses).
@@ -76,7 +77,34 @@ BreakRuntimeError core_app_net_transport_event_stats(CoreAppNetTransport *transp
 bool core_app_net_event_notice_decode(const void *data, usize size, CoreAppNetEventNotice *out);
 
 #ifdef CORE_APP_NET_TRANSPORT_TESTING
+#include <network/break_online_types.h>
+
 typedef struct BreakNetReactor BreakNetReactor;
+typedef struct BreakAspectStore BreakAspectStore;
+typedef struct BreakSpatialIndex BreakSpatialIndex;
+typedef struct BreakAspectReplication BreakAspectReplication;
+typedef struct BreakAspectSession BreakAspectSession;
+
+typedef struct CoreAppNetAspectTestView {
+    bool enabled;
+    bool created;
+    BreakAspectStore *authoritative;
+    BreakAspectStore *inbound;
+    BreakSpatialIndex *spatial_index;
+    BreakAspectReplication *replication;
+    BreakAspectSession *session;
+    BreakOnlineHandle objects[2];
+    u32 open_count;
+    usize scope_count;
+    u64 opened;
+    u64 closed;
+    u64 sent_fragments;
+} CoreAppNetAspectTestView;
+
+bool core_app_net_transport_aspect_for_test(CoreAppNetTransport *transport,
+                                            CoreAppNetAspectTestView *out);
+BreakRuntimeError core_app_net_transport_aspect_sync_for_test(CoreAppNetTransport *transport,
+                                                              u64 key);
 /* Test-only (test_core_app_net_transport): the live reactor, or NULL. */
 BreakNetReactor *core_app_net_transport_reactor_for_test(CoreAppNetTransport *transport);
 /* Test-only: after the step that blocked the stop has returned, stops and
