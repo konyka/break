@@ -297,16 +297,12 @@ static Entity create_full_entity(World *world, Entity expected,
     return created;
 }
 
-static void sort_creates_by_index(Entity *creates, u32 count) {
-    for (u32 i = 1u; i < count; ++i) {
-        Entity value = creates[i];
-        u32 j = i;
-        while (j > 0u && creates[j - 1u].index > value.index) {
-            creates[j] = creates[j - 1u];
-            --j;
-        }
-        creates[j] = value;
-    }
+static int compare_create_indices(const void *left, const void *right) {
+    const Entity *a = (const Entity *)left;
+    const Entity *b = (const Entity *)right;
+    if (a->index < b->index) return -1;
+    if (a->index > b->index) return 1;
+    return 0;
 }
 
 static bool create_entities(World *world, const BreakWorldDeltaWire *message, bool full) {
@@ -327,7 +323,11 @@ static bool create_entities(World *world, const BreakWorldDeltaWire *message, bo
                 creates[create_count++] = message->records[i].entity;
             }
         }
-        sort_creates_by_index(creates, create_count);
+        if (create_count >= ECS_MAX_ENTITIES) {
+            free(creates);
+            return false;
+        }
+        qsort(creates, create_count, sizeof(*creates), compare_create_indices);
         for (u32 i = 1u; i < create_count; ++i) {
             if (creates[i - 1u].index == creates[i].index) {
                 free(creates);

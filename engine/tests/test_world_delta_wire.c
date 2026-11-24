@@ -1242,6 +1242,31 @@ TEST(world_delta_wire_full_rebuilds_shuffled_create_order) {
     fixture_destroy(&fixture);
 }
 
+
+TEST(world_delta_wire_full_rejects_over_capacity_creates_before_sorting) {
+    Fixture fixture;
+    BreakWorldDeltaWire message = golden_message();
+    BreakWorldSnapshot *rebuilt = NULL;
+    const u32 count = (u32)ECS_MAX_ENTITIES;
+    ASSERT_TRUE(fixture_init(&fixture));
+    message.records = (BreakWorldDeltaRecord *)calloc(count, sizeof(*message.records));
+    ASSERT_NOT_NULL(message.records);
+    message.record_count = count;
+    message.level_generation = TEST_LEVEL;
+    message.schema_hash = break_world_snapshot_schema_hash(fixture.target);
+    for (u32 i = 0u; i < count; ++i) {
+        message.records[i].kind = BREAK_DELTA_ENTITY_CREATE;
+        message.records[i].entity.index = count - i;
+        message.records[i].entity.generation = 1u;
+    }
+    ASSERT_EQ(break_world_delta_wire_rebuild(&message, NULL, NULL, fixture.schemas,
+                                             TEST_LEVEL, &rebuilt),
+              BREAK_WORLD_DELTA_WIRE_APPLY_FAILED);
+    ASSERT_TRUE(rebuilt == NULL);
+    free(message.records);
+    fixture_destroy(&fixture);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(world_delta_wire_golden_full_layout_and_round_trip);
     RUN_TEST(world_delta_wire_unaligned_decode_borrows_input);
@@ -1261,6 +1286,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(world_delta_wire_rejects_negative_record_kind);
     RUN_TEST(world_delta_wire_rejects_remove_record_with_payload);
     RUN_TEST(world_delta_wire_full_rebuilds_shuffled_create_order);
+    RUN_TEST(world_delta_wire_full_rejects_over_capacity_creates_before_sorting);
     RUN_TEST(world_delta_wire_multi_entity_component_full_delta_are_canonical);
     RUN_TEST(world_delta_wire_wide_u64_fields_survive_repeated_round_trips);
     RUN_TEST(world_delta_wire_empty_record_full_message_rebuilds_empty_snapshot);

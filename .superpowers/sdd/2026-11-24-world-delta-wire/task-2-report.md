@@ -67,3 +67,10 @@ Verdict was needs changes for a create-ordering defect, plus two minor items.
   test frees its payload right after the exact-size encode, reducing peak
   memory while keeping byte-for-byte comparisons.
 - The wide-field description above was narrowed as suggested by review.
+
+### Review follow-up: sort complexity
+
+The insertion sort was replaced with qsort plus a comparator, and
+create_entities rejects create_count >= ECS_MAX_ENTITIES before sorting. The
+new over-capacity regression uses 65536 reverse-ordered unique CREATE records
+and asserts APPLY_FAILED with a NULL target. All three lanes report 23/23.
