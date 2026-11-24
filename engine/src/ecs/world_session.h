@@ -106,6 +106,11 @@ bool break_world_session_handle_control(BreakConnectionKey connection,
 BreakNetSendResult break_world_session_publish(BreakWorldSession *session,
                                                BreakConnectionKey connection,
                                                World *world, u64 tick);
+/* Borrows an immutable target and lets this connection's attempt/history retain
+ * it. An active attempt resumes without inspecting target or level_generation. */
+BreakNetSendResult break_world_session_publish_snapshot(
+    BreakWorldSession *session, BreakConnectionKey connection,
+    BreakWorldSnapshot *target, u64 level_generation);
 bool break_world_session_sender_state(const BreakWorldSession *session,
                                       BreakConnectionKey connection,
                                       BreakWorldSessionSenderState *out_state);

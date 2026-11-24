@@ -728,28 +728,29 @@ static bool world_session_history_would_exceed(const BreakWorldSession *session,
     return packet_bytes > session->history_byte_limit - connection->history_bytes;
 }
 
-static bool world_session_build_attempt(BreakWorldSession *session,
-                                        BreakWorldSessionConnection *connection,
-                                        World *world, u64 tick)
+static bool world_session_build_attempt_from_snapshot(
+    BreakWorldSession *session, BreakWorldSessionConnection *connection,
+    BreakWorldSnapshot *target, u64 level_generation)
 {
     BreakWorldSessionAttempt *attempt = &connection->attempt;
-    BreakWorldSnapshot *target = NULL;
     const BreakWorldSnapshot *base = NULL;
     u8 *wire = NULL;
     size_t wire_size = 0u;
     bool full = connection->force_full || !connection->confirmed;
     BreakReplicationFragmentResult fragment_result;
-    if (tick == 0u) return false;
-    target = break_world_snapshot_build(world, session->schemas, tick);
-    if (!target) return false;
+    if (!target || break_world_snapshot_tick(target) == 0u ||
+        break_world_snapshot_schema_hash(target) != break_schema_hash(session->schemas) ||
+        level_generation != session->level_generation) {
+        goto invalid;
+    }
+    base = connection->history_count != 0u
+               ? connection->history[connection->history_count - 1u].target
+               : connection->confirmed;
+    if (base && break_world_snapshot_tick(target) <= break_world_snapshot_tick(base)) {
+        goto invalid;
+    }
     if (!full) {
-        base = connection->history_count != 0u
-                   ? connection->history[connection->history_count - 1u].target
-                   : connection->confirmed;
-        if (!base || tick <= break_world_snapshot_tick(base)) {
-            break_world_snapshot_release(target);
-            return false;
-        }
+        if (!base) goto invalid;
         if (!world_session_encode_delta(session, base, target, &wire, &wire_size) ||
             wire_size > session->packet_byte_limit ||
             world_session_history_would_exceed(session, connection, wire_size)) {
@@ -759,15 +760,10 @@ static bool world_session_build_attempt(BreakWorldSession *session,
             full = true;
         }
     }
-    if (full && !world_session_encode_full(session, target, &wire, &wire_size)) {
-        break_world_snapshot_release(target);
-        return false;
-    }
+    if (full && !world_session_encode_full(session, target, &wire, &wire_size)) goto invalid;
     if (wire_size == 0u || wire_size > session->packet_byte_limit ||
         wire_size > session->history_byte_limit || connection->next_delta_id == 0u) {
-        free(wire);
-        break_world_snapshot_release(target);
-        return false;
+        goto invalid;
     }
     memset(attempt, 0, sizeof(*attempt));
     attempt->active = true;
@@ -775,14 +771,16 @@ static bool world_session_build_attempt(BreakWorldSession *session,
     attempt->delta_id = connection->next_delta_id;
     attempt->target = target;
     attempt->packet_bytes = wire_size;
+    attempt->payload = wire;
+    target = NULL;
+    wire = NULL;
     fragment_result = break_replication_fragment_payload(
         attempt->delta_id,
         break_world_session_stream_epoch(session->protocol_version,
                                          break_schema_hash(session->schemas),
                                          session->level_generation),
-        wire, wire_size, session->fragment_byte_limit,
+        attempt->payload, attempt->packet_bytes, session->fragment_byte_limit,
         &attempt->fragments, &attempt->fragment_count);
-    attempt->payload = wire;
     if (fragment_result != BREAK_REPLICATION_FRAGMENT_OK ||
         attempt->fragment_count == 0u ||
         attempt->fragment_count > session->fragment_count_limit) {
@@ -791,6 +789,11 @@ static bool world_session_build_attempt(BreakWorldSession *session,
     }
     connection->next_delta_id++;
     return true;
+
+invalid:
+    free(wire);
+    break_world_snapshot_release(target);
+    return false;
 }
 
 static BreakNetSendResult world_session_resume_attempt(
@@ -833,14 +836,36 @@ BreakNetSendResult break_world_session_publish(BreakWorldSession *session,
 {
     size_t slot;
     BreakWorldSessionConnection *state;
+    BreakWorldSnapshot *owned;
     if (!session || !session->reactor) return BREAK_NET_SEND_CLOSED;
     slot = world_session_connection_index(session, connection);
     if (slot == session->max_connections) return BREAK_NET_SEND_CLOSED;
     state = &session->connections[slot];
     if (state->attempt.active) return world_session_resume_attempt(session, state);
     if (!world) return BREAK_NET_SEND_INVALID;
-    if (!world_session_build_attempt(session, state, world, tick))
+    owned = break_world_snapshot_build(world, session->schemas, tick);
+    if (!world_session_build_attempt_from_snapshot(session, state, owned,
+                                                   session->level_generation)) {
         return BREAK_NET_SEND_INVALID;
+    }
+    return world_session_resume_attempt(session, state);
+}
+
+BreakNetSendResult break_world_session_publish_snapshot(
+    BreakWorldSession *session, BreakConnectionKey connection,
+    BreakWorldSnapshot *target, u64 level_generation)
+{
+    size_t slot;
+    BreakWorldSessionConnection *state;
+    if (!session || !session->reactor) return BREAK_NET_SEND_CLOSED;
+    slot = world_session_connection_index(session, connection);
+    if (slot == session->max_connections) return BREAK_NET_SEND_CLOSED;
+    state = &session->connections[slot];
+    if (state->attempt.active) return world_session_resume_attempt(session, state);
+    break_world_snapshot_retain(target);
+    if (!world_session_build_attempt_from_snapshot(session, state, target, level_generation)) {
+        return BREAK_NET_SEND_INVALID;
+    }
     return world_session_resume_attempt(session, state);
 }
 
