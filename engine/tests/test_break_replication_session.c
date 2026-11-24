@@ -19,6 +19,8 @@ extern int usleep(unsigned int);
 
 #define TEST_MAX_PENDING_BYTES (16u * 1024u * 1024u)
 
+size_t break_test_replication_consumer_count = 0u;
+
 static uint64_t test_bridge_clock(void *user)
 {
     return *(const uint64_t *)user;
@@ -982,61 +984,79 @@ static bool test_session_socket_disconnect(TestSessionSocketFixture *fixture)
     return false;
 }
 
-TEST(bridge_socket_loopback_reassembles_interleaved_duplicates_in_fifo)
+static void test_session_socket_consume_polled_completion(
+    BreakReplicationSessionCompletion *completion)
+{
+    break_test_replication_consumer_count++;
+    break_replication_session_completion_release(completion);
+}
+
+typedef struct TestSessionSocketLoopbackCase {
+    TestSessionSocketFixture fixture;
+    BreakReplicationFragment *first;
+    BreakReplicationFragment *second;
+    size_t first_count;
+    size_t second_count;
+    BreakReplicationSessionCompletion completions[2];
+} TestSessionSocketLoopbackCase;
+
+static void test_session_socket_loopback_cleanup(TestSessionSocketLoopbackCase *test)
+{
+    size_t i;
+    for (i = 0u; i < 2u; ++i)
+        break_replication_session_completion_release(&test->completions[i]);
+    break_replication_fragments_free(test->first, test->first_count);
+    break_replication_fragments_free(test->second, test->second_count);
+    test_session_socket_destroy(&test->fixture);
+}
+
+static void test_session_socket_loopback_run(TestSessionSocketLoopbackCase *test)
 {
     static const uint8_t first_payload[] = "abcdefghij";
     static const uint8_t second_payload[] = "KLMNOPQR";
     static const uint64_t expected_base_id = 77u;
-    TestSessionSocketFixture fixture;
-    BreakReplicationFragment *first = NULL;
-    BreakReplicationFragment *second = NULL;
     BreakReplicationFragment wrong_base;
-    BreakReplicationSessionCompletion completions[2] = {{0}};
     BreakReplicationSessionBridgeStats stats;
     BreakSessionApplyStats session_stats;
-    size_t first_count = 0u;
-    size_t second_count = 0u;
-    size_t consumer_count = 0u;
     uint8_t duplicate[128];
     size_t duplicate_size = 0u;
-    size_t i;
 
-    ASSERT_TRUE(test_session_socket_start(&fixture));
-    ASSERT_TRUE(test_session_socket_authenticate(&fixture, expected_base_id));
+    ASSERT_TRUE(test_session_socket_start(&test->fixture));
+    ASSERT_TRUE(test_session_socket_authenticate(&test->fixture, expected_base_id));
     ASSERT_EQ(break_replication_fragment_payload(
                   100u, expected_base_id, first_payload, sizeof(first_payload) - 1u,
-                  4u, &first, &first_count), BREAK_REPLICATION_FRAGMENT_OK);
+                  4u, &test->first, &test->first_count), BREAK_REPLICATION_FRAGMENT_OK);
     ASSERT_EQ(break_replication_fragment_payload(
                   200u, expected_base_id, second_payload, sizeof(second_payload) - 1u,
-                  4u, &second, &second_count), BREAK_REPLICATION_FRAGMENT_OK);
-    ASSERT_EQ(first_count, 3u);
-    ASSERT_EQ(second_count, 2u);
+                  4u, &test->second, &test->second_count), BREAK_REPLICATION_FRAGMENT_OK);
+    ASSERT_EQ(test->first_count, 3u);
+    ASSERT_EQ(test->second_count, 2u);
 
-    wrong_base = first[2];
+    wrong_base = test->first[2];
     wrong_base.base_id = expected_base_id + 1u;
-    ASSERT_TRUE(test_session_socket_write_fragment(&fixture, &wrong_base));
-    ASSERT_TRUE(test_session_socket_wait_stats(&fixture, 0u, 1u));
-    ASSERT_EQ(break_session_manager_state(fixture.manager, fixture.connection),
+    ASSERT_TRUE(test_session_socket_write_fragment(&test->fixture, &wrong_base));
+    ASSERT_TRUE(test_session_socket_wait_stats(&test->fixture, 0u, 1u));
+    ASSERT_EQ(break_session_manager_state(test->fixture.manager, test->fixture.connection),
               BREAK_SESSION_AUTHENTICATED);
-    break_session_manager_apply_stats(fixture.manager, &session_stats);
+    break_session_manager_apply_stats(test->fixture.manager, &session_stats);
     ASSERT_EQ(session_stats.handler_failed, 1u);
 
-    ASSERT_EQ(break_replication_wire_encode(&first[2], duplicate, sizeof(duplicate),
+    ASSERT_EQ(break_replication_wire_encode(&test->first[2], duplicate, sizeof(duplicate),
                                              &duplicate_size),
               BREAK_REPLICATION_FRAGMENT_OK);
-    ASSERT_TRUE(test_session_socket_write_brfg(&fixture, duplicate, duplicate_size));
-    ASSERT_TRUE(test_session_socket_write_brfg(&fixture, duplicate, duplicate_size));
-    ASSERT_EQ(break_replication_wire_encode(&second[1], duplicate, sizeof(duplicate),
+    ASSERT_TRUE(test_session_socket_write_brfg(&test->fixture, duplicate, duplicate_size));
+    ASSERT_TRUE(test_session_socket_write_brfg(&test->fixture, duplicate, duplicate_size));
+    ASSERT_EQ(break_replication_wire_encode(&test->second[1], duplicate, sizeof(duplicate),
                                              &duplicate_size),
               BREAK_REPLICATION_FRAGMENT_OK);
-    ASSERT_TRUE(test_session_socket_write_brfg(&fixture, duplicate, duplicate_size));
-    ASSERT_TRUE(test_session_socket_write_brfg(&fixture, duplicate, duplicate_size));
-    ASSERT_TRUE(test_session_socket_write_fragment(&fixture, &first[0]));
-    ASSERT_TRUE(test_session_socket_write_fragment(&fixture, &second[0]));
-    ASSERT_TRUE(test_session_socket_write_fragment(&fixture, &first[1]));
-    ASSERT_TRUE(test_session_socket_wait_stats(&fixture, 2u, 1u));
+    ASSERT_TRUE(test_session_socket_write_brfg(&test->fixture, duplicate, duplicate_size));
+    ASSERT_TRUE(test_session_socket_write_brfg(&test->fixture, duplicate, duplicate_size));
+    ASSERT_TRUE(test_session_socket_write_fragment(&test->fixture, &test->first[0]));
+    ASSERT_TRUE(test_session_socket_write_fragment(&test->fixture, &test->second[0]));
+    ASSERT_TRUE(test_session_socket_write_fragment(&test->fixture, &test->first[1]));
+    ASSERT_TRUE(test_session_socket_wait_stats(&test->fixture, 2u, 1u));
 
-    break_replication_session_bridge_stats(fixture.bridge, &stats);
+    break_replication_session_bridge_stats(test->fixture.bridge, &stats);
     ASSERT_EQ(stats.connections, 1u);
     ASSERT_EQ(stats.pending_bytes, 0u);
     ASSERT_EQ(stats.completion_count, 2u);
@@ -1045,101 +1065,120 @@ TEST(bridge_socket_loopback_reassembles_interleaved_duplicates_in_fifo)
     ASSERT_EQ(stats.duplicate_fragments, 2u);
     ASSERT_EQ(stats.completed_packets, 2u);
     ASSERT_EQ(stats.dropped_completions, 0u);
-    ASSERT_EQ(consumer_count, 0u);
+    ASSERT_EQ(break_test_replication_consumer_count, 0u);
 
-    ASSERT_EQ(break_replication_session_poll_completed(fixture.bridge, completions, 2u), 2u);
-    ASSERT_EQ(completions[0].connection, fixture.connection);
-    ASSERT_EQ(completions[0].delta_id, 200u);
-    ASSERT_EQ(completions[0].payload_size, sizeof(second_payload) - 1u);
-    ASSERT_TRUE(memcmp(completions[0].payload, second_payload,
+    ASSERT_EQ(break_replication_session_poll_completed(
+                  test->fixture.bridge, test->completions, 2u), 2u);
+    ASSERT_EQ(test->completions[0].connection, test->fixture.connection);
+    ASSERT_EQ(test->completions[0].delta_id, 200u);
+    ASSERT_EQ(test->completions[0].payload_size, sizeof(second_payload) - 1u);
+    ASSERT_TRUE(memcmp(test->completions[0].payload, second_payload,
                        sizeof(second_payload) - 1u) == 0);
-    ASSERT_EQ(completions[1].connection, fixture.connection);
-    ASSERT_EQ(completions[1].delta_id, 100u);
-    ASSERT_EQ(completions[1].payload_size, sizeof(first_payload) - 1u);
-    ASSERT_TRUE(memcmp(completions[1].payload, first_payload,
+    ASSERT_EQ(test->completions[1].connection, test->fixture.connection);
+    ASSERT_EQ(test->completions[1].delta_id, 100u);
+    ASSERT_EQ(test->completions[1].payload_size, sizeof(first_payload) - 1u);
+    ASSERT_TRUE(memcmp(test->completions[1].payload, first_payload,
                        sizeof(first_payload) - 1u) == 0);
-    for (i = 0u; i < 2u; ++i) {
-        consumer_count++;
-        break_replication_session_completion_release(&completions[i]);
-    }
-    ASSERT_EQ(consumer_count, 2u);
-    break_replication_session_bridge_stats(fixture.bridge, &stats);
+    test_session_socket_consume_polled_completion(&test->completions[0]);
+    test_session_socket_consume_polled_completion(&test->completions[1]);
+    ASSERT_EQ(break_test_replication_consumer_count, 2u);
+    break_replication_session_bridge_stats(test->fixture.bridge, &stats);
     ASSERT_EQ(stats.completion_count, 0u);
     ASSERT_EQ(stats.completion_bytes, 0u);
-
-    break_replication_fragments_free(first, first_count);
-    break_replication_fragments_free(second, second_count);
-    test_session_socket_destroy(&fixture);
 }
 
-TEST(bridge_socket_reconnect_same_key_resets_completed_high_water)
+TEST(bridge_socket_loopback_reassembles_interleaved_duplicates_in_fifo)
+{
+    TestSessionSocketLoopbackCase test = {0};
+    break_test_replication_consumer_count = 0u;
+    test_session_socket_loopback_run(&test);
+    test_session_socket_loopback_cleanup(&test);
+}
+
+typedef struct TestSessionSocketReconnectCase {
+    TestSessionSocketFixture fixture;
+    BreakReplicationFragment *old;
+    BreakReplicationFragment *fresh;
+    size_t old_count;
+    size_t fresh_count;
+    BreakReplicationSessionCompletion completion;
+    BreakConnectionKey original_connection;
+} TestSessionSocketReconnectCase;
+
+static void test_session_socket_reconnect_cleanup(TestSessionSocketReconnectCase *test)
+{
+    break_replication_session_completion_release(&test->completion);
+    break_replication_fragments_free(test->old, test->old_count);
+    break_replication_fragments_free(test->fresh, test->fresh_count);
+    test_session_socket_destroy(&test->fixture);
+}
+
+static void test_session_socket_reconnect_run(TestSessionSocketReconnectCase *test)
 {
     static const uint8_t old_payload[] = "old";
     static const uint8_t fresh_payload[] = "fresh";
     static const uint64_t expected_base_id = 88u;
-    TestSessionSocketFixture fixture;
-    BreakReplicationFragment *old = NULL;
-    BreakReplicationFragment *fresh = NULL;
-    BreakReplicationSessionCompletion completion = {0};
     BreakReplicationSessionBridgeStats stats;
-    BreakConnectionKey original_connection;
-    size_t old_count = 0u;
-    size_t fresh_count = 0u;
-    size_t consumer_count = 0u;
 
-    ASSERT_TRUE(test_session_socket_start(&fixture));
-    ASSERT_TRUE(test_session_socket_authenticate(&fixture, expected_base_id));
-    original_connection = fixture.connection;
+    ASSERT_TRUE(test_session_socket_start(&test->fixture));
+    ASSERT_TRUE(test_session_socket_authenticate(&test->fixture, expected_base_id));
+    test->original_connection = test->fixture.connection;
     ASSERT_EQ(break_replication_fragment_payload(
                   40u, expected_base_id, old_payload, sizeof(old_payload) - 1u,
-                  3u, &old, &old_count), BREAK_REPLICATION_FRAGMENT_OK);
+                  3u, &test->old, &test->old_count), BREAK_REPLICATION_FRAGMENT_OK);
     ASSERT_EQ(break_replication_fragment_payload(
                   1u, expected_base_id, fresh_payload, sizeof(fresh_payload) - 1u,
-                  3u, &fresh, &fresh_count), BREAK_REPLICATION_FRAGMENT_OK);
-    ASSERT_EQ(old_count, 1u);
-    ASSERT_EQ(fresh_count, 2u);
-    ASSERT_TRUE(test_session_socket_write_fragment(&fixture, &old[0]));
-    ASSERT_TRUE(test_session_socket_wait_stats(&fixture, 1u, 0u));
-    ASSERT_EQ(consumer_count, 0u);
-    ASSERT_EQ(break_replication_session_poll_completed(fixture.bridge, &completion, 1u), 1u);
-    ASSERT_EQ(completion.connection, original_connection);
-    ASSERT_EQ(completion.delta_id, 40u);
-    ASSERT_EQ(completion.payload_size, sizeof(old_payload) - 1u);
-    ASSERT_TRUE(memcmp(completion.payload, old_payload, sizeof(old_payload) - 1u) == 0);
-    consumer_count++;
-    break_replication_session_completion_release(&completion);
+                  3u, &test->fresh, &test->fresh_count), BREAK_REPLICATION_FRAGMENT_OK);
+    ASSERT_EQ(test->old_count, 1u);
+    ASSERT_EQ(test->fresh_count, 2u);
+    ASSERT_TRUE(test_session_socket_write_fragment(&test->fixture, &test->old[0]));
+    ASSERT_TRUE(test_session_socket_wait_stats(&test->fixture, 1u, 0u));
+    ASSERT_EQ(break_test_replication_consumer_count, 0u);
+    ASSERT_EQ(break_replication_session_poll_completed(
+                  test->fixture.bridge, &test->completion, 1u), 1u);
+    ASSERT_EQ(test->completion.connection, test->original_connection);
+    ASSERT_EQ(test->completion.delta_id, 40u);
+    ASSERT_EQ(test->completion.payload_size, sizeof(old_payload) - 1u);
+    ASSERT_TRUE(memcmp(test->completion.payload, old_payload,
+                       sizeof(old_payload) - 1u) == 0);
+    test_session_socket_consume_polled_completion(&test->completion);
 
-    ASSERT_TRUE(test_session_socket_disconnect(&fixture));
-    ASSERT_TRUE(break_replication_session_connection_close(fixture.bridge,
-                                                            original_connection));
-    break_replication_session_bridge_stats(fixture.bridge, &stats);
+    ASSERT_TRUE(test_session_socket_disconnect(&test->fixture));
+    ASSERT_TRUE(break_replication_session_connection_close(
+        test->fixture.bridge, test->original_connection));
+    break_replication_session_bridge_stats(test->fixture.bridge, &stats);
     ASSERT_EQ(stats.connections, 0u);
     ASSERT_EQ(stats.pending_bytes, 0u);
     ASSERT_EQ(stats.completion_count, 0u);
 
-    ASSERT_TRUE(test_session_socket_authenticate(&fixture, expected_base_id));
-    ASSERT_EQ(fixture.connection, original_connection);
-    consumer_count = 0u;
-    ASSERT_TRUE(test_session_socket_write_fragment(&fixture, &fresh[1]));
-    ASSERT_TRUE(test_session_socket_write_fragment(&fixture, &fresh[0]));
-    ASSERT_TRUE(test_session_socket_wait_stats(&fixture, 2u, 0u));
-    break_replication_session_bridge_stats(fixture.bridge, &stats);
+    ASSERT_TRUE(test_session_socket_authenticate(&test->fixture, expected_base_id));
+    ASSERT_EQ(test->fixture.connection, test->original_connection);
+    break_test_replication_consumer_count = 0u;
+    ASSERT_TRUE(test_session_socket_write_fragment(&test->fixture, &test->fresh[1]));
+    ASSERT_TRUE(test_session_socket_write_fragment(&test->fixture, &test->fresh[0]));
+    ASSERT_TRUE(test_session_socket_wait_stats(&test->fixture, 2u, 0u));
+    break_replication_session_bridge_stats(test->fixture.bridge, &stats);
     ASSERT_EQ(stats.connections, 1u);
     ASSERT_EQ(stats.completion_count, 1u);
     ASSERT_EQ(stats.rejected_fragments, 0u);
-    ASSERT_EQ(consumer_count, 0u);
-    ASSERT_EQ(break_replication_session_poll_completed(fixture.bridge, &completion, 1u), 1u);
-    ASSERT_EQ(completion.connection, original_connection);
-    ASSERT_EQ(completion.delta_id, 1u);
-    ASSERT_EQ(completion.payload_size, sizeof(fresh_payload) - 1u);
-    ASSERT_TRUE(memcmp(completion.payload, fresh_payload, sizeof(fresh_payload) - 1u) == 0);
-    consumer_count++;
-    break_replication_session_completion_release(&completion);
-    ASSERT_EQ(consumer_count, 1u);
+    ASSERT_EQ(break_test_replication_consumer_count, 0u);
+    ASSERT_EQ(break_replication_session_poll_completed(
+                  test->fixture.bridge, &test->completion, 1u), 1u);
+    ASSERT_EQ(test->completion.connection, test->original_connection);
+    ASSERT_EQ(test->completion.delta_id, 1u);
+    ASSERT_EQ(test->completion.payload_size, sizeof(fresh_payload) - 1u);
+    ASSERT_TRUE(memcmp(test->completion.payload, fresh_payload,
+                       sizeof(fresh_payload) - 1u) == 0);
+    test_session_socket_consume_polled_completion(&test->completion);
+    ASSERT_EQ(break_test_replication_consumer_count, 1u);
+}
 
-    break_replication_fragments_free(old, old_count);
-    break_replication_fragments_free(fresh, fresh_count);
-    test_session_socket_destroy(&fixture);
+TEST(bridge_socket_reconnect_same_key_resets_completed_high_water)
+{
+    TestSessionSocketReconnectCase test = {0};
+    break_test_replication_consumer_count = 0u;
+    test_session_socket_reconnect_run(&test);
+    test_session_socket_reconnect_cleanup(&test);
 }
 
 static BreakReplicationFragment test_outbound_fragment(void)

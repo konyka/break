@@ -36,6 +36,7 @@
 #include <network/break_replay_window.h>
 #include <network/break_replication.h>
 #include <network/break_replication_fragment.h>
+#include <network/break_replication_session.h>
 #include <network/break_session.h>
 #include <network/break_online_aspect.h>
 #include <network/break_online_inbox.h>

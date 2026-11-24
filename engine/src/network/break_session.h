@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "core/types.h"
 #include "network/break_net_events.h"
 #include "network/break_net_message_registry.h"
 
@@ -18,8 +19,6 @@ typedef uint64_t BreakConnectionKey;
 typedef uint64_t BreakSessionId;
 
 #ifdef BREAK_ENABLE_CRYPTO
-#include "core/types.h"
-
 typedef BreakSessionManager BreakSession;
 /* CHALLENGE payload (message_id=3, v1): server_nonce[16]. AUTH v2 payload
  * (message_id=1, version 2, 56 bytes): key_id[8] || client_nonce[16] || tag[32],
