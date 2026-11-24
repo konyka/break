@@ -925,3 +925,18 @@ World session 的旧 API 保留 full tick 兼容：首 full 未 ACK 或 NEED_FUL
 远端 CI `45487057078`、windows-d3d12 `45487057107`、QUIC `45487057440`、Proton `45490144324` 均 success；CI 为 24 success、3 条件 skip、0 cancelled、0 failed。Proton 上游 run-id=`45487057107`，两个 contract 均为 77，仅表示兼容通道。
 
 本节只关闭库级只读 publication 和共享 snapshot fan-out，不关闭共享 live World、Runtime Core 映射、权威 simulation 合并、自动换级或完整资产链。公平 admission 是默认关闭的 opt-in，不宣称默认全局公平调度。本收据提交自身的工作流结果不在此预写。
+
+
+## 第 17 节补充（2026-11-25）：仅关闭 Runtime World 标量控制生命周期缺口
+
+新增的独立 bridge 只覆盖标量控制：kind `0x5753`/version 1 的 **56 字节**命令由 u32 kind/reserved_zero 和 connection key、connection epoch、level、delta id、target snapshot id、target tick 六个 u64 构成。`connection_epoch` 是 open 后由 bridge 分配的本地非零单调代次，不复用，也不替代 level、queue generation、publication epoch 或 correlation；完整 u64 cid 经 correlated BRWC 保留，和网络 sequence 无关。
+
+submit 不调用 World，owner drain 是唯一应用入口。queue OVERLOAD 时 World 不变，排空后同内容/cid 可重试；ACK/NEED_FULL 的 transport OVERLOAD 保留同一 control/level/epoch/cid，下一 drain 优先重试，逐次记录 OVERLOAD 且只应用一次。close 停止 admission 但允许 FIFO/pending 恰好一次排空；pending 非零 destroy=false 且资源保留，清空后 destroy=true，再由调用方销毁 session/publication。默认 `fair_outbound_admission=false` 仍是全局 256，显式 true 才使用逐 key 公平份额。
+
+以下能力仍明确缺失，不能由本控制面切片推断为完成：
+
+- **Runtime 数据面**：snapshot/lease/BRWD/BRFG 未映射到 Runtime owned message，既有 completion、publication 和 AOI 不自动接入。
+- **生命周期集成**：没有 Runtime Coordinator 自动注册或 callback，调用方仍须显式执行 stop admission、drain、destroy 与最后销毁。
+- **权威与共享状态**：没有 core_app authoritative World 接线、共享 live World、权威 simulation 合并、预测回滚或跨 World 持久身份。
+
+本地测试覆盖上述背压、shutdown、默认/opt-in admission 和反向变异，但没有因此关闭完整 sanitizer、原生 GPU 或远端矩阵；core_app/editor Lua longjmp 环境限制仍须独立记录，不预写远端结果。

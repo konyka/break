@@ -740,12 +740,97 @@ TEST(need_full_ack_and_close_leave_other_connection_independent)
     fixture_dispose(&fixture);
 }
 
+TEST(queue_overload_defers_world_and_retries_identical_command)
+{
+    Fixture fixture;
+    BreakRuntimeWorldCommand need_full;
+    BreakRuntimeWorldCommand ack;
+    BreakRuntimeWorldSessionStats stats;
+    BreakWorldSessionStats world_before;
+    BreakWorldSessionStats world_after;
+    BreakWorldSessionSenderState sender_before;
+    BreakWorldSessionSenderState sender_after;
+    BreakNetOwnedMessage outbound;
+    u64 epoch = 0u, current_epoch = 0u, key = 0u;
+    usize drained = 99u;
+    ASSERT_TRUE(fixture_init_without_adapter(&fixture, 7u));
+    ASSERT_TRUE(fixture_attach(&fixture, 1u, 2u));
+    ASSERT_TRUE(open_connection(&fixture, KEY_A, 7u, &epoch));
+    need_full = command(BREAK_RUNTIME_WORLD_COMMAND_NEED_FULL, KEY_A, epoch, 7u);
+    need_full.target_snapshot_id = 11u;
+    need_full.target_tick = 101u;
+    ack = command(BREAK_RUNTIME_WORLD_COMMAND_ACK, KEY_A, epoch, 7u);
+    ack.delta_id = UINT64_C(0x10000000A);
+    ack.target_snapshot_id = UINT64_C(0x20000000B);
+    ack.target_tick = 77u;
+    ASSERT_EQ(break_runtime_world_session_submit(fixture.adapter, &need_full, 1u),
+              BREAK_RUNTIME_OK);
+    break_world_session_stats(fixture.session, &world_before);
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, KEY_A, &sender_before));
+    ASSERT_EQ(break_runtime_world_session_submit(fixture.adapter, &ack, HIGH_CID),
+              BREAK_RUNTIME_OVERLOAD);
+    break_world_session_stats(fixture.session, &world_after);
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, KEY_A, &sender_after));
+    ASSERT_EQ(memcmp(&world_before, &world_after, sizeof(world_before)), 0);
+    ASSERT_EQ(memcmp(&sender_before, &sender_after, sizeof(sender_before)), 0);
+    ASSERT_EQ(break_net_reactor_outbound_count(fixture.reactor), 0u);
+    break_runtime_world_session_stats(fixture.adapter, &stats);
+    ASSERT_EQ(stats.submitted, 2u);
+    ASSERT_EQ(stats.drained, 1u);
+    ASSERT_EQ(stats.applied, 1u);
+    ASSERT_EQ(stats.rejected, 0u);
+    ASSERT_EQ(stats.next_sequence, 3u);
+    ASSERT_EQ(stats.queued, 1u);
+    ASSERT_EQ(stats.transport_overloads, 0u);
+
+    ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 1u, &drained),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(drained, 1u);
+    ASSERT_TRUE(next_control(&fixture, &key, &outbound));
+    ASSERT_EQ(key, KEY_A);
+    ASSERT_EQ(outbound.correlation_id, 1u);
+    ASSERT_TRUE(control_payload_matches(&outbound, BREAK_WORLD_SESSION_CONTROL_NEED_FULL,
+                                        0u, 11u, 101u, 7u));
+    break_net_message_release(&outbound);
+    ASSERT_EQ(break_runtime_world_session_submit(fixture.adapter, &ack, HIGH_CID),
+              BREAK_RUNTIME_OK);
+    break_runtime_world_session_stats(fixture.adapter, &stats);
+    ASSERT_EQ(stats.submitted, 3u);
+    ASSERT_EQ(stats.next_sequence, 4u);
+    ASSERT_EQ(stats.queued, 1u);
+    ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 1u, &drained),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(drained, 1u);
+    ASSERT_TRUE(next_control(&fixture, &key, &outbound));
+    ASSERT_EQ(key, KEY_A);
+    ASSERT_EQ(outbound.correlation_id, HIGH_CID);
+    ASSERT_TRUE(control_payload_matches(&outbound, BREAK_WORLD_SESSION_CONTROL_ACK,
+                                        UINT64_C(0x10000000A), UINT64_C(0x20000000B),
+                                        77u, 7u));
+    break_net_message_release(&outbound);
+    ASSERT_EQ(break_net_reactor_outbound_count(fixture.reactor), 0u);
+    ASSERT_TRUE(break_runtime_world_session_connection_epoch(fixture.adapter, KEY_A,
+                                                              &current_epoch));
+    ASSERT_EQ(current_epoch, epoch);
+    break_runtime_world_session_stats(fixture.adapter, &stats);
+    ASSERT_EQ(stats.submitted, 3u);
+    ASSERT_EQ(stats.drained, 3u);
+    ASSERT_EQ(stats.applied, 3u);
+    ASSERT_EQ(stats.rejected, 0u);
+    ASSERT_EQ(stats.next_sequence, 4u);
+    ASSERT_EQ(stats.queued, 0u);
+    ASSERT_EQ(stats.transport_overloads, 0u);
+    ASSERT_EQ(break_runtime_world_session_pending(fixture.adapter), 0u);
+    fixture_dispose(&fixture);
+}
+
 TEST(fifo_bounded_drain_close_and_destroy_preserve_world_lifetime)
 {
     Fixture fixture;
     BreakRuntimeWorldCommand item;
     BreakNetOwnedMessage outbound;
     BreakRuntimeMessageView view;
+    BreakRuntimeWorldSessionStats stats;
     u64 epoch_a = 0u, epoch_b = 0u, key = 0u;
     usize drained = 99u;
     u32 delivered = 99u;
@@ -770,17 +855,35 @@ TEST(fifo_bounded_drain_close_and_destroy_preserve_world_lifetime)
     ASSERT_EQ(break_runtime_world_session_pending(fixture.adapter), 3u);
     ASSERT_FALSE(break_runtime_world_session_destroy(fixture.adapter));
     ASSERT_EQ(break_runtime_world_session_pending(fixture.adapter), 3u);
+    ASSERT_TRUE(break_runtime_world_session_connection_epoch(fixture.adapter, KEY_A, &key));
+    ASSERT_EQ(key, epoch_a);
+    ASSERT_TRUE(break_runtime_world_session_connection_epoch(fixture.adapter, KEY_B, &key));
+    ASSERT_EQ(key, epoch_b);
+    ASSERT_TRUE(break_world_session_baseline(fixture.session, KEY_A, NULL, NULL));
+    ASSERT_TRUE(break_world_session_baseline(fixture.session, KEY_B, NULL, NULL));
     ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 2u, &drained), BREAK_RUNTIME_OK);
     ASSERT_EQ(drained, 2u);
     ASSERT_EQ(break_runtime_world_session_pending(fixture.adapter), 1u);
     ASSERT_FALSE(break_runtime_world_session_destroy(fixture.adapter));
+    ASSERT_TRUE(break_runtime_world_session_connection_epoch(fixture.adapter, KEY_A, &key));
+    ASSERT_EQ(key, epoch_a);
+    ASSERT_TRUE(break_world_session_baseline(fixture.session, KEY_A, NULL, NULL));
+    ASSERT_TRUE(break_world_session_baseline(fixture.session, KEY_B, NULL, NULL));
+    break_runtime_world_session_stats(fixture.adapter, &stats);
+    ASSERT_EQ(stats.submitted, 5u);
+    ASSERT_EQ(stats.drained, 4u);
+    ASSERT_EQ(stats.applied, 4u);
+    ASSERT_EQ(stats.rejected, 0u);
+    ASSERT_EQ(stats.queued, 1u);
     ASSERT_TRUE(next_control(&fixture, &key, &outbound));
     ASSERT_EQ(key, KEY_A);
+    ASSERT_EQ(outbound.correlation_id, 1u);
     ASSERT_TRUE(control_payload_matches(&outbound, BREAK_WORLD_SESSION_CONTROL_NEED_FULL,
                                         0u, 11u, 101u, 7u));
     break_net_message_release(&outbound);
     ASSERT_TRUE(next_control(&fixture, &key, &outbound));
     ASSERT_EQ(key, KEY_B);
+    ASSERT_EQ(outbound.correlation_id, 2u);
     ASSERT_TRUE(control_payload_matches(&outbound, BREAK_WORLD_SESSION_CONTROL_NEED_FULL,
                                         0u, 22u, 201u, 7u));
     break_net_message_release(&outbound);
@@ -791,10 +894,24 @@ TEST(fifo_bounded_drain_close_and_destroy_preserve_world_lifetime)
     ASSERT_EQ(drained, 1u);
     ASSERT_TRUE(next_control(&fixture, &key, &outbound));
     ASSERT_EQ(key, KEY_A);
+    ASSERT_EQ(outbound.correlation_id, 3u);
     ASSERT_TRUE(control_payload_matches(&outbound, BREAK_WORLD_SESSION_CONTROL_NEED_FULL,
                                         0u, 33u, 102u, 7u));
     break_net_message_release(&outbound);
+    ASSERT_EQ(break_net_reactor_outbound_count(fixture.reactor), 0u);
     ASSERT_EQ(break_runtime_world_session_pending(fixture.adapter), 0u);
+    break_runtime_world_session_stats(fixture.adapter, &stats);
+    ASSERT_EQ(stats.submitted, 5u);
+    ASSERT_EQ(stats.drained, 5u);
+    ASSERT_EQ(stats.applied, 5u);
+    ASSERT_EQ(stats.rejected, 0u);
+    ASSERT_EQ(stats.transport_overloads, 0u);
+    ASSERT_EQ(stats.queued, 0u);
+    ASSERT_FALSE(stats.control_pending);
+    ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 1u, &drained),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(drained, 0u);
+    ASSERT_EQ(break_net_reactor_outbound_count(fixture.reactor), 0u);
     ASSERT_TRUE(break_runtime_world_session_destroy(fixture.adapter));
     fixture.adapter = NULL;
     ASSERT_TRUE(break_world_session_baseline(fixture.session, KEY_A, NULL, NULL));
@@ -878,6 +995,98 @@ TEST(transport_overload_retries_same_control_before_fifo)
     fixture_dispose(&fixture);
 }
 
+TEST(transport_overload_retries_need_full_before_later_ack)
+{
+    Fixture fixture;
+    BreakRuntimeWorldCommand need_full;
+    BreakRuntimeWorldCommand ack;
+    BreakRuntimeWorldSessionStats stats;
+    BreakNetOwnedMessage outbound;
+    u64 epoch_a = 0u, epoch_b = 0u, current_epoch = 0u, key = 0u;
+    usize drained = 99u;
+    ASSERT_TRUE(fixture_init(&fixture, 7u, 2u));
+    ASSERT_TRUE(open_connection(&fixture, KEY_A, 7u, &epoch_a));
+    ASSERT_TRUE(open_connection(&fixture, KEY_B, 7u, &epoch_b));
+    need_full = command(BREAK_RUNTIME_WORLD_COMMAND_NEED_FULL, KEY_A, epoch_a, 7u);
+    need_full.target_snapshot_id = UINT64_C(0x20000000C);
+    need_full.target_tick = 101u;
+    ack = command(BREAK_RUNTIME_WORLD_COMMAND_ACK, KEY_B, epoch_b, 7u);
+    ack.delta_id = UINT64_C(0x10000000D);
+    ack.target_snapshot_id = UINT64_C(0x20000000E);
+    ack.target_tick = 202u;
+    ASSERT_EQ(break_runtime_world_session_submit(fixture.adapter, &need_full, HIGH_CID),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_world_session_submit(fixture.adapter, &ack, HIGH_CID - 1u),
+              BREAK_RUNTIME_OK);
+    for (u32 i = 0u; i < BREAK_NET_OUTBOUND_QUEUE_CAPACITY; ++i) {
+        ASSERT_EQ(break_net_reactor_send(fixture.reactor, KEY_A, BREAK_NET_MESSAGE_ID_PING,
+                                         1u, "x", 1u), BREAK_NET_SEND_OK);
+    }
+    ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 2u, &drained),
+              BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(drained, 1u);
+    break_runtime_world_session_stats(fixture.adapter, &stats);
+    ASSERT_EQ(stats.submitted, 4u);
+    ASSERT_EQ(stats.drained, 3u);
+    ASSERT_EQ(stats.applied, 2u);
+    ASSERT_EQ(stats.rejected, 0u);
+    ASSERT_EQ(stats.transport_overloads, 1u);
+    ASSERT_EQ(stats.queued, 1u);
+    ASSERT_TRUE(stats.control_pending);
+    ASSERT_EQ(break_runtime_world_session_pending(fixture.adapter), 2u);
+    ASSERT_FALSE(break_runtime_world_session_destroy(fixture.adapter));
+    ASSERT_TRUE(break_runtime_world_session_connection_epoch(fixture.adapter, KEY_A,
+                                                              &current_epoch));
+    ASSERT_EQ(current_epoch, epoch_a);
+    ASSERT_TRUE(break_runtime_world_session_connection_epoch(fixture.adapter, KEY_B,
+                                                              &current_epoch));
+    ASSERT_EQ(current_epoch, epoch_b);
+    ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 2u, &drained),
+              BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(drained, 0u);
+    break_runtime_world_session_stats(fixture.adapter, &stats);
+    ASSERT_EQ(stats.drained, 3u);
+    ASSERT_EQ(stats.applied, 2u);
+    ASSERT_EQ(stats.transport_overloads, 2u);
+    ASSERT_EQ(break_runtime_world_session_pending(fixture.adapter), 2u);
+    clear_outbound(&fixture);
+    ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 2u, &drained),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(drained, 1u);
+    break_runtime_world_session_stats(fixture.adapter, &stats);
+    ASSERT_EQ(stats.submitted, 4u);
+    ASSERT_EQ(stats.drained, 4u);
+    ASSERT_EQ(stats.applied, 4u);
+    ASSERT_EQ(stats.rejected, 0u);
+    ASSERT_EQ(stats.transport_overloads, 2u);
+    ASSERT_EQ(stats.queued, 0u);
+    ASSERT_FALSE(stats.control_pending);
+    ASSERT_EQ(break_runtime_world_session_pending(fixture.adapter), 0u);
+    ASSERT_TRUE(next_control(&fixture, &key, &outbound));
+    ASSERT_EQ(key, KEY_A);
+    ASSERT_EQ(outbound.correlation_id, HIGH_CID);
+    ASSERT_TRUE(control_payload_matches(&outbound, BREAK_WORLD_SESSION_CONTROL_NEED_FULL,
+                                        0u, UINT64_C(0x20000000C), 101u, 7u));
+    break_net_message_release(&outbound);
+    ASSERT_TRUE(next_control(&fixture, &key, &outbound));
+    ASSERT_EQ(key, KEY_B);
+    ASSERT_EQ(outbound.correlation_id, HIGH_CID - 1u);
+    ASSERT_TRUE(control_payload_matches(&outbound, BREAK_WORLD_SESSION_CONTROL_ACK,
+                                        UINT64_C(0x10000000D), UINT64_C(0x20000000E),
+                                        202u, 7u));
+    break_net_message_release(&outbound);
+    ASSERT_EQ(break_net_reactor_outbound_count(fixture.reactor), 0u);
+    ASSERT_TRUE(break_runtime_world_session_connection_epoch(fixture.adapter, KEY_A,
+                                                              &current_epoch));
+    ASSERT_EQ(current_epoch, epoch_a);
+    ASSERT_TRUE(break_runtime_world_session_connection_epoch(fixture.adapter, KEY_B,
+                                                              &current_epoch));
+    ASSERT_EQ(current_epoch, epoch_b);
+    ASSERT_TRUE(break_runtime_world_session_destroy(fixture.adapter));
+    fixture.adapter = NULL;
+    fixture_dispose(&fixture);
+}
+
 TEST(terminal_pending_result_is_counted_and_released)
 {
     Fixture fixture;
@@ -920,7 +1129,9 @@ RUN_TEST(level_zero_and_rebaseline_require_strict_increase);
 RUN_TEST(queued_old_level_and_level7_to8_ack_cannot_touch_new_history);
 RUN_TEST(correlation_and_runtime_sequence_survive_bus_queue_and_brwc);
 RUN_TEST(need_full_ack_and_close_leave_other_connection_independent);
+RUN_TEST(queue_overload_defers_world_and_retries_identical_command);
 RUN_TEST(fifo_bounded_drain_close_and_destroy_preserve_world_lifetime);
 RUN_TEST(transport_overload_retries_same_control_before_fifo);
+RUN_TEST(transport_overload_retries_need_full_before_later_ack);
 RUN_TEST(terminal_pending_result_is_counted_and_released);
 TEST_MAIN_END()

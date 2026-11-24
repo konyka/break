@@ -493,3 +493,12 @@ late join 会动态缩小份额，已排队旧消息不驱逐，超过新份额�
 直接 adapter 测试使用真实 socket、硬 RST、slot 复用重连和既有 outbound ownership seam，覆盖默认 false、late join 旧消息保留、closing 未退休占份额及退休后恢复、unknown key 和 global full，不通过伪造状态 getter 代替生命周期。World 双连接 fixture 显式 opt-in，默认 core_app/raw-key 配置不变。
 
 legacy World API 的 full tick 规则也保持兼容：未 ACK full 与 NEED_FULL fresh full 可复用 tick，只有 delta 要求递增；borrowed snapshot API 的 full/delta 准入仍严格。publication 的 single-owner/acquire/destroy/lease 线程与生命期合同已写入公共头。本节不构成默认全局公平调度或最终全量验收声明。
+
+
+## 补充（2026-11-25）：Runtime World 控制面的背压与 shutdown
+
+Runtime 新增独立可选控制桥，kind `0x5753`/version 1 的 payload 固定 **56 字节**：两个 u32 的 kind/reserved_zero 加 connection key、connection epoch、level、delta id、target snapshot id、target tick 六个 u64。bridge 本地 `connection_epoch` 防止同 key close/reopen 后旧命令串代；它与 session level、queue generation、publication epoch 分离。ACK/NEED_FULL 经 Task 1 correlated BRWC 保留完整 u64 cid，cid 0 仍为 uncorrelated，Runtime sequence 不变成网络 sequence。
+
+submit 不触碰 World，只有 owner drain 执行 open/close/rebaseline/control。queue OVERLOAD 不改变 World，允许排空后以同内容和同 cid 重试；reactor OUTBOUND OVERLOAD 将原 control、level、epoch、cid 留在 pending，后续 drain 必须先成功重试该控制再处理下一命令。连续饱和每次都计 transport OVERLOAD，成功应用只计一次。close 后 submit=CLOSED，但已排队和 pending 控制仍按 FIFO 恰好一次排空；pending 非零拒绝 destroy 并保留资源，归零后才允许 adapter 销毁，再由调用方销毁 session/publication。
+
+真实 socket 回归同时固定 admission 兼容：零初始化 `fair_outbound_admission=false` 保持旧全局 256，A 占满后 B 同样 OVERLOAD；只有两个既有双连接公平用例显式 true，继续验证 A 达自身份额时 B 可推进。本项没有 snapshot/BRWD 数据面 Runtime 映射、Coordinator 自动注册、共享 live World 或权威合并，也不预写远端验收。

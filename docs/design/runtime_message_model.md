@@ -473,3 +473,14 @@ Network 是第四个接入总线的线程域，分两层：
 总评审补充（2026-11-22）：Build Guide 的示例已统一检查应用、shutdown 和 detach 结果，`BREAK_RUNTIME_TIMEOUT` 以独立非零码明确交接 facade 的 `STOPPING` 与继续 shutdown 责任；scoped 复审无遗留发现。增强根契约在 Unix Makefiles 和 Ninja Multi-Config 各 1/1 通过，显式 ON 子树真实构建并运行本测试 1/1。
 
 远端验收补充（2026-11-22）：首批提交 `77878229` 的 CI run `45016241068` 为 24 成功、3 条件跳过、0 失败；arm64 QEMU 276/276，Windows D3D12 与 QUIC 成功，Proton 兼容工作流成功。macOS 实机 Metal 422/422、MoltenVK 425/425，二者 graphics/gpu 均 6/6，根契约 1/1。完整 run 标识、Proton 的 artifact 归属及跳过边界见 `docs/Implementation_Status.md` 与本文件的后续最终提交记录。
+
+
+### 补充（2026-11-25）：World Session 控制消息的有界生命周期
+
+独立 `runtime_world_session` 适配器登记 kind `0x5753`、version 1 和固定 **56 字节** `BreakRuntimeWorldCommand`：`u32 kind`、`u32 reserved_zero`，以及 `connection_key`、`connection_epoch`、`level_generation`、`delta_id`、`target_snapshot_id`、`target_tick` 六个 u64。该布局是 Runtime owned-message payload，不是新的 BRWC wire struct。`connection_epoch` 由 bridge 在 open 成功后分配非零、严格递增且不复用的本地代次；level、Runtime queue generation、publication epoch 不互相替代，完整 u64 correlation 也不编码进 level 或网络 u32 sequence。
+
+producer 的 submit 只做无状态校验和 bounded copy；World Session 调用只能发生在 owner-thread drain。control queue 满时返回 OVERLOAD，不 inline、不改变 World，排空后可按相同命令和 cid 重试。ACK/NEED_FULL 遇到 OUTBOUND 饱和时保存原 control、level、connection_epoch 与 correlation，下一 drain 先重试同一项，成功后才继续 FIFO；每次 OVERLOAD 分别计数，最终 applied 只增加一次。
+
+close 只停止 admission 并关闭 queue，已有 A1/B1/A2 仍可恰好一次 FIFO drain。`pending = queued + control_pending`；pending 非零时 destroy=false 且 bus、queue、连接代次和借用 session 保持可用，清空后 destroy=true，最后才由调用方销毁 session/publication。`fair_outbound_admission=false` 仍是默认全局 256 准入，显式 true 才启用逐 key 公平份额，既有双连接 opt-in 行为不变。
+
+本切片不搬运 snapshot/lease/BRWD/BRFG 数据面，不注册 Runtime Coordinator callback，也不做 core_app authoritative World 接线或权威 simulation 合并。上述验证是本地控制面契约，不预写推送、CI 或其他远端结果。

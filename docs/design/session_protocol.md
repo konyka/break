@@ -388,3 +388,12 @@ publication 准入要求非空 snapshot、非零 tick、匹配 schema、未关�
 `BreakNetReactorConfig` 尾部新增 `fair_outbound_admission`，零初始化默认 **false**，保持旧的全局 256 OVERLOAD 合同。显式 true 时才按 `share=max(1,256/max(1,active_count))` 限制每 key queued；active 为 `valid && key!=0 && !retired`，closing 未 retired 仍计入。key 达份额即 OVERLOAD，即使全局未满；全局满同样拒绝。unknown key 不计 active 但按自己的 key queued 计数，active_count=0 时 share=256。late join 会缩小份额但不驱逐旧消息，global full 必须等 drain；每 key FIFO 与消息 ownership 不变。
 
 双连接 World loopback 显式启用 fair admission，保留 A 饱和时 B 可推进及 pending-attempt lease 覆盖。adapter 直接边界用例验证默认旧行为、late join、真实 closing/retire、unknown key 与 global full。publication 公共头同时明确 publish/close single-owner、并发 acquire、destroy 前置条件，以及 immutable snapshot lease 可晚于 publication 的生命期。本文不预写最终全量或远端结果。
+
+
+## 补充（2026-11-25）：Runtime 控制桥的身份、pending 与关闭合同
+
+`runtime_world_session` 使用固定 **56 字节**控制命令（kind/reserved_zero 两个 u32，加 connection key、connection epoch、level generation、delta id、target snapshot id、target tick 六个 u64），并未改变 32/40 字节 BRWC/v1/v2。open drain 成功后分配的 `connection_epoch` 是 bridge 本地连接身份，close/reopen 不复用；它和 BRWC level、Runtime queue generation、publication epoch 各自独立。Task 1 的 envelope correlation 扩展保留完整 u64 cid，level 不承担 correlation，cid 也不参与逐连接网络序号。
+
+所有有状态 Session 操作只在 owner drain 调用。queue 满返回 OVERLOAD 且 World 不变；OUTBOUND 饱和时 ACK 与 NEED_FULL 都保存同一 control/level/epoch/cid，下一 drain 优先重试，后续命令不得越过，OVERLOAD 逐次计数而 applied 仅成功一次。close 后不再 admit，已有 A1/B1/A2 与 pending 仍可 FIFO drain 恰好一次；pending 非零时 destroy=false 且资源保持，清空后才 unsubscribe/destroy adapter，session/publication 最后由调用方销毁。
+
+默认 `fair_outbound_admission=false` 仍采用全局 256，显式 true 才启用逐 key share；新增默认真实双 socket 用例与原 opt-in 公平用例共同固定该边界。本补充不包含 snapshot/BRWD 数据面桥接、Runtime Coordinator 自动注册或权威 simulation 合并，不声明 exactly-once，也不预写远端结果。

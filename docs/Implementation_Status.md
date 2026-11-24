@@ -13765,3 +13765,12 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 在最终 HEAD 完整构建并运行：OpenGL **478 注册、474 执行通过、4 条件 skip、0 失败**（300.29 s）；Vulkan **480 注册、476 执行通过、4 条件 skip、0 失败**（304.27 s）。条件 skip 不计执行通过，完整 sanitizer suite 未运行。
 - 远端 CI run `45487057078`、windows-d3d12 run `45487057107`、QUIC run `45487057440`、Proton run `45490144324` 均 completed/success；CI 为 **24 success、3 条件 skip、0 cancelled、0 failed**。Proton 上游 run-id=`45487057107`，device/pipeline contract 均为 77，仅表示兼容通道。
 - 本项只关闭库级只读 publication 与共享 snapshot fan-out，不关闭共享 live World、Runtime Core 映射、权威 simulation 合并、自动换级或完整资产链。剩余 S2/S3 断言和审计 rc 增强是 deferred Minor，不改变交付边界。本收据提交自身的工作流结果不在此预写。
+
+
+## Runtime World Session 控制面生命周期（2026-11-25）
+
+- **已交付控制切片**：独立 adapter 的 kind `0x5753`/version 1 使用 **56 字节**命令（两个 u32 加六个 u64），完整保留 connection key/cid。open 成功后分配非零、严格递增且不复用的 bridge `connection_epoch`；level、queue generation、publication epoch 与 correlation 分离，Runtime sequence 不写入网络 sequence。
+- **owner 与背压**：submit 只做校验和 bounded copy，World 只在 owner drain 改变。queue 满返回 OVERLOAD 且 World 不变，排空后同内容/cid 可重试；ACK 与 NEED_FULL 的 OUTBOUND OVERLOAD 保存原 control/level/epoch/cid，下一 drain 先重试再处理后续 FIFO，逐次 OVERLOAD 计数、成功 applied 只一次。
+- **shutdown 与兼容**：close 后 submit=CLOSED，A1/B1/A2 和 pending 仍恰好一次 FIFO drain；pending 非零 destroy=false 且资源保留，清空后 destroy=true，session/publication 由调用方最后销毁。默认 `fair_outbound_admission=false` 保持全局 256，真实默认双 socket 用例和显式 true 的既有公平用例分别覆盖两种合同。
+- **验证与反向控制**：新增 queue 重试、NEED_FULL pending 镜像、shutdown 精确 cid/计数/资源存活和默认 admission 回归。临时 pending 新 correlation 与 destroy 忽略 pending 的变异均由测试判红后恢复，未保留生产 diff；详细命令、计数、sanitizer 环境和最终双后端结果见本地 `task-3-report.md` 及其日志。
+- **未关闭缺口**：本项没有 Runtime snapshot/BRWD 数据面、Coordinator 自动注册、core_app authoritative World 接线或权威 simulation 合并，也不处理 Task 2 deferred target-contract Minors。既有 core_app/editor Lua longjmp 限制单列，focused sanitizer 不等于完整 sanitizer suite；不预写推送、CI、Windows、QUIC、Proton 或其他远端结果。

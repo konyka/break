@@ -312,3 +312,12 @@ normal、ASan+UBSan（显式 `detect_leaks=1`）和 TSan focused 均为 **6/6、
 真实双连接 socket/AUTH 用例同时验证交错收片、A 背压不妨碍 B、A NEED_FULL 不强迫 B full、B 的未确认 S2 作为 S3 base，以及两个 World 在各自 drain 前不变。释放调用方 S2/S3 lease 后 diff/ACK 仍有效；level 7→8 后旧 S1 lease 可读但不能发布，新代两连接均 full。普通和 ASan+UBSan/LSan focused 均 39/39，TSan library/server-socket 13/13；完整 core_app TSan 仍受既有 Lua longjmp 限制，混合客户端运行不冒充服务端覆盖。
 
 这里共享的是只读 snapshot，不是可变 World，也不是通用 epoch/hazard 回收框架。跨连接共享 live World、跨 World 持久身份、权威 simulation 合并、Runtime Core 映射、预测回滚、自动换级与完整资产链仍未实现；AOI/BRA1 语义不变，不预写远端结果。
+
+
+## 补充（2026-11-25）：Runtime 标量控制与 ECS 数据面的边界
+
+独立 Runtime bridge 现在能把 open、close、rebaseline、ACK、NEED_FULL 交给既有 World Session。其 owned command 固定 **56 字节**：u32 kind/reserved_zero 与六个 u64（connection key、connection epoch、level、delta id、target snapshot id、target tick）。bridge 分配的非零单调 `connection_epoch` 隔离同 key 重连；它不等于 level、queue generation 或 publication epoch。完整 correlation 独立穿过 bus/queue/BRWC envelope，不改 BRWD、snapshot id 或网络 sequence。
+
+生产者只复制标量，只有 owner drain 能调用 World Session。control queue 满不改变 World，排空后同内容/cid 可重试；OUTBOUND 饱和保留原控制及 level/epoch/cid，下一次先重试再继续 FIFO，每次 OVERLOAD 计数且 applied 只一次。close 停止新提交但保留 FIFO/pending drain；pending 非零 destroy=false 且资源保留，清空后 destroy=true，调用方随后才销毁 session/publication。admission 默认 false 保持全局 256，显式 true 的既有双连接公平行为不变。
+
+**这里没有实现 Runtime snapshot/lease/BRWD/BRFG 数据面映射**，immutable publication、AOI、completion 和 authoritative World 不会因此自动接入 Runtime；Coordinator 自动注册、跨连接共享 live World、权威 simulation 合并与完整资产链也仍未完成。本节只追加本地控制面证据，不预写远端结果。
