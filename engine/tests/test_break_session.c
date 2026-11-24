@@ -1040,10 +1040,21 @@ TEST(break_session_registry_has_physics_sync_messages)
     ASSERT_EQ(correction->phase, BREAK_NET_MESSAGE_PHASE_AUTHENTICATED);
     ASSERT_EQ(correction->duplicate_policy, BREAK_NET_DUPLICATE_IDEMPOTENT);
 #ifdef BREAK_ENABLE_CRYPTO
-    ASSERT_EQ(registry->count, 29u);
+    ASSERT_EQ(registry->count, 30u);
 #else
-    ASSERT_EQ(registry->count, 28u);
+    ASSERT_EQ(registry->count, 29u);
 #endif
+    {
+        const BreakNetMessageDefinition *replication = break_net_message_registry_lookup(
+            registry, BREAK_NET_MESSAGE_ID_REPLICATION_FRAGMENT);
+        ASSERT_EQ(BREAK_NET_MESSAGE_ID_REPLICATION_FRAGMENT, 0x4009u);
+        ASSERT_NOT_NULL(replication);
+        ASSERT_EQ(replication->minimum_version, 1u);
+        ASSERT_EQ(replication->maximum_version, 1u);
+        ASSERT_EQ(replication->payload_limit, (size_t)BREAK_NET_MAX_PAYLOAD_SIZE);
+        ASSERT_EQ(replication->phase, BREAK_NET_MESSAGE_PHASE_AUTHENTICATED);
+        ASSERT_EQ(replication->duplicate_policy, BREAK_NET_DUPLICATE_IDEMPOTENT);
+    }
     {
         const BreakNetMessageDefinition *voice = break_net_message_registry_lookup(
             registry, BREAK_NET_MESSAGE_ID_CORE_VOICE);

@@ -964,6 +964,7 @@ if(BREAK_ENABLE_SNOWFLAKE)
         src/network/break_net_envelope.c
         src/network/break_net_message_registry.c
         src/network/break_session.c
+        src/network/break_replication_session.c
         src/network/break_msg_rate.c)
     set_property(TARGET break_net PROPERTY C_STANDARD 11)
     target_include_directories(break_net PUBLIC
@@ -7085,6 +7086,16 @@ endif()
         add_test(NAME test_break_session COMMAND test_break_session)
         set_tests_properties(test_break_session PROPERTIES
             TIMEOUT 20 LABELS "network;snowflake;session")
+
+        add_executable(test_break_replication_session
+            tests/test_break_replication_session.c)
+        target_include_directories(test_break_replication_session PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_break_replication_session PRIVATE
+            break_net_test break_online)
+        add_test(NAME test_break_replication_session COMMAND test_break_replication_session)
+        set_tests_properties(test_break_replication_session PROPERTIES
+            TIMEOUT 30 LABELS "network;snowflake;session;replication")
 
         # Stage 5 Phase D Task 2: TLS transport mode. The self-signed PEM
         # fixtures are referenced in place from the pinned Snowflake tree

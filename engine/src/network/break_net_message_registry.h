@@ -49,6 +49,10 @@ extern "C" {
  * relay to this peer; exactly 16 bytes. */
 #define BREAK_NET_MESSAGE_ID_CORE_VOICE_MUTE 0x4008u
 #define BREAK_NET_CORE_VOICE_MUTE_PAYLOAD 16u
+/* Replication fragment (network/break_replication_session.h), AUTHENTICATED
+ * only: one BRFG v1 fragment (network/break_replication_wire.h), bounded by
+ * the global payload cap. */
+#define BREAK_NET_MESSAGE_ID_REPLICATION_FRAGMENT 0x4009u
 #define BREAK_NET_MESSAGE_ID_MAX 65535u
 #define BREAK_NET_REGISTRY_MAX_MESSAGES 64u
 #define BREAK_NET_MAX_PAYLOAD_SIZE (64u * 1024u)
