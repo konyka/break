@@ -460,3 +460,14 @@ World delta、inbound-to-simulation、level rebaseline、可靠恢复、Runtime 
 ### 最终 HEAD 验证补充（2026-11-24）
 
 代码与测试提交 `13d74092e52b084e8036c9d0324abd99079f584c` 的完整 CTest 实际结果：OpenGL 注册 **477**，**473 执行通过、4 条件 skip、0 失败**（310.06 s）；Vulkan 注册 **479**，**475 执行通过、4 条件 skip、0 失败**（297.11 s）。两项 skip 均为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计执行通过。World loopback、clean-room 与两个 core_app archive 契约在两套后端均实际通过。后续仅追加验证文档，最终文档 HEAD 的 naming 门禁为 **2/2**；不重跑已完整通过的套件，不预写远端结果。
+
+
+## 补充（2026-11-24）：World session 换代的所有权与线协议边界
+
+库级 `break_world_session_rebaseline` 由 owner 显式调用，要求非零且严格大于当前 generation。它先在既有固定 pool/slot、bridge connection 和 completion 数组上完成无分配 epoch 复位，再逐连接释放旧 baseline/confirmed/history/attempt、清 pending ACK/NEED_FULL 与限速纪元；连接 key、history 数组、容量、expiry 策略和单调统计保留。每连接都必须先收到并 drain 新 full，发送侧也须独立等到当前 ACK 才恢复 delta，连接 A 的 ACK 不推进连接 B。
+
+初始 generation 保持 32 字节 BRWC/v1、outer/payload version 1。换代后的控制改为 40 字节 BRWC/v2、outer/payload version 2，offset 32 写入当前 u64 level；v2 的版本、长度和 level 全部校验后才可触碰 sender 状态，v1 在换代后一律拒绝。BRWD/v1 和 0x400A 不变。网络回调仍只重组并入队，只有 owner drain 可修改调用方 World；full 成功前保留旧 World，新 full 在 staging 重建并核对 target 后原子替换。
+
+同 socket 验收让 raw TCP 客户端和服务端在 AUTH 后从 level 7 显式进入 8，真实收发 BRFG/BRWC，覆盖旧 epoch 乱序重复片、旧 v1/v2 ACK/NEED_FULL、新代 full 前 NEED_FULL、full target id 和当前 ACK 后 delta。旧 completion 不直接注入，连接 key/session id 与 TCP 身份保持连续。
+
+本项没有自动换级、资产处理、混合 level、共享 live World、Runtime Core 消息映射、权威合并或完整资产链，也没有把 CoreAppThread 诊断 drain 扩展成生产权威 World 集成。既有远端与集成复验收据不复制，本追加不预写新的远端结果。

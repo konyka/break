@@ -290,3 +290,14 @@ normal、ASan+UBSan（显式 `detect_leaks=1`）和 TSan focused 均为 **6/6、
 ### 最终 HEAD 验证补充（2026-11-24）
 
 代码与测试提交 `13d74092e52b084e8036c9d0324abd99079f584c` 的完整 CTest 实际结果：OpenGL 注册 **477**，**473 执行通过、4 条件 skip、0 失败**（310.06 s）；Vulkan 注册 **479**，**475 执行通过、4 条件 skip、0 失败**（297.11 s）。两项 skip 均为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计执行通过。World loopback、clean-room 与两个 core_app archive 契约在两套后端均实际通过。后续仅追加验证文档，最终文档 HEAD 的 naming 门禁为 **2/2**；不重跑已完整通过的套件，不预写远端结果。
+
+
+## 补充（2026-11-24）：ECS World stream 的显式 epoch 再基线
+
+`BreakWorldSession` 现在支持 owner 显式、非零且严格递增的 level 换代。新 stream epoch 仍由 protocol version、schema hash 和 level generation 派生。pool/bridge 复用固定 slot 与 connection/completion 存储完成无分配复位，清 pending、retired high-water 和旧 completion；每连接再清 baseline、confirmed、history、attempt 与控制状态，保留 key 和 history 数组。接收 World 不因换代立即清空，而是在新 full 成功 drain 前保持旧内容；没有新 baseline 的 delta 只产生 NEED_FULL。full 仍在空 staging World 重建并验证 target 后原子替换，随后该连接才建立新 baseline；发送侧也须当前 ACK 后才发 delta。
+
+初始代继续使用 32 字节 BRWC/v1。新代以 40 字节 BRWC/v2 在 offset 32 携带 level，outer/payload version 均为 2；精确版本、长度和当前 level 是控制修改 history/confirmed/force_full 的前置条件。这样即使 delta id、snapshot id 和 tick 跨代复用，旧 ACK 也不能碰撞新 history。BRWD/v1 的 60 字节头、record 编码和 target 重建规则不变。
+
+真实 loopback 在同一 AUTH/TCP 连接完成 7→8，旧 epoch 反序/重复片及旧 v1/v2 控制不推进 World、baseline 或 history；新 full 前 delta 被拒绝并请求 full，新 full drain 后 snapshot id 等于新 target，当前 ACK 后才发布 delta。断言同时保留旧 World 到成功 drain 的边界和连接 key/session/TCP 身份连续性，不直接注入 completion。
+
+本项不选择或加载资产，不做自动换级、schema online migration 或混合 level，也不实现共享 live World、Runtime Core 映射、权威 simulation 合并、跨 World 持久身份和完整资产链。AOI/BRA1 语义不变；既有集成复验收据不重复，本补充不预写远端结果。

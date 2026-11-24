@@ -357,3 +357,14 @@ World snapshot/delta 现在有独立 BRWD/v1 canonical codec。消息头为 60 �
 ### 最终 HEAD 验证补充（2026-11-24）
 
 代码与测试提交 `13d74092e52b084e8036c9d0324abd99079f584c` 的完整 CTest 实际结果：OpenGL 注册 **477**，**473 执行通过、4 条件 skip、0 失败**（310.06 s）；Vulkan 注册 **479**，**475 执行通过、4 条件 skip、0 失败**（297.11 s）。两项 skip 均为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计执行通过。World loopback、clean-room 与两个 core_app archive 契约在两套后端均实际通过。后续仅追加验证文档，最终文档 HEAD 的 naming 门禁为 **2/2**；不重跑已完整通过的套件，不预写远端结果。
+
+
+## 补充（2026-11-24）：World session 显式 level 换代与 BRWC/v2
+
+`BreakWorldSession` 新增 owner 显式 `break_world_session_rebaseline` 与 level getter。新 generation 必须非零且严格递增；同一 session 只有一个 active level。pool/bridge 在固定存储上原地更新由 protocol/schema/level 派生的 stream epoch，清掉 pending、retired high-water、旧 completion 和发送侧 expected base，保留连接 key、容量及 expiry 配置；该复位路径不分配、不加锁。每个打开连接另清 baseline、confirmed、未确认 history、attempt 和 pending 控制，重置 delta id，并独立执行“新 full→当前 ACK→delta”。session/bridge 单调统计不因换代清零。
+
+0x400B 初始代继续 outer/payload v1 和 32 字节 BRWC/v1；换代后使用 outer/payload v2 和 40 字节 BRWC/v2。v2 在 offset 32 增加 u64 little-endian `level_generation`，其余 `BRWC`、version/kind、delta id、target snapshot id/tick 布局保持原偏移。v1 仅限初始代；v2 要求精确版本、40 字节长度和当前 level，旧/零/未来 level 在修改 history、confirmed 或 force_full 前拒绝。0x400A 与 BRWD/v1 不变，registry 仅把 0x400B 的 outer version 上限扩为 2。
+
+真实 raw TCP/AUTH 用例在同一连接内完成 level 7 full/ACK/delta，双方显式切到 8，并注入旧 epoch 反序/重复片及旧 v1/v2 ACK/NEED_FULL。旧流量不改变 World、baseline 或 sender history；新代 delta 在 full 前产生 NEED_FULL，新 full drain 后达到新 target id，只有当前 v2 ACK 后才发布新 delta。测试同时核对 transport key、session id、AUTH 次数和 TCP endpoint 未变，没有直接注入 completion。
+
+本节不实现自动换级、资产选择/加载或 schema online migration，不允许混合 level，也不提供跨连接共享 live World、Runtime Core 映射、权威 simulation 合并或完整资产链。现有集成复验收据保持原记录，本节不预写推送、CI 或其他平台结果。

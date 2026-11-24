@@ -195,3 +195,14 @@ normal、ASan+UBSan（显式 leak 检测）和 TSan focused 均为 **6/6、112/1
 ### 最终 HEAD 验证补充（2026-11-24）
 
 代码与测试提交 `13d74092e52b084e8036c9d0324abd99079f584c` 的完整 CTest 实际结果：OpenGL 注册 **477**，**473 执行通过、4 条件 skip、0 失败**（310.06 s）；Vulkan 注册 **479**，**475 执行通过、4 条件 skip、0 失败**（297.11 s）。两项 skip 均为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计执行通过。World loopback、clean-room 与两个 core_app archive 契约在两套后端均实际通过。后续仅追加验证文档，最终文档 HEAD 的 naming 门禁为 **2/2**；不重跑已完整通过的套件，不预写远端结果。
+
+
+## 补充（2026-11-24）：BRWC 双版本与同连接显式再基线
+
+World session 可在不关闭认证传输的情况下显式提升 level generation；新值必须非零且严格递增，不支持并行或混合 active level。重组 pool 与 Session bridge 在已分配存储内切换到新 stream epoch，清 pending/high-water/completion 并保留 key、容量和 expiry；World session 对每连接清接收 baseline、发送 confirmed/history/attempt 与控制纪元。换代本身不分配、不加锁，full/ACK 门控和 confirmed/history 仍为逐连接状态。
+
+BRWC/v1 的 32 字节初始代 wire 保持兼容，旧常量与 BRWD/v1 不变。换代后 0x400B 使用 outer/payload v2，载荷为 40 字节：0..3 `BRWC`、4..5 version=2、6..7 kind、8..15 delta id、16..23 target snapshot id、24..31 target tick、32..39 level generation，整数为 little-endian。初始代只接受 v1；新代只接受版本/长度精确且 level 等于当前值的 v2，迟到 v1/v2 控制不能确认新 history 或强制恢复。
+
+新增真实 socket/AUTH 验收从 level 7 的 full、精确 ACK 和 delta 开始，在同一 TCP 连接换到 8。旧 epoch 反序/重复片与四种旧 v1/v2 ACK/NEED_FULL 均经真实 Session handler；World/baseline/history 不变，新代 delta 先触发 NEED_FULL，full drain 命中新 target，当前 v2 ACK 后才接受 delta。临时移除 v2 level 校验会使旧 ACK 碰撞并让该用例失败，恢复后通过；未使用 completion 直注。
+
+这里只交付显式库级换代，不做自动换级、资产加载/迁移、混合 level、跨连接共享 live World、Runtime Core 映射、权威 simulation 合并或完整资产链。既有在线与集成复验收据原样保留，不预写本节的推送、CI、Windows 或 Proton 结论。

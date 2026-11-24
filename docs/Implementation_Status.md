@@ -13720,3 +13720,12 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 #### core_app World replication 后续集成复验（2026-11-24）
 
 收据提交 `f5c0f44c` 的后续集成 CI run `45418377037` 最终为 **completed/success**：24 success、3 条件 skip、0 cancelled、0 failed；首轮两个步骤前取消的 macOS job 在本次均成功，因此上一轮基础设施取消已由包含相同代码的后续集成运行闭合，历史 failure 记录保持不改。windows-d3d12 run `45418377300` 与 Proton run `45420887374` 均 success，Proton 上游 run-id=`45418377300`，device/pipeline contract 均为 77，仅表示兼容通道。该提交未触发新的 QUIC run，不补写 QUIC 结论；本追加提交自身的工作流结果不在此预写。
+
+
+## World session 显式 level rebaseline 与同 socket 验收（2026-11-24）
+
+- **交付**：pool/bridge 提供固定存储、无分配的 epoch 复位，清 pending/high-water/completion 并保留连接 key、容量和 expiry。World session 新增严格非零递增的显式 rebaseline/getter，逐连接清 baseline、confirmed、history、attempt 与控制状态，保持单调统计；每个连接独立要求新 full 和当前 ACK 后才恢复 delta。
+- **协议**：初始代继续 32 字节 BRWC/v1、outer/payload v1。换代后使用 40 字节 BRWC/v2、outer/payload v2，offset 32 为 u64 little-endian level generation；精确版本、长度和当前 level 在校验通过前不改变 sender 状态。0x400A/BRWD/v1 不变，0x400B 仅扩展 outer version 上限到 2。
+- **真实验收**：`world_session_same_socket_rebaselines_and_rejects_late_traffic` 复用 raw TCP/AUTH fixture，在同一连接完成 level 7 full/ACK/delta 后双方显式进入 8。旧 epoch 反序/重复片、旧 v1/v2 ACK/NEED_FULL 均不推进 World/baseline/history；新代 delta 在 full 前 NEED_FULL，新 full drain 后 target id 一致，当前 v2 ACK 后才发布 delta。连接 key、session id、AUTH 次数和 TCP endpoint 连续，未直接注入 completion。
+- **反向控制**：正确实现初跑 loopback 内部 **3/3**；临时删除 v2 level 等值校验后可构建但降为 **2/3**，新用例在旧 ACK 不得推进 acknowledged 的断言处失败。恢复后重新 **3/3**，生产源码无残留 diff。
+- **边界**：不做自动换级、资产选择/加载、schema online migration 或混合 level；不实现共享 live World、Runtime Core 映射、权威 simulation 合并或完整资产链。Task 1/2 已 deferred 的 Minors 不在本任务处理。既有集成复验段保持唯一且不改写，本节不预写推送、CI、Windows、Proton 或其他远端结果。

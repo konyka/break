@@ -869,3 +869,18 @@ windows-d3d12 `45414002947`、QUIC `45414003043`、Proton `45417162209` 均 succ
 #### core_app World replication 后续集成复验（2026-11-24）
 
 `f5c0f44c` 的 CI `45418377037` 最终 success（24 success、3 条件 skip、0 cancelled、0 failed），首轮两个 macOS 取消未复现；windows-d3d12 `45418377300` 与 Proton `45420887374` 均 success，Proton 上游 run-id=`45418377300`，两个 contract 均为 77。该结果闭合首轮基础设施取消，不改变生产 level rebaseline、共享 live World、Runtime Core 映射、权威 simulation 合并与完整资产链缺口；本追加提交自身的工作流结果不在此预写。
+
+
+## 第 17 节（大世界/流式）补充（2026-11-24）：仅关闭库级显式 World session 换代缺口
+
+pool/bridge 现在能在不重新分配固定存储的情况下复位 World stream epoch；World session 的新 level 必须非零且严格递增，每连接独立清旧 baseline/history/attempt 并经过新 full、当前 ACK 后才恢复 delta。连接 key、容量、expiry 和单调统计保留，旧 completion/high-water 不进入新代。full 成功 drain 前 caller World 不变，full 仍在 staging 重建并校验 target 后原子提交。
+
+初始代保持 32 字节 BRWC/v1；新代改用 40 字节 BRWC/v2，outer/payload version 2 在 offset 32 携带当前 level。错误版本/长度及零、旧、未来 level 均在状态变更前拒绝，防止 delta id/target/tick 跨代相同时的旧 ACK 碰撞。BRWD/v1 不变。真实同一 TCP/AUTH 用例覆盖 level 7→8、旧 epoch 反序重复片、旧 v1/v2 ACK/NEED_FULL、新代 NEED_FULL/full/target/ACK/delta，并证明连接身份连续且没有直接 completion 注入；移除 v2 level 校验的临时负对照真实失败，恢复后通过。
+
+以下能力明确仍未交付，不能把显式库级 rebaseline 扩大解释为生产大世界流式系统：
+
+- **自动换级与资产链**：没有自动 level 选择、资产选择/加载、schema online migration 或完整资产依赖链。
+- **混合 level**：同一 session 只有一个 active generation，没有多代并行或跨代 delta。
+- **共享 live World**：没有跨连接共享可变 World、publication 或 epoch reclamation；drain World 仍由 owner 显式提供。
+- **Runtime Core 与权威合并**：没有 Runtime Core 消息映射、权威 simulation 合并、预测回滚或 authority handoff。
+- **生产与远端范围**：core_app 自动换代和完整资产链仍开放；条件 skip/既有 Proton 77 不升级为原生 GPU 通过。既有集成复验段保持唯一、不复制，本补充不预写新的推送或远端结果。
