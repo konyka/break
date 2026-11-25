@@ -924,6 +924,36 @@ usize break_runtime_world_session_connection_snapshots(
     return opened;
 }
 
+bool break_runtime_world_session_publish_progress(
+    const BreakRuntimeWorldSession *adapter,
+    BreakRuntimeWorldPublishProgress *out_progress)
+{
+    if (!out_progress) return false;
+    memset(out_progress, 0, sizeof(*out_progress));
+    if (!adapter) return false;
+    platform_mutex_lock((PlatformMutex *)(uintptr_t)&adapter->mutex);
+    out_progress->observed_publication_epoch = adapter->publish_observed_epoch;
+    out_progress->request_pending = adapter->publish_request;
+    out_progress->continuation_pending = adapter->publish_continuation;
+    for (usize i = 0u; i < adapter->max_connections; ++i) {
+        const RuntimeWorldConnection *connection = &adapter->connections[i];
+        bool dirty;
+        if (connection->key == 0u) continue;
+        ++out_progress->open_connections;
+        /* Same expression as BreakRuntimeWorldConnectionSnapshot.publish_dirty. */
+        dirty = connection->retry_publish ||
+                connection->attempt_publication_epoch != 0u ||
+                connection->attempt_target_snapshot_id != 0u ||
+                connection->attempt_target_tick != 0u ||
+                (adapter->publish_observed_epoch != 0u &&
+                 connection->completed_publication_epoch != adapter->publish_observed_epoch &&
+                 connection->terminal_publication_epoch != adapter->publish_observed_epoch);
+        if (dirty) ++out_progress->dirty_connections;
+    }
+    platform_mutex_unlock((PlatformMutex *)(uintptr_t)&adapter->mutex);
+    return true;
+}
+
 void break_runtime_world_session_stats(
     const BreakRuntimeWorldSession *adapter,
     BreakRuntimeWorldSessionStats *out_stats)

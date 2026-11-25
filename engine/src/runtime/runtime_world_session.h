@@ -153,6 +153,25 @@ usize break_runtime_world_session_connection_snapshots(
     BreakRuntimeWorldConnectionSnapshot *out_snapshots,
     usize capacity);
 
+/* Adapter-level publish progress for diagnosis: where the publish-current chain has
+ * advanced to, how many connections still owe a publication, and whether a request or
+ * a cross-drain continuation is outstanding. `dirty_connections` uses exactly the same
+ * per-connection criterion as BreakRuntimeWorldConnectionSnapshot.publish_dirty, so the
+ * two views cannot disagree. Read-only: copies scalars under the adapter mutex, never
+ * calls World Session, publication or queue. */
+typedef struct {
+    u64 observed_publication_epoch; /* last epoch acquired by a drain; 0 means never */
+    u32 open_connections;
+    u32 dirty_connections;
+    bool request_pending;
+    bool continuation_pending;
+} BreakRuntimeWorldPublishProgress;
+
+/* Returns false with a zeroed output when the adapter (or output) is NULL. */
+bool break_runtime_world_session_publish_progress(
+    const BreakRuntimeWorldSession *adapter,
+    BreakRuntimeWorldPublishProgress *out_progress);
+
 #ifdef BREAK_RUNTIME_TESTING
 void break_runtime_world_session_set_next_connection_epoch_for_test(
     BreakRuntimeWorldSession *adapter, u64 next_epoch);

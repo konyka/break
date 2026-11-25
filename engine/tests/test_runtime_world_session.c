@@ -4364,6 +4364,104 @@ TEST(connection_snapshots_race_with_producer_without_corruption)
     fixture_dispose(&fixture);
 }
 
+TEST(publish_progress_reports_adapter_level_state)
+{
+    Fixture fixture;
+    BreakRuntimeWorldPublishProgress progress;
+    BreakRuntimeWorldSessionStats before_stats;
+    BreakRuntimeWorldSessionStats after_stats;
+    BreakRuntimeWorldConnectionSnapshot before_snaps[4];
+    BreakRuntimeWorldConnectionSnapshot after_snaps[4];
+    BreakWorldSnapshot *s1 = NULL;
+    u64 epoch_a = 0u;
+    u64 epoch_b = 0u;
+    u64 epoch_c = 0u;
+    usize drained = 0u;
+    usize count = 0u;
+    u32 dirty = 0u;
+
+    /* NULL adapter clears the output and reports failure. */
+    memset(&progress, 0xAB, sizeof(progress));
+    ASSERT_FALSE(break_runtime_world_session_publish_progress(NULL, &progress));
+    ASSERT_EQ(progress.observed_publication_epoch, 0u);
+    ASSERT_EQ(progress.open_connections, 0u);
+    ASSERT_EQ(progress.dirty_connections, 0u);
+    ASSERT_FALSE(progress.request_pending);
+    ASSERT_FALSE(progress.continuation_pending);
+    ASSERT_FALSE(break_runtime_world_session_publish_progress(NULL, NULL));
+
+    /* An empty adapter reports zeros without a publication configured. */
+    ASSERT_TRUE(fixture_init(&fixture, 7u, 3u));
+    ASSERT_TRUE(break_runtime_world_session_publish_progress(fixture.adapter, &progress));
+    ASSERT_EQ(progress.observed_publication_epoch, 0u);
+    ASSERT_EQ(progress.open_connections, 0u);
+    ASSERT_EQ(progress.dirty_connections, 0u);
+    ASSERT_FALSE(progress.request_pending);
+    ASSERT_FALSE(progress.continuation_pending);
+    fixture_dispose(&fixture);
+
+    ASSERT_TRUE(fixture_init_without_adapter_scaled(&fixture, 7u, 3u));
+    {
+        BreakWorldSnapshotPublicationConfig publication_config;
+        memset(&publication_config, 0, sizeof(publication_config));
+        publication_config.schema_hash = break_schema_hash(fixture.schemas);
+        publication_config.level_generation = 7u;
+        fixture.publication = break_world_snapshot_publication_create(&publication_config);
+        ASSERT_NOT_NULL(fixture.publication);
+        ASSERT_TRUE(fixture_attach_publication(&fixture, 0u, 3u, fixture.publication, 1u));
+    }
+    ASSERT_TRUE(open_connection(&fixture, KEY_A, 7u, &epoch_a));
+    ASSERT_TRUE(open_connection(&fixture, KEY_B, 7u, &epoch_b));
+    ASSERT_TRUE(open_connection(&fixture, KEY_C, 7u, &epoch_c));
+    ASSERT_TRUE(break_runtime_world_session_publish_progress(fixture.adapter, &progress));
+    ASSERT_EQ(progress.open_connections, 3u);
+    ASSERT_EQ(progress.dirty_connections, 0u);
+    ASSERT_EQ(progress.observed_publication_epoch, 0u);
+
+    /* budget=1: one connection served, two still dirty, continuation pending. */
+    s1 = make_target(&fixture, 42u, 10u);
+    ASSERT_NOT_NULL(s1);
+    ASSERT_TRUE(break_world_snapshot_publication_publish(fixture.publication, s1, 7u));
+    ASSERT_EQ(submit_current(&fixture, 7u, 0u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 1u, &drained), BREAK_RUNTIME_OK);
+    ASSERT_EQ(drained, 1u);
+    ASSERT_TRUE(break_runtime_world_session_publish_progress(fixture.adapter, &progress));
+    ASSERT_EQ(progress.observed_publication_epoch, 1u);
+    ASSERT_FALSE(progress.request_pending);
+    ASSERT_TRUE(progress.continuation_pending);
+    ASSERT_EQ(progress.open_connections, 3u);
+    ASSERT_EQ(progress.dirty_connections, 2u);
+
+    /* The summary is read-only and agrees with the per-connection snapshot. */
+    break_runtime_world_session_stats(fixture.adapter, &before_stats);
+    memset(before_snaps, 0, sizeof(before_snaps));
+    count = break_runtime_world_session_connection_snapshots(fixture.adapter, before_snaps, 4u);
+    ASSERT_TRUE(break_runtime_world_session_publish_progress(fixture.adapter, &progress));
+    break_runtime_world_session_stats(fixture.adapter, &after_stats);
+    memset(after_snaps, 0, sizeof(after_snaps));
+    ASSERT_EQ(break_runtime_world_session_connection_snapshots(fixture.adapter, after_snaps, 4u),
+              count);
+    ASSERT_EQ(memcmp(&before_stats, &after_stats, sizeof(before_stats)), 0);
+    ASSERT_EQ(memcmp(before_snaps, after_snaps, sizeof(before_snaps)), 0);
+    for (usize i = 0u; i < count; ++i) dirty += after_snaps[i].publish_dirty ? 1u : 0u;
+    ASSERT_EQ(progress.dirty_connections, dirty);
+
+    /* Empty-queue drains finish the remaining connections. Drain with a positive
+     * max_messages so the continuation actually runs; max_messages==0 is a no-op. */
+    for (u32 round = 0u; round < 16u; ++round) {
+        if (break_runtime_world_session_pending(fixture.adapter) == 0u) break;
+        (void)break_runtime_world_session_drain(fixture.adapter, 4u, &drained);
+    }
+    ASSERT_TRUE(break_runtime_world_session_publish_progress(fixture.adapter, &progress));
+    ASSERT_FALSE(progress.continuation_pending);
+    ASSERT_EQ(progress.dirty_connections, 0u);
+    ASSERT_EQ(progress.observed_publication_epoch, 1u);
+    ASSERT_EQ(progress.open_connections, 3u);
+
+    break_world_snapshot_release(s1);
+    fixture_dispose(&fixture);
+}
+
 TEST_MAIN_BEGIN()
 RUN_TEST(publish_notice_layout_submit_and_external_bus_contract);
 RUN_TEST(publish_notice_basic_s1_full_has_no_pre_drain_effects);
@@ -4371,6 +4469,7 @@ RUN_TEST(publish_notice_connections_keep_independent_full_delta_and_dedup);
 RUN_TEST(publish_notice_empty_closed_wrong_level_and_no_open_connections);
 RUN_TEST(connection_snapshots_report_per_connection_state);
 RUN_TEST(connection_snapshots_race_with_producer_without_corruption);
+RUN_TEST(publish_progress_reports_adapter_level_state);
 RUN_TEST(publish_budget_one_round_robin_continues_without_queue_message);
 RUN_TEST(publish_default_budget_eight_defers_ninth_connection);
 RUN_TEST(publish_overload_resumes_e1_before_latest_e2);
