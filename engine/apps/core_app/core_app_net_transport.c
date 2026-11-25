@@ -276,6 +276,7 @@ struct CoreAppNetTransport {
     bool world_desired_open[CORE_APP_NET_MAX_CONNECTIONS];
     bool world_admission_pending[CORE_APP_NET_MAX_CONNECTIONS];
     u32 world_transition_kind[CORE_APP_NET_MAX_CONNECTIONS];
+    u64 world_transition_keys[CORE_APP_NET_MAX_CONNECTIONS];
     u64 world_connection_epochs[CORE_APP_NET_MAX_CONNECTIONS];
     World *world_pending_diagnostics[CORE_APP_NET_MAX_CONNECTIONS];
     bool world_control_pending[CORE_APP_NET_MAX_CONNECTIONS];
@@ -794,13 +795,17 @@ static CoreAppNetWorldTransitionResult net_world_reconcile_slot(CoreAppNetTransp
         u32 completed_kind;
         if (t->world_transition_kind[slot] == 0u) {
             if (t->world_desired_open[slot] == t->world_open[slot]) {
+                t->world_transition_keys[slot] = 0u;
                 return NET_WORLD_TRANSITION_OK;
+            }
+            if (t->world_transition_keys[slot] == 0u) {
+                t->world_transition_keys[slot] = t->keys[slot];
             }
             memset(&command, 0, sizeof(command));
             command.kind = t->world_desired_open[slot]
                                ? BREAK_RUNTIME_WORLD_COMMAND_OPEN
                                : BREAK_RUNTIME_WORLD_COMMAND_CLOSE;
-            command.connection_key = t->keys[slot];
+            command.connection_key = t->world_transition_keys[slot];
             command.connection_epoch = t->world_desired_open[slot]
                                            ? 0u
                                            : t->world_connection_epochs[slot];
@@ -808,6 +813,7 @@ static CoreAppNetWorldTransitionResult net_world_reconcile_slot(CoreAppNetTransp
             result = core_app_net_transport_world_submit(t, &command, 0u);
             if (result != BREAK_RUNTIME_OK) {
                 t->world_desired_open[slot] = t->world_open[slot];
+                t->world_transition_keys[slot] = 0u;
                 world_destroy(t->world_pending_diagnostics[slot]);
                 t->world_pending_diagnostics[slot] = NULL;
                 if (!t->world_open[slot]) net_world_reject_admission(t, slot);
@@ -822,7 +828,7 @@ static CoreAppNetWorldTransitionResult net_world_reconcile_slot(CoreAppNetTransp
         completed_kind = t->world_transition_kind[slot];
         t->world_transition_kind[slot] = 0u;
         if (completed_kind == BREAK_RUNTIME_WORLD_COMMAND_OPEN) {
-            if (break_runtime_world_session_connection_epoch(t->world_adapter, t->keys[slot],
+            if (break_runtime_world_session_connection_epoch(t->world_adapter, t->world_transition_keys[slot],
                                                              &epoch) &&
                 epoch != 0u) {
                 t->world_open[slot] = true;
@@ -839,12 +845,13 @@ static CoreAppNetWorldTransitionResult net_world_reconcile_slot(CoreAppNetTransp
             t->world_open[slot] = false;
             t->world_connection_epochs[slot] = 0u;
             t->world_desired_open[slot] = false;
+            t->world_transition_keys[slot] = 0u;
             world_destroy(t->world_pending_diagnostics[slot]);
             t->world_pending_diagnostics[slot] = NULL;
             net_world_reject_admission(t, slot);
             return NET_WORLD_TRANSITION_REJECTED;
         }
-        if (!break_runtime_world_session_connection_epoch(t->world_adapter, t->keys[slot],
+        if (!break_runtime_world_session_connection_epoch(t->world_adapter, t->world_transition_keys[slot],
                                                           &epoch)) {
             t->world_open[slot] = false;
             t->world_connection_epochs[slot] = 0u;
@@ -855,9 +862,15 @@ static CoreAppNetWorldTransitionResult net_world_reconcile_slot(CoreAppNetTransp
             continue;
         }
         t->world_desired_open[slot] = true;
+        t->world_transition_keys[slot] = 0u;
         world_destroy(t->world_pending_diagnostics[slot]);
         t->world_pending_diagnostics[slot] = NULL;
         return NET_WORLD_TRANSITION_REJECTED;
+    }
+    if (t->world_desired_open[slot] == t->world_open[slot] &&
+        t->world_transition_kind[slot] == 0u) {
+        t->world_transition_keys[slot] = 0u;
+        return NET_WORLD_TRANSITION_OK;
     }
     return NET_WORLD_TRANSITION_PENDING;
 }
@@ -882,6 +895,7 @@ static void net_world_close(CoreAppNetTransport *t, u32 slot) {
         if (t->world_open[slot] || t->world_transition_kind[slot] != 0u) return;
     } else {
         t->world_transition_kind[slot] = 0u;
+        t->world_transition_keys[slot] = 0u;
         if (t->world_open[slot]) {
             t->world_open[slot] = false;
             t->world_connection_epochs[slot] = 0u;
@@ -2205,6 +2219,14 @@ bool core_app_net_transport_world_open_for_test(CoreAppNetTransport *transport, 
 void core_app_net_transport_world_close_for_test(CoreAppNetTransport *transport, u64 key) {
     int slot = transport ? net_slot_find(transport, key) : -1;
     if (slot >= 0) net_world_close(transport, (u32)slot);
+}
+
+void core_app_net_transport_world_disconnect_for_test(CoreAppNetTransport *transport, u64 key) {
+    int slot = transport ? net_slot_find(transport, key) : -1;
+    if (slot >= 0) {
+        net_world_close(transport, (u32)slot);
+        transport->keys[slot] = 0u;
+    }
 }
 
 World *core_app_net_transport_world_reopen_for_test(CoreAppNetTransport *transport, u64 key) {

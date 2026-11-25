@@ -1300,6 +1300,75 @@ TEST(world_adapter_close_pending_control_reconciles_epoch_slot_and_diagnostic) {
     aspect_fixture_dispose(&fixture);
 }
 
+TEST(world_adapter_cancel_pending_open_after_disconnect_closes_original_key) {
+    AspectTransportFixture fixture;
+    CoreAppNetWorldTestView view;
+    BreakRuntimeWorldSession *adapter;
+    BreakRuntimeWorldSessionStats stats;
+    const BreakConnectionKey open_key = 0x140bu;
+    const BreakConnectionKey canceled_key = UINT64_C(0x300000004);
+    u64 epoch = 0u;
+    ASSERT_TRUE(world_fixture_start(&fixture, "core_app_world_cancel_disconnect.port", true, false));
+    ASSERT_TRUE(world_fixture_open(&fixture, open_key));
+    ASSERT_TRUE(world_make_control_pending(&fixture, open_key, 84u));
+    adapter = core_app_net_transport_world_adapter(fixture.transport);
+    (void)core_app_net_transport_world_open_for_test(fixture.transport, canceled_key);
+    break_runtime_world_session_stats(adapter, &stats);
+    ASSERT_EQ(stats.queued, 1u);
+    ASSERT_TRUE(stats.control_pending);
+
+    core_app_net_transport_world_disconnect_for_test(fixture.transport, canceled_key);
+    world_clear_outbound(&fixture);
+    core_app_net_transport_world_drain_for_test(fixture.transport, 21u);
+    ASSERT_FALSE(break_runtime_world_session_connection_epoch(adapter, canceled_key, &epoch));
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    ASSERT_FALSE(break_world_session_baseline(view.session, canceled_key, NULL, NULL));
+    ASSERT_EQ(view.open_count, 1u);
+    ASSERT_EQ(view.opened, 2u);
+    ASSERT_EQ(view.closed, 1u);
+    ASSERT_NOT_NULL(view.diagnostic);
+    break_runtime_world_session_stats(adapter, &stats);
+    ASSERT_EQ(stats.queued, 0u);
+    ASSERT_FALSE(stats.control_pending);
+    ASSERT_TRUE(transport_fixture_destroy(&fixture));
+    aspect_fixture_dispose(&fixture);
+}
+
+TEST(world_adapter_close_failure_after_disconnect_is_not_misread_as_success) {
+    AspectTransportFixture fixture;
+    CoreAppNetWorldTestView view;
+    BreakRuntimeWorldSession *adapter;
+    BreakRuntimeWorldSessionStats stats;
+    const BreakConnectionKey key = 0x240cu;
+    u64 epoch = 0u;
+    ASSERT_TRUE(world_fixture_start(&fixture, "core_app_world_close_failure_disconnect.port", true, false));
+    ASSERT_TRUE(world_fixture_open(&fixture, key));
+    ASSERT_TRUE(world_make_control_pending(&fixture, key, 85u));
+    adapter = core_app_net_transport_world_adapter(fixture.transport);
+    ASSERT_TRUE(break_runtime_world_session_connection_epoch(adapter, key, &epoch));
+    ASSERT_NEQ(epoch, 0u);
+    core_app_net_transport_world_close_for_test(fixture.transport, key);
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    ASSERT_TRUE(break_world_session_close(view.session, key));
+
+    core_app_net_transport_world_disconnect_for_test(fixture.transport, key);
+    world_clear_outbound(&fixture);
+    core_app_net_transport_world_drain_for_test(fixture.transport, 21u);
+    ASSERT_TRUE(break_runtime_world_session_connection_epoch(adapter, key, &epoch));
+    ASSERT_NEQ(epoch, 0u);
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    ASSERT_FALSE(break_world_session_baseline(view.session, key, NULL, NULL));
+    ASSERT_EQ(view.open_count, 1u);
+    ASSERT_EQ(view.opened, 1u);
+    ASSERT_EQ(view.closed, 0u);
+    ASSERT_NOT_NULL(view.diagnostic);
+    break_runtime_world_session_stats(adapter, &stats);
+    ASSERT_EQ(stats.queued, 0u);
+    ASSERT_FALSE(stats.control_pending);
+    ASSERT_TRUE(transport_fixture_destroy(&fixture));
+    aspect_fixture_dispose(&fixture);
+}
+
 TEST(world_transport_open_copies_fixed_pod_entities_independently) {
     AspectTransportFixture fixture;
     CoreAppNetWorldTestView view;
@@ -1915,6 +1984,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(world_adapter_open_pending_control_reconciles_epoch_slot_and_diagnostic);
     RUN_TEST(world_adapter_reopen_pending_control_completes_second_open);
     RUN_TEST(world_adapter_close_pending_control_reconciles_epoch_slot_and_diagnostic);
+    RUN_TEST(world_adapter_cancel_pending_open_after_disconnect_closes_original_key);
+    RUN_TEST(world_adapter_close_failure_after_disconnect_is_not_misread_as_success);
     RUN_TEST(world_transport_open_copies_fixed_pod_entities_independently);
     RUN_TEST(world_transport_bounded_tick_and_shutdown_drain_only_fill_diagnostic_world);
     RUN_TEST(world_transport_local_ack_uses_adapter_exactly_once);
