@@ -1973,7 +1973,7 @@ TEST(runtime_notice_real_socket_replaces_lease_and_recovers_e1_e2)
     Value *value;
     u64 e1_id;
     u64 e2_id;
-    u64 e1_epoch;
+    u64 e2_epoch;
     u8 *expected_payload = NULL;
     usize expected_size = 0u;
     u8 *actual_payload = NULL;
@@ -2052,8 +2052,8 @@ TEST(runtime_notice_real_socket_replaces_lease_and_recovers_e1_e2)
     LOOPBACK_CHECK(break_world_snapshot_publication_acquire(fixture.publication, &lease) ==
                    BREAK_WORLD_SNAPSHOT_ACQUIRE_OK);
     LOOPBACK_CHECK(break_world_snapshot_id(lease.snapshot) == e2_id);
-    e1_epoch = lease.publication_epoch;
-    LOOPBACK_CHECK(e1_epoch != 0u);
+    e2_epoch = lease.publication_epoch;
+    LOOPBACK_CHECK(e2_epoch != 0u);
     break_world_snapshot_lease_release(&lease);
     LOOPBACK_CHECK(lease.snapshot == NULL && lease.level_generation == 0u &&
                    lease.publication_epoch == 0u);
@@ -2121,8 +2121,14 @@ static PLATFORM_THREAD_RET runtime_socket_notice_race_producer(PLATFORM_THREAD_A
     RuntimeSocketNoticeRace *race = (RuntimeSocketNoticeRace *)argument;
     SocketFixture *fixture = race->fixture;
     atomic_store_explicit(&race->ready, 1u, memory_order_release);
-    while (!atomic_load_explicit(&race->go, memory_order_acquire)) {
+    for (u64 spin = 0u; spin < 100000000u; ++spin) {
+        if (atomic_load_explicit(&race->go, memory_order_acquire)) break;
         platform_thread_yield();
+    }
+    if (!atomic_load_explicit(&race->go, memory_order_acquire)) {
+        atomic_store_explicit(&race->failed, true, memory_order_release);
+        atomic_store_explicit(&race->done, true, memory_order_release);
+        return PLATFORM_THREAD_RETURN;
     }
     for (u32 i = 0u; i < RUNTIME_SOCKET_RACE_ROUNDS; ++i) {
         BreakWorldSnapshot *snapshot;
