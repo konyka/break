@@ -585,6 +585,130 @@ TEST(diagnostics_max_frames_excludes_unfinished_tick) {
     ASSERT_EQ(capture.snapshots[capture.count - 1u].key_down_count, 1u);
 }
 
+typedef struct HalfWorldAdapterHooksProbe {
+    u32 start_calls;
+    u32 register_calls;
+    u32 query_calls;
+    u32 destroy_calls;
+} HalfWorldAdapterHooksProbe;
+
+static BreakRuntimeError half_world_network_start(void *user, FILE *trace) {
+    HalfWorldAdapterHooksProbe *probe = (HalfWorldAdapterHooksProbe *)user;
+    (void)trace;
+    probe->start_calls++;
+    return BREAK_RUNTIME_OK;
+}
+
+static void half_world_network_tick(void *user, u32 tick, u64 level_generation,
+                                    const CoreAppSnapshotEntity *entities, u32 entity_count,
+                                    u64 physics_hash) {
+    (void)user;
+    (void)tick;
+    (void)level_generation;
+    (void)entities;
+    (void)entity_count;
+    (void)physics_hash;
+}
+
+static BreakRuntimeError half_world_network_noop(void *user) {
+    (void)user;
+    return BREAK_RUNTIME_OK;
+}
+
+static BreakRuntimeError half_world_network_destroy(void *user) {
+    HalfWorldAdapterHooksProbe *probe = (HalfWorldAdapterHooksProbe *)user;
+    probe->destroy_calls++;
+    return BREAK_RUNTIME_OK;
+}
+
+static BreakRuntimeError half_world_adapter_register(void *user, struct BreakRuntimeBus *bus,
+                                                     struct BreakRuntimeCoordinator *coordinator) {
+    HalfWorldAdapterHooksProbe *probe = (HalfWorldAdapterHooksProbe *)user;
+    (void)bus;
+    (void)coordinator;
+    probe->register_calls++;
+    return BREAK_RUNTIME_OK;
+}
+
+static struct BreakRuntimeWorldSession *half_world_adapter_query(void *user) {
+    HalfWorldAdapterHooksProbe *probe = (HalfWorldAdapterHooksProbe *)user;
+    probe->query_calls++;
+    return NULL;
+}
+
+static void run_half_world_adapter_hooks(bool register_present, bool query_present,
+                                         HalfWorldAdapterHooksProbe *probe,
+                                         BreakRuntimeError *out_result, int *out_exit_code) {
+    static const char scenario_text[] =
+        "core-app-scenario 1\n"
+        "seed 12648430\n"
+        "fixed-dt-ns 16666667\n"
+        "1 quit\n";
+    char scenario_path[512];
+    char trace_path[512];
+    FILE *scenario_file;
+    CoreAppNetworkHooks hooks;
+    CoreAppConfig config;
+    memset(probe, 0, sizeof(*probe));
+    memset(&hooks, 0, sizeof(hooks));
+    memset(&config, 0, sizeof(config));
+    test_tmp(scenario_path, sizeof(scenario_path), "core_app_half_world_adapter");
+    test_tmp(trace_path, sizeof(trace_path), "core_app_half_world_adapter_trace");
+    (void)remove(scenario_path);
+    (void)remove(trace_path);
+    scenario_file = fopen(scenario_path, "wb");
+    ASSERT_NOT_NULL(scenario_file);
+    ASSERT_TRUE(fputs(scenario_text, scenario_file) >= 0);
+    ASSERT_EQ(fclose(scenario_file), 0);
+
+    hooks.user = probe;
+    hooks.start = half_world_network_start;
+    hooks.tick = half_world_network_tick;
+    hooks.stop_admission = half_world_network_noop;
+    hooks.stop_producers = half_world_network_noop;
+    hooks.drain = half_world_network_noop;
+    hooks.destroy = half_world_network_destroy;
+    if (register_present) hooks.world_adapter_register = half_world_adapter_register;
+    if (query_present) hooks.world_adapter = half_world_adapter_query;
+    config.render_mode = CORE_APP_RENDER_RECORD;
+    config.audio_mode = CORE_APP_AUDIO_RECORD;
+    config.fixed_step = true;
+    config.network = true;
+    config.network_hooks = &hooks;
+    config.asset_root = ".";
+    config.scenario_path = scenario_path;
+    config.trace_path = trace_path;
+    *out_result = core_app_run(&config, out_exit_code);
+    (void)remove(scenario_path);
+    (void)remove(trace_path);
+}
+
+TEST(world_adapter_query_without_register_is_rejected) {
+    HalfWorldAdapterHooksProbe probe;
+    BreakRuntimeError result;
+    int exit_code = 0;
+    run_half_world_adapter_hooks(false, true, &probe, &result, &exit_code);
+    ASSERT_EQ(result, BREAK_RUNTIME_FAILED);
+    ASSERT_EQ(exit_code, 2);
+    ASSERT_EQ(probe.start_calls, 1u);
+    ASSERT_EQ(probe.register_calls, 0u);
+    ASSERT_EQ(probe.query_calls, 0u);
+    ASSERT_EQ(probe.destroy_calls, 1u);
+}
+
+TEST(world_adapter_register_without_query_is_rejected) {
+    HalfWorldAdapterHooksProbe probe;
+    BreakRuntimeError result;
+    int exit_code = 0;
+    run_half_world_adapter_hooks(true, false, &probe, &result, &exit_code);
+    ASSERT_EQ(result, BREAK_RUNTIME_FAILED);
+    ASSERT_EQ(exit_code, 2);
+    ASSERT_EQ(probe.start_calls, 1u);
+    ASSERT_EQ(probe.register_calls, 0u);
+    ASSERT_EQ(probe.query_calls, 0u);
+    ASSERT_EQ(probe.destroy_calls, 1u);
+}
+
 TEST(input_reuses_touch_id_with_new_generation) {
     CoreAppInput *input = core_app_input_create();
     CoreAppInputFrame frame;
@@ -1978,6 +2102,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(invalid_diagnostics_hooks_rejected_before_trace_creation);
     RUN_TEST(diagnostics_capture_runtime_tick_zero_and_completed_tick);
     RUN_TEST(diagnostics_max_frames_excludes_unfinished_tick);
+    RUN_TEST(world_adapter_query_without_register_is_rejected);
+    RUN_TEST(world_adapter_register_without_query_is_rejected);
     RUN_TEST(input_reuses_touch_id_with_new_generation);
     RUN_TEST(input_cancel_emits_no_gesture_and_next_tick_is_idle);
     RUN_TEST(input_key_hold_survives_tick_and_release_clears_it);

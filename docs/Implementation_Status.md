@@ -13853,9 +13853,18 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 
 ## core_app World adapter 生产接线（2026-11-25）
 
-- **已交付**：`--world-replication` 的生产 core_app 注册独立 `runtime_world_session`，位于既有 `"network"` 之前；world on 为六项 subsystem，world off 保持原五项且无 adapter/subscription/trace。首 tick 原地 rebaseline，OPEN/CLOSE 和本地 ACK/NEED_FULL 经 owner drain，pending transition 以保存 key/epoch 对账。完整构建发现 concrete transport 直接引用导致 mock 目标链接失败后，注册/查询已改为可选 network hooks，恢复 runtime library 不链接 transport 的既有边界；`test_core_app_runtime` **65/65** 与真实 loopback 复验通过。
+- **已交付**：`--world-replication` 的生产 core_app 注册独立 `runtime_world_session`，位于既有 `"network"` 之前；world on 为六项 subsystem，world off 无 World adapter/subscription，既有五子系统和 trace 不变。首 tick 原地 rebaseline，OPEN/CLOSE 和本地 ACK/NEED_FULL 经 owner drain，pending transition 以保存 key/epoch 对账。完整构建发现 concrete transport 直接引用导致 mock 目标链接失败后，注册/查询已改为可选 network hooks，恢复 runtime library 不链接 transport 的既有边界；`test_core_app_runtime` **67/67** 与真实 loopback 复验通过。
 - **协议与证据**：真实 loopback 的客户端改用 BRWC/v2 且入站 correlation=0，服务端 ACK/NEED_FULL/ACK 均为非零唯一 envelope correlation，payload/target/level 不变。客户端 41 项检查通过，包含 pre-drain 不变、drain 后 target 和最终无重复。直接 normal、ASan+UBSan（`detect_leaks=1`）、TSan 的 transport 均为 **33/33**，Runtime World Session 均为 **34/34**。
 - **关闭与反向控制**：CREATED/FAILED 都覆盖 abandon/manual drain 后才回收 network；adapter TIMEOUT 保留 network/session/reactor，成功 `on_destroy` 清指针后才允许 network 自身的 TIMEOUT 路径。首 tick 替换 session 在普通分配器下因地址复用未判红，但 ASan 下出现 1 个断言和 heap-use-after-free；绕过 adapter 为 **1/33 RED**；on_destroy 不清指针为 **19/33 RED**。三项均已恢复，生产源码无残留 diff。
-- **限制单列**：扩大 ASan focused 时，未修改的 `test_break_replication_session` 第 23 例报告 67,056 字节既有泄漏；本任务未越界修改该文件。core_app TSan 进程矩阵仍受既有 Lua `can't find longjmp buf` 限制，未计为通过；直接 TSan 与 World/Session/bridge 证据不替代完整 sanitizer suite。最终双后端命令和计数见本地 Task 2 报告，不预写远端结果。
+- **限制单列**：此前扩大 ASan focused 时发现 `test_break_replication_session` 第 23 例缺少 fixture destroy；独立单行清理经 normal/ASan+UBSan/TSan **23/23** 验证后已进入当前 HEAD，本 fix round 的完整 focused normal 与 ASan+UBSan 均为 **32/32**，未过滤红项或修改 suppressions。core_app 进程级 TSan 的既有 Lua `can't find longjmp buf` 限制不扩展为完整 sanitizer suite；最终双后端命令和计数见本地 Task 2 报告，不预写远端结果。
 
 本切片不交付 snapshot/BRWD Runtime 数据面、自动后续换级、共享 live World、权威 simulation 合并、默认全局公平调度或完整资产链。
+
+
+
+## core_app World adapter 评审修正（2026-11-25）
+
+- **入站控制禁回发**：真实客户端在等待服务端 full/delta 时显式拒绝任何 `WORLD_CONTROL`，不再让禁止的 ACK 回复被非 delta 分支吞掉。正确生产保持 GREEN；临时让入站 0x400B 错误回发 ACK 后，`world_inbound_control_never_causes_server_control_reply` 等 **3 个检查 RED**，精确还原后重新 GREEN。
+- **hooks 成对语义**：`world_adapter_register` 与 `world_adapter` 任一缺失均在 subsystem 容量计算和实际调用前返回 INVALID，两个 NULL 才保持原五子系统。query-only 在旧实现得到结果断言 RED，register-only 随后以 **139** 崩溃；修复后两种配置均受控回滚，register/query 均为 0 次调用，core_app runtime 在 normal、ASan+UBSan、TSan 均为 **67/67**。
+- **验证状态**：真实 World loopback normal 与 ASan+UBSan 均通过；transport **33/33**、Runtime World Session **34/34** 在 normal、ASan+UBSan（`detect_leaks=1`）和 TSan 均通过。完整 focused normal **32/32（132.22 s）**，ASan+UBSan **32/32（141.63 s）**，bridge 单行清理在当前 HEAD 内生效，未过滤红项。
+- **边界**：只关闭评审指出的测试盲区和半初始化崩溃，不改变 BRWD/BRWC、Runtime 数据面、world on 六项或 world off 五项/trace。详细 RED/GREEN、变异与后续双后端命令见 Task 2 fix round 报告，不预写远端结果。

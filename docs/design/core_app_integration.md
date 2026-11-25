@@ -1839,9 +1839,9 @@ arm64 lane 新增 `test_core_app_network`（25/25）和 `test_core_app_network_o
 
 ## 补充（2026-11-25）：World adapter 的生产注册、控制与回滚
 
-- **两个不同 subsystem**：既有 `"network"` 仍负责 transport 的 stop/drain/destroy；新增 `runtime_world_session` 由可选 network hooks 调用 `core_app_net_transport_world_adapter_register` 显式创建并先注册，runtime library 不直接链接 concrete transport。world on 的顺序为 adapter→network→voice→audio→render→level，共六项；world off 不创建 adapter/kind/subscription，保留原五项和 trace。
+- **两个不同 subsystem**：既有 `"network"` 仍负责 transport 的 stop/drain/destroy；新增 `runtime_world_session` 由可选 network hooks 调用 `core_app_net_transport_world_adapter_register` 显式创建并先注册，runtime library 不直接链接 concrete transport。两个 hooks 必须成对提供，半对配置在容量计算和实际 register/query 之前以 INVALID 拒绝；两个 NULL 才选择原五子系统。world on 的顺序为 adapter→network→voice→audio→render→level，共六项；world off 不创建 adapter/kind/subscription，保留原五项和 trace。
 - **首 tick 与控制路径**：首次实际 level 只对原 World Session rebaseline，不替换 session。OPEN/CLOSE 使用保存 key/epoch 经 adapter 对账，本地 ACK/NEED_FULL 保留 delta/target/tick/level 和首轮完整 cid，drain 前无副作用，重试不重复提交。入站 0x400B 仍直接裁剪 history/设置 force_full，不能再发 ACK。
-- **真实 loopback**：客户端已改用带当前 level 的 BRWC/v2，仍以 correlation=0 入站；服务端 ACK/NEED_FULL/ACK 使用非零唯一 envelope correlation。测试同时检查 pre-drain 不变、drain 后 target、每个控制恰好一次和离线/联网非 network trace 一致，没有放宽服务端 v1/v2 校验。
+- **真实 loopback**：客户端已改用带当前 level 的 BRWC/v2，仍以 correlation=0 入站；服务端 ACK/NEED_FULL/ACK 使用非零唯一 envelope correlation。测试同时检查 pre-drain 不变、drain 后 target、每个控制恰好一次和离线/联网非 network trace 一致；等待服务端 full/delta 时，任何 WORLD_CONTROL 都作为禁止回复立即失败，不会被 delta 等待循环吞掉。没有放宽服务端 v1/v2 校验。
 - **组合关闭**：正常停止先 adapter，后 network/session/reactor，最后 net_bus。pending 或 adapter drain TIMEOUT 阻断 network destroy；`on_destroy` 只在成功销毁后清指针。CREATED/FAILED 回滚先 abandon、close、手动 drain 到 pending=0 并 destroy adapter，再回收 network。
 
 仍未实现 snapshot/lease/BRWD/BRFG Runtime 数据面、自动后续换级、共享 live World、权威 simulation 合并、默认全局公平调度和完整资产链。诊断 World 的恢复不等于 inbound 已合并到生产权威 World；本节不预写远端结果。

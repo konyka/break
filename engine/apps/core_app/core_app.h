@@ -71,7 +71,8 @@ typedef struct CoreAppNetworkHooks {
      * and totals at stop ("event=network_events"). */
     BreakRuntimeError (*attach_bus)(void *user, struct BreakRuntimeBus *bus);
     /* Optional World control adapter. Both hooks are present together in the
-     * real transport; NULL keeps the original five-subsystem composition. */
+     * real transport; a half pair is INVALID, and two NULL hooks keep the
+     * original five-subsystem composition. */
     BreakRuntimeError (*world_adapter_register)(void *user, struct BreakRuntimeBus *bus,
                                                 struct BreakRuntimeCoordinator *coordinator);
     struct BreakRuntimeWorldSession *(*world_adapter)(void *user);

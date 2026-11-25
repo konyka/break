@@ -1297,7 +1297,13 @@ static bool world_receive_attempt(NetClient *c, WorldPeer *peer, WorldAttempt *a
             ok = false;
             break;
         }
-        if (got == 0 || env.message_id != BREAK_NET_MESSAGE_ID_WORLD_DELTA) continue;
+        if (got == 0) continue;
+        if (env.message_id == BREAK_NET_MESSAGE_ID_WORLD_CONTROL) {
+            check(false, "world_inbound_control_never_causes_server_control_reply");
+            ok = false;
+            break;
+        }
+        if (env.message_id != BREAK_NET_MESSAGE_ID_WORLD_DELTA) continue;
         if (env.protocol_version != BREAK_REPLICATION_WIRE_VERSION ||
             break_replication_wire_decode(env.payload, env.payload_size, &fragment) !=
                 BREAK_REPLICATION_FRAGMENT_OK ||

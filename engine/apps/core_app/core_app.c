@@ -2711,13 +2711,20 @@ static BreakRuntimeError app_register_subsystems(CoreApp *app) {
     BreakRuntimeCoordinatorConfig config = {5u};
 #if defined(CORE_APP_NET_TRANSPORT) && CORE_APP_NET_TRANSPORT
     const CoreAppNetworkHooks *network_hooks = app->config.network_hooks;
-    if (app->network_live && network_hooks->world_adapter_register) config.max_subsystems = 6u;
+    bool world_adapter_paired = false;
+    if (app->network_live) {
+        bool has_register = network_hooks->world_adapter_register != NULL;
+        bool has_query = network_hooks->world_adapter != NULL;
+        if (has_register != has_query) return BREAK_RUNTIME_INVALID;
+        world_adapter_paired = has_register && has_query;
+    }
+    if (world_adapter_paired) config.max_subsystems = 6u;
 #endif
     BreakRuntimeError result = break_runtime_coordinator_create(&config,
                                                                 &app->coordinator);
     if (result != BREAK_RUNTIME_OK) return result;
 #if defined(CORE_APP_NET_TRANSPORT) && CORE_APP_NET_TRANSPORT
-    if (app->network_live && network_hooks->world_adapter_register) {
+    if (world_adapter_paired) {
         result = network_hooks->world_adapter_register(network_hooks->user, app->net_bus,
                                                        app->coordinator);
         if (result != BREAK_RUNTIME_OK) return result;
