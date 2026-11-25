@@ -527,3 +527,12 @@ destroy 在任何 pending 判定之前先关闭 queue admission 并退订，且�
 当前 OpenGL 注册 **481**。旧 480 与它的名称差集是 `test_rhi_device_type`，由当前旧 cache 中残留的 Vulkan include/library 配置触发；同 ON/backend/pin 的新 OpenGL 探针无这些变量时为 480。该 RHI 条件差异与 network ON/OFF 差集分开记录，未删减网络或 transport 测试凑数。
 
 最终 OpenGL **477 执行通过、4 条件 skip、0 失败**，build 11.72 s、CTest 303.85 s；Vulkan **478 执行通过、4 条件 skip、0 失败**，build 11.85 s、CTest 306.76 s。共同 skip 为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`。所有最终 CTest 均未过滤且 rc=0；本修正不改生产源码，不预写远端结果。
+
+
+## 修订（2026-11-25）：World 控制生命周期的外部 quiesce 与 abandon
+
+注册成功后 adapter 的 lifecycle binding 唯一归属于一个 Coordinator，同/跨 Coordinator 重复注册均 REJECTED；已绑定直接 destroy 返回 false，不再可能绕过 Coordinator 释放 queue。注册分配或入表失败会回滚占用，lifecycle destroy 的 false 保留 binding 供精确重试。
+
+`break_runtime_world_session_abandon` 只在 CREATED/FAILED 可用：精确 unregister 成功后才清 binding 并 free，失败不改变 adapter 或 Coordinator。正常路径由 stop_producers/join 先停止并 join 外部生产者与 transport，再 stop 到 STOPPED。若 Coordinator 未 STOPPED 而要销毁，调用方必须先 quiesce 所有外部生产者及其他 adapter API，再 abandon；归还所有权后手动 close/drain/destroy adapter，不能借 abandon 丢弃网络 pending 或借用 Bus/Session/publication。
+
+该修订不改变 wire、BRWC correlation 或 transport OVERLOAD/CLOSED 语义，也不自动接入 core_app World adapter。

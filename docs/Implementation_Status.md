@@ -13819,7 +13819,7 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 ## Runtime World Coordinator TIMEOUT 恢复（2026-11-25）
 
 - **六阶段交付**：`runtime_world_session` 新增显式 subsystem 注册，真实执行 stop_admission → stop_producers → close_queues → drain → join → destroy；通用 Coordinator 状态机不变。stop_producers/join 是外部生产者与 transport hooks，adapter-only destroy 保留调用方拥有的 Bus、World Session 和 publication。
-- **pending 与恢复**：有界 budget、queue+control_pending 和 transport OVERLOAD 均按真实 pending 返回 TIMEOUT；重试只恢复超时阶段，不重跑 admission/close，也不重复 join/destroy。pending 控制保持 control/level/epoch/cid，CLOSED 清 pending 并计 rejected 后继续 queue drain。已消费 STALE/INVALID/REJECTED/CLOSED 且 pending=0，以及 destroy=false→TIMEOUT→retry，均有直接覆盖。
+- **pending 与恢复**：有界 budget、queue+control_pending 和 transport OVERLOAD 均按真实 pending 返回 TIMEOUT；前序阶段不重跑，TIMEOUT callback 精确重入，成功销毁一次。pending 控制保持 control/level/epoch/cid，CLOSED 清 pending 并计 rejected 后继续 queue drain。已消费 STALE/INVALID/REJECTED/CLOSED 且 pending=0，以及 destroy=false→TIMEOUT→retry，均有直接覆盖。
 - **外部 ingress**：direct 与外部 Bus 混合提交在 close 前恰好一次输出；close 后不增加 pending，退订后 delivered=0。queue-only 与 queue+control_pending 两类都覆盖 join 首次 TIMEOUT、STOPPING 和精确恢复，STOPPED 后重复 stop 不重复 callback。
 - **本地证据**：`test_runtime_world_session` 为 **27/27**；Runtime/World/adapter/Session/bridge focused normal、ASan+UBSan（显式 `detect_leaks=1`）和 TSan 各 **12/12**。core_app focused normal/ASan+UBSan 各 **15/15**；TSan core_app 为 **2/15**，其中 runtime 与 network library 通过，其余 13 个进程场景未通过。11 项日志直接显示既有 Lua `can't find longjmp buf` 退出 66，simulation/roundtrip 则在驱动层因缺少正常退出产物失败；这些场景均未记为通过，editor/core_app 的完整 sanitizer 进程验收也不由 focused 结果替代。
 - **当前集成边界**：core_app 已在 `app_register_subsystems` 注册 `"network"` subsystem，旧描述不再代表当前缺失；但 World adapter 尚未注册到 core_app。Runtime snapshot/lease/BRWD/BRFG 数据面、共享 live World、core_app authoritative World 与权威 simulation 合并仍未实现。三组定向变异及最终双后端命令、计数和日志见本地 Task 2 报告；本节保留全部历史收据，不预写远端结果。
@@ -13832,3 +13832,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **最终未过滤结果**：OpenGL 注册 **481**，**477 执行通过、4 条件 skip、0 失败**，build **11.72 s**、CTest **303.85 s**；Vulkan 注册 **482**，**478 执行通过、4 条件 skip、0 失败**，build **11.85 s**、CTest **306.76 s**。两套 CTest 均 `ctest_rc=0`。
 - **共同条件 skip**：`test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计执行通过。
 - **证据边界**：configure、OFF/ON 注册列表、差集、build、完整 CTest 和显式 rc 均保存在 Task 2 fix1 日志；中断的部分 OpenGL 日志没有用作通过证据。本轮没有生产源码修改，不改写前述历史记录，不预写远端结果。
+
+
+## Runtime World binding 所有权修订（2026-11-25）
+
+- **重复注册与直接 destroy**：adapter 在同一 mutex 下保存 lifecycle binding 占用、binding 指针和 lifecycle_destroying。同一或不同 Coordinator 的第二次注册均 REJECTED，分配或入表失败回滚；已注册直接 destroy 在任何 close/unsubscribe 前返回 false，只有 lifecycle destroy 可清占用。失败 destroy 保留 binding 供重试，成功销毁一次。
+- **unregister 与 abandon**：通用 `break_runtime_coordinator_unregister_subsystem` 仅在 CREATED/FAILED 按 user_data 精确移除首项，其他子系统保序且状态/last_error/resume 不变。`break_runtime_world_session_abandon` 先精确 unregister，再 detach/free binding；失败不清 binding。CREATED abandon 后 Coordinator start/stop 不再触碰 binding，FAILED abandon 后调用方可手动 close/drain/destroy。
+- **调用顺序**：正常路径必须 stop 到 STOPPED；未达 STOPPED 的 Coordinator 在 destroy 前，调用方先 quiesce 外部生产者和其他 adapter API，再 abandon World adapter 并手动释放。RUNNING abandon=false 后仍可正常 stop。前序阶段不重跑，TIMEOUT callback 精确重入，成功销毁一次。
+- **范围**：不重写前述 TIMEOUT 收据，不改变 direct/external FIFO、BRWC/cid 或 borrowed Bus/Session/publication 边界；不做数据面、自动 core_app World 接线或权威合并。最终 focused 验证命令与计数追加于 Task 2 报告，本节不预写远端结果。

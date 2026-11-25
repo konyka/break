@@ -12,6 +12,19 @@ typedef struct {
     BreakRuntimeWorldSessionLifecycle lifecycle;
 } RuntimeWorldSessionLifecycleBinding;
 
+extern bool break_runtime_world_session_lifecycle_reserve(
+    BreakRuntimeWorldSession *adapter);
+extern bool break_runtime_world_session_lifecycle_attach(
+    BreakRuntimeWorldSession *adapter, void *binding);
+extern void break_runtime_world_session_lifecycle_release(
+    BreakRuntimeWorldSession *adapter, const void *binding);
+extern void *break_runtime_world_session_lifecycle_detach(
+    BreakRuntimeWorldSession *adapter, BreakRuntimeCoordinator *coordinator);
+extern bool break_runtime_world_session_lifecycle_begin_destroy(
+    BreakRuntimeWorldSession *adapter);
+extern void break_runtime_world_session_lifecycle_cancel_destroy(
+    BreakRuntimeWorldSession *adapter);
+
 #ifdef BREAK_RUNTIME_TESTING
 static BreakRuntimeWorldSessionLifecycleTrace runtime_world_lifecycle_trace;
 static void *runtime_world_lifecycle_trace_user_data;
@@ -116,7 +129,11 @@ static BreakRuntimeError runtime_world_lifecycle_destroy(void *user_data)
     if (break_runtime_world_session_pending(binding->adapter) != 0u) {
         return BREAK_RUNTIME_TIMEOUT;
     }
+    if (!break_runtime_world_session_lifecycle_begin_destroy(binding->adapter)) {
+        return BREAK_RUNTIME_TIMEOUT;
+    }
     if (!runtime_world_lifecycle_destroy_adapter(binding->adapter)) {
+        break_runtime_world_session_lifecycle_cancel_destroy(binding->adapter);
         return BREAK_RUNTIME_TIMEOUT;
     }
     free(binding);
@@ -136,12 +153,23 @@ BreakRuntimeError break_runtime_world_session_register_subsystem(
         break_runtime_coordinator_state(coordinator) != BREAK_RUNTIME_CREATED) {
         return BREAK_RUNTIME_REJECTED;
     }
+    if (!break_runtime_world_session_lifecycle_reserve(adapter)) {
+        return BREAK_RUNTIME_REJECTED;
+    }
     binding = calloc(1u, sizeof(*binding));
-    if (!binding) return BREAK_RUNTIME_OOM;
+    if (!binding) {
+        break_runtime_world_session_lifecycle_release(adapter, NULL);
+        return BREAK_RUNTIME_OOM;
+    }
     binding->adapter = adapter;
     if (lifecycle) binding->lifecycle = *lifecycle;
     if (binding->lifecycle.drain_budget == 0u) {
         binding->lifecycle.drain_budget = RUNTIME_WORLD_SESSION_DEFAULT_DRAIN_BUDGET;
+    }
+    if (!break_runtime_world_session_lifecycle_attach(adapter, binding)) {
+        break_runtime_world_session_lifecycle_release(adapter, NULL);
+        free(binding);
+        return BREAK_RUNTIME_REJECTED;
     }
     memset(&subsystem, 0, sizeof(subsystem));
     subsystem.name = "runtime_world_session";
@@ -153,6 +181,25 @@ BreakRuntimeError break_runtime_world_session_register_subsystem(
     subsystem.join = runtime_world_lifecycle_join;
     subsystem.destroy = runtime_world_lifecycle_destroy;
     result = break_runtime_coordinator_register_subsystem(coordinator, &subsystem);
-    if (result != BREAK_RUNTIME_OK) free(binding);
+    if (result != BREAK_RUNTIME_OK) {
+        break_runtime_world_session_lifecycle_release(adapter, binding);
+        free(binding);
+    }
     return result;
+}
+
+bool break_runtime_world_session_abandon(BreakRuntimeWorldSession *adapter,
+                                         BreakRuntimeCoordinator *coordinator)
+{
+    BreakRuntimeState state;
+    RuntimeWorldSessionLifecycleBinding *binding;
+    if (!adapter || !coordinator) return false;
+    state = break_runtime_coordinator_state(coordinator);
+    if (state != BREAK_RUNTIME_CREATED && state != BREAK_RUNTIME_STATE_FAILED) {
+        return false;
+    }
+    binding = break_runtime_world_session_lifecycle_detach(adapter, coordinator);
+    if (!binding) return false;
+    free(binding);
+    return true;
 }

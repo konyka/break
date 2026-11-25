@@ -96,3 +96,38 @@ join 外部生产者和 transport，adapter API 本身不是全面线程退出�
   join 重试重复 destroy，均须判红后恢复。
 - focused normal、ASan+UBSan（显式 leak 检测）、TSan 和完整 Vulkan/OpenGL；
   独立任务与整分支评审后推送并核验远端矩阵。
+
+
+## 修订（2026-11-25）：显式 binding 占用与 abandon 所有权恢复
+
+通用 Coordinator 增加不改变状态机的精确注销：
+
+```c
+bool break_runtime_coordinator_unregister_subsystem(
+    BreakRuntimeCoordinator *coordinator, const void *user_data);
+```
+
+仅 CREATED 或 FAILED 可调用；首个 user_data 指针精确匹配的表项被移除，其他子系统保序，state、last_error 与 resume 状态不变。NULL、未找到或其他状态返回 false。
+
+adapter 在同一 mutex 下保存 lifecycle binding 占用、binding 指针和 lifecycle_destroying。注册采用 reserve→分配→attach→Coordinator register；同一或不同 Coordinator 的第二次注册均 REJECTED，分配/attach/注册失败回滚占用。已绑定 adapter 的直接 destroy 在任何 close/unsubscribe 前返回 false；只有 lifecycle destroy callback 可进入 destroying。失败保留 binding 并恢复可重试状态，成功才清占用并释放 adapter。
+
+World 所有权恢复接口为：
+
+```c
+bool break_runtime_world_session_abandon(
+    BreakRuntimeWorldSession *adapter,
+    BreakRuntimeCoordinator *coordinator);
+```
+
+仅 CREATED 或 FAILED 可执行。abandon 在 adapter mutex 内先按 binding 精确 unregister，成功才清占用，随后在锁外 free binding；失败不得清 binding，之后可重试或继续正常 stop。RUNNING、QUIESCING、DRAINING、STOPPING、STOPPED、错误 Coordinator 或未绑定 adapter 均返回 false，双方状态不变。
+
+正常路径是 register→start→外部 stop_producers/join quiesce→stop 到 STOPPED→destroy Coordinator，adapter 已由 lifecycle 成功销毁一次。若 Coordinator 未达 STOPPED而要销毁，调用方必须先 quiesce 外部生产者和其他 adapter API，再在 CREATED/FAILED 对每个 World adapter 执行 abandon，之后才能手动 close/drain/destroy adapter 并销毁 Coordinator。FAILED 后保留的 queue/control_pending 仍须按真实 pending 手动 drain，不能由 abandon 丢弃。
+
+TIMEOUT 语义保持：前序已完成阶段不重跑，返回 TIMEOUT 的 callback 在下一次 stop 精确重入；join/destroy 可因此各进入多次，但成功 adapter destroy 只发生一次。借用的 Bus、World Session、publication 仍由调用方最后清理。本修订不增加数据面、自动 core_app World 接线或权威合并。
+
+
+## 验证修订（2026-11-25）：ownership fix wave 证据
+
+先 RED 后修复：Core 缺 unregister 编译 RED；World 同/跨 Coordinator 重复注册与直接 destroy 运行期 **27/30**，三项断言判红；abandon 缺 API 编译 RED。分阶段恢复为 Core **12/12**、占用修复 World **30/30**、最终 World **34/34**。RED 日志为 `task-2-fix2-core-unregister-red.log`、`task-2-fix2-world-duplicates-red.log`、`task-2-fix2-abandon-red.log`。
+
+最终 normal、ASan+UBSan（显式 detect_leaks=1）和 TSan 的 adapter/Runtime Core/World/Session/bridge library 均 **12/12**，直接 Core 均 **12/12**、World 均 **34/34**，无 sanitizer 诊断。命令沿用本计划固定 pin 与 focused targets；完整输出保存在 `task-2-fix2-{normal,asan,tsan}-*.log`，自审与计数见 `task-2-report.md` Fix round 2。证据只覆盖本修订，不改写既有完整双后端或 TIMEOUT 收据。

@@ -258,3 +258,12 @@ drain 使用真实 `pending = queued + control_pending`。pending 非零或 tran
 当前 OpenGL 为 **481** 而非旧收据 480：其旧 cache 留有 `Vulkan_INCLUDE_DIR`/`Vulkan_LIBRARY`，满足 `test_rhi_device_type` 的注册条件。相同 ON/backend/pin 的新 OpenGL 探针无这些 cache 项，注册 480，名称差集仅此一项；当前 481 是旧 cache 下完整矩阵，未过滤该测试。
 
 最终未过滤 CTest：OpenGL **477 执行通过、4 条件 skip、0 失败**，build 11.72 s、CTest 303.85 s；Vulkan **478 执行通过、4 条件 skip、0 失败**，build 11.85 s、CTest 306.76 s。两树 skip 均为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`。本修正不改生产源码，不预写远端结果。
+
+
+## 修订（2026-11-25）：Coordinator unregister 与 World binding 所有权
+
+`break_runtime_coordinator_unregister_subsystem(coordinator, user_data)` 仅在 CREATED 或 FAILED 按指针精确移除首个注册项，其他子系统保序，state、last_error 和 resume 状态不变；RUNNING、STOPPED、NULL 或未找到返回 false。该操作只提供表项注销，不自动释放 user_data。
+
+World adapter 以同一 mutex 保护 binding 占用和 lifecycle_destroying。同/跨 Coordinator 重复注册均 REJECTED，失败注册回滚占用；已绑定 adapter 的直接 destroy 在 close/unsubscribe 前返回 false，只有 lifecycle destroy 可推进并在成功时清占用。`break_runtime_world_session_abandon` 仅在 CREATED/FAILED 先精确 unregister，再清 binding 并释放描述块，失败保持双方状态。
+
+正常关闭仍须 stop 到 STOPPED。若要在 CREATED/FAILED 销毁 Coordinator，调用方先 quiesce 外部生产者和其他 adapter API，再 abandon 每个 World adapter，随后手动 close/drain/destroy adapter；不得用 abandon 丢弃 pending。TIMEOUT 的 join/destroy callback 会按恢复点精确重入，前序阶段不重跑，成功销毁一次。

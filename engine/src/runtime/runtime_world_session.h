@@ -66,14 +66,17 @@ typedef struct {
  * contract and race only with queue admission, never with World calls.
  *
  * pending() is queue enqueued-dequeued plus control_pending, not
- * submitted-drained. destroy() first closes admission and unsubscribes, then
- * checks that actual pending count. Even a false destroy attempt therefore
- * prevents further direct or external ingress; drain/stats/epoch queries and
- * a later destroy retry remain valid, and the retry does not unsubscribe
- * twice. A fail-early destroy may overlap producers/drain only while pending
- * is known to keep it false. Before any destroy call that can succeed, the
- * caller must quiesce every other adapter API call and prevent new calls;
- * success invalidates the adapter. The borrowed bus/session stay caller-owned.
+ * submitted-drained. For an unregistered adapter, destroy() first closes
+ * admission and unsubscribes, then checks actual pending. A false attempt then
+ * leaves drain/stats/epoch queries and a later retry valid, without repeating
+ * unsubscribe. A directly registered adapter instead rejects destroy before
+ * close/unsubscribe; only its lifecycle destroy callback may release it.
+ * Abandon returns that ownership to the caller before a manual destroy.
+ *
+ * A fail-early destroy may overlap producers/drain only while pending is known
+ * to keep it false. Before any destroy call that can succeed, the caller must
+ * quiesce every other adapter API call and prevent new calls; success
+ * invalidates the adapter. The borrowed bus/session stay caller-owned.
  */
 BreakRuntimeWorldSession *break_runtime_world_session_create(
     const BreakRuntimeWorldSessionConfig *config);

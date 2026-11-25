@@ -422,3 +422,12 @@ pending 是 queue occupancy 加 control_pending。budget 不足或 OUTBOUND 饱�
 OpenGL 最终为 **481** 而非机械计算的 480：当前旧 cache 的 Vulkan include/library 变量额外满足 `test_rhi_device_type` 注册条件。新同 ON/backend/pin OpenGL 探针为 480，逐项差集只有该 RHI 测试，因此当前 481 如实保留，未过滤任何 network/transport 项。
 
 最终 OpenGL **477 通过、4 skip、0 失败**，build 11.72 s、CTest 303.85 s；Vulkan **478 通过、4 skip、0 失败**，build 11.85 s、CTest 306.76 s。两树共同 skip 为 D3D12 dependency gate、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计执行通过。完整名称、配置差集和 rc 见 Task 2 报告；不预写远端或其他平台结果。
+
+
+## 修订（2026-11-25）：Runtime 控制 binding 唯一占用与销毁顺序
+
+同一 World adapter 的 lifecycle binding 在同一或不同 Coordinator 都只能注册一次；第二次注册 REJECTED 且双方状态不变。已注册 adapter 的直接 destroy 在 close/unsubscribe 前返回 false，只有 lifecycle destroy callback 可在 pending=0 后清占用并销毁。注册失败回滚 binding，失败 destroy 保留可重试状态。
+
+CREATED/FAILED 的 `break_runtime_world_session_abandon` 通过通用 Coordinator 的精确 user_data unregister 摘除 binding，再 free 并归还 adapter 所有权；其他状态或错误 Coordinator 返回 false。销毁未达 STOPPED 的 Coordinator 前，调用方必须先 quiesce 外部生产者和其他 adapter API，再 abandon 并手动 close/drain/destroy adapter。FAILED 后剩余命令仍按真实 pending 排空，不改变 BRWC、connection epoch、level、cid 或网络 sequence。
+
+关闭恢复文案统一为：前序阶段不重跑，TIMEOUT callback 精确重入，成功销毁一次。该表述不要求 join/destroy callback 本身只进入一次。

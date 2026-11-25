@@ -509,3 +509,12 @@ close 只停止 admission 并关闭 queue，已有 A1/B1/A2 仍可恰好一次 F
 OpenGL 当前注册 **481**，比旧 480 多出的独立一项为 `test_rhi_device_type`：旧 cache 的 Vulkan include/library 变量满足其 CMake 注册条件。新同配置 OpenGL 探针没有这些变量而为 480，差集仅该测试；最终树保留并实际执行它。
 
 最终 OpenGL **477 通过、4 skip、0 失败（481 注册）**，build 11.72 s、CTest 303.85 s；Vulkan **478 通过、4 skip、0 失败（482 注册）**，build 11.85 s、CTest 306.76 s。四项条件 skip 两树相同：D3D12 dependency gate 及三个 core_app NM negative/unsupported 项，完整名称与 rc 日志见 Task 2 报告。本追加不改生产源码或历史收据，不预写远端。
+
+
+### 修订（2026-11-25）：控制 binding 的占用与 FAILED 后手动 drain
+
+World 控制 adapter 的 lifecycle binding 现在有明确唯一占用：同一 adapter 在同一或不同 Coordinator 的第二次注册均 REJECTED，分配或 Coordinator 注册失败回滚。binding 指针由 adapter mutex 保护，直接 destroy 在已注册且非 lifecycle destroying 时于任何 ingress/退订副作用前返回 false，避免两个描述块二次释放同一 queue。
+
+CREATED 或 FAILED 可调用 `break_runtime_world_session_abandon(adapter, coordinator)`：先按精确 user_data unregister，再 detach/free binding 并归还 adapter 所有权；错误状态或错误 Coordinator 返回 false 且 binding 不变。FAILED 若发生在 drain 前，abandon 不会清空 queue/control_pending，调用方必须继续手动 close/drain 到真实 pending=0 后再 destroy。Coordinator destroy 前若未 STOPPED，必须先执行该 abandon 路径并 quiesce 外部生产者与其他 adapter API。
+
+上述变化不改变 direct/external 消息计数、FIFO 或 TIMEOUT 恢复。前序阶段不重跑，TIMEOUT callback 精确重入；join/destroy 可重入，成功销毁一次。

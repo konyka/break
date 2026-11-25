@@ -71,7 +71,7 @@ typedef struct BreakRuntimeCoordinatorConfig {
  *    owner verbatim; the remaining callbacks of the stop sequence do not run.
  *  - Callbacks run on the owner thread. The only coordinator call legal from
  *    inside a callback is break_runtime_coordinator_state(); callbacks must
- *    not drive start/stop/fail/register recursively.
+ *    not drive start/stop/fail/register/unregister recursively.
  *
  * Phase order for one full stop (registration order within each phase):
  *   QUIESCING: stop_admission, stop_producers   (stop new admission, then producers)
@@ -98,8 +98,10 @@ BreakRuntimeError break_runtime_coordinator_create(
 /* Releases the coordinator object itself, in ANY state. This never stops or
  * destroys subsystems: subsystem resources are owned by the subsystems, so
  * the owner must stop() to STOPPED first if it wants the shutdown sequence
- * to run. Destroying a live (non-STOPPED) coordinator only abandons
- * coordination. NULL is a no-op. */
+ * to run. Before destroying a live coordinator, the owner must unregister or
+ * abandon every registration-bound resource through its CREATED/FAILED owner
+ * API. Destroying without that cleanup only abandons coordination. NULL is a
+ * no-op. */
 void break_runtime_coordinator_destroy(BreakRuntimeCoordinator *coordinator);
 
 BreakRuntimeState break_runtime_coordinator_state(
@@ -115,6 +117,13 @@ BreakRuntimeError break_runtime_coordinator_last_error(
 BreakRuntimeError break_runtime_coordinator_register_subsystem(
     BreakRuntimeCoordinator *coordinator,
     const BreakRuntimeSubsystem *subsystem);
+
+/* Removes the first entry whose user_data is exactly equal, preserving every
+ * other entry's order. Only CREATED or FAILED is legal. Returns false for NULL,
+ * not-found, or any other state. State, last_error and resume state are not
+ * changed. The caller releases the removed user_data after this returns true. */
+bool break_runtime_coordinator_unregister_subsystem(
+    BreakRuntimeCoordinator *coordinator, const void *user_data);
 
 /* CREATED -> STARTING -> RUNNING. From any other state -> REJECTED
  * (FAILED included: sticky). */

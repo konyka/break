@@ -979,3 +979,12 @@ submit 不调用 World，owner drain 是唯一应用入口。queue OVERLOAD 时 
 当前 OpenGL 为 **481**：相较旧 480 的唯一名称差异是 `test_rhi_device_type`，其注册来自当前旧 cache 中残留的 Vulkan include/library 变量。相同 ON/backend/pin 的新 OpenGL 探针没有这些变量而为 480。该配置差异与 network 差集分离记录，当前完整树仍执行全部 481 项，没有过滤 transport 或网络场景。
 
 最终 OpenGL **477 通过、4 skip、0 失败**，build 11.72 s、CTest 303.85 s；Vulkan **478 通过、4 skip、0 失败**，build 11.85 s、CTest 306.76 s。共同 skip 为 D3D12 dependency gate 和三个 core_app NM negative/unsupported 项，准确名称见 Task 2 报告。条件 skip 不计通过，本修正不关闭其他平台、完整 sanitizer 或远端能力缺口，也不改生产源码和历史收据。
+
+
+## 第 17 节修订（2026-11-25）：仅关闭 Runtime World binding 所有权缺口
+
+此前同一 adapter 可在同一或不同 Coordinator 重复注册，形成两个 binding 并在 stop 时二次 destroy；FAILED 或直接销毁 Coordinator 也缺少 binding 回收和 adapter 所有权恢复。现在 adapter mutex 保护唯一 binding 与 lifecycle_destroying，重复注册和已注册直接 destroy 均拒绝，注册失败回滚，lifecycle destroy 成功才清占用。
+
+通用 Coordinator 新增仅限 CREATED/FAILED 的精确 user_data unregister。`break_runtime_world_session_abandon` 先注销精确 binding，再 detach/free 并归还 adapter 所有权；失败保持双方状态。任何未达 STOPPED 的 Coordinator 在 destroy 前，调用方必须先 quiesce 外部生产者和其他 adapter API，再 abandon World adapter，随后手动 close/drain/destroy；FAILED 后 pending 不得丢弃。
+
+本修订只关闭上述所有权缺口。Runtime snapshot/lease/BRWD/BRFG 数据面、core_app World 自动注册、共享 live World、跨 World 身份、权威 simulation 合并和预测回滚仍未实现。TIMEOUT callback 按恢复点精确重入，成功销毁一次；不预写远端或其他 deferred 验收。

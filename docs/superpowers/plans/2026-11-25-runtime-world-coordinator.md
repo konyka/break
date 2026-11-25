@@ -116,3 +116,23 @@ ctest --test-dir engine/build-vulkan --output-on-failure -j2
 - [ ] **Step 7: 独立评审、推送与收据**
 
 完成任务和整分支评审，修复所有 Critical/Important 后复验。确认最终 HEAD 双后端、focused sanitizer 和工作树干净后推送 `HEAD:master`；核验 CI、Windows、QUIC（若触发）、Proton 和 contract，再追加远端收据。条件 skip、Proton 77 和混合 TSan 不升级为原生 GPU 或完整 sanitizer 验收。
+
+
+## 修订（2026-11-25）：最终整分支 ownership fix wave
+
+仅修复重复注册、FAILED/提前 Coordinator destroy 的 binding 回收和 TIMEOUT 文案，不做其他 deferred 增强。
+
+1. 先用 `test_runtime_core` 固定 unregister：CREATED 精确保序移除、FAILED 保留 sticky 错误、RUNNING/STOPPED/not-found 拒绝。RED 命令：`cmake --build engine/build --target test_runtime_core -j2`。
+2. 先用 `test_runtime_world_session` 复现同/跨 Coordinator 重复注册和已注册直接 destroy。RED/GREEN 命令：`cmake --build engine/build --target test_runtime_world_session -j2 && ./engine/build/test_runtime_world_session`。
+3. adapter mutex 内实现 reserve/attach/release 与 lifecycle_destroying；注册失败回滚，直接 destroy 拒绝，lifecycle false 可重试。
+4. 新增 CREATED/FAILED unregister 和 `break_runtime_world_session_abandon`。覆盖 CREATED abandon 后空 Coordinator start/stop 与手动 adapter 命令/destroy、RUNNING abandon=false 后正常 stop，以及外部 stop_producers/join 致命错误后的 FAILED abandon、手动 drain/destroy。
+5. 公共头说明重复注册、直接 destroy、外部 quiesce 与 Coordinator destroy 前的 abandon 顺序；六份事实文档追加本修订。Implementation_Status 统一为“前序阶段不重跑，TIMEOUT callback 精确重入，成功销毁一次”。
+6. 运行 adapter/Runtime Core/World/Session/bridge normal、ASan+UBSan（`ASAN_OPTIONS=detect_leaks=1`）、TSan focused，以及 naming/dangling/archive 十项聚焦门禁。保留既有 TIMEOUT 证据，不重写历史计数。
+7. 追加 `task-2-report.md` 与 RED/GREEN 终端日志，自审 unregister/detach/free 顺序、失败原子性和生产/测试符号边界，提交 `fix(runtime): make world lifecycle ownership explicit`，不推送。
+
+
+### Fix wave 实际 RED/GREEN 与自审记录
+
+- Core RED：`cmake --build engine/build --target test_runtime_core -j2` 缺 unregister，exit 2；GREEN 直接 `test_runtime_core` **12/12**。World ownership RED：同/跨 Coordinator 重复注册与直接 destroy **27/30**，三项真实断言失败；占用修复 **30/30**。abandon RED 缺 API，exit 2；最终 World **34/34**。对应日志为本地 `task-2-fix2-{core-unregister-red,world-duplicates-red,world-occupancy-green,abandon-red}.log`。
+- 最终 normal、ASan+UBSan（detect_leaks=1）、TSan library 均 **12/12**，直接 Core 均 **12/12**、World 均 **34/34**，无 sanitizer 诊断。完整命令和日志名见 `task-2-report.md` Fix round 2。
+- 自审确认： unregister 不改 state/last_error/resume；注册失败逐路径回滚；直接 destroy 拒绝先于副作用；abandon 在同一 adapter mutex 内 unregister+detach、锁外 free，失败保持 binding；成功 destroy 一次，TIMEOUT callback 精确重入。六份事实文档和公共头均已同步，不做其他 deferred 增强。

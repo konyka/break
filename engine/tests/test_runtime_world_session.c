@@ -1600,6 +1600,20 @@ static BreakRuntimeError lifecycle_join(void *user_data)
     return BREAK_RUNTIME_OK;
 }
 
+static BreakRuntimeError lifecycle_fatal_stop_producers(void *user_data)
+{
+    LifecycleProbe *probe = (LifecycleProbe *)user_data;
+    probe->stop_producers_calls++;
+    return BREAK_RUNTIME_UNAVAILABLE;
+}
+
+static BreakRuntimeError lifecycle_fatal_join(void *user_data)
+{
+    LifecycleProbe *probe = (LifecycleProbe *)user_data;
+    probe->join_calls++;
+    return BREAK_RUNTIME_UNAVAILABLE;
+}
+
 TEST(coordinator_runs_real_six_phase_shutdown_and_preserves_borrowed_owners)
 {
     enum { COMMAND_COUNT = 32 };
@@ -2407,6 +2421,277 @@ TEST(coordinator_destroy_false_times_out_and_retries_only_destroy)
     fixture_dispose(&fixture);
 }
 
+TEST(coordinator_duplicate_registration_same_coordinator_is_rejected)
+{
+    Fixture fixture;
+    BreakRuntimeCoordinator *coordinator = NULL;
+    BreakRuntimeWorldSessionStats before;
+    BreakRuntimeWorldSessionStats after;
+    LifecycleProbe probe;
+    BreakRuntimeError stop_result;
+
+    memset(&probe, 0, sizeof(probe));
+    ASSERT_TRUE(fixture_init(&fixture, 7u, 2u));
+    probe.fixture = &fixture;
+    ASSERT_EQ(break_runtime_coordinator_create(NULL, &coordinator), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_world_session_register_subsystem(fixture.adapter, coordinator, NULL),
+              BREAK_RUNTIME_OK);
+    break_runtime_world_session_stats(fixture.adapter, &before);
+    ASSERT_EQ(break_runtime_world_session_register_subsystem(fixture.adapter, coordinator, NULL),
+              BREAK_RUNTIME_REJECTED);
+    break_runtime_world_session_stats(fixture.adapter, &after);
+    ASSERT_EQ(memcmp(&before, &after, sizeof(before)), 0);
+    ASSERT_EQ(break_runtime_coordinator_state(coordinator), BREAK_RUNTIME_CREATED);
+    ASSERT_EQ(break_runtime_coordinator_last_error(coordinator), BREAK_RUNTIME_OK);
+
+    break_runtime_world_session_lifecycle_set_trace_for_test(lifecycle_trace, &probe);
+    ASSERT_EQ(break_runtime_coordinator_start(coordinator), BREAK_RUNTIME_OK);
+    stop_result = break_runtime_coordinator_stop(coordinator);
+    if (stop_result == BREAK_RUNTIME_OK) fixture.adapter = NULL;
+    break_runtime_world_session_lifecycle_set_trace_for_test(NULL, NULL);
+    ASSERT_EQ(stop_result, BREAK_RUNTIME_OK);
+    ASSERT_EQ(probe.phase_count, 6u);
+    ASSERT_EQ(probe.destroy_calls, 1u);
+    break_runtime_coordinator_destroy(coordinator);
+    fixture_dispose(&fixture);
+}
+
+TEST(coordinator_duplicate_registration_across_coordinators_is_rejected)
+{
+    Fixture fixture;
+    BreakRuntimeCoordinator *first = NULL;
+    BreakRuntimeCoordinator *second = NULL;
+    BreakRuntimeWorldSessionStats before;
+    BreakRuntimeWorldSessionStats after;
+    LifecycleProbe probe;
+    BreakRuntimeError stop_result;
+
+    memset(&probe, 0, sizeof(probe));
+    ASSERT_TRUE(fixture_init(&fixture, 7u, 2u));
+    probe.fixture = &fixture;
+    ASSERT_EQ(break_runtime_coordinator_create(NULL, &first), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_coordinator_create(NULL, &second), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_world_session_register_subsystem(fixture.adapter, first, NULL),
+              BREAK_RUNTIME_OK);
+    break_runtime_world_session_stats(fixture.adapter, &before);
+    ASSERT_EQ(break_runtime_world_session_register_subsystem(fixture.adapter, second, NULL),
+              BREAK_RUNTIME_REJECTED);
+    break_runtime_world_session_stats(fixture.adapter, &after);
+    ASSERT_EQ(memcmp(&before, &after, sizeof(before)), 0);
+    ASSERT_EQ(break_runtime_coordinator_state(first), BREAK_RUNTIME_CREATED);
+    ASSERT_EQ(break_runtime_coordinator_state(second), BREAK_RUNTIME_CREATED);
+    ASSERT_EQ(break_runtime_coordinator_last_error(first), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_coordinator_last_error(second), BREAK_RUNTIME_OK);
+
+    break_runtime_world_session_lifecycle_set_trace_for_test(lifecycle_trace, &probe);
+    ASSERT_EQ(break_runtime_coordinator_start(second), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_coordinator_stop(second), BREAK_RUNTIME_OK);
+    ASSERT_EQ(probe.phase_count, 0u);
+    ASSERT_EQ(break_runtime_coordinator_start(first), BREAK_RUNTIME_OK);
+    stop_result = break_runtime_coordinator_stop(first);
+    if (stop_result == BREAK_RUNTIME_OK) fixture.adapter = NULL;
+    break_runtime_world_session_lifecycle_set_trace_for_test(NULL, NULL);
+    ASSERT_EQ(stop_result, BREAK_RUNTIME_OK);
+    ASSERT_EQ(probe.phase_count, 6u);
+    ASSERT_EQ(probe.destroy_calls, 1u);
+    break_runtime_coordinator_destroy(second);
+    break_runtime_coordinator_destroy(first);
+    fixture_dispose(&fixture);
+}
+
+TEST(coordinator_registered_adapter_direct_destroy_is_rejected)
+{
+    Fixture fixture;
+    BreakRuntimeCoordinator *coordinator = NULL;
+    BreakRuntimeWorldSessionStats before;
+    BreakRuntimeWorldSessionStats after;
+    LifecycleProbe probe;
+    BreakRuntimeError stop_result;
+
+    memset(&probe, 0, sizeof(probe));
+    ASSERT_TRUE(fixture_init(&fixture, 7u, 2u));
+    probe.fixture = &fixture;
+    ASSERT_EQ(break_runtime_coordinator_create(NULL, &coordinator), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_world_session_register_subsystem(fixture.adapter, coordinator, NULL),
+              BREAK_RUNTIME_OK);
+    break_runtime_world_session_stats(fixture.adapter, &before);
+    ASSERT_FALSE(break_runtime_world_session_destroy(fixture.adapter));
+    break_runtime_world_session_stats(fixture.adapter, &after);
+    ASSERT_EQ(memcmp(&before, &after, sizeof(before)), 0);
+    ASSERT_FALSE(break_runtime_world_session_is_closed(fixture.adapter));
+    ASSERT_EQ(break_runtime_world_session_pending(fixture.adapter), 0u);
+
+    break_runtime_world_session_lifecycle_set_trace_for_test(lifecycle_trace, &probe);
+    ASSERT_EQ(break_runtime_coordinator_start(coordinator), BREAK_RUNTIME_OK);
+    stop_result = break_runtime_coordinator_stop(coordinator);
+    if (stop_result == BREAK_RUNTIME_OK) fixture.adapter = NULL;
+    break_runtime_world_session_lifecycle_set_trace_for_test(NULL, NULL);
+    ASSERT_EQ(stop_result, BREAK_RUNTIME_OK);
+    ASSERT_EQ(probe.phase_count, 6u);
+    ASSERT_EQ(probe.destroy_calls, 1u);
+    break_runtime_coordinator_destroy(coordinator);
+    fixture_dispose(&fixture);
+}
+
+TEST(coordinator_abandon_created_restores_adapter_ownership)
+{
+    Fixture fixture;
+    BreakRuntimeCoordinator *coordinator = NULL;
+    LifecycleProbe probe;
+    u64 epoch = 0u;
+
+    memset(&probe, 0, sizeof(probe));
+    ASSERT_TRUE(fixture_init(&fixture, 7u, 2u));
+    probe.fixture = &fixture;
+    ASSERT_EQ(break_runtime_coordinator_create(NULL, &coordinator), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_world_session_register_subsystem(fixture.adapter, coordinator, NULL),
+              BREAK_RUNTIME_OK);
+    break_runtime_world_session_lifecycle_set_trace_for_test(lifecycle_trace, &probe);
+    ASSERT_FALSE(break_runtime_world_session_abandon(NULL, coordinator));
+    ASSERT_FALSE(break_runtime_world_session_abandon(fixture.adapter, NULL));
+    ASSERT_TRUE(break_runtime_world_session_abandon(fixture.adapter, coordinator));
+    ASSERT_EQ(break_runtime_coordinator_state(coordinator), BREAK_RUNTIME_CREATED);
+    ASSERT_EQ(break_runtime_coordinator_last_error(coordinator), BREAK_RUNTIME_OK);
+    ASSERT_EQ(probe.phase_count, 0u);
+    ASSERT_FALSE(break_runtime_world_session_is_closed(fixture.adapter));
+
+    ASSERT_EQ(break_runtime_coordinator_start(coordinator), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_coordinator_stop(coordinator), BREAK_RUNTIME_OK);
+    ASSERT_EQ(probe.phase_count, 0u);
+    ASSERT_TRUE(open_connection(&fixture, KEY_A, 7u, &epoch));
+    ASSERT_TRUE(break_runtime_world_session_destroy(fixture.adapter));
+    fixture.adapter = NULL;
+    break_runtime_world_session_lifecycle_set_trace_for_test(NULL, NULL);
+    break_runtime_coordinator_destroy(coordinator);
+    fixture_dispose(&fixture);
+}
+
+TEST(coordinator_abandon_running_preserves_binding_for_normal_stop)
+{
+    Fixture fixture;
+    BreakRuntimeCoordinator *coordinator = NULL;
+    BreakRuntimeWorldSessionStats before;
+    BreakRuntimeWorldSessionStats after;
+    LifecycleProbe probe;
+    BreakRuntimeError stop_result;
+
+    memset(&probe, 0, sizeof(probe));
+    ASSERT_TRUE(fixture_init(&fixture, 7u, 2u));
+    probe.fixture = &fixture;
+    ASSERT_EQ(break_runtime_coordinator_create(NULL, &coordinator), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_world_session_register_subsystem(fixture.adapter, coordinator, NULL),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_coordinator_start(coordinator), BREAK_RUNTIME_OK);
+    break_runtime_world_session_stats(fixture.adapter, &before);
+    ASSERT_FALSE(break_runtime_world_session_abandon(fixture.adapter, coordinator));
+    break_runtime_world_session_stats(fixture.adapter, &after);
+    ASSERT_EQ(memcmp(&before, &after, sizeof(before)), 0);
+    ASSERT_EQ(break_runtime_coordinator_state(coordinator), BREAK_RUNTIME_RUNNING);
+    ASSERT_EQ(break_runtime_coordinator_last_error(coordinator), BREAK_RUNTIME_OK);
+
+    break_runtime_world_session_lifecycle_set_trace_for_test(lifecycle_trace, &probe);
+    stop_result = break_runtime_coordinator_stop(coordinator);
+    if (stop_result == BREAK_RUNTIME_OK) fixture.adapter = NULL;
+    break_runtime_world_session_lifecycle_set_trace_for_test(NULL, NULL);
+    ASSERT_EQ(stop_result, BREAK_RUNTIME_OK);
+    ASSERT_EQ(probe.phase_count, 6u);
+    ASSERT_EQ(probe.destroy_calls, 1u);
+    break_runtime_coordinator_destroy(coordinator);
+    fixture_dispose(&fixture);
+}
+
+TEST(coordinator_abandon_failed_stop_producers_allows_manual_drain_and_destroy)
+{
+    Fixture fixture;
+    BreakRuntimeCoordinator *coordinator = NULL;
+    BreakRuntimeWorldSessionLifecycle lifecycle;
+    LifecycleProbe probe;
+    BreakRuntimeWorldCommand item;
+    usize drained = 0u;
+
+    memset(&probe, 0, sizeof(probe));
+    ASSERT_TRUE(fixture_init(&fixture, 7u, 2u));
+    probe.fixture = &fixture;
+    item = command(BREAK_RUNTIME_WORLD_COMMAND_OPEN, KEY_A, 0u, 7u);
+    ASSERT_EQ(break_runtime_world_session_submit(fixture.adapter, &item, 0u), BREAK_RUNTIME_OK);
+    memset(&lifecycle, 0, sizeof(lifecycle));
+    lifecycle.stop_producers = lifecycle_fatal_stop_producers;
+    lifecycle.user_data = &probe;
+    ASSERT_EQ(break_runtime_coordinator_create(NULL, &coordinator), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_world_session_register_subsystem(
+                  fixture.adapter, coordinator, &lifecycle),
+              BREAK_RUNTIME_OK);
+    break_runtime_world_session_lifecycle_set_trace_for_test(lifecycle_trace, &probe);
+    ASSERT_EQ(break_runtime_coordinator_start(coordinator), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_coordinator_stop(coordinator), BREAK_RUNTIME_UNAVAILABLE);
+    ASSERT_EQ(break_runtime_coordinator_state(coordinator), BREAK_RUNTIME_STATE_FAILED);
+    ASSERT_EQ(break_runtime_coordinator_last_error(coordinator), BREAK_RUNTIME_UNAVAILABLE);
+    ASSERT_EQ(probe.phase_count, 2u);
+    ASSERT_EQ(probe.destroy_calls, 0u);
+    ASSERT_EQ(break_runtime_world_session_pending(fixture.adapter), 1u);
+    ASSERT_TRUE(break_runtime_world_session_is_closed(fixture.adapter));
+
+    ASSERT_TRUE(break_runtime_world_session_abandon(fixture.adapter, coordinator));
+    ASSERT_EQ(break_runtime_coordinator_state(coordinator), BREAK_RUNTIME_STATE_FAILED);
+    ASSERT_EQ(break_runtime_coordinator_last_error(coordinator), BREAK_RUNTIME_UNAVAILABLE);
+    ASSERT_EQ(probe.phase_count, 2u);
+    break_runtime_world_session_lifecycle_set_trace_for_test(NULL, NULL);
+    break_runtime_coordinator_destroy(coordinator);
+
+    break_runtime_world_session_close(fixture.adapter);
+    ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 1u, &drained),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(drained, 1u);
+    ASSERT_EQ(break_runtime_world_session_pending(fixture.adapter), 0u);
+    ASSERT_TRUE(break_runtime_world_session_destroy(fixture.adapter));
+    fixture.adapter = NULL;
+    fixture_dispose(&fixture);
+}
+
+TEST(coordinator_abandon_failed_join_allows_manual_destroy)
+{
+    Fixture fixture;
+    BreakRuntimeCoordinator *coordinator = NULL;
+    BreakRuntimeWorldSessionLifecycle lifecycle;
+    LifecycleProbe probe;
+    usize drained = 99u;
+
+    memset(&probe, 0, sizeof(probe));
+    ASSERT_TRUE(fixture_init(&fixture, 7u, 2u));
+    probe.fixture = &fixture;
+    memset(&lifecycle, 0, sizeof(lifecycle));
+    lifecycle.join = lifecycle_fatal_join;
+    lifecycle.user_data = &probe;
+    ASSERT_EQ(break_runtime_coordinator_create(NULL, &coordinator), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_world_session_register_subsystem(
+                  fixture.adapter, coordinator, &lifecycle),
+              BREAK_RUNTIME_OK);
+    break_runtime_world_session_lifecycle_set_trace_for_test(lifecycle_trace, &probe);
+    ASSERT_EQ(break_runtime_coordinator_start(coordinator), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_coordinator_stop(coordinator), BREAK_RUNTIME_UNAVAILABLE);
+    ASSERT_EQ(break_runtime_coordinator_state(coordinator), BREAK_RUNTIME_STATE_FAILED);
+    ASSERT_EQ(break_runtime_coordinator_last_error(coordinator), BREAK_RUNTIME_UNAVAILABLE);
+    ASSERT_EQ(probe.phase_count, 5u);
+    ASSERT_EQ(probe.join_calls, 1u);
+    ASSERT_EQ(probe.destroy_calls, 0u);
+    ASSERT_EQ(break_runtime_world_session_pending(fixture.adapter), 0u);
+
+    ASSERT_TRUE(break_runtime_world_session_abandon(fixture.adapter, coordinator));
+    ASSERT_EQ(break_runtime_coordinator_state(coordinator), BREAK_RUNTIME_STATE_FAILED);
+    ASSERT_EQ(break_runtime_coordinator_last_error(coordinator), BREAK_RUNTIME_UNAVAILABLE);
+    ASSERT_EQ(probe.phase_count, 5u);
+    break_runtime_world_session_lifecycle_set_trace_for_test(NULL, NULL);
+    break_runtime_coordinator_destroy(coordinator);
+
+    break_runtime_world_session_close(fixture.adapter);
+    ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 1u, &drained),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(drained, 0u);
+    ASSERT_TRUE(break_runtime_world_session_destroy(fixture.adapter));
+    fixture.adapter = NULL;
+    fixture_dispose(&fixture);
+}
+
 TEST_MAIN_BEGIN()
 RUN_TEST(layout_registry_defaults_and_invalid_configs);
 RUN_TEST(stateless_validation_defers_connection_and_level_state);
@@ -2435,4 +2720,11 @@ RUN_TEST(coordinator_transport_retry_preserves_control_then_join_retry);
 RUN_TEST(coordinator_transport_close_rejects_pending_and_still_drains_queue);
 RUN_TEST(coordinator_consumed_terminal_results_with_zero_pending_complete);
 RUN_TEST(coordinator_destroy_false_times_out_and_retries_only_destroy);
+RUN_TEST(coordinator_duplicate_registration_same_coordinator_is_rejected);
+RUN_TEST(coordinator_duplicate_registration_across_coordinators_is_rejected);
+RUN_TEST(coordinator_registered_adapter_direct_destroy_is_rejected);
+RUN_TEST(coordinator_abandon_created_restores_adapter_ownership);
+RUN_TEST(coordinator_abandon_running_preserves_binding_for_normal_stop);
+RUN_TEST(coordinator_abandon_failed_stop_producers_allows_manual_drain_and_destroy);
+RUN_TEST(coordinator_abandon_failed_join_allows_manual_destroy);
 TEST_MAIN_END()

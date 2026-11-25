@@ -159,6 +159,30 @@ BreakRuntimeError break_runtime_coordinator_register_subsystem(
     return BREAK_RUNTIME_OK;
 }
 
+bool break_runtime_coordinator_unregister_subsystem(
+    BreakRuntimeCoordinator *coordinator, const void *user_data)
+{
+    if (!coordinator || !user_data) return false;
+    if (coordinator->state != BREAK_RUNTIME_CREATED &&
+        coordinator->state != BREAK_RUNTIME_STATE_FAILED) {
+        return false;
+    }
+    for (u32 i = 0u; i < coordinator->subsystem_count; ++i) {
+        if (coordinator->subsystems[i].user_data == user_data) {
+            u32 remaining = coordinator->subsystem_count - i - 1u;
+            if (remaining != 0u) {
+                memmove(&coordinator->subsystems[i], &coordinator->subsystems[i + 1u],
+                        (usize)remaining * sizeof(coordinator->subsystems[0]));
+            }
+            coordinator->subsystem_count--;
+            memset(&coordinator->subsystems[coordinator->subsystem_count], 0,
+                   sizeof(coordinator->subsystems[0]));
+            return true;
+        }
+    }
+    return false;
+}
+
 BreakRuntimeError break_runtime_coordinator_start(
     BreakRuntimeCoordinator *coordinator)
 {

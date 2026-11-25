@@ -24,6 +24,9 @@ struct BreakRuntimeWorldSession {
     u32 max_connections;
     bool closed;
     bool unsubscribed;
+    bool lifecycle_bound;
+    bool lifecycle_destroying;
+    void *lifecycle_binding;
     u64 next_connection_epoch;
     u64 next_sequence;
     u64 submitted;
@@ -256,11 +259,90 @@ static usize runtime_world_pending_locked(const BreakRuntimeWorldSession *adapte
     return runtime_world_queued_locked(adapter) + (adapter->control_pending ? 1u : 0u);
 }
 
+bool break_runtime_world_session_lifecycle_reserve(BreakRuntimeWorldSession *adapter)
+{
+    bool reserved = false;
+    platform_mutex_lock(&adapter->mutex);
+    if (!adapter->closed && !adapter->lifecycle_bound && !adapter->lifecycle_destroying) {
+        adapter->lifecycle_bound = true;
+        reserved = true;
+    }
+    platform_mutex_unlock(&adapter->mutex);
+    return reserved;
+}
+
+bool break_runtime_world_session_lifecycle_attach(BreakRuntimeWorldSession *adapter,
+                                                  void *binding)
+{
+    bool attached = false;
+    platform_mutex_lock(&adapter->mutex);
+    if (!adapter->closed && adapter->lifecycle_bound && !adapter->lifecycle_destroying &&
+        adapter->lifecycle_binding == NULL && binding != NULL) {
+        adapter->lifecycle_binding = binding;
+        attached = true;
+    }
+    platform_mutex_unlock(&adapter->mutex);
+    return attached;
+}
+
+void break_runtime_world_session_lifecycle_release(BreakRuntimeWorldSession *adapter,
+                                                   const void *binding)
+{
+    platform_mutex_lock(&adapter->mutex);
+    if (adapter->lifecycle_bound && !adapter->lifecycle_destroying &&
+        adapter->lifecycle_binding == binding) {
+        adapter->lifecycle_bound = false;
+        adapter->lifecycle_binding = NULL;
+    }
+    platform_mutex_unlock(&adapter->mutex);
+}
+
+void *break_runtime_world_session_lifecycle_detach(
+    BreakRuntimeWorldSession *adapter, BreakRuntimeCoordinator *coordinator)
+{
+    void *binding = NULL;
+    platform_mutex_lock(&adapter->mutex);
+    if (adapter->lifecycle_bound && !adapter->lifecycle_destroying &&
+        adapter->lifecycle_binding != NULL &&
+        break_runtime_coordinator_unregister_subsystem(
+            coordinator, adapter->lifecycle_binding)) {
+        binding = adapter->lifecycle_binding;
+        adapter->lifecycle_bound = false;
+        adapter->lifecycle_binding = NULL;
+    }
+    platform_mutex_unlock(&adapter->mutex);
+    return binding;
+}
+
+bool break_runtime_world_session_lifecycle_begin_destroy(BreakRuntimeWorldSession *adapter)
+{
+    bool began = false;
+    platform_mutex_lock(&adapter->mutex);
+    if (adapter->lifecycle_bound && adapter->lifecycle_binding != NULL &&
+        !adapter->lifecycle_destroying) {
+        adapter->lifecycle_destroying = true;
+        began = true;
+    }
+    platform_mutex_unlock(&adapter->mutex);
+    return began;
+}
+
+void break_runtime_world_session_lifecycle_cancel_destroy(BreakRuntimeWorldSession *adapter)
+{
+    platform_mutex_lock(&adapter->mutex);
+    if (adapter->lifecycle_bound) adapter->lifecycle_destroying = false;
+    platform_mutex_unlock(&adapter->mutex);
+}
+
 bool break_runtime_world_session_destroy(BreakRuntimeWorldSession *adapter)
 {
     BreakRuntimeError result;
     if (!adapter) return true;
     platform_mutex_lock(&adapter->mutex);
+    if (adapter->lifecycle_bound && !adapter->lifecycle_destroying) {
+        platform_mutex_unlock(&adapter->mutex);
+        return false;
+    }
     if (!adapter->closed) {
         adapter->closed = true;
         break_runtime_queue_close(adapter->queue);
@@ -268,15 +350,20 @@ bool break_runtime_world_session_destroy(BreakRuntimeWorldSession *adapter)
     if (!adapter->unsubscribed) {
         result = break_runtime_bus_unsubscribe(adapter->bus, adapter->subscriber_id);
         if (result != BREAK_RUNTIME_OK && result != BREAK_RUNTIME_STALE) {
+            adapter->lifecycle_destroying = false;
             platform_mutex_unlock(&adapter->mutex);
             return false;
         }
         adapter->unsubscribed = true;
     }
     if (runtime_world_pending_locked(adapter) != 0u) {
+        adapter->lifecycle_destroying = false;
         platform_mutex_unlock(&adapter->mutex);
         return false;
     }
+    adapter->lifecycle_bound = false;
+    adapter->lifecycle_destroying = false;
+    adapter->lifecycle_binding = NULL;
     platform_mutex_unlock(&adapter->mutex);
     break_runtime_queue_destroy(adapter->queue);
     platform_mutex_destroy(&adapter->mutex);

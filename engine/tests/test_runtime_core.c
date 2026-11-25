@@ -472,6 +472,108 @@ TEST(subsystem_table_is_bounded)
     break_runtime_coordinator_destroy(rt);
 }
 
+TEST(unregister_created_removes_only_exact_user_data)
+{
+    BreakRuntimeCoordinator *rt = NULL;
+    FakeSub subs[3];
+    FakeSub absent;
+    static const int expected[] = {
+        11, 31, 12, 32, 13, 33, 14, 34, 15, 35, 16, 36
+    };
+
+    memset(subs, 0, sizeof(subs));
+    memset(&absent, 0, sizeof(absent));
+    for (int i = 0; i < 3; ++i) subs[i].id = i + 1;
+    absent.id = 99;
+    ASSERT_EQ(break_runtime_coordinator_create(NULL, &rt), BREAK_RUNTIME_OK);
+    for (int i = 0; i < 3; ++i) {
+        BreakRuntimeSubsystem desc = fake_desc(&subs[i]);
+        ASSERT_EQ(break_runtime_coordinator_register_subsystem(rt, &desc),
+                  BREAK_RUNTIME_OK);
+    }
+    ASSERT_FALSE(break_runtime_coordinator_unregister_subsystem(NULL, &subs[1]));
+    ASSERT_FALSE(break_runtime_coordinator_unregister_subsystem(rt, NULL));
+    ASSERT_FALSE(break_runtime_coordinator_unregister_subsystem(rt, &absent));
+    ASSERT_EQ(break_runtime_coordinator_state(rt), BREAK_RUNTIME_CREATED);
+    ASSERT_EQ(break_runtime_coordinator_last_error(rt), BREAK_RUNTIME_OK);
+
+    ASSERT_TRUE(break_runtime_coordinator_unregister_subsystem(rt, &subs[1]));
+    ASSERT_EQ(break_runtime_coordinator_state(rt), BREAK_RUNTIME_CREATED);
+    ASSERT_EQ(break_runtime_coordinator_last_error(rt), BREAK_RUNTIME_OK);
+    ASSERT_FALSE(break_runtime_coordinator_unregister_subsystem(rt, &subs[1]));
+    ASSERT_EQ(break_runtime_coordinator_state(rt), BREAK_RUNTIME_CREATED);
+
+    ASSERT_EQ(break_runtime_coordinator_start(rt), BREAK_RUNTIME_OK);
+    log_reset(rt);
+    ASSERT_EQ(break_runtime_coordinator_stop(rt), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(events_match(expected, 12));
+    ASSERT_EQ(subs[0].destroy_calls, 1);
+    ASSERT_EQ(subs[1].destroy_calls, 0);
+    ASSERT_EQ(subs[2].destroy_calls, 1);
+    break_runtime_coordinator_destroy(rt);
+}
+
+TEST(unregister_failed_preserves_failure_and_other_subsystems)
+{
+    BreakRuntimeCoordinator *rt = NULL;
+    FakeSub subs[3];
+    int event_count;
+
+    memset(subs, 0, sizeof(subs));
+    for (int i = 0; i < 3; ++i) subs[i].id = i + 1;
+    subs[1].fail_event = EV_DRAIN;
+    subs[1].fail_error = BREAK_RUNTIME_UNAVAILABLE;
+    ASSERT_EQ(break_runtime_coordinator_create(NULL, &rt), BREAK_RUNTIME_OK);
+    for (int i = 0; i < 3; ++i) {
+        BreakRuntimeSubsystem desc = fake_desc(&subs[i]);
+        ASSERT_EQ(break_runtime_coordinator_register_subsystem(rt, &desc),
+                  BREAK_RUNTIME_OK);
+    }
+    ASSERT_EQ(break_runtime_coordinator_start(rt), BREAK_RUNTIME_OK);
+    log_reset(rt);
+    ASSERT_EQ(break_runtime_coordinator_stop(rt), BREAK_RUNTIME_UNAVAILABLE);
+    ASSERT_EQ(break_runtime_coordinator_state(rt), BREAK_RUNTIME_STATE_FAILED);
+    ASSERT_EQ(break_runtime_coordinator_last_error(rt), BREAK_RUNTIME_UNAVAILABLE);
+    event_count = g_event_count;
+
+    ASSERT_TRUE(break_runtime_coordinator_unregister_subsystem(rt, &subs[1]));
+    ASSERT_EQ(break_runtime_coordinator_state(rt), BREAK_RUNTIME_STATE_FAILED);
+    ASSERT_EQ(break_runtime_coordinator_last_error(rt), BREAK_RUNTIME_UNAVAILABLE);
+    ASSERT_EQ(g_event_count, event_count);
+    ASSERT_FALSE(break_runtime_coordinator_unregister_subsystem(rt, &subs[1]));
+    ASSERT_EQ(break_runtime_coordinator_state(rt), BREAK_RUNTIME_STATE_FAILED);
+    ASSERT_EQ(break_runtime_coordinator_last_error(rt), BREAK_RUNTIME_UNAVAILABLE);
+    ASSERT_EQ(break_runtime_coordinator_stop(rt), BREAK_RUNTIME_FAILED);
+    ASSERT_EQ(g_event_count, event_count);
+    for (int i = 0; i < 3; ++i) ASSERT_EQ(subs[i].destroy_calls, 0);
+    break_runtime_coordinator_destroy(rt);
+}
+
+TEST(unregister_running_or_stopped_is_rejected_without_changes)
+{
+    BreakRuntimeCoordinator *rt = NULL;
+    FakeSub sub;
+    BreakRuntimeSubsystem desc;
+
+    memset(&sub, 0, sizeof(sub));
+    sub.id = 1;
+    desc = fake_desc(&sub);
+    ASSERT_EQ(break_runtime_coordinator_create(NULL, &rt), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_coordinator_register_subsystem(rt, &desc), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_coordinator_start(rt), BREAK_RUNTIME_OK);
+    ASSERT_FALSE(break_runtime_coordinator_unregister_subsystem(rt, &sub));
+    ASSERT_EQ(break_runtime_coordinator_state(rt), BREAK_RUNTIME_RUNNING);
+    ASSERT_EQ(break_runtime_coordinator_last_error(rt), BREAK_RUNTIME_OK);
+    log_reset(rt);
+    ASSERT_EQ(break_runtime_coordinator_stop(rt), BREAK_RUNTIME_OK);
+    ASSERT_EQ(sub.destroy_calls, 1);
+    ASSERT_FALSE(break_runtime_coordinator_unregister_subsystem(rt, &sub));
+    ASSERT_EQ(break_runtime_coordinator_state(rt), BREAK_RUNTIME_STOPPED);
+    ASSERT_EQ(break_runtime_coordinator_last_error(rt), BREAK_RUNTIME_OK);
+    ASSERT_EQ(g_event_count, 6);
+    break_runtime_coordinator_destroy(rt);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(create_destroy_and_capacity_validation);
     RUN_TEST(legal_lifecycle_transitions);
@@ -482,4 +584,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(failed_is_sticky_for_admission);
     RUN_TEST(callback_error_propagates_and_enters_failed);
     RUN_TEST(subsystem_table_is_bounded);
+    RUN_TEST(unregister_created_removes_only_exact_user_data);
+    RUN_TEST(unregister_failed_preserves_failure_and_other_subsystems);
+    RUN_TEST(unregister_running_or_stopped_is_rejected_without_changes);
 TEST_MAIN_END()
