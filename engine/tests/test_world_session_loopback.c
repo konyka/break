@@ -1,16 +1,20 @@
 #include "test_framework.h"
 
+#include <core/platform_thread.h>
 #include <ecs/world_session.h>
+#include <ecs/world_snapshot_publication.h>
 #include <network/break_net_envelope.h>
 #include <network/break_net_message_registry.h>
 #include <network/break_replication_wire.h>
 #include <network/break_session.h>
+#include <runtime/runtime_world_session.h>
 #include <snow/acceptor.h>
 #include <snow/endpoint.h>
 
 #include <arpa/inet.h>
 #include <errno.h>
 #include <poll.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -77,6 +81,11 @@ typedef struct {
     int inactive_client_fd;
     bool active_secondary;
     bool fair_outbound_admission;
+    BreakRuntimeBus *bus;                   /* owned; NULL for adapter-free tests */
+    BreakRuntimeWorldSession *adapter;      /* owned; NULL for adapter-free tests */
+    BreakWorldSnapshotPublication *publication; /* owned; NULL disables */
+    u64 adapter_epoch;                      /* active connection adapter epoch */
+    u64 inactive_adapter_epoch;             /* inactive connection adapter epoch */
 } SocketFixture;
 
 static u64 test_clock(void *user)
@@ -176,16 +185,20 @@ static void socket_select_peer(SocketFixture *fixture, bool secondary)
     BreakConnectionKey connection;
     u32 sequence;
     int client_fd;
+    u64 adapter_epoch;
     if (fixture->active_secondary == secondary) return;
     connection = fixture->connection;
     sequence = fixture->sequence;
     client_fd = fixture->client_fd;
+    adapter_epoch = fixture->adapter_epoch;
     fixture->connection = fixture->inactive_connection;
     fixture->sequence = fixture->inactive_sequence;
     fixture->client_fd = fixture->inactive_client_fd;
+    fixture->adapter_epoch = fixture->inactive_adapter_epoch;
     fixture->inactive_connection = connection;
     fixture->inactive_sequence = sequence;
     fixture->inactive_client_fd = client_fd;
+    fixture->inactive_adapter_epoch = adapter_epoch;
     fixture->active_secondary = secondary;
 }
 
@@ -212,6 +225,25 @@ static void socket_dispose(SocketFixture *fixture)
             usleep(1000u);
         }
         (void)break_session_manager_poll(fixture->manager, 64u);
+    }
+    if (fixture->adapter) {
+        break_runtime_world_session_close(fixture->adapter);
+        for (u32 i = 0u; i < 1024u &&
+                 break_runtime_world_session_pending(fixture->adapter) != 0u; ++i) {
+            usize drained = 0u;
+            (void)break_runtime_world_session_drain(fixture->adapter, 256u, &drained);
+        }
+        (void)break_runtime_world_session_destroy(fixture->adapter);
+        fixture->adapter = NULL;
+    }
+    if (fixture->publication) {
+        break_world_snapshot_publication_close(fixture->publication);
+        break_world_snapshot_publication_destroy(fixture->publication);
+        fixture->publication = NULL;
+    }
+    if (fixture->bus) {
+        break_runtime_bus_destroy(fixture->bus);
+        fixture->bus = NULL;
     }
     break_world_session_destroy(fixture->session);
     break_session_manager_destroy(fixture->manager);
@@ -326,6 +358,42 @@ static bool socket_start_with_connections(SocketFixture *fixture, bool include_d
 static bool socket_start(SocketFixture *fixture, bool include_delta)
 {
     return socket_start_with_connections(fixture, include_delta, 1u);
+}
+
+static bool socket_attach_runtime_publication(SocketFixture *fixture, u32 budget)
+{
+    BreakWorldSnapshotPublicationConfig publication_config;
+    BreakRuntimeWorldSessionConfig config;
+    memset(&publication_config, 0, sizeof(publication_config));
+    publication_config.schema_hash = break_schema_hash(fixture->schemas);
+    publication_config.level_generation = TEST_LEVEL;
+    fixture->publication = break_world_snapshot_publication_create(&publication_config);
+    if (!fixture->publication ||
+        break_runtime_bus_create(&fixture->bus) != BREAK_RUNTIME_OK) return false;
+    memset(&config, 0, sizeof(config));
+    config.session = fixture->session;
+    config.bus = fixture->bus;
+    config.subscriber_name = "world_loopback";
+    config.max_connections = 2u;
+    config.publication = fixture->publication;
+    config.publish_connection_budget = budget;
+    fixture->adapter = break_runtime_world_session_create(&config);
+    return fixture->adapter != NULL;
+}
+
+static BreakRuntimeError socket_submit_current(
+    SocketFixture *fixture, u64 level_generation, u64 correlation_id)
+{
+    BreakRuntimeWorldPublishCurrentNotice notice = {level_generation, 0u};
+    return break_runtime_world_session_submit_publish_current(
+        fixture->adapter, &notice, correlation_id);
+}
+
+static bool socket_publish_snapshot(
+    SocketFixture *fixture, BreakWorldSnapshot *snapshot, u64 level_generation)
+{
+    return break_world_snapshot_publication_publish(fixture->publication, snapshot,
+                                                    level_generation);
 }
 
 static bool write_frame_version(SocketFixture *fixture, u16 message_id, u16 protocol_version,
@@ -476,7 +544,29 @@ static bool connect_authenticate(SocketFixture *fixture)
         if (fixture->auth_calls != 0u && fixture->connection != 0u &&
             break_session_manager_state(fixture->manager, fixture->connection) ==
                 BREAK_SESSION_AUTHENTICATED) {
-            return break_world_session_open(fixture->session, fixture->connection);
+            BreakRuntimeWorldCommand open;
+            usize drained = 0u;
+            u64 epoch = 0u;
+            if (fixture->adapter == NULL) {
+                return break_world_session_open(fixture->session, fixture->connection);
+            }
+            memset(&open, 0, sizeof(open));
+            open.kind = BREAK_RUNTIME_WORLD_COMMAND_OPEN;
+            open.connection_key = fixture->connection;
+            open.connection_epoch = 0u;
+            open.level_generation = TEST_LEVEL;
+            if (break_runtime_world_session_submit(fixture->adapter, &open, 0u) !=
+                    BREAK_RUNTIME_OK ||
+                break_runtime_world_session_drain(fixture->adapter, 1u, &drained) !=
+                    BREAK_RUNTIME_OK ||
+                drained != 1u ||
+                !break_runtime_world_session_connection_epoch(
+                    fixture->adapter, fixture->connection, &epoch) ||
+                epoch == 0u) {
+                return false;
+            }
+            fixture->adapter_epoch = epoch;
+            return true;
         }
         if (!pump(fixture)) return false;
         usleep(1000u);
@@ -1714,6 +1804,457 @@ cleanup:
     socket_dispose(&fixture);
 }
 
+TEST(runtime_notice_real_dual_socket_budget_and_independent_ack)
+{
+    SocketFixture fixture;
+    BreakWorldSnapshot *first = NULL;
+    BreakWorldSnapshot *second = NULL;
+    SocketAttempt a_first;
+    SocketAttempt b_first;
+    SocketAttempt a_second;
+    SocketAttempt b_second;
+    BreakWorldSessionSenderState a_before;
+    BreakWorldSessionSenderState b_before;
+    BreakWorldSessionSenderState a_after;
+    BreakWorldSessionSenderState b_after;
+    BreakWorldSessionSenderState a_state;
+    BreakWorldSessionSenderState b_state;
+    BreakConnectionKey a_key;
+    BreakConnectionKey b_key;
+    Entity entity;
+    Value *value;
+    u64 first_id;
+    u64 second_id;
+    usize drained = 0u;
+    u8 *wire = NULL;
+    usize size = 0u;
+
+    memset(&fixture, 0, sizeof(fixture));
+    fixture.client_fd = -1;
+    fixture.inactive_client_fd = -1;
+    fixture.fair_outbound_admission = true;
+    LOOPBACK_CHECK(socket_start_with_connections(&fixture, true, 2u));
+    LOOPBACK_CHECK(socket_attach_runtime_publication(&fixture, 1u));
+    LOOPBACK_CHECK(connect_authenticate(&fixture));
+    a_key = fixture.connection;
+    socket_select_peer(&fixture, true);
+    LOOPBACK_CHECK(connect_authenticate(&fixture));
+    b_key = fixture.connection;
+    LOOPBACK_CHECK(fixture.auth_calls == 2u && a_key != 0u && b_key != 0u && a_key != b_key);
+
+    entity = world_create_entity(fixture.authoritative);
+    LOOPBACK_CHECK(add_value(fixture.authoritative, entity, 42u));
+    first = break_world_snapshot_build(fixture.authoritative, fixture.schemas, 10u);
+    LOOPBACK_CHECK(first != NULL);
+    first_id = break_world_snapshot_id(first);
+    LOOPBACK_CHECK(socket_publish_snapshot(&fixture, first, TEST_LEVEL));
+
+    /* submit 前记录 A/B sender state，submit 后 memcmp 必须相等。 */
+    LOOPBACK_CHECK(break_world_session_sender_state(fixture.session, a_key, &a_before));
+    LOOPBACK_CHECK(break_world_session_sender_state(fixture.session, b_key, &b_before));
+    LOOPBACK_CHECK(socket_submit_current(&fixture, TEST_LEVEL,
+                                         UINT64_C(0xF123456789ABCDEF)) == BREAK_RUNTIME_OK);
+    LOOPBACK_CHECK(break_world_session_sender_state(fixture.session, a_key, &a_after));
+    LOOPBACK_CHECK(break_world_session_sender_state(fixture.session, b_key, &b_after));
+    LOOPBACK_CHECK(memcmp(&a_before, &a_after, sizeof(a_before)) == 0);
+    LOOPBACK_CHECK(memcmp(&b_before, &b_after, sizeof(b_before)) == 0);
+
+    LOOPBACK_CHECK(break_runtime_world_session_drain(fixture.adapter, 1u, &drained) ==
+                   BREAK_RUNTIME_OK);
+    LOOPBACK_CHECK(drained == 1u);
+    LOOPBACK_CHECK(break_runtime_world_session_pending(fixture.adapter) == 1u);
+    socket_select_peer(&fixture, false);
+    LOOPBACK_CHECK(collect_published(&fixture, &a_first));
+    LOOPBACK_CHECK(a_first.kind == BREAK_WORLD_DELTA_WIRE_FULL);
+    LOOPBACK_CHECK(a_first.target_snapshot_id == first_id);
+    LOOPBACK_CHECK(a_first.target_tick == 10u);
+    LOOPBACK_CHECK(a_first.level_generation == TEST_LEVEL);
+    LOOPBACK_CHECK(break_world_session_sender_state(fixture.session, a_key, &a_state));
+    LOOPBACK_CHECK(break_world_session_sender_state(fixture.session, b_key, &b_state));
+    LOOPBACK_CHECK(a_state.history_count == 1u && b_state.history_count == 0u);
+
+    /* queue 空，第二次 drain 才给 B；A 不重复 full。 */
+    LOOPBACK_CHECK(break_runtime_world_session_drain(fixture.adapter, 1u, &drained) ==
+                   BREAK_RUNTIME_OK);
+    LOOPBACK_CHECK(drained == 0u);
+    LOOPBACK_CHECK(break_runtime_world_session_pending(fixture.adapter) == 0u);
+    socket_select_peer(&fixture, true);
+    LOOPBACK_CHECK(collect_published(&fixture, &b_first));
+    LOOPBACK_CHECK(b_first.kind == BREAK_WORLD_DELTA_WIRE_FULL);
+    LOOPBACK_CHECK(b_first.target_snapshot_id == a_first.target_snapshot_id);
+    LOOPBACK_CHECK(b_first.target_tick == 10u);
+    LOOPBACK_CHECK(break_world_session_sender_state(fixture.session, a_key, &a_state));
+    LOOPBACK_CHECK(break_world_session_sender_state(fixture.session, b_key, &b_state));
+    LOOPBACK_CHECK(a_state.history_count == 1u && b_state.history_count == 1u);
+
+    /* 只 ACK A：B 的 history 不受影响。 */
+    socket_select_peer(&fixture, false);
+    LOOPBACK_CHECK(write_attempt_ack(&fixture, &a_first, 1u, 0u));
+    LOOPBACK_CHECK(wait_sender_confirmed_for_connection(&fixture, a_key, first_id));
+    LOOPBACK_CHECK(break_world_session_sender_state(fixture.session, b_key, &b_state));
+    LOOPBACK_CHECK(b_state.history_count == 1u && b_state.confirmed_snapshot_id == 0u);
+
+    /* S2/tick20：A 已确认 S1 发 DELTA/base=S1，B 未确认仍 FULL/base=0。 */
+    value = (Value *)world_get_component(fixture.authoritative, entity, TEST_COMPONENT);
+    LOOPBACK_CHECK(value != NULL);
+    value->value = 43u;
+    second = break_world_snapshot_build(fixture.authoritative, fixture.schemas, 20u);
+    LOOPBACK_CHECK(second != NULL);
+    second_id = break_world_snapshot_id(second);
+    LOOPBACK_CHECK(socket_publish_snapshot(&fixture, second, TEST_LEVEL));
+    LOOPBACK_CHECK(socket_submit_current(&fixture, TEST_LEVEL, 0u) == BREAK_RUNTIME_OK);
+    LOOPBACK_CHECK(break_runtime_world_session_drain(fixture.adapter, 1u, &drained) ==
+                   BREAK_RUNTIME_OK);
+    LOOPBACK_CHECK(drained == 1u);
+    LOOPBACK_CHECK(break_runtime_world_session_drain(fixture.adapter, 1u, &drained) ==
+                   BREAK_RUNTIME_OK);
+    LOOPBACK_CHECK(drained == 0u);
+    LOOPBACK_CHECK(break_runtime_world_session_pending(fixture.adapter) == 0u);
+    LOOPBACK_CHECK(collect_published_pair_interleaved(&fixture, &a_second, &b_second));
+    LOOPBACK_CHECK(a_second.kind == BREAK_WORLD_DELTA_WIRE_DELTA);
+    LOOPBACK_CHECK(a_second.base_snapshot_id == first_id);
+    LOOPBACK_CHECK(b_second.kind == BREAK_WORLD_DELTA_WIRE_FULL);
+    LOOPBACK_CHECK(b_second.base_snapshot_id == 0u);
+    LOOPBACK_CHECK(a_second.target_snapshot_id == second_id &&
+                   b_second.target_snapshot_id == second_id);
+    LOOPBACK_CHECK(a_second.target_tick == 20u && b_second.target_tick == 20u);
+
+    /* 分别 ACK A2/B2，互不裁剪对方 history。 */
+    socket_select_peer(&fixture, false);
+    LOOPBACK_CHECK(write_attempt_ack(&fixture, &a_second, 1u, 0u));
+    LOOPBACK_CHECK(wait_sender_confirmed_for_connection(&fixture, a_key, second_id));
+    LOOPBACK_CHECK(break_world_session_sender_state(fixture.session, b_key, &b_state));
+    LOOPBACK_CHECK(b_state.history_count == 1u && b_state.confirmed_snapshot_id == 0u);
+    socket_select_peer(&fixture, true);
+    LOOPBACK_CHECK(write_attempt_ack(&fixture, &b_second, 1u, 0u));
+    LOOPBACK_CHECK(wait_sender_confirmed_for_connection(&fixture, b_key, second_id));
+    LOOPBACK_CHECK(break_world_session_sender_state(fixture.session, a_key, &a_state));
+    LOOPBACK_CHECK(a_state.history_count == 0u && a_state.confirmed_snapshot_id == second_id);
+
+    /* 独立 remote World：两个连接各自入站 S1，不混入同一 World。 */
+    LOOPBACK_CHECK(encode_full(first, &wire, &size));
+    socket_select_peer(&fixture, false);
+    LOOPBACK_CHECK(write_shuffled_payload(&fixture, 100u, wire, size));
+    socket_select_peer(&fixture, true);
+    LOOPBACK_CHECK(write_shuffled_payload(&fixture, 100u, wire, size));
+    free(wire);
+    wire = NULL;
+    LOOPBACK_CHECK(wait_completed(&fixture, 2u));
+    LOOPBACK_CHECK(break_world_session_drain(fixture.session, a_key,
+                                             fixture.remote, 1u) == 1u);
+    LOOPBACK_CHECK(world_matches(fixture.remote, fixture.schemas, 10u, first_id));
+    LOOPBACK_CHECK(break_world_entity_count(fixture.remote_secondary) == 0u);
+    LOOPBACK_CHECK(break_world_session_drain(fixture.session, b_key,
+                                             fixture.remote_secondary, 1u) == 1u);
+    LOOPBACK_CHECK(world_matches(fixture.remote_secondary, fixture.schemas, 10u, first_id));
+
+cleanup:
+    free(wire);
+    break_world_snapshot_release(second);
+    break_world_snapshot_release(first);
+    socket_dispose(&fixture);
+}
+
+TEST(runtime_notice_real_socket_replaces_lease_and_recovers_e1_e2)
+{
+    SocketFixture fixture;
+    BreakWorldSnapshot *e1 = NULL;
+    BreakWorldSnapshot *e2 = NULL;
+    BreakWorldSnapshotLease lease;
+    SocketAttempt b_e1;
+    SocketAttempt resumed;
+    SocketAttempt a_e2;
+    SocketAttempt b_e2;
+    BreakWorldSessionSenderState a_state;
+    BreakRuntimeWorldSessionStats stats;
+    BreakConnectionKey a_key;
+    BreakConnectionKey b_key;
+    Entity entity;
+    Value *value;
+    u64 e1_id;
+    u64 e2_id;
+    u64 e1_epoch;
+    u8 *expected_payload = NULL;
+    usize expected_size = 0u;
+    u8 *actual_payload = NULL;
+    usize actual_size = 0u;
+    usize drained = 0u;
+
+    memset(&fixture, 0, sizeof(fixture));
+    fixture.client_fd = -1;
+    fixture.inactive_client_fd = -1;
+    fixture.fair_outbound_admission = true;
+    LOOPBACK_CHECK(socket_start_with_connections(&fixture, true, 2u));
+    LOOPBACK_CHECK(socket_attach_runtime_publication(&fixture, 1u));
+    LOOPBACK_CHECK(connect_authenticate(&fixture));
+    a_key = fixture.connection;
+    socket_select_peer(&fixture, true);
+    LOOPBACK_CHECK(connect_authenticate(&fixture));
+    b_key = fixture.connection;
+    LOOPBACK_CHECK(fixture.auth_calls == 2u && a_key != b_key);
+
+    entity = world_create_entity(fixture.authoritative);
+    LOOPBACK_CHECK(add_value(fixture.authoritative, entity, 77u));
+    e1 = break_world_snapshot_build(fixture.authoritative, fixture.schemas, 30u);
+    LOOPBACK_CHECK(e1 != NULL);
+    e1_id = break_world_snapshot_id(e1);
+    LOOPBACK_CHECK(encode_full(e1, &expected_payload, &expected_size));
+
+    /* A 填满自身份额、发布 E1 并 notice。 */
+    socket_select_peer(&fixture, false);
+    for (usize i = 0u; i < TEST_DUAL_OUTBOUND_SHARE; ++i) {
+        LOOPBACK_CHECK(break_net_reactor_send(fixture.reactor, a_key,
+                                             BREAK_NET_MESSAGE_ID_PING, 1u, "x", 1u) ==
+                       BREAK_NET_SEND_OK);
+    }
+    LOOPBACK_CHECK(socket_publish_snapshot(&fixture, e1, TEST_LEVEL));
+    LOOPBACK_CHECK(socket_submit_current(&fixture, TEST_LEVEL, 0u) == BREAK_RUNTIME_OK);
+
+    /* 第一次 drain：A 饱和返回 OVERLOAD，active attempt==E1。 */
+    LOOPBACK_CHECK(break_runtime_world_session_drain(fixture.adapter, 1u, &drained) ==
+                   BREAK_RUNTIME_OVERLOAD);
+    LOOPBACK_CHECK(drained == 1u);
+    LOOPBACK_CHECK(break_world_session_sender_state(fixture.session, a_key, &a_state));
+    LOOPBACK_CHECK(a_state.attempt_pending);
+    LOOPBACK_CHECK(a_state.attempt_target_snapshot_id == e1_id);
+    LOOPBACK_CHECK(a_state.attempt_target_tick == 30u);
+    break_runtime_world_session_stats(fixture.adapter, &stats);
+    LOOPBACK_CHECK(stats.publish_overloads == 1u);
+    LOOPBACK_CHECK(break_runtime_world_session_pending(fixture.adapter) != 0u);
+
+    /* 第二次 drain：显式 fair admission 下 A 饱和不阻断 B，B 收到 E1 full。 */
+    LOOPBACK_CHECK(break_runtime_world_session_drain(fixture.adapter, 1u, &drained) ==
+                   BREAK_RUNTIME_OK);
+    socket_select_peer(&fixture, true);
+    LOOPBACK_CHECK(collect_published(&fixture, &b_e1));
+    LOOPBACK_CHECK(b_e1.kind == BREAK_WORLD_DELTA_WIRE_FULL);
+    LOOPBACK_CHECK(b_e1.target_snapshot_id == e1_id && b_e1.target_tick == 30u);
+
+    /* 逐个读走 A 的全部 PING，不用固定 sleep。 */
+    socket_select_peer(&fixture, false);
+    for (usize i = 0u; i < TEST_DUAL_OUTBOUND_SHARE; ++i) {
+        SocketFrame frame;
+        LOOPBACK_CHECK(read_frame(&fixture, &frame));
+        LOOPBACK_CHECK(frame.message_id == BREAK_NET_MESSAGE_ID_PING &&
+                       frame.payload_size == 1u && frame.payload[0] == (u8)'x');
+    }
+
+    /* publication publish 替换 current 为 E2；本地 acquire 得 E2 和新 epoch。 */
+    value = (Value *)world_get_component(fixture.authoritative, entity, TEST_COMPONENT);
+    LOOPBACK_CHECK(value != NULL);
+    value->value = 99u;
+    e2 = break_world_snapshot_build(fixture.authoritative, fixture.schemas, 40u);
+    LOOPBACK_CHECK(e2 != NULL);
+    e2_id = break_world_snapshot_id(e2);
+    LOOPBACK_CHECK(e2_id != e1_id);
+    LOOPBACK_CHECK(socket_publish_snapshot(&fixture, e2, TEST_LEVEL));
+    memset(&lease, 0, sizeof(lease));
+    LOOPBACK_CHECK(break_world_snapshot_publication_acquire(fixture.publication, &lease) ==
+                   BREAK_WORLD_SNAPSHOT_ACQUIRE_OK);
+    LOOPBACK_CHECK(break_world_snapshot_id(lease.snapshot) == e2_id);
+    e1_epoch = lease.publication_epoch;
+    LOOPBACK_CHECK(e1_epoch != 0u);
+    break_world_snapshot_lease_release(&lease);
+    LOOPBACK_CHECK(lease.snapshot == NULL && lease.level_generation == 0u &&
+                   lease.publication_epoch == 0u);
+
+    /* 释放调用方 E1 引用；Session active attempt 仍拥有它。 */
+    break_world_snapshot_release(e1);
+    e1 = NULL;
+
+    /* 不提交新 notice；continuation 自行 acquire E2，A 续发旧 E1。 */
+    LOOPBACK_CHECK(break_runtime_world_session_drain(fixture.adapter, 1u, &drained) ==
+                   BREAK_RUNTIME_OK);
+    LOOPBACK_CHECK(collect_published_with_payload(&fixture, &resumed, &actual_payload,
+                                                  &actual_size));
+    LOOPBACK_CHECK(resumed.kind == BREAK_WORLD_DELTA_WIRE_FULL);
+    LOOPBACK_CHECK(resumed.target_snapshot_id == e1_id);
+    LOOPBACK_CHECK(resumed.target_snapshot_id != e2_id);
+    LOOPBACK_CHECK(resumed.target_tick == 30u);
+    LOOPBACK_CHECK(actual_size == expected_size);
+    LOOPBACK_CHECK(memcmp(actual_payload, expected_payload, expected_size) == 0);
+    LOOPBACK_CHECK(break_runtime_world_session_pending(fixture.adapter) != 0u);
+
+    /* 后续 drain 分别让 B/A 发 E2，最终两个 socket 都收到 E2 target，pending=0。 */
+    for (u32 round = 0u;
+         round < 8u && break_runtime_world_session_pending(fixture.adapter) != 0u; ++round) {
+        LOOPBACK_CHECK(break_runtime_world_session_drain(fixture.adapter, 1u, &drained) ==
+                       BREAK_RUNTIME_OK);
+    }
+    LOOPBACK_CHECK(break_runtime_world_session_pending(fixture.adapter) == 0u);
+    socket_select_peer(&fixture, false);
+    LOOPBACK_CHECK(collect_published(&fixture, &a_e2));
+    LOOPBACK_CHECK(a_e2.target_snapshot_id == e2_id && a_e2.target_tick == 40u);
+    socket_select_peer(&fixture, true);
+    LOOPBACK_CHECK(collect_published(&fixture, &b_e2));
+    LOOPBACK_CHECK(b_e2.target_snapshot_id == e2_id && b_e2.target_tick == 40u);
+
+    /* 再次 acquire current，确认仍是 E2；recovery 不依赖调用方 E1 指针。 */
+    memset(&lease, 0, sizeof(lease));
+    LOOPBACK_CHECK(break_world_snapshot_publication_acquire(fixture.publication, &lease) ==
+                   BREAK_WORLD_SNAPSHOT_ACQUIRE_OK);
+    LOOPBACK_CHECK(break_world_snapshot_id(lease.snapshot) == e2_id);
+    break_world_snapshot_lease_release(&lease);
+
+cleanup:
+    break_replication_reassembly_free(actual_payload);
+    free(expected_payload);
+    break_world_snapshot_release(e2);
+    break_world_snapshot_release(e1);
+    socket_dispose(&fixture);
+}
+
+#define RUNTIME_SOCKET_RACE_ROUNDS 8u
+
+typedef struct {
+    SocketFixture *fixture;
+    Entity entity;
+    _Atomic u32 ready;
+    _Atomic bool go;
+    _Atomic bool done;
+    _Atomic bool failed;
+    u32 accepted;
+} RuntimeSocketNoticeRace;
+
+static PLATFORM_THREAD_RET runtime_socket_notice_race_producer(PLATFORM_THREAD_ARG argument)
+{
+    RuntimeSocketNoticeRace *race = (RuntimeSocketNoticeRace *)argument;
+    SocketFixture *fixture = race->fixture;
+    atomic_store_explicit(&race->ready, 1u, memory_order_release);
+    while (!atomic_load_explicit(&race->go, memory_order_acquire)) {
+        platform_thread_yield();
+    }
+    for (u32 i = 0u; i < RUNTIME_SOCKET_RACE_ROUNDS; ++i) {
+        BreakWorldSnapshot *snapshot;
+        Value *value = (Value *)world_get_component(fixture->authoritative, race->entity,
+                                                    TEST_COMPONENT);
+        if (!value) { atomic_store_explicit(&race->failed, true, memory_order_release); break; }
+        value->value = 100u + i;
+        snapshot = break_world_snapshot_build(fixture->authoritative, fixture->schemas,
+                                              (u64)i + 1u);
+        if (!snapshot || !socket_publish_snapshot(fixture, snapshot, TEST_LEVEL)) {
+            break_world_snapshot_release(snapshot);
+            atomic_store_explicit(&race->failed, true, memory_order_release);
+            break;
+        }
+        for (u32 spin = 0u; spin < 1000000u; ++spin) {
+            BreakRuntimeError result = socket_submit_current(fixture, TEST_LEVEL,
+                                                             UINT64_C(0xD5754) + i);
+            if (result == BREAK_RUNTIME_OK) { race->accepted++; break; }
+            if (result != BREAK_RUNTIME_OVERLOAD || spin == 999999u) {
+                atomic_store_explicit(&race->failed, true, memory_order_release);
+                break;
+            }
+            platform_thread_yield();
+        }
+        break_world_snapshot_release(snapshot);
+        if (atomic_load_explicit(&race->failed, memory_order_relaxed)) break;
+    }
+    atomic_store_explicit(&race->done, true, memory_order_release);
+    return PLATFORM_THREAD_RETURN;
+}
+
+static bool race_collect_connection(SocketFixture *fixture, BreakConnectionKey key,
+                                    bool secondary, u64 final_id)
+{
+    BreakWorldSessionSenderState state;
+    u64 attempts;
+    u64 last_tick = 0u;
+    u64 last_id = 0u;
+    if (!break_world_session_sender_state(fixture->session, key, &state)) return false;
+    if (state.next_delta_id == 0u) return false;
+    attempts = state.next_delta_id - 1u;
+    if (attempts == 0u) return false;
+    socket_select_peer(fixture, secondary);
+    for (u64 i = 0u; i < attempts; ++i) {
+        SocketAttempt attempt;
+        if (!collect_published(fixture, &attempt)) return false;
+        if (i != 0u && attempt.target_tick <= last_tick) return false;
+        last_tick = attempt.target_tick;
+        last_id = attempt.target_snapshot_id;
+    }
+    return last_id == final_id;
+}
+
+TEST(RuntimeSocketNoticeRace)
+{
+    SocketFixture fixture;
+    RuntimeSocketNoticeRace race;
+    PlatformThread thread;
+    BreakWorldSnapshotLease lease;
+    BreakRuntimeWorldSessionStats stats;
+    BreakConnectionKey a_key;
+    BreakConnectionKey b_key;
+    u64 final_id = 0u;
+    usize drained = 0u;
+    bool ready = false;
+
+    memset(&fixture, 0, sizeof(fixture));
+    fixture.client_fd = -1;
+    fixture.inactive_client_fd = -1;
+    LOOPBACK_CHECK(socket_start_with_connections(&fixture, true, 2u));
+    LOOPBACK_CHECK(socket_attach_runtime_publication(&fixture, 2u));
+    LOOPBACK_CHECK(connect_authenticate(&fixture));
+    a_key = fixture.connection;
+    socket_select_peer(&fixture, true);
+    LOOPBACK_CHECK(connect_authenticate(&fixture));
+    b_key = fixture.connection;
+    LOOPBACK_CHECK(fixture.auth_calls == 2u && a_key != b_key);
+    socket_select_peer(&fixture, false);
+
+    memset(&race, 0, sizeof(race));
+    race.fixture = &fixture;
+    race.entity = world_create_entity(fixture.authoritative);
+    LOOPBACK_CHECK(add_value(fixture.authoritative, race.entity, 1u));
+    atomic_init(&race.ready, 0u);
+    atomic_init(&race.go, false);
+    atomic_init(&race.done, false);
+    atomic_init(&race.failed, false);
+    LOOPBACK_CHECK(platform_thread_create(&thread, runtime_socket_notice_race_producer, &race));
+    for (u32 spin = 0u; spin < 1000000u && !ready; ++spin) {
+        ready = atomic_load_explicit(&race.ready, memory_order_acquire) != 0u;
+        if (!ready) platform_thread_yield();
+    }
+    LOOPBACK_CHECK(ready);
+    atomic_store_explicit(&race.go, true, memory_order_release);
+
+    for (u32 spin = 0u;
+         spin < 1000000u && !atomic_load_explicit(&race.done, memory_order_acquire); ++spin) {
+        (void)break_runtime_world_session_drain(fixture.adapter, 4u, &drained);
+        (void)pump(&fixture);
+        platform_thread_yield();
+    }
+    platform_thread_join(thread);
+    for (u32 round = 0u;
+         round < 1024u && break_runtime_world_session_pending(fixture.adapter) != 0u;
+         ++round) {
+        (void)break_runtime_world_session_drain(fixture.adapter, 4u, &drained);
+        (void)pump(&fixture);
+    }
+
+    LOOPBACK_CHECK(!atomic_load_explicit(&race.failed, memory_order_acquire));
+    LOOPBACK_CHECK(race.accepted == RUNTIME_SOCKET_RACE_ROUNDS);
+    LOOPBACK_CHECK(break_runtime_world_session_pending(fixture.adapter) == 0u);
+    break_runtime_world_session_stats(fixture.adapter, &stats);
+    LOOPBACK_CHECK(!stats.publish_pending);
+
+    memset(&lease, 0, sizeof(lease));
+    LOOPBACK_CHECK(break_world_snapshot_publication_acquire(fixture.publication, &lease) ==
+                   BREAK_WORLD_SNAPSHOT_ACQUIRE_OK);
+    LOOPBACK_CHECK(break_world_snapshot_tick(lease.snapshot) ==
+                   (u64)RUNTIME_SOCKET_RACE_ROUNDS);
+    final_id = break_world_snapshot_id(lease.snapshot);
+    break_world_snapshot_lease_release(&lease);
+
+    LOOPBACK_CHECK(race_collect_connection(&fixture, a_key, false, final_id));
+    LOOPBACK_CHECK(race_collect_connection(&fixture, b_key, true, final_id));
+
+cleanup:
+    socket_dispose(&fixture);
+}
+
+/* __RUNTIME_SOCKET_TESTS__ */
+
 static void check_registry_control(bool include_delta)
 {
     SocketFixture fixture;
@@ -1774,5 +2315,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(world_session_default_outbound_admission_keeps_global_capacity);
     RUN_TEST(world_session_two_sockets_share_snapshots_with_independent_recovery);
     RUN_TEST(world_session_pending_snapshot_attempt_outlives_caller_lease);
+    RUN_TEST(runtime_notice_real_dual_socket_budget_and_independent_ack);
+    RUN_TEST(runtime_notice_real_socket_replaces_lease_and_recovers_e1_e2);
+    RUN_TEST(RuntimeSocketNoticeRace);
     RUN_TEST(world_session_registry_without_delta_fails_then_restores);
 TEST_MAIN_END()

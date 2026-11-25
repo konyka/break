@@ -441,3 +441,11 @@ CREATED/FAILED 的 `break_runtime_world_session_abandon` 通过通用 Coordinato
 Runtime adapter 出站控制使用非零 envelope correlation extension；该扩展位于 BRWC payload 之外，不改变 40 字节内容，也不要求对端回显同一 cid。真实 loopback 检查 ACK/NEED_FULL/ACK 的 payload、target、level 和唯一性，并以完整 64 位值比较 cid；transport 另以高位非零常量证明没有截断。客户端向服务端发送的 v2 ACK 继续 correlation=0，沿用既有 uncorrelated 入站兼容。
 
 入站 0x400B 仍只调用 `break_world_session_handle_control` 裁剪 history 或设置 force_full，不经过 adapter 再发 ACK。网络 at-least-once/final-consistency 语义不变，不新增 exactly-once、自动后续换级、Runtime BRWD 数据面、共享 live World 或权威 simulation 合并承诺。
+
+## 补充（2026-11-25）：snapshot notice 数据面的 attempt 判账与真实 socket 证据
+
+本节记录 Runtime snapshot notice 数据面经真实双 socket loopback 验证的协议级行为，不改写历史小节，也不预写远端结果。
+
+active attempt 的 id/tick 由 Session 维护，adapter 逐分支判账：OVERLOAD 记 `publish_overloads` 并按 `after`/`same_saved` 保存或保留 attempt epoch（E1 续发时保持原 attempt epoch）；OK 仅在 `!had_active||same_current` 或 `same_saved` 时标 completed，未知旧 attempt 下 current 保持 dirty；INVALID/CLOSED/terminal 记 `publish_terminal` 并清 attempt 标量。close/reopen/rebaseline 重置每连接发布标量与 Session 的 attempt/history；EMPTY/CLOSED/level 不符分别走 clear/terminal/STALE。
+
+真实 socket 证据（已在本地实际运行）：双认证连接经真实 AUTH + adapter OPEN（非零 connection epoch）建立；budget=1 round-robin、独立 full/delta 与独立 ACK、E1/E2 续发与 publication replace、真线程 barrier 下的严格递增 target 均在真实 loopback 上通过。这些是本切片的边界证据；远端 CI/平台结果不在此预写。

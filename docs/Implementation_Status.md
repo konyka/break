@@ -13902,3 +13902,13 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 远端 CI run `45586796211`、windows-d3d12 run `45586795726`、QUIC run `45586795878`、Proton run `45589459606` 均 completed/success；CI 为 **25 success、3 条件 skip、0 cancelled、0 failed**。Proton 上游 run-id=`45586795726`，device/pipeline contract 均为 77，仅表示兼容通道，不是原生 GPU 通过。
 - macOS Snowflake replication job 的私有依赖 checkout、configure、build 和 14 项测试均为 skipped，并记录 UNAVAILABLE，不能将 job success 解释为这些测试执行通过。TSan focused 的 24 个 core_app 进程用例仍受既有 Lua longjmp 限制，完整 sanitizer suite 未运行。
 - 本项只关闭 core_app World adapter 生产控制接线及其生命周期缺口，不关闭 Runtime snapshot/lease/BRWD/BRFG 数据面、自动后续换级、共享 live World、权威 simulation 合并或默认全局公平调度。终审保留一项 Minor：同步 CLOSE 失败与断连交错时的保存 key 文档承诺仍需后续收窄，不将其写成完整所有权闭环。本收据提交自身的工作流结果不在此预写。
+
+## Runtime snapshot notice 数据面真实双 socket loopback 验证（2026-11-25）
+
+本小节只记录到此为止已经实际在本地运行的结果，不预写远端 CI/平台或整分支评审结论。
+
+- 范围：`engine/tests/test_world_session_loopback.c` 新增三项真实双 socket 用例（`runtime_notice_real_dual_socket_budget_and_independent_ack`、`runtime_notice_real_socket_replaces_lease_and_recovers_e1_e2`、`RuntimeSocketNoticeRace`），`engine/CMakeLists.txt` 将 loopback target 改为链接 `runtime_world_session_test runtime_core` 并补 `log/profiler/time` 源与平台定义；生产 `runtime_world_session.c` 未改动（与 Task 3 公开行为一致）。
+- RED→GREEN：在完整 Task 3 实现上，去掉 adapter OPEN 接线使三项真实 socket 用例全部 RED（pending 不达 1、无 OVERLOAD、无 attempt 可收），恢复后 GREEN；另以 budget 1→2 复证 budget-cursor 断言 RED。GREEN 后 loopback 本体 **10/10**。
+- 三项高价值变异（真实 socket 路径，均实际判红并恢复，生产源最终 byte-identical sha256 `6125e367…223f6`）：任意 OK 标 current → E1/E2 用例 RED（A 不再续发 E2）；A OVERLOAD 中止 fanout → fair=true 的 B 收不到 E1 full，E1/E2 用例 RED；删除统一 `lease_release` → ASan 树 `detect_leaks=1` 直跑新 loopback，LeakSanitizer 报快照 lease 泄漏 RED；三项恢复后 ASan loopback **10/10** 无泄漏。
+- 提交前 focused（正则含 13 项）：normal **13/13（4.02 s）**、ASan+UBSan（显式 `detect_leaks=1`）**13/13（10.00 s）**、TSan（`halt_on_error=1`）**13/13（34.58 s）**，均实际执行、无 Not Run。
+- 限制：以上为提交前本地结果，最终提交 HEAD 的 focused 重跑与完整 OpenGL+Vulkan 未过滤 CTest、命名/Wayland 合同结果单列于本任务 report；既有 Lua longjmp、混合 TSan、条件 skip、Proton 77 不升级为原生 GPU 或完整 sanitizer 验收。远端 push 与收据不在本切片范围。

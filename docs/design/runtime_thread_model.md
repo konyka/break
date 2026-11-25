@@ -357,3 +357,11 @@ worker 主循环调整为两步，`task.c` 的 `worker_entry`：
 2. 本地没有任务时按优先级窃取：先尝试所有其他 worker 的高优先级队列，再尝试中、低优先级队列；起始的 worker 仍按尝试次数轮转，使多个窃取者分散。之前按 worker 逐个扫描三个队列，扫描到的第一个 worker 有低优先级任务时，就会先取走它，而另一个 worker 上的高优先级任务继续等待。
 
 `test_task_steal` 用阻塞任务固定各 worker 队列的内容，覆盖这两种情形。它们在旧策略下都失败，在新策略下连续 20 次通过。在 15 个 worker 上运行 16 × 64 个混合优先级子任务、共 208,000 个任务的吞吐测试中，旧策略最好成绩为 112~121 ms，新策略为 116~122 ms，差异在波动范围内。
+
+### 追加：snapshot notice 数据面的生产者/owner 线程纪律（2026-11-25）
+
+本小节记录 Runtime snapshot notice 数据面在真实 socket 上的真线程竞态验证，不改写历史小节，也不预写远端结果。
+
+线程纪律保持 Task 3 的单 owner 契约：生产线程只修改权威 World、build snapshot、publication publish、direct submit 和 release snapshot，**不**调用 Session、reactor、manager 或入站 remote World；owner（主）线程是唯一能 drain 并触达 World Session 的入口。loopback 的真线程用例用两阶段原子 barrier（`_Atomic u32 ready` + `_Atomic bool go`，另有 `done/failed`）协调：主线程自旋等 `ready`、释放 `go`，在有界循环里 owner drain + `pump()` + `platform_thread_yield()`，join 后继续 drain 到 pending=0，全程不用固定 sleep；queue submit OVERLOAD 只用有界 yield 重试，其他错误置 `failed`。
+
+锁边界不变：publication 的 publish/close 是单 owner，acquire 可与其他 acquire 及 owner 的 publish/close 并发；lease 不跨 drain 持有——每次 `runtime_world_publish_current` 单次 acquire、单 `release:` 出口释放，不把 lease 留到下一次 drain。中间 epoch 允许 coalesce，最终 acquire 到的 current id/tick 等于生产线程最后一次发布的快照，两个连接各自读到的真实 BRFG target tick 严格递增且末尾等于 final current。

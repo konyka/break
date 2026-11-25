@@ -243,3 +243,11 @@ bridge 创建配置现在必须同时提供 payload 与动态分片元数据的�
 生产关闭顺序为 adapter→network→voice→audio→render→level，session/reactor 随 network 后于 adapter 回收，net_bus 最后关闭。CREATED/FAILED 回滚先 abandon、手动 drain 并销毁 adapter；`on_destroy` 成功后清指针，避免 network destroy TIMEOUT 后二次访问。
 
 本验收不覆盖 snapshot/BRWD Runtime 数据面、自动后续换级、共享 live World、权威 simulation 合并或默认全局公平调度，也不预写推送、CI 或其他平台结果。
+
+## 补充（2026-11-25）：Runtime snapshot notice 的 outbound-only 广播边界
+
+本节记录 Runtime snapshot notice 数据面在真实双认证连接上的 loopback 验证边界，不改写既有段落，也不预写远端结果。
+
+这是一次 outbound-only 的 handoff：权威侧 build snapshot、publication publish、direct notice，owner drain 把 current 快照按每连接的 ACK/baseline 状态发成 full 或 delta。它是**非可靠的每 epoch 广播**——中间 epoch 允许 coalesce，测试据此只用 sender `next_delta_id-1` 推算实际创建的 attempt 数、断言 target tick 严格递增且最后一个等于 final current，不假设固定包数。
+
+handoff **不建立跨 World 的持久身份**：两个认证连接各自维护独立的 sender 状态与独立入站 remote World，一个连接 ACK 自己的 target 不裁剪另一个连接的 history。它也**不做权威合并**：入站 full/delta 只落到该连接自己的 remote World，权威 simulation 仍只在发布侧。显式公平发送 `fair_outbound_admission=true` 仍是 opt-in：测试用它覆盖「A 填满自身 share、B 仍推进」，默认仍为 false、保持全局 256 槽语义。wire（BRWC/BRWD/BRFG、56 字节控制、16 字节 notice）没有变化。

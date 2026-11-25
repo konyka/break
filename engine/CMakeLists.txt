@@ -7192,15 +7192,6 @@ endif()
         set_tests_properties(test_world_session_recovery PROPERTIES
             TIMEOUT 30 LABELS "ecs;replication;session;wire;recovery")
 
-        add_executable(test_world_session_loopback tests/test_world_session_loopback.c)
-        target_include_directories(test_world_session_loopback PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
-        target_link_libraries(test_world_session_loopback PRIVATE
-            break_net_test break_ecs_replication_test)
-        add_test(NAME test_world_session_loopback COMMAND test_world_session_loopback)
-        set_tests_properties(test_world_session_loopback PROPERTIES
-            TIMEOUT 60 LABELS "ecs;replication;session;wire;recovery;loopback")
-
         add_library(runtime_world_session_test STATIC EXCLUDE_FROM_ALL
             src/runtime/runtime_world_session.c
             src/runtime/runtime_world_session_lifecycle.c)
@@ -7210,6 +7201,26 @@ endif()
         target_compile_definitions(runtime_world_session_test PUBLIC BREAK_RUNTIME_TESTING=1)
         target_link_libraries(runtime_world_session_test PUBLIC
             runtime_core_test break_net_test break_ecs_replication_test)
+
+        add_executable(test_world_session_loopback tests/test_world_session_loopback.c
+            src/core/log.c src/core/profiler.c src/platform/time.c)
+        target_include_directories(test_world_session_loopback PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+        if(ENGINE_PLATFORM STREQUAL "linux")
+            target_compile_definitions(test_world_session_loopback PRIVATE
+                ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+            target_link_libraries(test_world_session_loopback PRIVATE pthread m)
+        elseif(ENGINE_PLATFORM STREQUAL "windows")
+            target_compile_definitions(test_world_session_loopback PRIVATE
+                ENGINE_PLATFORM_WINDOWS=1)
+            target_link_libraries(test_world_session_loopback PRIVATE kernel32)
+        endif()
+        target_link_libraries(test_world_session_loopback PRIVATE
+            runtime_world_session_test runtime_core)
+        add_test(NAME test_world_session_loopback COMMAND test_world_session_loopback)
+        set_tests_properties(test_world_session_loopback PROPERTIES
+            TIMEOUT 60 LABELS "ecs;replication;session;wire;recovery;loopback")
+
         add_executable(test_runtime_world_session tests/test_runtime_world_session.c
             src/core/log.c src/core/profiler.c src/platform/time.c)
         target_include_directories(test_runtime_world_session PRIVATE

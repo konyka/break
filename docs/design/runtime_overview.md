@@ -279,3 +279,11 @@ World adapter 以同一 mutex 保护 binding 占用和 lifecycle_destroying。�
 正常关闭先完成 adapter 六阶段，再执行 network/session/reactor 销毁，net_bus 最后关闭。adapter drain TIMEOUT 会阻断 network destroy；成功销毁后 `on_destroy` 清 transport 指针，所以后续 network destroy TIMEOUT 不会留下悬挂 adapter。CREATED/FAILED 回滚先 abandon、close、手动 drain 到 pending=0 并 destroy adapter，再进入 network 回收。
 
 本节只关闭生产控制面的组合缺口，不包括 snapshot/lease/BRWD/BRFG Runtime 数据面、自动后续换级、共享 live World、权威 simulation 合并或默认全局公平调度，不预写远端结果。
+
+## 补充（2026-11-25）：Runtime snapshot notice 数据面的代次分离与 target 边界
+
+本节记录 Runtime snapshot notice 数据面经真实双 socket loopback 验证后的架构边界，不改写历史段落，也不预写远端结果。
+
+direct notice 架构保持不变：生产者只构造 16 字节 `0x5754/v1` publish-current notice 并 `submit_publish_current`，owner `drain` 才 acquire publication current 并对每个已 OPEN 的连接调用 World Session。多个代次在这里是分离的：level generation（Session rebaseline）、publication epoch（发布替换）、connection epoch（每连接 OPEN 身份）、queue generation（adapter FIFO）各自独立推进，adapter 以 publication epoch 判账、以 connection epoch 校验 OPEN、以 level generation 做 STALE 拒绝，互不混用。
+
+target 依赖边界不变：loopback 测试通过 `runtime_world_session_test`（PUBLIC 链接 `runtime_core_test break_net_test break_ecs_replication_test`）加 `runtime_core` 链接正式 adapter，不把 adapter/lifecycle 源直接编入可执行文件，`runtime_core` 的源与依赖也没有改变。**core_app 不自动接线这条数据面**：snapshot/lease/BRWD/BRFG 的 Runtime 数据面仍只在测试 fixture 中组合，生产 core_app 不会自动注册 publication 或把权威 World 接入 Runtime。

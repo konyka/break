@@ -1035,3 +1035,11 @@ authority handoff 和默认全局公平调度仍未交付。正常断连顺序�
 远端 CI `45586796211`、windows-d3d12 `45586795726`、QUIC `45586795878`、Proton `45589459606` 均 completed/success；CI 为 **25 success、3 条件 skip、0 cancelled、0 failed**。Proton 上游 run-id=`45586795726`，device/pipeline contract 均为 77，只代表兼容通道。macOS Snowflake job 的 checkout/configure/build/14 项测试仍因私有依赖不可用而 skipped 并记录 UNAVAILABLE，不计执行通过。
 
 本节只关闭 core_app World adapter 注册、控制路径、跨槽代际与组合关闭缺口。Runtime snapshot/lease/BRWD/BRFG 数据面、自动后续换级、共享 live World、跨 World 身份、权威 simulation 合并、预测回滚和默认全局公平调度仍未关闭。既有 Lua/TSan 进程限制和完整 sanitizer suite 边界不变；同步 CLOSE 失败的保存 key 文档承诺留作后续 Minor 收窄。本收据提交自身的工作流结果不在此预写。
+
+### 第 17 节补充（2026-11-25）：snapshot notice 数据面真实 socket 验证后的剩余缺口
+
+本节记录 Runtime snapshot notice 数据面经真实双 socket loopback 验证后仍未关闭的缺口，不改写历史收据，也不预写远端结果。
+
+本切片只关闭了「Runtime snapshot notice 数据面在真实双认证连接上的端到端 outbound-only 验证」这一项：真实 publication publish → direct notice → owner drain → 每连接 BRWD/BRFG → AUTH socket → 每连接独立入站 World drain，含 budget/cursor、独立 full/delta/ACK、E1/E2 续发、publication replace 后恢复与真线程竞态。
+
+仍未交付：共享 live World、权威 simulation 合并、跨 World 持久身份、AOI/可见性裁剪、自动后续换级、完整资产链、inbound completion 的 Runtime 数据面注入、可靠的每 epoch 广播（当前为非可靠、允许中间 epoch coalesce）、预测回滚与 authority handoff、默认全局公平调度（仍默认 false）。core_app 不自动接线该数据面。既有 Lua/TSan 进程限制与完整 sanitizer suite 边界不变。

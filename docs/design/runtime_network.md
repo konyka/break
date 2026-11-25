@@ -548,3 +548,11 @@ destroy 在任何 pending 判定之前先关闭 queue admission 并退订，且�
 关闭时 adapter 先于 network，session/reactor 后于 adapter，net_bus 最后回收。CREATED/FAILED 先 abandon/manual drain/destroy；pending 未排空时 network 不得先销毁。`on_destroy` 只在 adapter 成功销毁后清指针，network 自身随后的 TIMEOUT 不影响该顺序。
 
 本项不做 snapshot/BRWD Runtime 数据面、自动后续换级、共享 live World、权威 simulation 合并或默认全局公平调度，不预写远端结果。
+
+## 补充（2026-11-25）：snapshot notice 数据面的预算/cursor 与 E1/E2 在真实 socket 上的验证
+
+本小节记录 Runtime snapshot notice 数据面经真实双 socket loopback 验证的网络行为，不改写历史小节，也不预写远端结果。
+
+预算/cursor：`publish_connection_budget=1` 时一次 `drain` 只推进一个连接，round-robin cursor 下一次才轮到下一个连接；A 收到 full 后 pending 仍为 1，第二次 drain 才让 B 收到 full，A 不重复 full。full/delta/ACK/NEED_FULL 的选择由每连接的已确认 baseline 决定：已 ACK S1 的连接在 S2 发 DELTA/base=S1，未确认的连接发 FULL/base=0，两者 target 同为 S2；只 ACK 一个连接不裁剪另一个连接的 history。
+
+E1/E2：A 填满自身 share 后第一次 drain 返回 OVERLOAD，`attempt_target_snapshot_id==E1`、`publish_overloads==1`；显式 fair admission 下第二次 drain 让 B 收到 E1 full（A 饱和不阻断 B）。publication publish 用 E2 替换 current 后，不提交新 notice，continuation 自行 acquire E2，但 A 仍先续发旧 E1（resumed 字节等于 `encode_full(E1)`、不等于 E2），E2 此时不得 completed；后续 drain 才分别让两连接发 E2，pending 归零。fair admission 默认 false、测试显式 true；BRWC/BRWD/BRFG wire 不变。

@@ -337,3 +337,11 @@ destroy 现在先 close/退订再判断真实 pending，false 后没有新 ingre
 `BreakReplicationSessionBridgeConfig` 新增必填的 `max_metadata_bytes_per_connection` 和 `max_total_metadata_bytes`，与 payload 一样校验连接乘积且每连接上限为 16 MiB。bridge stats 新增 `pending_metadata_bytes`。零初始化配置若未设置这两个字段会明确创建失败，不会回退到无界分配。
 
 新增池用例覆盖超限原子拒绝、重复片不重复计费、expire/reset/complete 释放；session 用例在真实 BRFG handler 入口拒绝 250000 片声明，并检查第二条流无法抢占剩余元数据。合入上游 rebaseline 后，普通及 ASan+UBSan 的 fragment/wire 分别为 **30/30、9/9**，无诊断。Snowflake session/socket 结果以新增 CI job 为准，不用本地未启用 Snowflake 的全量套件代替。
+
+## 补充（2026-11-25）：Runtime snapshot notice 数据面的真实双 socket loopback 验证
+
+本节只记录通过真实双 socket loopback 对 Runtime snapshot notice 数据面做端到端验证得到的本地证据，不改写上面的历史收据，也不预写远端结果。
+
+immutable publication 仍只保留 latest-current：`break_world_snapshot_publication_publish` 以严格单调递增的 `publication_epoch` 替换当前快照，`break_world_snapshot_publication_acquire` 返回独立引用的 lease。loopback 测试先 publish E1，再 publish E2 覆盖 current；随后 `break_world_snapshot_lease_release` 把 lease 的 `snapshot/level_generation/publication_epoch` 清零，而调用方对 E1 的引用释放后，Session 上仍 pending 的 active attempt 继续独立持有 E1，续发字节与 `encode_full(E1)` 逐字节一致且不等于 E2。这坐实了 lease/epoch 与 snapshot id 是三类不同的身份：lease 是短锁引用，`publication_epoch` 是发布代次，snapshot id 是内容标识；adapter 判账用 epoch，wire 续发用 attempt 持有的 snapshot id，不依赖调用方指针寿命。
+
+真实路径是 snapshot build → publication publish → direct notice（`submit_publish_current`）→ owner `drain` → 每连接 `break_world_session_publish_snapshot` → BRWD/BRFG 分片 → AUTH socket；入站侧每连接各自的 remote World 独立 drain，两条入站 S1 不会写进同一个 World。**这里仍然没有实现 AOI、共享 live World 或权威 simulation 合并**：每连接是独立的 outbound 快照流与独立的入站 World，没有可见性裁剪，也没有把多个连接合并到同一权威世界。
