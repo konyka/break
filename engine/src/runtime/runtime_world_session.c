@@ -343,6 +343,16 @@ void break_runtime_world_session_close(BreakRuntimeWorldSession *adapter)
     platform_mutex_unlock(&adapter->mutex);
 }
 
+bool break_runtime_world_session_is_closed(const BreakRuntimeWorldSession *adapter)
+{
+    bool closed;
+    if (!adapter) return true;
+    platform_mutex_lock((PlatformMutex *)(uintptr_t)&adapter->mutex);
+    closed = adapter->closed;
+    platform_mutex_unlock((PlatformMutex *)(uintptr_t)&adapter->mutex);
+    return closed;
+}
+
 BreakRuntimeError break_runtime_world_session_drain(
     BreakRuntimeWorldSession *adapter, usize max_messages,
     usize *out_drained)

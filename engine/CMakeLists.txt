@@ -1009,7 +1009,8 @@ if(BREAK_ENABLE_SNOWFLAKE)
     # Optional Runtime -> World Session control bridge. Runtime Core remains
     # transport-neutral; only this opt-in target owns the ECS/network edge.
     add_library(runtime_world_session STATIC
-        src/runtime/runtime_world_session.c)
+        src/runtime/runtime_world_session.c
+        src/runtime/runtime_world_session_lifecycle.c)
     set_property(TARGET runtime_world_session PROPERTY C_STANDARD 11)
     target_include_directories(runtime_world_session PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -7194,7 +7195,8 @@ endif()
             TIMEOUT 60 LABELS "ecs;replication;session;wire;recovery;loopback")
 
         add_library(runtime_world_session_test STATIC EXCLUDE_FROM_ALL
-            src/runtime/runtime_world_session.c)
+            src/runtime/runtime_world_session.c
+            src/runtime/runtime_world_session_lifecycle.c)
         set_property(TARGET runtime_world_session_test PROPERTY C_STANDARD 11)
         target_include_directories(runtime_world_session_test PUBLIC
             ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -7214,7 +7216,8 @@ endif()
                 ENGINE_PLATFORM_WINDOWS=1)
             target_link_libraries(test_runtime_world_session PRIVATE kernel32)
         endif()
-        target_link_libraries(test_runtime_world_session PRIVATE runtime_world_session_test)
+        target_link_libraries(test_runtime_world_session PRIVATE
+            runtime_world_session_test runtime_core)
         add_test(NAME test_runtime_world_session COMMAND test_runtime_world_session)
         set_tests_properties(test_runtime_world_session PROPERTIES
             TIMEOUT 60 LABELS "headless;runtime_core;ecs;replication;session")

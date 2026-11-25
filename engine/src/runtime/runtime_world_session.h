@@ -60,9 +60,9 @@ typedef struct {
  * messages increase drained/applied as consumed, never submitted or the
  * adapter-local Runtime sequence.
  *
- * submit(), close(), pending(), connection_epoch() and stats() may run on any
- * thread. drain() is the single-owner entry point and is the only API that may
- * call World Session. External Bus publishers use the bus' normal threading
+ * submit(), close(), is_closed(), pending(), connection_epoch() and stats()
+ * may run on any thread. drain() is the single-owner entry point and is the
+ * only API that may call World Session. External Bus publishers use the bus' normal threading
  * contract and race only with queue admission, never with World calls.
  *
  * pending() is queue enqueued-dequeued plus control_pending, not
@@ -85,6 +85,8 @@ BreakRuntimeError break_runtime_world_session_submit(
     u64 correlation_id);
 void break_runtime_world_session_close(
     BreakRuntimeWorldSession *adapter);
+bool break_runtime_world_session_is_closed(
+    const BreakRuntimeWorldSession *adapter);
 BreakRuntimeError break_runtime_world_session_drain(
     BreakRuntimeWorldSession *adapter, usize max_messages,
     usize *out_drained);
@@ -105,3 +107,5 @@ void break_runtime_world_session_set_next_connection_epoch_for_test(
 #ifdef __cplusplus
 }
 #endif
+
+#include <runtime/runtime_world_session_lifecycle.h>

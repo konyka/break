@@ -1,8 +1,10 @@
 #include "test_framework.h"
 
 #include <core/platform_thread.h>
+#include <ecs/world_snapshot_publication.h>
 #include <network/break_net_message_registry.h>
 #include <runtime/runtime_world_session.h>
+#include <runtime/runtime_world_session_lifecycle.h>
 #include <snow/acceptor.h>
 #include <snow/endpoint.h>
 
@@ -1539,6 +1541,325 @@ TEST(connection_epoch_exhaustion_is_terminal_rejected)
     fixture_dispose(&fixture);
 }
 
+typedef struct {
+    Fixture *fixture;
+    const char *phases[8];
+    u32 phase_count;
+    u32 stop_producers_calls;
+    u32 join_calls;
+    bool phase_overflow;
+    bool admission_closed;
+    bool pending_empty_at_join;
+    bool pending_empty_at_destroy;
+    BreakRuntimeWorldSessionStats stats_at_join;
+} LifecycleProbe;
+
+static void lifecycle_trace(void *user_data, const char *phase)
+{
+    LifecycleProbe *probe = (LifecycleProbe *)user_data;
+    if (probe->phase_count < 8u) {
+        probe->phases[probe->phase_count] = phase;
+    } else {
+        probe->phase_overflow = true;
+    }
+    probe->phase_count++;
+    if (strcmp(phase, "destroy") == 0) {
+        probe->pending_empty_at_destroy =
+            break_runtime_world_session_pending(probe->fixture->adapter) == 0u;
+    }
+}
+
+static BreakRuntimeError lifecycle_stop_producers(void *user_data)
+{
+    LifecycleProbe *probe = (LifecycleProbe *)user_data;
+    BreakRuntimeWorldCommand item =
+        command(BREAK_RUNTIME_WORLD_COMMAND_REBASELINE, 0u, 0u, 8u);
+    probe->stop_producers_calls++;
+    probe->admission_closed =
+        break_runtime_world_session_submit(probe->fixture->adapter, &item, 0u) ==
+        BREAK_RUNTIME_CLOSED;
+    return BREAK_RUNTIME_OK;
+}
+
+static BreakRuntimeError lifecycle_join(void *user_data)
+{
+    LifecycleProbe *probe = (LifecycleProbe *)user_data;
+    probe->join_calls++;
+    probe->pending_empty_at_join =
+        break_runtime_world_session_pending(probe->fixture->adapter) == 0u;
+    break_runtime_world_session_stats(probe->fixture->adapter, &probe->stats_at_join);
+    return BREAK_RUNTIME_OK;
+}
+
+TEST(coordinator_runs_real_six_phase_shutdown_and_preserves_borrowed_owners)
+{
+    enum { COMMAND_COUNT = 32 };
+    Fixture fixture;
+    BreakRuntimeCoordinator *coordinator = NULL;
+    BreakRuntimeWorldSessionLifecycle lifecycle;
+    LifecycleProbe probe;
+    BreakRuntimeWorldSessionStats stats;
+    BreakRuntimeBusKind expected_kind = {
+        BREAK_RUNTIME_WORLD_SESSION_CONTROL_KIND, 1u, 56u,
+        "world_session.control", true, 0u
+    };
+    BreakRuntimeBusKindStats bus_stats;
+    BreakWorldSnapshotPublicationConfig publication_config;
+    BreakWorldSnapshotPublication *publication = NULL;
+    BreakWorldSnapshot *snapshot = NULL;
+    BreakWorldSnapshotLease lease;
+    BreakRuntimeWorldCommand item;
+    BreakNetOwnedMessage outbound;
+    BreakRuntimeError stop_result;
+    BreakRuntimeError repeated_stop_result = BREAK_RUNTIME_INVALID;
+    u64 expected_correlations[COMMAND_COUNT];
+    u64 epoch = 0u;
+    u64 key = 0u;
+    u32 delivered = 0u;
+    bool outputs_valid = true;
+    static const char *expected_phases[6] = {
+        "stop_admission", "stop_producers", "close_queues", "drain", "join", "destroy"
+    };
+
+    memset(&probe, 0, sizeof(probe));
+    memset(&lease, 0, sizeof(lease));
+    ASSERT_TRUE(fixture_init(&fixture, 7u, 2u));
+    probe.fixture = &fixture;
+    ASSERT_TRUE(open_connection(&fixture, KEY_A, 7u, &epoch));
+    ASSERT_EQ(break_runtime_coordinator_create(NULL, &coordinator), BREAK_RUNTIME_OK);
+    ASSERT_NOT_NULL(coordinator);
+
+    snapshot = make_target(&fixture, 42u, 10u);
+    ASSERT_NOT_NULL(snapshot);
+    memset(&publication_config, 0, sizeof(publication_config));
+    publication_config.schema_hash = break_schema_hash(fixture.schemas);
+    publication_config.level_generation = 7u;
+    publication = break_world_snapshot_publication_create(&publication_config);
+    ASSERT_NOT_NULL(publication);
+    ASSERT_TRUE(break_world_snapshot_publication_publish(publication, snapshot, 7u));
+
+    for (u32 i = 0u; i < COMMAND_COUNT; ++i) {
+        item = command(BREAK_RUNTIME_WORLD_COMMAND_ACK, KEY_A, epoch, 7u);
+        item.delta_id = (u64)i + 1u;
+        item.target_snapshot_id = 1000u + (u64)i;
+        item.target_tick = 2000u + (u64)i;
+        if ((i & 1u) == 0u) {
+            expected_correlations[i] = UINT64_C(0xD100) + (u64)i;
+            ASSERT_EQ(break_runtime_world_session_submit(
+                          fixture.adapter, &item, expected_correlations[i]),
+                      BREAK_RUNTIME_OK);
+        } else {
+            expected_correlations[i] = UINT64_C(0xE100) + (u64)i;
+            ASSERT_EQ(publish_external(fixture.bus, &item, expected_correlations[i], &delivered),
+                      BREAK_RUNTIME_OK);
+            ASSERT_EQ(delivered, 1u);
+        }
+    }
+    ASSERT_EQ(break_runtime_world_session_pending(fixture.adapter), COMMAND_COUNT);
+
+    memset(&lifecycle, 0, sizeof(lifecycle));
+    lifecycle.stop_producers = lifecycle_stop_producers;
+    lifecycle.join = lifecycle_join;
+    lifecycle.user_data = &probe;
+    ASSERT_EQ(break_runtime_world_session_register_subsystem(
+                  fixture.adapter, coordinator, &lifecycle),
+              BREAK_RUNTIME_OK);
+    memset(&lifecycle, 0, sizeof(lifecycle));
+    break_runtime_world_session_lifecycle_set_trace_for_test(lifecycle_trace, &probe);
+    ASSERT_EQ(break_runtime_coordinator_start(coordinator), BREAK_RUNTIME_OK);
+    stop_result = break_runtime_coordinator_stop(coordinator);
+    if (stop_result == BREAK_RUNTIME_OK) {
+        fixture.adapter = NULL;
+        repeated_stop_result = break_runtime_coordinator_stop(coordinator);
+    }
+    break_runtime_world_session_lifecycle_set_trace_for_test(NULL, NULL);
+
+    ASSERT_EQ(stop_result, BREAK_RUNTIME_OK);
+    ASSERT_EQ(repeated_stop_result, BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_coordinator_state(coordinator), BREAK_RUNTIME_STOPPED);
+    ASSERT_EQ(probe.phase_count, 6u);
+    ASSERT_FALSE(probe.phase_overflow);
+    for (u32 i = 0u; i < 6u; ++i) {
+        ASSERT_STR_EQ(probe.phases[i], expected_phases[i]);
+    }
+    ASSERT_EQ(probe.stop_producers_calls, 1u);
+    ASSERT_EQ(probe.join_calls, 1u);
+    ASSERT_TRUE(probe.admission_closed);
+    ASSERT_TRUE(probe.pending_empty_at_join);
+    ASSERT_TRUE(probe.pending_empty_at_destroy);
+    stats = probe.stats_at_join;
+    ASSERT_EQ(stats.submitted, 17u);
+    ASSERT_EQ(stats.drained, 33u);
+    ASSERT_EQ(stats.applied, 33u);
+    ASSERT_EQ(stats.rejected, 0u);
+    ASSERT_EQ(stats.stale_rejected, 0u);
+    ASSERT_EQ(stats.transport_overloads, 0u);
+    ASSERT_EQ(stats.next_sequence, 18u);
+    ASSERT_EQ(stats.queued, 0u);
+    ASSERT_FALSE(stats.control_pending);
+
+    for (u32 i = 0u; i < COMMAND_COUNT; ++i) {
+        if (!next_control(&fixture, &key, &outbound)) {
+            outputs_valid = false;
+            break;
+        }
+        if (key != KEY_A || outbound.correlation_id != expected_correlations[i] ||
+            !control_payload_matches(&outbound, BREAK_WORLD_SESSION_CONTROL_ACK,
+                                     (u64)i + 1u, 1000u + (u64)i, 2000u + (u64)i, 7u)) {
+            outputs_valid = false;
+        }
+        break_net_message_release(&outbound);
+    }
+    ASSERT_TRUE(outputs_valid);
+    ASSERT_EQ(break_net_reactor_outbound_count(fixture.reactor), 0u);
+
+    ASSERT_EQ(break_runtime_bus_kind_matches(fixture.bus, &expected_kind), BREAK_RUNTIME_OK);
+    item = command(BREAK_RUNTIME_WORLD_COMMAND_ACK, KEY_A, epoch, 7u);
+    item.delta_id = 99u;
+    item.target_snapshot_id = 1099u;
+    item.target_tick = 2099u;
+    ASSERT_EQ(publish_external(fixture.bus, &item, HIGH_CID, &delivered), BREAK_RUNTIME_OK);
+    ASSERT_EQ(delivered, 0u);
+    ASSERT_EQ(break_runtime_bus_kind_stats(
+                  fixture.bus, BREAK_RUNTIME_WORLD_SESSION_CONTROL_KIND, &bus_stats),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(bus_stats.published, 17u);
+    ASSERT_EQ(bus_stats.delivered, 16u);
+    ASSERT_EQ(bus_stats.dropped, 0u);
+    ASSERT_EQ(break_world_session_level_generation(fixture.session), 7u);
+    ASSERT_TRUE(break_world_session_baseline(fixture.session, KEY_A, NULL, NULL));
+    ASSERT_EQ(break_world_snapshot_publication_acquire(publication, &lease),
+              BREAK_WORLD_SNAPSHOT_ACQUIRE_OK);
+    ASSERT_TRUE(lease.snapshot == snapshot);
+    ASSERT_EQ(lease.level_generation, 7u);
+    ASSERT_EQ(lease.publication_epoch, 1u);
+    break_world_snapshot_lease_release(&lease);
+
+    break_world_snapshot_publication_close(publication);
+    break_world_snapshot_publication_destroy(publication);
+    break_world_snapshot_release(snapshot);
+    break_runtime_coordinator_destroy(coordinator);
+    fixture_dispose(&fixture);
+}
+
+TEST(coordinator_null_lifecycle_uses_default_noop_hooks)
+{
+    Fixture fixture;
+    BreakRuntimeCoordinator *coordinator = NULL;
+    LifecycleProbe probe;
+    BreakRuntimeError stop_result;
+    static const char *expected_phases[6] = {
+        "stop_admission", "stop_producers", "close_queues", "drain", "join", "destroy"
+    };
+    memset(&probe, 0, sizeof(probe));
+    ASSERT_TRUE(fixture_init(&fixture, 7u, 2u));
+    probe.fixture = &fixture;
+    ASSERT_EQ(break_runtime_coordinator_create(NULL, &coordinator), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_world_session_register_subsystem(fixture.adapter, coordinator, NULL),
+              BREAK_RUNTIME_OK);
+    break_runtime_world_session_lifecycle_set_trace_for_test(lifecycle_trace, &probe);
+    ASSERT_EQ(break_runtime_coordinator_start(coordinator), BREAK_RUNTIME_OK);
+    stop_result = break_runtime_coordinator_stop(coordinator);
+    if (stop_result == BREAK_RUNTIME_OK) fixture.adapter = NULL;
+    break_runtime_world_session_lifecycle_set_trace_for_test(NULL, NULL);
+    ASSERT_EQ(stop_result, BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_coordinator_state(coordinator), BREAK_RUNTIME_STOPPED);
+    ASSERT_EQ(probe.phase_count, 6u);
+    ASSERT_FALSE(probe.phase_overflow);
+    for (u32 i = 0u; i < 6u; ++i) ASSERT_STR_EQ(probe.phases[i], expected_phases[i]);
+    ASSERT_EQ(probe.stop_producers_calls, 0u);
+    ASSERT_EQ(probe.join_calls, 0u);
+    ASSERT_TRUE(probe.pending_empty_at_destroy);
+    break_runtime_coordinator_destroy(coordinator);
+    fixture_dispose(&fixture);
+}
+
+TEST(coordinator_registration_rejects_closed_adapter_without_state_changes)
+{
+    Fixture fixture;
+    BreakRuntimeCoordinator *coordinator = NULL;
+    BreakRuntimeWorldSessionStats before;
+    BreakRuntimeWorldSessionStats after;
+    ASSERT_TRUE(fixture_init(&fixture, 7u, 2u));
+    ASSERT_EQ(break_runtime_coordinator_create(NULL, &coordinator), BREAK_RUNTIME_OK);
+    break_runtime_world_session_close(fixture.adapter);
+    break_runtime_world_session_stats(fixture.adapter, &before);
+    ASSERT_EQ(break_runtime_world_session_register_subsystem(fixture.adapter, coordinator, NULL),
+              BREAK_RUNTIME_REJECTED);
+    break_runtime_world_session_stats(fixture.adapter, &after);
+    ASSERT_EQ(memcmp(&before, &after, sizeof(before)), 0);
+    ASSERT_EQ(break_runtime_coordinator_state(coordinator), BREAK_RUNTIME_CREATED);
+    ASSERT_EQ(break_runtime_coordinator_last_error(coordinator), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_coordinator_start(coordinator), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_coordinator_stop(coordinator), BREAK_RUNTIME_OK);
+    break_runtime_coordinator_destroy(coordinator);
+    fixture_dispose(&fixture);
+}
+
+TEST(coordinator_registration_rejects_non_created_without_state_changes)
+{
+    Fixture fixture;
+    BreakRuntimeCoordinator *coordinator = NULL;
+    BreakRuntimeWorldSessionStats before;
+    BreakRuntimeWorldSessionStats after;
+    BreakRuntimeWorldCommand item;
+    u64 epoch = 0u;
+    usize drained = 0u;
+    ASSERT_TRUE(fixture_init(&fixture, 7u, 2u));
+    ASSERT_EQ(break_runtime_coordinator_create(NULL, &coordinator), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_coordinator_start(coordinator), BREAK_RUNTIME_OK);
+    break_runtime_world_session_stats(fixture.adapter, &before);
+    ASSERT_EQ(break_runtime_world_session_register_subsystem(fixture.adapter, coordinator, NULL),
+              BREAK_RUNTIME_REJECTED);
+    break_runtime_world_session_stats(fixture.adapter, &after);
+    ASSERT_EQ(memcmp(&before, &after, sizeof(before)), 0);
+    ASSERT_EQ(break_runtime_coordinator_state(coordinator), BREAK_RUNTIME_RUNNING);
+    ASSERT_EQ(break_runtime_coordinator_last_error(coordinator), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(open_connection(&fixture, KEY_A, 7u, &epoch));
+    ASSERT_EQ(break_runtime_coordinator_stop(coordinator), BREAK_RUNTIME_OK);
+    item = command(BREAK_RUNTIME_WORLD_COMMAND_CLOSE, KEY_A, epoch, 7u);
+    ASSERT_EQ(break_runtime_world_session_submit(fixture.adapter, &item, 0u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 1u, &drained), BREAK_RUNTIME_OK);
+    ASSERT_EQ(drained, 1u);
+    break_runtime_coordinator_destroy(coordinator);
+    fixture_dispose(&fixture);
+}
+
+TEST(coordinator_registration_overload_preserves_adapter_and_coordinator)
+{
+    Fixture fixture;
+    BreakRuntimeCoordinator *coordinator = NULL;
+    BreakRuntimeCoordinatorConfig config;
+    BreakRuntimeSubsystem filler;
+    BreakRuntimeWorldSessionStats before;
+    BreakRuntimeWorldSessionStats after;
+    BreakRuntimeWorldCommand item;
+    usize drained = 0u;
+    memset(&config, 0, sizeof(config));
+    memset(&filler, 0, sizeof(filler));
+    config.max_subsystems = 1u;
+    filler.name = "filler";
+    ASSERT_TRUE(fixture_init(&fixture, 7u, 2u));
+    ASSERT_EQ(break_runtime_coordinator_create(&config, &coordinator), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_coordinator_register_subsystem(coordinator, &filler),
+              BREAK_RUNTIME_OK);
+    break_runtime_world_session_stats(fixture.adapter, &before);
+    ASSERT_EQ(break_runtime_world_session_register_subsystem(fixture.adapter, coordinator, NULL),
+              BREAK_RUNTIME_OVERLOAD);
+    break_runtime_world_session_stats(fixture.adapter, &after);
+    ASSERT_EQ(memcmp(&before, &after, sizeof(before)), 0);
+    ASSERT_EQ(break_runtime_coordinator_state(coordinator), BREAK_RUNTIME_CREATED);
+    ASSERT_EQ(break_runtime_coordinator_last_error(coordinator), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_coordinator_start(coordinator), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_coordinator_stop(coordinator), BREAK_RUNTIME_OK);
+    item = command(BREAK_RUNTIME_WORLD_COMMAND_OPEN, KEY_A, 0u, 7u);
+    ASSERT_EQ(break_runtime_world_session_submit(fixture.adapter, &item, 0u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 1u, &drained), BREAK_RUNTIME_OK);
+    ASSERT_EQ(drained, 1u);
+    break_runtime_coordinator_destroy(coordinator);
+    fixture_dispose(&fixture);
+}
+
 TEST_MAIN_BEGIN()
 RUN_TEST(layout_registry_defaults_and_invalid_configs);
 RUN_TEST(stateless_validation_defers_connection_and_level_state);
@@ -1557,4 +1878,9 @@ RUN_TEST(two_adapters_isolate_direct_submit_from_external_fanout);
 RUN_TEST(destroy_attempt_closes_ingress_before_pending_retry);
 RUN_TEST(connection_epoch_exhaustion_is_terminal_rejected);
 RUN_TEST(concurrent_ingress_close_drain_and_destroy_preserve_exactly_once);
+RUN_TEST(coordinator_runs_real_six_phase_shutdown_and_preserves_borrowed_owners);
+RUN_TEST(coordinator_null_lifecycle_uses_default_noop_hooks);
+RUN_TEST(coordinator_registration_rejects_closed_adapter_without_state_changes);
+RUN_TEST(coordinator_registration_rejects_non_created_without_state_changes);
+RUN_TEST(coordinator_registration_overload_preserves_adapter_and_coordinator);
 TEST_MAIN_END()
