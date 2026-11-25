@@ -13941,3 +13941,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **为何仍安全**：OPEN 对账要求非零 epoch 相对提交前发生变化，`net_world_key_owned_elsewhere` 在所有槽仍持有该 key 的 transition 时阻止同 key 新 admission。因此释放保存 key 不会重新引入同 key 跨槽认领旧 epoch 的问题，前一轮 Critical 的修复不依赖“失败后永久保存 key”。
 - **文档同步**：`docs/design/core_app_integration.md` 与 `docs/superpowers/specs/2026-11-25-core-app-world-runtime-design.md` 的当前约束已改为“保存 key 只在命令完成对账后释放；CLOSE 同步失败后断连清 key 按完成对账处理”。本澄清不改变任何生产行为、wire 或测试结论，也不预写远端结果。
 - **本地合同验证**：在 `fd55cc79` 后于 `-G Ninja`、`CORE_APP_ENABLE_NETWORK=ON`、固定 Snowflake `4ab761fc58a9d15970f295e231003c99a7d44df8` 的树中构建 `core_app` 后，`test_wayland_ci_migration_contract`、`test_core_app_naming_contract`、`test_repo_naming_contract`、`test_core_app_contract_compat` 共 **4/4** 通过（`test_core_app_contract_compat` 依赖已构建的 `core_app`，未构建时其 nm 子用例会先失败）。
+
+
+## arm64 交叉构建 lane 的上游依赖漂移（2026-11-26）
+
+- **现象**：`Linux arm64 cross-build + QEMU tests (GCC)` 在 `fd55cc79`、`128000c0` 两次 CI 中均在 `Install the host and arm64 build dependencies` 步骤失败，`apt-get` 报 `mesa-libgallium:arm64 : Depends: libelf1t64:arm64 (>= 0.142) but it is not going to be installed`，退出 100；该 job 在 `48d383c8`、`739a09ef` 两次 CI 中为 success。
+- **根因**：runner 镜像滚动。success 的运行使用 `ubuntu24/20261116.133`，失败的运行使用 `ubuntu24/20261116.376`；新镜像上 amd64 `mesa-libgallium` 与 `ports.ubuntu.com` 的 arm64 `libelf1t64` 版本组合无法同时满足，属于上游包依赖漂移，不是本仓源码、workflow 逻辑或本次文档改动的结果（同一 commit 上其余 24 个 job、Windows-d3d12、Proton 均成功）。
+- **未修复原因**：本次改动纯粹是文档收窄，不修改依赖安装步骤；把镜像钉死或改写 arm64 依赖集合属于独立 CI 维护变更，应在单独提交中评估（例如固定 runner 镜像版本，或改用 `apt-get` 的 `--allow-downgrades`/显式版本约束并复验 QEMU 套件）。在此之前该 lane 记为**环境不可用**，其 `success` 与 `failure` 都不应被当作本切片代码正确性证据。
+- **证据边界**：`CI 45694815652` 为 **24 success、3 条件 skip、0 cancelled、1 failed（arm64 依赖安装）**；Windows-d3d12 `45694815630` 与 Proton `45697075787` 均 success，Proton 77 仍只表示兼容通道。本节不预写任何后续重跑或修复结果。

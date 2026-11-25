@@ -1052,3 +1052,10 @@ authority handoff 和默认全局公平调度仍未交付。正常断连顺序�
 远端 CI `45684529232`、windows-d3d12 `45684529198`、QUIC `45684529212`、Proton `45687424089` 均 completed/success；CI 为 **25 success、3 条件 skip、0 cancelled、0 failed**。Proton 上游 run-id=`45684529198`，device/pipeline contract 均为 77，只代表兼容通道。macOS Snowflake job 的私有依赖不可用，checkout/configure/build/14 项测试均 skipped 并记录 UNAVAILABLE，不计执行通过。
 
 本切片只关闭 outbound-only 的 snapshot notice 数据面及真实双 socket 端到端验证，不关闭共享 live World、权威 simulation 合并、跨 World 持久身份、AOI/可见性裁剪、自动换级、完整资产链、inbound completion 的 Runtime 注入、可靠每 epoch 广播（仍允许中间 epoch coalesce）、预测回滚、authority handoff 或默认全局公平调度。core_app 不自动接线该数据面。既有 Lua/TSan 进程限制、条件 skip 与完整 sanitizer suite 边界不变；本收据提交自身的工作流结果不在此预写。
+
+
+### 第 17 节补充（2026-11-26）：arm64 lane 环境不可用的记录方式
+
+`Linux arm64 cross-build + QEMU tests (GCC)` 目前因 runner 镜像 `ubuntu24/20261116.376` 上 `mesa-libgallium:arm64` 与 arm64 `libelf1t64` 的依赖冲突而在安装步骤失败（此前镜像 `...133` 上通过）。该 lane 的失败不提供代码正确性证据，其通过也不应被当作本切片证据；arm64 交叉编译与 QEMU 套件的实际可用性在修复镜像或依赖集合前保持**未验证**。
+
+本记录不改变任何能力边界：共享 live World、权威 simulation 合并、跨 World 持久身份、AOI 裁剪、自动换级、资产链、inbound completion 映射、可靠每 epoch 广播与默认全局公平调度仍未交付；既有 Lua/TSan、条件 skip 与完整 sanitizer suite 的限制同样不变。
