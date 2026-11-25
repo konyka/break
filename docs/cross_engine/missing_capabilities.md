@@ -1026,3 +1026,12 @@ submit 不调用 World，owner drain 是唯一应用入口。queue OVERLOAD 时 
 数据面、自动后续换级、共享 live World、跨 World 持久身份、权威 simulation 合并、预测回滚、
 authority handoff 和默认全局公平调度仍未交付。正常断连顺序与 world off 五项、真实 world on
 六项保持不变；完整 sanitizer、其他平台和远端结果不在本追加中预写。
+
+
+### 第 17 节补充（2026-11-25）：core_app World adapter 最终验证与剩余边界
+
+`c43a07c7` 已完成任务与整分支独立评审并推送。最终直接 normal、ASan+UBSan（显式 leak 检测）、TSan 均为 transport **36/36**、Runtime World Session **34/34**、core_app runtime **68/68**；实际离线 runtime **68/68**。focused normal 与 ASan+UBSan 均 **32/32**，真实 World loopback 通过。OpenGL 全量 **477/481 执行通过、4 条件 skip、0 失败**（301.59 s），Vulkan **478/482 执行通过、4 条件 skip、0 失败**（304.83 s）；条件 skip 不计执行通过。
+
+远端 CI `45586796211`、windows-d3d12 `45586795726`、QUIC `45586795878`、Proton `45589459606` 均 completed/success；CI 为 **25 success、3 条件 skip、0 cancelled、0 failed**。Proton 上游 run-id=`45586795726`，device/pipeline contract 均为 77，只代表兼容通道。macOS Snowflake job 的 checkout/configure/build/14 项测试仍因私有依赖不可用而 skipped 并记录 UNAVAILABLE，不计执行通过。
+
+本节只关闭 core_app World adapter 注册、控制路径、跨槽代际与组合关闭缺口。Runtime snapshot/lease/BRWD/BRFG 数据面、自动后续换级、共享 live World、跨 World 身份、权威 simulation 合并、预测回滚和默认全局公平调度仍未关闭。既有 Lua/TSan 进程限制和完整 sanitizer suite 边界不变；同步 CLOSE 失败的保存 key 文档承诺留作后续 Minor 收窄。本收据提交自身的工作流结果不在此预写。

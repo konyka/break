@@ -13893,3 +13893,12 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
   `CheckUnwind` 进程限制；通过项含直接 transport、Runtime/World/Session/bridge，不将这些
   红项过滤或升级为完整进程 sanitizer 结论。最终提交 HEAD 的双后端与合同结果见本轮
   `final-review-fix-report.md`，不预写远端结果。
+
+
+### core_app World adapter 最终验证与远端收据（2026-11-25）
+
+- 最终推送 `c43a07c759c47968f35a077b53ca7fdec70b31f4`。任务评审、整分支评审及集中修复范围复审均关闭 Critical/Important；最终直接 normal、ASan+UBSan（显式 `detect_leaks=1`）、TSan 均为 transport **36/36**、Runtime World Session **34/34**、core_app runtime **68/68**，实际离线 runtime **68/68**。focused normal **32/32（129.37 s）**，ASan+UBSan **32/32（137.18 s）**，真实 World loopback 均通过。
+- 推送前在最终 HEAD 独立复跑未过滤 CTest：OpenGL **481 注册、477 执行通过、4 条件 skip、0 失败**（301.59 s）；Vulkan **482 注册、478 执行通过、4 条件 skip、0 失败**（304.83 s）。共同条件 skip 为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计执行通过。
+- 远端 CI run `45586796211`、windows-d3d12 run `45586795726`、QUIC run `45586795878`、Proton run `45589459606` 均 completed/success；CI 为 **25 success、3 条件 skip、0 cancelled、0 failed**。Proton 上游 run-id=`45586795726`，device/pipeline contract 均为 77，仅表示兼容通道，不是原生 GPU 通过。
+- macOS Snowflake replication job 的私有依赖 checkout、configure、build 和 14 项测试均为 skipped，并记录 UNAVAILABLE，不能将 job success 解释为这些测试执行通过。TSan focused 的 24 个 core_app 进程用例仍受既有 Lua longjmp 限制，完整 sanitizer suite 未运行。
+- 本项只关闭 core_app World adapter 生产控制接线及其生命周期缺口，不关闭 Runtime snapshot/lease/BRWD/BRFG 数据面、自动后续换级、共享 live World、权威 simulation 合并或默认全局公平调度。终审保留一项 Minor：同步 CLOSE 失败与断连交错时的保存 key 文档承诺仍需后续收窄，不将其写成完整所有权闭环。本收据提交自身的工作流结果不在此预写。
