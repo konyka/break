@@ -902,12 +902,20 @@ usize break_runtime_world_session_connection_snapshots(
         snapshot.attempt_target_snapshot_id = connection->attempt_target_snapshot_id;
         snapshot.attempt_target_tick = connection->attempt_target_tick;
         snapshot.retry_publish = connection->retry_publish;
+        /* Mirrors runtime_world_recompute_continuation for one connection: an
+         * unresolved attempt keeps the connection dirty regardless of the observed
+         * epoch; otherwise the epoch comparison decides, and a never-drained adapter
+         * has no epoch to compare. The saved attempt scalars are always paired with
+         * retry_publish in the current state machine, so listing them keeps this
+         * field defined for any future writer that clears retry first. */
         snapshot.publish_dirty =
             connection->retry_publish ||
-            (adapter->publish_observed_epoch == 0u
-                 ? connection->attempt_publication_epoch != 0u
-                 : (connection->completed_publication_epoch != adapter->publish_observed_epoch &&
-                    connection->terminal_publication_epoch != adapter->publish_observed_epoch));
+            connection->attempt_publication_epoch != 0u ||
+            connection->attempt_target_snapshot_id != 0u ||
+            connection->attempt_target_tick != 0u ||
+            (adapter->publish_observed_epoch != 0u &&
+             connection->completed_publication_epoch != adapter->publish_observed_epoch &&
+             connection->terminal_publication_epoch != adapter->publish_observed_epoch);
         if (out_snapshots && opened < capacity) out_snapshots[opened] = snapshot;
         ++opened;
     }
