@@ -134,6 +134,37 @@ typedef struct CoreAppNetWorldTestView {
     u64 terminal_errors;
 } CoreAppNetWorldTestView;
 
+typedef struct CoreAppNetConnectionTestView {
+    u64 key;
+    bool authenticated;
+    u64 session_id;
+    int session_state;
+    bool correction_pending;
+    bool physics_baseline_owned;
+    usize physics_baseline_size;
+    bool clock_probe_pending;
+    u32 clock_samples;
+    bool world_open;
+    bool world_desired_open;
+    bool world_admission_pending;
+    u32 world_transition_kind;
+    u64 world_transition_key;
+    u64 world_epoch;
+    World *world_diagnostic;
+    World *world_pending_diagnostic;
+    bool voice_rate_ready;
+    struct BreakVoiceReceiver *voice_receiver;
+    u64 voice_accepted;
+    u64 voice_played;
+    u32 voice_mute_count;
+} CoreAppNetConnectionTestView;
+
+bool core_app_net_transport_connection_for_test(CoreAppNetTransport *transport, u32 slot,
+                                                CoreAppNetConnectionTestView *out);
+bool core_app_net_transport_authenticate_for_test(CoreAppNetTransport *transport, u64 key);
+bool core_app_net_transport_seed_physics_for_test(CoreAppNetTransport *transport, u64 key);
+void core_app_net_transport_pump_for_test(CoreAppNetTransport *transport);
+
 bool core_app_net_transport_world_for_test(CoreAppNetTransport *transport,
                                            CoreAppNetWorldTestView *out);
 BreakNetSendResult core_app_net_transport_world_publish_for_test(CoreAppNetTransport *transport,

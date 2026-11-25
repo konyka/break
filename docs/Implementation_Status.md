@@ -13865,6 +13865,31 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 ## core_app World adapter 评审修正（2026-11-25）
 
 - **入站控制禁回发**：真实客户端在等待服务端 full/delta 时显式拒绝任何 `WORLD_CONTROL`，不再让禁止的 ACK 回复被非 delta 分支吞掉。正确生产保持 GREEN；临时让入站 0x400B 错误回发 ACK 后，`world_inbound_control_never_causes_server_control_reply` 等 **3 个检查 RED**，精确还原后重新 GREEN。
-- **hooks 成对语义**：`world_adapter_register` 与 `world_adapter` 任一缺失均在 subsystem 容量计算和实际调用前返回 INVALID，两个 NULL 才保持原五子系统。query-only 在旧实现得到结果断言 RED，register-only 随后以 **139** 崩溃；修复后两种配置均受控回滚，register/query 均为 0 次调用，core_app runtime 在 normal、ASan+UBSan、TSan 均为 **67/67**。
+- **hooks 成对语义**：`world_adapter_register` 与 `world_adapter` 任一缺失均在 subsystem 容量计算和实际调用前返回 INVALID；两个 NULL 保持原五子系统，world-off 成对注册后返回空 adapter 也回退五项。query-only 在旧实现得到结果断言 RED，register-only 随后以 **139** 崩溃；修复后两种配置均受控回滚，register/query 均为 0 次调用，core_app runtime 在 normal、ASan+UBSan、TSan 均为 **67/67**。
 - **验证状态**：真实 World loopback normal 与 ASan+UBSan 均通过；transport **33/33**、Runtime World Session **34/34** 在 normal、ASan+UBSan（`detect_leaks=1`）和 TSan 均通过。完整 focused normal **32/32（132.22 s）**，ASan+UBSan **32/32（141.63 s）**，bridge 单行清理在当前 HEAD 内生效，未过滤红项。
 - **边界**：只关闭评审指出的测试盲区和半初始化崩溃，不改变 BRWD/BRWC、Runtime 数据面、world on 六项或 world off 五项/trace。详细 RED/GREEN、变异与后续双后端命令见 Task 2 fix round 报告，不预写远端结果。
+
+
+
+## core_app World 终审集中修复（2026-11-25）
+
+- **跨槽代际所有权**：旧槽仍持有同 key 的 OPEN/CLOSE/补偿 CLOSE 时，新槽 World admission
+  延迟到旧槽释放后；断连后 CLOSE 失败且仍持有旧 epoch 的槽位继续占有 key。OPEN 对账要求
+  非零 epoch 相对提交前变化。新增 pending CLOSE→OPEN 与取消 OPEN→同 key OPEN 的真实
+  跨槽回归，逐槽检查 key/epoch/transition/diagnostic、独立 epoch 和 opened/closed/open_count。
+- **拒绝清理**：延迟 OPEN 拒绝复用正常断连的完整槽位释放路径，覆盖 voice receiver/rate/
+  mute、clock probe、physics baseline/correction 和 session/auth/welcome。回归在 pending
+  期间认证并接收真实编码 voice，强制拒绝后验证清理和同槽复用的新 receiver 统计。
+- **离线 hooks**：半对校验不再受 `CORE_APP_NET_TRANSPORT` 条件限制；离线任何非 NULL 成对
+  hooks 也明确 INVALID，两个 NULL 保持五项，离线无新增链接依赖。transport-enabled 空
+  adapter 回退五项与真实 world on 六项保持不变。实际离线构建执行新增合同用例。
+- **反向控制与 focused 证据**：移除全槽门禁为 **34/36**，两条同 key 回归判红；移除延迟
+  拒绝清理为 **35/36**，认证 voice 回归判红；分别恢复后均回到 **36/36**。直接 normal、
+  ASan+UBSan(`detect_leaks=1`)、TSan 均为 transport **36/36**、Runtime World Session
+  **34/34**、core_app runtime **68/68**。实际离线 runtime **68/68**。
+- **完整 focused**：normal **32/32（129.37 s）**，ASan+UBSan **32/32（137.18 s）**，其中真实
+  World loopback 分别 **23.73 s / 24.58 s** 通过，无 ASan/LSan/UBSan 红项。TSan focused
+  **8/32 通过、24 失败（6.09 s）**，24 项均为既有 core_app Lua `can't find longjmp buf` /
+  `CheckUnwind` 进程限制；通过项含直接 transport、Runtime/World/Session/bridge，不将这些
+  红项过滤或升级为完整进程 sanitizer 结论。最终提交 HEAD 的双后端与合同结果见本轮
+  `final-review-fix-report.md`，不预写远端结果。

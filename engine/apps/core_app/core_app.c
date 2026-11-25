@@ -2709,7 +2709,6 @@ static BreakRuntimeError app_level_destroy_cb(void *user) {
 
 static BreakRuntimeError app_register_subsystems(CoreApp *app) {
     BreakRuntimeCoordinatorConfig config = {5u};
-#if defined(CORE_APP_NET_TRANSPORT) && CORE_APP_NET_TRANSPORT
     const CoreAppNetworkHooks *network_hooks = app->config.network_hooks;
     bool world_adapter_paired = false;
     if (app->network_live) {
@@ -2718,7 +2717,10 @@ static BreakRuntimeError app_register_subsystems(CoreApp *app) {
         if (has_register != has_query) return BREAK_RUNTIME_INVALID;
         world_adapter_paired = has_register && has_query;
     }
+#if defined(CORE_APP_NET_TRANSPORT) && CORE_APP_NET_TRANSPORT
     if (world_adapter_paired) config.max_subsystems = 6u;
+#else
+    if (world_adapter_paired) return BREAK_RUNTIME_INVALID;
 #endif
     BreakRuntimeError result = break_runtime_coordinator_create(&config,
                                                                 &app->coordinator);

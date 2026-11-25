@@ -709,6 +709,26 @@ TEST(world_adapter_register_without_query_is_rejected) {
     ASSERT_EQ(probe.destroy_calls, 1u);
 }
 
+TEST(world_adapter_complete_pair_follows_transport_support) {
+    HalfWorldAdapterHooksProbe probe;
+    BreakRuntimeError result;
+    int exit_code = 0;
+    run_half_world_adapter_hooks(true, true, &probe, &result, &exit_code);
+#if defined(CORE_APP_NET_TRANSPORT) && CORE_APP_NET_TRANSPORT
+    ASSERT_EQ(result, BREAK_RUNTIME_OK);
+    ASSERT_EQ(exit_code, 0);
+    ASSERT_EQ(probe.register_calls, 1u);
+    ASSERT_EQ(probe.query_calls, 1u);
+#else
+    ASSERT_EQ(result, BREAK_RUNTIME_FAILED);
+    ASSERT_EQ(exit_code, 2);
+    ASSERT_EQ(probe.register_calls, 0u);
+    ASSERT_EQ(probe.query_calls, 0u);
+#endif
+    ASSERT_EQ(probe.start_calls, 1u);
+    ASSERT_EQ(probe.destroy_calls, 1u);
+}
+
 TEST(input_reuses_touch_id_with_new_generation) {
     CoreAppInput *input = core_app_input_create();
     CoreAppInputFrame frame;
@@ -2104,6 +2124,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(diagnostics_max_frames_excludes_unfinished_tick);
     RUN_TEST(world_adapter_query_without_register_is_rejected);
     RUN_TEST(world_adapter_register_without_query_is_rejected);
+    RUN_TEST(world_adapter_complete_pair_follows_transport_support);
     RUN_TEST(input_reuses_touch_id_with_new_generation);
     RUN_TEST(input_cancel_emits_no_gesture_and_next_tick_is_idle);
     RUN_TEST(input_key_hold_survives_tick_and_release_clears_it);

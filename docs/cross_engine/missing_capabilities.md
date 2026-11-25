@@ -1012,3 +1012,17 @@ submit 不调用 World，owner drain 是唯一应用入口。queue OVERLOAD 时 
 - **换级与共享状态**：没有自动后续换级、混合 level、共享 live World、跨 World 持久身份或 authority handoff。
 - **权威与调度**：没有权威 simulation 合并、预测回滚或默认全局公平调度；fair admission 仍为显式 opt-in，控制投递也不是 exactly-once。
 - **验收范围**：focused sanitizer、条件 skip、既有 Lua longjmp 和混合 TSan 边界分别记录，不升级为完整 sanitizer、原生 GPU 或远端矩阵结论；本追加不预写远端结果。
+
+
+
+## 第 17 节补充（2026-11-25）：只关闭 core_app 跨槽代际与拒绝清理缺口
+
+同 key 跨槽复用现在受全槽 World 代际所有权约束：旧 OPEN/CLOSE/补偿 CLOSE 未对账完成前，
+新 OPEN 延迟；OPEN 必须取得相对提交前已变化的非零 epoch。延迟 OPEN 拒绝复用正常断连的
+完整槽位清理，认证期间建立的 voice、clock、physics 和 session 状态不得传给后续槽位使用者。
+离线 hooks 半对与任何非 NULL 成对配置均明确 INVALID，不引入 concrete transport 链接。
+
+本修复不新增 Runtime/wire 协议，也不关闭既有能力缺口：Runtime snapshot/lease/BRWD/BRFG
+数据面、自动后续换级、共享 live World、跨 World 持久身份、权威 simulation 合并、预测回滚、
+authority handoff 和默认全局公平调度仍未交付。正常断连顺序与 world off 五项、真实 world on
+六项保持不变；完整 sanitizer、其他平台和远端结果不在本追加中预写。

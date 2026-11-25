@@ -147,3 +147,28 @@ ctest --test-dir engine/build-vulkan --output-on-failure -j2
 - [ ] **Step 6: 独立评审、推送与收据**
 
 完成任务与整分支评审并修复所有 Critical/Important。确认最终 HEAD 双后端、focused sanitizer 和工作树干净后推送 `HEAD:master`；核验 CI、Windows、QUIC（若触发）、Proton 和 contract，再追加远端收据。条件 skip、Proton 77 和混合 TSan 不升级为原生 GPU 或完整 sanitizer 验收。
+
+
+---
+
+## 终审集中修复约束（2026-11-25）
+
+本轮只关闭整分支终审的 generation lifecycle 与 hooks 合同缺口，不扩大原任务范围。
+
+- [x] 先以同 key、不同槽的 pending CLOSE→OPEN 和取消 OPEN→同 key OPEN 回归复现旧连接
+  对账污染，再实现全槽 key 代际所有权：旧 OPEN/CLOSE/补偿 CLOSE 未释放前延迟新 OPEN，
+  断连后仍未关闭的旧 epoch 继续占有 key；OPEN 对账同时要求 epoch 相对提交前发生变化。
+- [x] 回归逐槽检查旧 key/epoch/transition/diagnostic 释放、新 epoch 独立性、diagnostic
+  World 归属及 opened/closed/open_count，而非只检查表面返回值。移除全槽门禁的可构建
+  变异已使两条回归判红，恢复后重新通过。
+- [x] 先以 pending OPEN 期间认证、真实 voice 接收入 jitter buffer、随后拒绝并复用槽位的
+  回归复现资源遗留，再让延迟拒绝复用正常断连的完整槽位释放路径，覆盖
+  voice/rate/mute、clock probe、physics 和 session 状态。移除该释放的可构建变异已判红，
+  恢复后重新通过。
+- [x] 将 hooks 半对校验移出 transport 条件并实际构建执行 `CORE_APP_NET_TRANSPORT=0`
+  用例。离线任何非 NULL 成对 hooks 明确 INVALID；两个 NULL 保持五项，transport-enabled
+  空 adapter 回退五项，真实 world on 六项不变，离线不新增 concrete transport 链接。
+- 最终门禁：在最终提交 HEAD 重跑完整 OpenGL/Vulkan build 与未过滤 CTest，并记录注册、执行通过、
+  条件 skip、失败和耗时；命名/target/archive/config 合同、`git diff --check`、无变异残留、
+  工作树干净和无后台任务作为收尾门禁。focused sanitizer 与真实 loopback 结论写入本轮
+  `final-review-fix-report.md`，既有 Lua/TSan 进程限制单列，不预写远端结果。

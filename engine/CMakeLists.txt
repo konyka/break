@@ -5567,7 +5567,8 @@ endif()
     target_link_libraries(test_core_app_runtime PRIVATE engine)
     engine_link_rhi_backend(test_core_app_runtime)
     target_compile_definitions(test_core_app_runtime PRIVATE
-        CORE_APP_SOURCE_ASSET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app")
+        CORE_APP_SOURCE_ASSET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app"
+        CORE_APP_NET_TRANSPORT=$<BOOL:${_core_app_net_transport}>)
     add_test(NAME test_core_app_runtime COMMAND test_core_app_runtime)
     set_tests_properties(test_core_app_runtime PROPERTIES
         LABELS "headless;core_app" TIMEOUT 60)

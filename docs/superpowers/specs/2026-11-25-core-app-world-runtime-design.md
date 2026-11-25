@@ -95,3 +95,29 @@ CREATED 或 FAILED 回滚先停止其他 adapter API，调用
   trace 不变。
 - focused normal、ASan+UBSan（显式 leak 检测）、TSan 和完整 Vulkan/OpenGL；
   独立任务与整分支评审后推送并核验远端矩阵。
+
+
+## 终审约束（2026-11-25）：跨槽代际所有权与拒绝清理
+
+- connection key 的 World 代际所有权跨全部 transport 槽位生效。旧槽仍保存该 key 的
+  OPEN、CLOSE 或取消 OPEN 后的补偿 CLOSE 时，其他槽位的同 key OPEN 只保持
+  admission pending，不得进入 Runtime queue。旧连接及补偿关闭完成对账、旧槽释放后，
+  才允许新 OPEN 提交。断连后 CLOSE 失败且仍持有旧 epoch 的槽位继续保存 key，不能让
+  新连接认领旧状态。该规则不新增 Runtime API、wire 消息或数据面。
+- OPEN 提交前记录该 key 的先前 epoch；对账成功要求非零且相对先前值已经变化，不能仅凭
+  当前 key 存在任意 epoch 就认领连接。同 key pending CLOSE→OPEN 与取消 OPEN→同 key
+  OPEN 回归必须检查旧槽 key/epoch/transition/diagnostic 全部释放、新槽独立 epoch、
+  diagnostic 归属以及 opened/closed/open_count。
+- 延迟 OPEN 拒绝与正常断连共用同一槽位释放路径，保持正常断连的
+  voice→aspect→World→字段清理顺序。拒绝路径额外关闭 session/reactor，并覆盖 voice
+  receiver/rate/mute、clock probe、physics baseline/correction、session/auth/welcome
+  状态；后续 CLOSED 事件不再承担该已拒绝槽位的清理。回归在 pending OPEN 期间完成真实
+  session 认证并接收编码 voice 帧，随后强制 epoch 耗尽拒绝 OPEN，验证资源释放和同槽
+  复用后新 receiver 不继承旧帧或速率状态。
+- World hooks 的成对检查不依赖 `CORE_APP_NET_TRANSPORT`。半对配置在所有构建中均为
+  INVALID；无 concrete transport 时任何非 NULL 成对 hooks 同样明确 INVALID，两个 NULL
+  保持原五子系统且不新增链接依赖。transport-enabled 的 world-off 成对注册若返回空
+  adapter，也回退原五子系统；真实 world on 仍为六项。
+- 删除全槽 key 门禁必须使两条同 key 回归判红；删除延迟拒绝的共享释放必须使认证 voice
+  回归判红。恢复后 directed normal、ASan+UBSan（显式 leak 检测）与 TSan 分别验证，既有
+  core_app Lua/TSan 进程限制单列，不扩大为完整进程 sanitizer 结论。

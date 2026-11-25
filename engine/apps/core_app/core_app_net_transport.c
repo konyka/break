@@ -277,6 +277,7 @@ struct CoreAppNetTransport {
     bool world_admission_pending[CORE_APP_NET_MAX_CONNECTIONS];
     u32 world_transition_kind[CORE_APP_NET_MAX_CONNECTIONS];
     u64 world_transition_keys[CORE_APP_NET_MAX_CONNECTIONS];
+    u64 world_open_previous_epochs[CORE_APP_NET_MAX_CONNECTIONS];
     u64 world_connection_epochs[CORE_APP_NET_MAX_CONNECTIONS];
     World *world_pending_diagnostics[CORE_APP_NET_MAX_CONNECTIONS];
     bool world_control_pending[CORE_APP_NET_MAX_CONNECTIONS];
@@ -769,20 +770,29 @@ static void net_world_clear_control_state(CoreAppNetTransport *t, u32 slot) {
     memset(&t->world_controls[slot], 0, sizeof(t->world_controls[slot]));
 }
 
+static bool net_world_key_owned_elsewhere(const CoreAppNetTransport *t, u32 slot,
+                                          BreakConnectionKey key) {
+    if (key == 0u) return false;
+    for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
+        if (i != slot && t->world_transition_keys[i] == key) return true;
+    }
+    return false;
+}
+
+static void net_world_finish_transition(CoreAppNetTransport *t, u32 slot) {
+    if (!t->world_open[slot] || t->keys[slot] != 0u) {
+        t->world_transition_keys[slot] = 0u;
+    }
+    t->world_open_previous_epochs[slot] = 0u;
+}
+
+static void net_release_slot(CoreAppNetTransport *t, u32 slot, bool close_connection);
+
 static void net_world_reject_admission(CoreAppNetTransport *t, u32 slot) {
     if (!t->world_admission_pending[slot]) return;
     t->world_admission_pending[slot] = false;
     t->stats.refused++;
-    net_aspect_close(t, slot);
-    (void)break_session_manager_close(t->manager, t->keys[slot], 0u);
-    (void)break_net_reactor_close(t->reactor, t->keys[slot]);
-    t->keys[slot] = 0u;
-    t->authenticated[slot] = false;
-    t->welcomed[slot] = false;
-    t->closing[slot] = false;
-    t->session_ids[slot] = 0u;
-    t->correction_pending[slot] = false;
-    physics_sync_baseline_release(&t->physics_baselines[slot]);
+    net_release_slot(t, slot, true);
 }
 
 static CoreAppNetWorldTransitionResult net_world_reconcile_slot(CoreAppNetTransport *t,
@@ -795,8 +805,12 @@ static CoreAppNetWorldTransitionResult net_world_reconcile_slot(CoreAppNetTransp
         u32 completed_kind;
         if (t->world_transition_kind[slot] == 0u) {
             if (t->world_desired_open[slot] == t->world_open[slot]) {
-                t->world_transition_keys[slot] = 0u;
+                net_world_finish_transition(t, slot);
                 return NET_WORLD_TRANSITION_OK;
+            }
+            if (t->world_desired_open[slot] && t->world_transition_keys[slot] == 0u &&
+                net_world_key_owned_elsewhere(t, slot, t->keys[slot])) {
+                return NET_WORLD_TRANSITION_PENDING;
             }
             if (t->world_transition_keys[slot] == 0u) {
                 t->world_transition_keys[slot] = t->keys[slot];
@@ -810,10 +824,16 @@ static CoreAppNetWorldTransitionResult net_world_reconcile_slot(CoreAppNetTransp
                                            ? 0u
                                            : t->world_connection_epochs[slot];
             command.level_generation = t->world_level_generation;
+            t->world_open_previous_epochs[slot] = 0u;
+            if (command.kind == BREAK_RUNTIME_WORLD_COMMAND_OPEN) {
+                (void)break_runtime_world_session_connection_epoch(
+                    t->world_adapter, command.connection_key,
+                    &t->world_open_previous_epochs[slot]);
+            }
             result = core_app_net_transport_world_submit(t, &command, 0u);
             if (result != BREAK_RUNTIME_OK) {
                 t->world_desired_open[slot] = t->world_open[slot];
-                t->world_transition_keys[slot] = 0u;
+                net_world_finish_transition(t, slot);
                 world_destroy(t->world_pending_diagnostics[slot]);
                 t->world_pending_diagnostics[slot] = NULL;
                 if (!t->world_open[slot]) net_world_reject_admission(t, slot);
@@ -830,7 +850,7 @@ static CoreAppNetWorldTransitionResult net_world_reconcile_slot(CoreAppNetTransp
         if (completed_kind == BREAK_RUNTIME_WORLD_COMMAND_OPEN) {
             if (break_runtime_world_session_connection_epoch(t->world_adapter, t->world_transition_keys[slot],
                                                              &epoch) &&
-                epoch != 0u) {
+                epoch != 0u && epoch != t->world_open_previous_epochs[slot]) {
                 t->world_open[slot] = true;
                 t->world_connection_epochs[slot] = epoch;
                 t->world_diagnostics[slot] = t->world_pending_diagnostics[slot];
@@ -845,7 +865,7 @@ static CoreAppNetWorldTransitionResult net_world_reconcile_slot(CoreAppNetTransp
             t->world_open[slot] = false;
             t->world_connection_epochs[slot] = 0u;
             t->world_desired_open[slot] = false;
-            t->world_transition_keys[slot] = 0u;
+            net_world_finish_transition(t, slot);
             world_destroy(t->world_pending_diagnostics[slot]);
             t->world_pending_diagnostics[slot] = NULL;
             net_world_reject_admission(t, slot);
@@ -862,14 +882,14 @@ static CoreAppNetWorldTransitionResult net_world_reconcile_slot(CoreAppNetTransp
             continue;
         }
         t->world_desired_open[slot] = true;
-        t->world_transition_keys[slot] = 0u;
+        net_world_finish_transition(t, slot);
         world_destroy(t->world_pending_diagnostics[slot]);
         t->world_pending_diagnostics[slot] = NULL;
         return NET_WORLD_TRANSITION_REJECTED;
     }
     if (t->world_desired_open[slot] == t->world_open[slot] &&
         t->world_transition_kind[slot] == 0u) {
-        t->world_transition_keys[slot] = 0u;
+        net_world_finish_transition(t, slot);
         return NET_WORLD_TRANSITION_OK;
     }
     return NET_WORLD_TRANSITION_PENDING;
@@ -896,6 +916,7 @@ static void net_world_close(CoreAppNetTransport *t, u32 slot) {
     } else {
         t->world_transition_kind[slot] = 0u;
         t->world_transition_keys[slot] = 0u;
+        t->world_open_previous_epochs[slot] = 0u;
         if (t->world_open[slot]) {
             t->world_open[slot] = false;
             t->world_connection_epochs[slot] = 0u;
@@ -906,6 +927,25 @@ static void net_world_close(CoreAppNetTransport *t, u32 slot) {
     world_destroy(t->world_diagnostics[slot]);
     t->world_diagnostics[slot] = NULL;
     net_world_clear_control_state(t, slot);
+}
+
+static void net_release_slot(CoreAppNetTransport *t, u32 slot, bool close_connection) {
+    net_voice_release(t, slot);
+    net_aspect_close(t, slot);
+    net_world_close(t, slot);
+    if (close_connection) {
+        (void)break_session_manager_close(t->manager, t->keys[slot], 0u);
+        (void)break_net_reactor_close(t->reactor, t->keys[slot]);
+    }
+    t->keys[slot] = 0u;
+    t->authenticated[slot] = false;
+    t->welcomed[slot] = false;
+    t->closing[slot] = false;
+    t->session_ids[slot] = 0u;
+    t->voice_mute_count[slot] = 0u;
+    t->correction_pending[slot] = false;
+    physics_sync_baseline_release(&t->physics_baselines[slot]);
+    t->clock_probe_pending[slot] = false;
 }
 
 static void net_world_close_all(CoreAppNetTransport *t) {
@@ -1296,18 +1336,7 @@ static void net_pump(CoreAppNetTransport *t, int timeout_ms, u32 *budget, u32 ti
             event.type == BREAK_NET_EVENT_TRANSPORT_ERROR) {
             int slot = net_slot_find(t, event.connection_key);
             if (slot >= 0) {
-                net_voice_release(t, (u32)slot);
-                net_aspect_close(t, (u32)slot);
-                net_world_close(t, (u32)slot);
-                t->keys[slot] = 0u;
-                t->authenticated[slot] = false;
-                t->welcomed[slot] = false;
-                t->closing[slot] = false;
-                t->session_ids[slot] = 0u;
-                t->voice_mute_count[slot] = 0u;
-                t->correction_pending[slot] = false;
-                physics_sync_baseline_release(&t->physics_baselines[slot]);
-                t->clock_probe_pending[slot] = false;
+                net_release_slot(t, (u32)slot, false);
                 t->stats.closed++;
             }
         }
@@ -2162,6 +2191,74 @@ BreakRuntimeError core_app_net_transport_aspect_sync_for_test(CoreAppNetTranspor
     return net_aspect_sync_slot(transport, (u32)slot);
 }
 
+bool core_app_net_transport_connection_for_test(CoreAppNetTransport *transport, u32 slot,
+                                                CoreAppNetConnectionTestView *out) {
+    BreakVoiceReceiverStats voice_stats;
+    if (!out) return false;
+    memset(out, 0, sizeof(*out));
+    if (!transport || slot >= CORE_APP_NET_MAX_CONNECTIONS) return false;
+    out->key = transport->keys[slot];
+    out->authenticated = transport->authenticated[slot];
+    out->session_id = transport->session_ids[slot];
+    out->session_state = out->key != 0u
+                             ? (int)break_session_manager_state(transport->manager, out->key)
+                             : (int)BREAK_SESSION_UNKNOWN;
+    out->correction_pending = transport->correction_pending[slot];
+    out->physics_baseline_owned = transport->physics_baselines[slot].bytes != NULL;
+    out->physics_baseline_size = transport->physics_baselines[slot].size;
+    out->clock_probe_pending = transport->clock_probe_pending[slot];
+    out->clock_samples = transport->clock[slot].estimator.count;
+    out->world_open = transport->world_open[slot];
+    out->world_desired_open = transport->world_desired_open[slot];
+    out->world_admission_pending = transport->world_admission_pending[slot];
+    out->world_transition_kind = transport->world_transition_kind[slot];
+    out->world_transition_key = transport->world_transition_keys[slot];
+    out->world_epoch = transport->world_connection_epochs[slot];
+    out->world_diagnostic = transport->world_diagnostics[slot];
+    out->world_pending_diagnostic = transport->world_pending_diagnostics[slot];
+    out->voice_rate_ready = transport->voice_rate_ready[slot];
+    out->voice_receiver = transport->voice_receivers[slot];
+    if (out->voice_receiver &&
+        break_voice_receiver_stats(out->voice_receiver, &voice_stats) == BREAK_RUNTIME_OK) {
+        out->voice_accepted = voice_stats.accepted;
+        out->voice_played = voice_stats.played;
+    }
+    out->voice_mute_count = transport->voice_mute_count[slot];
+    return true;
+}
+
+bool core_app_net_transport_authenticate_for_test(CoreAppNetTransport *transport, u64 key) {
+    int slot = transport ? net_slot_find(transport, key) : -1;
+    BreakSessionState state;
+    if (slot < 0) return false;
+    state = break_session_manager_state(transport->manager, key);
+    if (state == BREAK_SESSION_UNKNOWN && !break_session_manager_bind(transport->manager, key)) {
+        return false;
+    }
+    if (state == BREAK_SESSION_UNKNOWN) state = BREAK_SESSION_NEW;
+    if (state == BREAK_SESSION_NEW && !break_session_manager_begin_auth(transport->manager, key)) {
+        return false;
+    }
+    return break_session_manager_auth_succeeded(transport->manager, key);
+}
+
+bool core_app_net_transport_seed_physics_for_test(CoreAppNetTransport *transport, u64 key) {
+    static const u8 snapshot[] = {1u, 2u, 3u, 4u};
+    int slot = transport ? net_slot_find(transport, key) : -1;
+    if (slot < 0 ||
+        !physics_sync_baseline_store(&transport->physics_baselines[slot], 7u, snapshot,
+                                     sizeof(snapshot))) {
+        return false;
+    }
+    transport->correction_pending[slot] = true;
+    return true;
+}
+
+void core_app_net_transport_pump_for_test(CoreAppNetTransport *transport) {
+    u32 budget = CORE_APP_NET_EVENTS_PER_TICK;
+    if (transport) net_pump(transport, 0, &budget, transport->current_tick);
+}
+
 bool core_app_net_transport_world_for_test(CoreAppNetTransport *transport,
                                            CoreAppNetWorldTestView *out) {
     if (!out) return false;
@@ -2204,12 +2301,16 @@ bool core_app_net_transport_world_control_for_test(CoreAppNetTransport *transpor
 
 bool core_app_net_transport_world_open_for_test(CoreAppNetTransport *transport, u64 key) {
     int slot;
+    CoreAppNetWorldTransitionResult result;
     if (!transport || !transport->world_replication || !transport->world_session || key == 0u) {
         return false;
     }
     slot = net_slot_find(transport, key);
     if (slot < 0) slot = net_slot_add(transport, key);
-    return slot >= 0 && net_world_open(transport, (u32)slot, key) == NET_WORLD_TRANSITION_OK;
+    if (slot < 0) return false;
+    result = net_world_open(transport, (u32)slot, key);
+    if (result == NET_WORLD_TRANSITION_PENDING) transport->world_admission_pending[slot] = true;
+    return result == NET_WORLD_TRANSITION_OK;
 }
 
 void core_app_net_transport_world_close_for_test(CoreAppNetTransport *transport, u64 key) {

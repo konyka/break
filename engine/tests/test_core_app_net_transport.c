@@ -1414,6 +1414,273 @@ TEST(world_adapter_close_failure_after_disconnect_is_not_misread_as_success) {
     aspect_fixture_dispose(&fixture);
 }
 
+TEST(world_adapter_same_key_pending_close_defers_cross_slot_open) {
+    AspectTransportFixture fixture;
+    CoreAppNetWorldTestView view;
+    CoreAppNetConnectionTestView old_slot_view;
+    CoreAppNetConnectionTestView new_slot_view;
+    BreakRuntimeWorldSession *adapter;
+    BreakRuntimeWorldSessionStats stats;
+    const BreakConnectionKey control_key = UINT64_C(0x500000007);
+    const BreakConnectionKey reused_key = UINT64_C(0x600000008);
+    u64 old_epoch = 0u;
+    u64 new_epoch = 0u;
+    int old_slot;
+    int new_slot;
+    bool epoch_open;
+    bool old_released;
+    bool new_committed;
+    bool counts_match;
+    bool drained;
+    bool destroyed;
+    ASSERT_TRUE(world_fixture_start(&fixture, "core_app_world_same_key_close.port", true, false));
+    ASSERT_TRUE(world_fixture_open(&fixture, control_key));
+    ASSERT_TRUE(core_app_net_transport_world_open_for_test(fixture.transport, reused_key));
+    old_slot = core_app_net_transport_world_slot_for_test(fixture.transport, reused_key);
+    ASSERT_TRUE(old_slot >= 0);
+    adapter = core_app_net_transport_world_adapter(fixture.transport);
+    ASSERT_TRUE(break_runtime_world_session_connection_epoch(adapter, reused_key, &old_epoch));
+    ASSERT_NEQ(old_epoch, 0u);
+    ASSERT_TRUE(world_make_control_pending(&fixture, control_key, 87u));
+
+    core_app_net_transport_world_disconnect_for_test(fixture.transport, reused_key);
+    (void)core_app_net_transport_world_open_for_test(fixture.transport, reused_key);
+    new_slot = core_app_net_transport_world_slot_for_test(fixture.transport, reused_key);
+    ASSERT_TRUE(new_slot >= 0);
+    ASSERT_NEQ(new_slot, old_slot);
+    break_runtime_world_session_stats(adapter, &stats);
+    ASSERT_TRUE(stats.control_pending);
+
+    world_clear_outbound(&fixture);
+    core_app_net_transport_world_drain_for_test(fixture.transport, 21u);
+    core_app_net_transport_world_drain_for_test(fixture.transport, 22u);
+    epoch_open = break_runtime_world_session_connection_epoch(adapter, reused_key, &new_epoch);
+    old_released = core_app_net_transport_connection_for_test(
+                       fixture.transport, (u32)old_slot, &old_slot_view) &&
+                   old_slot_view.key == 0u && !old_slot_view.world_open &&
+                   old_slot_view.world_epoch == 0u && old_slot_view.world_transition_kind == 0u &&
+                   old_slot_view.world_transition_key == 0u &&
+                   old_slot_view.world_diagnostic == NULL &&
+                   old_slot_view.world_pending_diagnostic == NULL;
+    new_committed = core_app_net_transport_connection_for_test(
+                        fixture.transport, (u32)new_slot, &new_slot_view) &&
+                    new_slot_view.key == reused_key && new_slot_view.world_open &&
+                    new_slot_view.world_epoch == new_epoch &&
+                    new_slot_view.world_diagnostic != NULL &&
+                    !new_slot_view.world_admission_pending;
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    counts_match = view.open_count == 2u && view.opened == 3u && view.closed == 1u;
+    break_runtime_world_session_stats(adapter, &stats);
+    drained = stats.queued == 0u && !stats.control_pending;
+    destroyed = transport_fixture_destroy(&fixture);
+    aspect_fixture_dispose(&fixture);
+    ASSERT_TRUE(destroyed);
+    ASSERT_TRUE(epoch_open);
+    ASSERT_NEQ(new_epoch, 0u);
+    ASSERT_NEQ(new_epoch, old_epoch);
+    ASSERT_TRUE(old_released);
+    ASSERT_TRUE(new_committed);
+    ASSERT_TRUE(counts_match);
+    ASSERT_TRUE(drained);
+}
+
+TEST(world_adapter_canceled_open_defers_same_key_cross_slot_open) {
+    AspectTransportFixture fixture;
+    CoreAppNetWorldTestView view;
+    CoreAppNetConnectionTestView old_slot_view;
+    CoreAppNetConnectionTestView new_slot_view;
+    BreakRuntimeWorldSession *adapter;
+    BreakRuntimeWorldSessionStats stats;
+    const BreakConnectionKey control_key = UINT64_C(0x500000009);
+    const BreakConnectionKey reused_key = UINT64_C(0x60000000a);
+    u64 control_epoch = 0u;
+    u64 new_epoch = 0u;
+    int old_slot;
+    int new_slot;
+    bool epoch_open;
+    bool old_released;
+    bool new_committed;
+    bool counts_match;
+    bool drained;
+    bool destroyed;
+    ASSERT_TRUE(world_fixture_start(&fixture, "core_app_world_same_key_cancel.port", true, false));
+    ASSERT_TRUE(world_fixture_open(&fixture, control_key));
+    adapter = core_app_net_transport_world_adapter(fixture.transport);
+    ASSERT_TRUE(break_runtime_world_session_connection_epoch(adapter, control_key, &control_epoch));
+    ASSERT_TRUE(world_make_control_pending(&fixture, control_key, 88u));
+    (void)core_app_net_transport_world_open_for_test(fixture.transport, reused_key);
+    old_slot = core_app_net_transport_world_slot_for_test(fixture.transport, reused_key);
+    ASSERT_TRUE(old_slot >= 0);
+    break_runtime_world_session_stats(adapter, &stats);
+    ASSERT_EQ(stats.queued, 1u);
+    ASSERT_TRUE(stats.control_pending);
+
+    core_app_net_transport_world_disconnect_for_test(fixture.transport, reused_key);
+    (void)core_app_net_transport_world_open_for_test(fixture.transport, reused_key);
+    new_slot = core_app_net_transport_world_slot_for_test(fixture.transport, reused_key);
+    ASSERT_TRUE(new_slot >= 0);
+    ASSERT_NEQ(new_slot, old_slot);
+    world_clear_outbound(&fixture);
+    core_app_net_transport_world_drain_for_test(fixture.transport, 21u);
+    core_app_net_transport_world_drain_for_test(fixture.transport, 22u);
+
+    epoch_open = break_runtime_world_session_connection_epoch(adapter, reused_key, &new_epoch);
+    old_released = core_app_net_transport_connection_for_test(
+                       fixture.transport, (u32)old_slot, &old_slot_view) &&
+                   old_slot_view.key == 0u && !old_slot_view.world_open &&
+                   old_slot_view.world_epoch == 0u && old_slot_view.world_transition_kind == 0u &&
+                   old_slot_view.world_transition_key == 0u &&
+                   old_slot_view.world_diagnostic == NULL &&
+                   old_slot_view.world_pending_diagnostic == NULL;
+    new_committed = core_app_net_transport_connection_for_test(
+                        fixture.transport, (u32)new_slot, &new_slot_view) &&
+                    new_slot_view.key == reused_key && new_slot_view.world_open &&
+                    new_slot_view.world_epoch == new_epoch &&
+                    new_slot_view.world_diagnostic != NULL &&
+                    !new_slot_view.world_admission_pending;
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    counts_match = view.open_count == 2u && view.opened == 3u && view.closed == 1u;
+    break_runtime_world_session_stats(adapter, &stats);
+    drained = stats.queued == 0u && !stats.control_pending;
+    destroyed = transport_fixture_destroy(&fixture);
+    aspect_fixture_dispose(&fixture);
+    ASSERT_TRUE(destroyed);
+    ASSERT_TRUE(epoch_open);
+    ASSERT_NEQ(new_epoch, 0u);
+    ASSERT_TRUE(new_epoch > control_epoch);
+    ASSERT_TRUE(old_released);
+    ASSERT_TRUE(new_committed);
+    ASSERT_TRUE(counts_match);
+    ASSERT_TRUE(drained);
+}
+
+TEST(world_adapter_rejected_pending_open_releases_connection_before_slot_reuse) {
+    AspectTransportFixture fixture;
+    CoreAppNetConnectionTestView old_view;
+    CoreAppNetConnectionTestView reused_view;
+    BreakRuntimeWorldSession *adapter;
+    BreakVoiceFrame frame;
+    CoreAppClockProbe clock_request = {CORE_APP_CLOCK_PROBE_REQUEST, 123u, 0u, 0u};
+    u8 voice_wire[BREAK_VOICE_MAX_DATAGRAM_SIZE];
+    u8 mute_wire[CORE_APP_VOICE_MUTE_BYTES];
+    u8 clock_wire[CORE_APP_CLOCK_PROBE_BYTES];
+    u32 voice_size = 0u;
+    usize mute_size = 0u;
+    usize clock_size = 0u;
+    const BreakConnectionKey control_key = UINT64_C(0x50000000b);
+    const BreakConnectionKey rejected_key = UINT64_C(0x60000000c);
+    const BreakConnectionKey new_key = UINT64_C(0x60000000d);
+    u64 epoch = 0u;
+    int rejected_slot;
+    int reused_slot;
+    bool rejected_epoch_absent;
+    bool rejected_cleaned;
+    bool reused_open;
+    bool reused_clean;
+    bool fresh_voice;
+    bool destroyed;
+    ASSERT_TRUE(world_fixture_start(&fixture, "core_app_world_reject_voice.port", true, false));
+    ASSERT_TRUE(world_fixture_open(&fixture, control_key));
+    ASSERT_TRUE(world_make_control_pending(&fixture, control_key, 89u));
+    (void)core_app_net_transport_world_open_for_test(fixture.transport, rejected_key);
+    rejected_slot = core_app_net_transport_world_slot_for_test(fixture.transport, rejected_key);
+    ASSERT_TRUE(rejected_slot >= 0);
+    ASSERT_TRUE(core_app_net_transport_authenticate_for_test(fixture.transport, rejected_key));
+    ASSERT_TRUE(core_app_net_transport_seed_physics_for_test(fixture.transport, rejected_key));
+
+    memset(&frame, 0, sizeof(frame));
+    frame.sequence = 9u;
+    frame.sample_rate = 48000u;
+    frame.channels = 1u;
+    frame.sample_count = BREAK_VOICE_MAX_SAMPLES;
+    for (u32 i = 0u; i < frame.sample_count; ++i) frame.samples[i] = (i16)(i * 17u);
+    ASSERT_EQ(break_voice_encode(&frame, voice_wire, sizeof(voice_wire), &voice_size),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(core_app_voice_mute_encode(77u, true, mute_wire, sizeof(mute_wire), &mute_size),
+              CORE_APP_SNAPSHOT_OK);
+    ASSERT_EQ(core_app_clock_probe_encode(&clock_request, clock_wire, sizeof(clock_wire),
+                                          &clock_size),
+              CORE_APP_SNAPSHOT_OK);
+    ASSERT_TRUE(break_net_reactor_enqueue_message_for_test(
+        fixture.reactor, rejected_key, BREAK_NET_MESSAGE_ID_CORE_VOICE, 1u,
+        voice_wire, voice_size));
+    ASSERT_TRUE(break_net_reactor_enqueue_message_for_test(
+        fixture.reactor, rejected_key, CORE_APP_VOICE_MUTE_MESSAGE_ID, 1u,
+        mute_wire, mute_size));
+    ASSERT_TRUE(break_net_reactor_enqueue_message_for_test(
+        fixture.reactor, rejected_key, CORE_APP_CLOCK_PROBE_MESSAGE_ID, 1u,
+        clock_wire, clock_size));
+    core_app_net_transport_pump_for_test(fixture.transport);
+    ASSERT_TRUE(core_app_net_transport_connection_for_test(fixture.transport,
+                                                           (u32)rejected_slot, &old_view));
+    ASSERT_TRUE(old_view.authenticated);
+    ASSERT_NEQ(old_view.session_id, 0u);
+    ASSERT_NOT_NULL(old_view.voice_receiver);
+    ASSERT_EQ(old_view.voice_accepted, 1u);
+    ASSERT_EQ(old_view.voice_played, 0u);
+    ASSERT_TRUE(old_view.voice_rate_ready);
+    ASSERT_EQ(old_view.voice_mute_count, 1u);
+    ASSERT_TRUE(old_view.clock_probe_pending);
+    ASSERT_TRUE(old_view.physics_baseline_owned);
+    ASSERT_TRUE(old_view.correction_pending);
+    ASSERT_TRUE(old_view.world_admission_pending);
+
+    adapter = core_app_net_transport_world_adapter(fixture.transport);
+    break_runtime_world_session_set_next_connection_epoch_for_test(adapter, 0u);
+    world_clear_outbound(&fixture);
+    core_app_net_transport_world_drain_for_test(fixture.transport, 21u);
+    rejected_epoch_absent =
+        !break_runtime_world_session_connection_epoch(adapter, rejected_key, &epoch);
+    rejected_cleaned = core_app_net_transport_connection_for_test(
+                           fixture.transport, (u32)rejected_slot, &old_view) &&
+                       old_view.key == 0u && !old_view.authenticated &&
+                       old_view.session_id == 0u &&
+                       old_view.session_state != (int)BREAK_SESSION_AUTHENTICATED &&
+                       !old_view.world_open && !old_view.world_admission_pending &&
+                       old_view.world_transition_kind == 0u &&
+                       old_view.world_diagnostic == NULL &&
+                       old_view.world_pending_diagnostic == NULL &&
+                       old_view.voice_receiver == NULL && !old_view.voice_rate_ready &&
+                       old_view.voice_mute_count == 0u && !old_view.clock_probe_pending &&
+                       !old_view.physics_baseline_owned && old_view.physics_baseline_size == 0u &&
+                       !old_view.correction_pending;
+
+    break_runtime_world_session_set_next_connection_epoch_for_test(adapter, 1000u);
+    reused_open = core_app_net_transport_world_open_for_test(fixture.transport, new_key);
+    reused_slot = core_app_net_transport_world_slot_for_test(fixture.transport, new_key);
+    reused_clean = reused_open && reused_slot == rejected_slot &&
+                   core_app_net_transport_connection_for_test(
+                       fixture.transport, (u32)reused_slot, &reused_view) &&
+                   reused_view.world_open && reused_view.world_epoch != 0u &&
+                   reused_view.world_diagnostic != NULL && reused_view.voice_receiver == NULL &&
+                   !reused_view.voice_rate_ready && reused_view.voice_mute_count == 0u &&
+                   !reused_view.clock_probe_pending && reused_view.clock_samples == 0u &&
+                   !reused_view.physics_baseline_owned && !reused_view.correction_pending;
+
+    ASSERT_TRUE(core_app_net_transport_authenticate_for_test(fixture.transport, new_key));
+    frame.sequence = 10u;
+    ASSERT_EQ(break_voice_encode(&frame, voice_wire, sizeof(voice_wire), &voice_size),
+              BREAK_RUNTIME_OK);
+    ASSERT_TRUE(break_net_reactor_enqueue_message_for_test(
+        fixture.reactor, new_key, BREAK_NET_MESSAGE_ID_CORE_VOICE, 1u,
+        voice_wire, voice_size));
+    core_app_net_transport_pump_for_test(fixture.transport);
+    fresh_voice = core_app_net_transport_connection_for_test(
+                      fixture.transport, (u32)reused_slot, &reused_view) &&
+                  reused_view.authenticated && reused_view.voice_receiver != NULL &&
+                  reused_view.voice_accepted == 1u && reused_view.voice_played == 0u &&
+                  reused_view.voice_rate_ready && reused_view.voice_mute_count == 0u &&
+                  !reused_view.clock_probe_pending;
+    destroyed = transport_fixture_destroy(&fixture);
+    aspect_fixture_dispose(&fixture);
+    ASSERT_TRUE(destroyed);
+    ASSERT_TRUE(rejected_epoch_absent);
+    ASSERT_TRUE(rejected_cleaned);
+    ASSERT_TRUE(reused_open);
+    ASSERT_TRUE(reused_clean);
+    ASSERT_TRUE(fresh_voice);
+}
+
 TEST(world_transport_open_copies_fixed_pod_entities_independently) {
     AspectTransportFixture fixture;
     CoreAppNetWorldTestView view;
@@ -2096,6 +2363,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(world_adapter_cancel_pending_open_after_disconnect_closes_original_key);
     RUN_TEST(world_adapter_disconnect_does_not_commit_old_open_to_reused_slot);
     RUN_TEST(world_adapter_close_failure_after_disconnect_is_not_misread_as_success);
+    RUN_TEST(world_adapter_same_key_pending_close_defers_cross_slot_open);
+    RUN_TEST(world_adapter_canceled_open_defers_same_key_cross_slot_open);
+    RUN_TEST(world_adapter_rejected_pending_open_releases_connection_before_slot_reuse);
     RUN_TEST(world_transport_open_copies_fixed_pod_entities_independently);
     RUN_TEST(world_transport_bounded_tick_and_shutdown_drain_only_fill_diagnostic_world);
     RUN_TEST(world_transport_local_ack_uses_adapter_exactly_once);
