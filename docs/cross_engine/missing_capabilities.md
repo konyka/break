@@ -988,3 +988,12 @@ submit 不调用 World，owner drain 是唯一应用入口。queue OVERLOAD 时 
 通用 Coordinator 新增仅限 CREATED/FAILED 的精确 user_data unregister。`break_runtime_world_session_abandon` 先注销精确 binding，再 detach/free 并归还 adapter 所有权；失败保持双方状态。任何未达 STOPPED 的 Coordinator 在 destroy 前，调用方必须先 quiesce 外部生产者和其他 adapter API，再 abandon World adapter，随后手动 close/drain/destroy；FAILED 后 pending 不得丢弃。
 
 本修订只关闭上述所有权缺口。Runtime snapshot/lease/BRWD/BRFG 数据面、core_app World 自动注册、共享 live World、跨 World 身份、权威 simulation 合并和预测回滚仍未实现。TIMEOUT callback 按恢复点精确重入，成功销毁一次；不预写远端或其他 deferred 验收。
+
+
+### 第 17 节补充（2026-11-25）：Coordinator binding 验证与剩余边界
+
+`ac427378` 已完成任务与整分支独立评审并推送。最终 focused normal、ASan+UBSan（显式 leak 检测）、TSan 各 **16/16**，fragment **30/30**，adapter **34/34**。OpenGL 全量 **477/481 执行通过、4 条件 skip、0 失败**（308.81 s），Vulkan **478/482 执行通过、4 条件 skip、0 失败**（310.24 s）；条件 skip 不计执行通过。
+
+远端 CI `45537875941`、windows-d3d12 `45537875813`、QUIC `45537875888`、Proton `45539232571` 均 completed/success；CI 为 **25 success、3 条件 skip、0 cancelled、0 failed**。Proton 上游 run-id=`45537875813`，device/pipeline contract 均为 77，只代表兼容通道。macOS Snowflake job 的私有依赖不可用，checkout/configure/build/14 项测试均 skipped 并记录 UNAVAILABLE，不将 job success 解释为这些测试通过。
+
+本节只关闭显式 binding、TIMEOUT 恢复和 CREATED/FAILED 回收；core_app World adapter 注册、Runtime snapshot/lease/BRWD/BRFG 数据面、共享 live World、权威 simulation 合并、预测回滚和跨 World 身份仍未关闭。既有 Lua longjmp、混合 TSan、条件 skip 和完整 sanitizer suite 的边界不变；本收据提交自身的工作流结果不在此预写。

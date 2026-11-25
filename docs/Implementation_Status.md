@@ -13840,3 +13840,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **unregister 与 abandon**：通用 `break_runtime_coordinator_unregister_subsystem` 仅在 CREATED/FAILED 按 user_data 精确移除首项，其他子系统保序且状态/last_error/resume 不变。`break_runtime_world_session_abandon` 先精确 unregister，再 detach/free binding；失败不清 binding。CREATED abandon 后 Coordinator start/stop 不再触碰 binding，FAILED abandon 后调用方可手动 close/drain/destroy。
 - **调用顺序**：正常路径必须 stop 到 STOPPED；未达 STOPPED 的 Coordinator 在 destroy 前，调用方先 quiesce 外部生产者和其他 adapter API，再 abandon World adapter 并手动释放。RUNNING abandon=false 后仍可正常 stop。前序阶段不重跑，TIMEOUT callback 精确重入，成功销毁一次。
 - **范围**：不重写前述 TIMEOUT 收据，不改变 direct/external FIFO、BRWC/cid 或 borrowed Bus/Session/publication 边界；不做数据面、自动 core_app World 接线或权威合并。最终 focused 验证命令与计数追加于 Task 2 报告，本节不预写远端结果。
+
+
+### Runtime World Coordinator binding 最终验证与远端收据（2026-11-25）
+
+- 最终推送 `ac42737871280e65c02c699a738a4001eea569bb`，任务及整分支独立评审为 Ready to merge。最终 focused normal、ASan+UBSan（显式 `detect_leaks=1`）与 TSan 各 **16/16**，fragment **30/30**，adapter **34/34**；既有 core_app/editor Lua longjmp 和混合 TSan 限制不扩展为完整 sanitizer 验收。
+- 在最终 HEAD 完整构建并运行：OpenGL **481 注册、477 执行通过、4 条件 skip、0 失败**（308.81 s）；Vulkan **482 注册、478 执行通过、4 条件 skip、0 失败**（310.24 s）。共同条件 skip 为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计执行通过。
+- 远端 CI run `45537875941`、windows-d3d12 run `45537875813`、QUIC run `45537875888`、Proton run `45539232571` 均 completed/success；CI 为 **25 success、3 条件 skip、0 cancelled、0 failed**。Proton 上游 run-id=`45537875813`，device/pipeline contract 均为 77，仅表示兼容通道，不是原生 GPU 通过。
+- 当前 macOS Snowflake replication job 的私有依赖 checkout、configure、build 和 14 项测试均为 skipped，并明确记录 UNAVAILABLE；这些测试不计为执行通过。本项仅关闭 Coordinator binding 所有权与恢复缺口，不关闭 core_app World adapter 接线、Runtime 数据面、共享 live World 或权威 simulation 合并。本收据提交自身的工作流结果不在此预写。
