@@ -13781,3 +13781,12 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **修复范围**：direct submit 改为自有 message copy + queue enqueue，不再 Bus fan-out；外部同 kind publish 保留，且各 adapter 独立 pending/World/close。`submitted` 仅计 direct 成功，`drained` 包含 direct 与外部消息；stats.queued/pending 改用真实 queue `enqueued-dequeued`，pending 另加 control_pending。
 - **关停与终态**：destroy 先 closed/queue_close、退订并记录状态，再判断实际 pending。queued 或 transport pending 非零时返回 false，但新 direct/external ingress 已停止，drain 继续，清零后的重试跳过重复退订并成功。connection epoch 耗尽返回 REJECTED 且计 rejected，不再作为未计数 OVERLOAD。
 - **验证边界**：新增外部 publish、双 adapter、queued/pending shutdown、epoch 边界及真实线程 submit/publish/close/drain/destroy 交错；并发用例按 accepted cid/内容检查不丢失、不重复。公共头补充路由、线程和成功 destroy 的外部 quiesce 前置。World 调用仍只在 owner drain，未增加数据面、Coordinator 注册或其他 deferred 能力；最终命令和 sanitizer 计数见本地 `task-3-report.md` 追加记录。
+
+
+### Runtime World 控制面最终验证与远端收据（2026-11-25）
+
+- 最终推送 `61c792eb2226ceaf59f3f4ba2575307f586b594f`。任务与整分支独立评审全部通过；共享 Bus 外部投递引起的归属、pending 和 shutdown 竞态已修复并复审关闭。direct submit 使用精确 enqueue 回执，pending 使用真实 queue 计数，destroy 先停止新投递再判定；epoch 耗尽为计数的 REJECTED。
+- 最终 focused normal、ASan+UBSan（显式 leak 检测）、TSan 均 **12/12**，adapter **17/17**；包括真实线程 submit/publish/close/drain/destroy 交错及 accepted 控制不丢失、不重复。既有 core_app/editor Lua longjmp、Clang glad 构建限制和混合 TSan 边界保持单列，完整 sanitizer suite 未运行。
+- 在最终 HEAD 完整构建并运行：OpenGL **480 注册、476 执行通过、4 条件 skip、0 失败**（303.79 s）；Vulkan **482 注册、478 执行通过、4 条件 skip、0 失败**（307.00 s）。条件 skip 不计执行通过。
+- 远端 CI run `45512281106`、windows-d3d12 run `45512280291`、QUIC run `45512282037`、Proton run `45514116011` 均 completed/success；CI 为 **24 success、3 条件 skip、0 cancelled、0 failed**。Proton 上游 run-id=`45512280291`，device/pipeline contract 均为 77，仅表示兼容通道。
+- 本项只关闭 Runtime 标量控制与生命周期切片，不关闭 snapshot/BRWD 数据面、Runtime Coordinator 自动注册、core_app authoritative World 或权威 simulation 合并。常驻 production consumer 和 runtime_core link-interface 契约增强仍是 deferred Minor，不改变交付边界。本收据提交自身的工作流结果不在此预写。

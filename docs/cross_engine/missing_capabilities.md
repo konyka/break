@@ -947,3 +947,12 @@ submit 不调用 World，owner drain 是唯一应用入口。queue OVERLOAD 时 
 本次修复关闭的是一个既有控制桥缺陷，而不是新增数据面能力：direct submit 只进入自有 queue，外部同 kind Bus publish 保留独立 fan-out；submitted/drained 不再相减表示占用，pending 使用真实 queue 计数加 transport pending。destroy 在判定前关闭 admission 并退订，false 后可继续 drain，重试不重复退订；connection epoch 耗尽为计数的 REJECTED。并发测试覆盖真实 submit/publish/close/drain/destroy 交错及 accepted 控制恰好一次。
 
 以下边界保持开放：Runtime snapshot/lease/BRWD/BRFG 映射、Coordinator 自动注册、core_app authoritative World 接线、共享 live World、权威 simulation 合并、预测回滚和完整资产链均未因此实现。成功 destroy 仍要求调用方外部 quiesce 其他 adapter API，World 仍只允许 owner drain；本追加不预写完整 sanitizer、原生 GPU 或远端矩阵结果。
+
+
+### Runtime World 控制面最终验证与远端收据（2026-11-25）
+
+`61c792eb` 已完成任务与整分支独立评审并推送。最终 HEAD 的 OpenGL 全量为 **476/480 执行通过、4 条件 skip、0 失败**，Vulkan 为 **478/482 执行通过、4 条件 skip、0 失败**。focused normal、ASan+UBSan、TSan 均 **12/12**，adapter **17/17**，含真实并发 ingress/shutdown 证据。
+
+远端 CI `45512281106`、windows-d3d12 `45512280291`、QUIC `45512282037`、Proton `45514116011` 均 success；CI 为 24 success、3 条件 skip、0 cancelled、0 failed。Proton 上游 run-id=`45512280291`，两个 contract 均为 77，仅表示兼容通道。
+
+本节只关闭 Runtime 标量控制与生命周期切片，不关闭 snapshot/BRWD 数据面、Coordinator 自动注册、core_app authoritative World 或权威 simulation 合并。默认 fair_outbound_admission=false 的兼容不变，混合 TSan 与既有 Lua longjmp 不升级为完整 sanitizer 验收。本收据提交自身的工作流结果不在此预写。
