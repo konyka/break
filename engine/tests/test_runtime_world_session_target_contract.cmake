@@ -7,6 +7,51 @@ file(READ "${ADAPTER_SOURCE}" adapter_source)
 if(NOT adapter_source MATCHES "queue_config.reserved_control = queue_config.capacity;")
     message(FATAL_ERROR "the adapter queue must reserve its full capacity for control")
 endif()
+if(NOT adapter_source MATCHES "const u16 kinds\\[1\\] = \\{BREAK_RUNTIME_WORLD_SESSION_CONTROL_KIND\\};")
+    message(FATAL_ERROR "the adapter must subscribe only to the external control kind")
+endif()
+if(adapter_source MATCHES "kinds\\[2\\]" OR
+   adapter_source MATCHES "\"world_session\\.publish\"")
+    message(FATAL_ERROR "publish-current notices must not become an external Bus kind")
+endif()
+
+string(FIND "${adapter_source}"
+       "BreakRuntimeError break_runtime_world_session_submit_publish_current(" submit_start)
+string(FIND "${adapter_source}" "\nvoid break_runtime_world_session_close(" submit_end)
+if(submit_start LESS 0 OR submit_end LESS 0 OR submit_end LESS submit_start)
+    message(FATAL_ERROR "missing bounded direct publish-current submit function")
+endif()
+math(EXPR submit_length "${submit_end} - ${submit_start}")
+string(SUBSTRING "${adapter_source}" ${submit_start} ${submit_length} submit_block)
+if(NOT submit_block MATCHES
+   "view.kind = BREAK_RUNTIME_WORLD_SESSION_PUBLISH_CURRENT_KIND;")
+    message(FATAL_ERROR "direct publish-current submit has the wrong kind")
+endif()
+if(NOT submit_block MATCHES "view.flags = BREAK_RUNTIME_MESSAGE_FLAG_CONTROL;")
+    message(FATAL_ERROR "direct publish-current submit must use a control flag")
+endif()
+if(submit_block MATCHES "break_world_session_")
+    message(FATAL_ERROR "direct publish-current submit must not call World Session")
+endif()
+
+string(FIND "${adapter_source}" "static BreakRuntimeError runtime_world_publish_connection("
+       publish_connection_start)
+string(FIND "${adapter_source}" "static bool runtime_world_recompute_continuation("
+       publish_connection_end)
+if(publish_connection_start LESS 0 OR publish_connection_end LESS 0 OR
+   publish_connection_end LESS publish_connection_start)
+    message(FATAL_ERROR "missing bounded per-connection publish helper")
+endif()
+math(EXPR publish_connection_length
+     "${publish_connection_end} - ${publish_connection_start}")
+string(SUBSTRING "${adapter_source}" ${publish_connection_start}
+       ${publish_connection_length} publish_connection_block)
+if(publish_connection_block MATCHES "break_world_snapshot_publication_acquire")
+    message(FATAL_ERROR "publication acquire must not enter the per-connection helper")
+endif()
+if(NOT adapter_source MATCHES "break_world_snapshot_lease_release\\(&lease\\);")
+    message(FATAL_ERROR "publish-current drain must release its acquired lease")
+endif()
 
 string(REGEX MATCH "add_library\\(runtime_core STATIC[^)]*\\)" runtime_core_block "${cmake_text}")
 if(runtime_core_block STREQUAL "")

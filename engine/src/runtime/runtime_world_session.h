@@ -1,6 +1,7 @@
 #pragma once
 
 #include <ecs/world_session.h>
+#include <ecs/world_snapshot_publication.h>
 #include <runtime/runtime_bus.h>
 
 #ifdef __cplusplus
@@ -8,6 +9,8 @@ extern "C" {
 #endif
 
 #define BREAK_RUNTIME_WORLD_SESSION_CONTROL_KIND 0x5753u
+#define BREAK_RUNTIME_WORLD_SESSION_PUBLISH_CURRENT_KIND 0x5754u
+#define BREAK_RUNTIME_WORLD_SESSION_PUBLISH_CURRENT_VERSION 1u
 
 typedef enum {
     BREAK_RUNTIME_WORLD_COMMAND_OPEN = 1,
@@ -31,6 +34,14 @@ typedef struct {
 BREAK_STATIC_ASSERT(sizeof(BreakRuntimeWorldCommand) == 56u,
                     "BreakRuntimeWorldCommand must be 56 bytes");
 
+typedef struct {
+    u64 level_generation;
+    u64 reserved_zero;
+} BreakRuntimeWorldPublishCurrentNotice;
+
+BREAK_STATIC_ASSERT(sizeof(BreakRuntimeWorldPublishCurrentNotice) == 16u,
+                    "BreakRuntimeWorldPublishCurrentNotice must be 16 bytes");
+
 typedef struct BreakRuntimeWorldSession BreakRuntimeWorldSession;
 
 typedef struct {
@@ -39,6 +50,8 @@ typedef struct {
     const char *subscriber_name;
     u32 queue_capacity;
     u32 max_connections;
+    BreakWorldSnapshotPublication *publication; /* borrowed; NULL disables */
+    u32 publish_connection_budget;              /* 0 = 8; allowed 1..64 */
 } BreakRuntimeWorldSessionConfig;
 
 typedef struct {
@@ -51,22 +64,28 @@ typedef struct {
     u64 next_sequence;
     usize queued;        /* queue enqueued-dequeued; excludes control_pending */
     bool control_pending;
+    u64 publish_overloads;
+    u64 publish_terminal;
+    bool publish_pending;
 } BreakRuntimeWorldSessionStats;
 
-/* submit() validates, copies and enqueues only into this adapter's owned
- * queue; it never fans out through the bus. The registered kind/subscription
- * remains available to external producers: a direct Bus publish delivers an
- * independent copy to every adapter subscribed to that kind. Those external
- * messages increase drained/applied as consumed, never submitted or the
- * adapter-local Runtime sequence.
+/* submit() and submit_publish_current() validate, copy and enqueue only into
+ * this adapter's owned queue; they never fan out through the bus. Only the
+ * control kind is registered for external producers: a direct Bus publish
+ * delivers an independent copy to every adapter subscribed to that kind.
+ * Publish-current notices have no external Bus kind. External control messages
+ * increase drained/applied as consumed, never submitted or the adapter-local
+ * Runtime sequence.
  *
- * submit(), close(), is_closed(), pending(), connection_epoch() and stats()
- * may run on any thread. drain() is the single-owner entry point and is the
+ * submit(), submit_publish_current(), close(), is_closed(), pending(),
+ * connection_epoch() and stats() may run on any thread. drain() is the
+ * single-owner entry point and is the
  * only API that may call World Session. External Bus publishers use the bus' normal threading
  * contract and race only with queue admission, never with World calls.
  *
- * pending() is queue enqueued-dequeued plus control_pending, not
- * submitted-drained. For an unregistered adapter, destroy() first closes
+ * pending() is queue enqueued-dequeued plus control_pending and one Boolean
+ * publish request/continuation, not submitted-drained. For an unregistered
+ * adapter, destroy() first closes
  * admission and unsubscribes, then checks actual pending. A false attempt then
  * leaves drain/stats/epoch queries and a later retry valid, without repeating
  * unsubscribe. A directly registered adapter instead rejects destroy before
@@ -76,7 +95,8 @@ typedef struct {
  * A fail-early destroy may overlap producers/drain only while pending is known
  * to keep it false. Before any destroy call that can succeed, the caller must
  * quiesce every other adapter API call and prevent new calls; success
- * invalidates the adapter. The borrowed bus/session stay caller-owned.
+ * invalidates the adapter. The borrowed bus/session/publication stay
+ * caller-owned.
  */
 BreakRuntimeWorldSession *break_runtime_world_session_create(
     const BreakRuntimeWorldSessionConfig *config);
@@ -85,6 +105,10 @@ bool break_runtime_world_session_destroy(
 BreakRuntimeError break_runtime_world_session_submit(
     BreakRuntimeWorldSession *adapter,
     const BreakRuntimeWorldCommand *command,
+    u64 correlation_id);
+BreakRuntimeError break_runtime_world_session_submit_publish_current(
+    BreakRuntimeWorldSession *adapter,
+    const BreakRuntimeWorldPublishCurrentNotice *notice,
     u64 correlation_id);
 void break_runtime_world_session_close(
     BreakRuntimeWorldSession *adapter);

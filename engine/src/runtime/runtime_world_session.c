@@ -13,15 +13,23 @@
 typedef struct {
     u64 key;
     u64 epoch;
+    u64 completed_publication_epoch;
+    u64 terminal_publication_epoch;
+    u64 attempt_publication_epoch;
+    u64 attempt_target_snapshot_id;
+    u64 attempt_target_tick;
+    bool retry_publish;
 } RuntimeWorldConnection;
 
 struct BreakRuntimeWorldSession {
     BreakWorldSession *session;
     BreakRuntimeBus *bus;
+    BreakWorldSnapshotPublication *publication;
     BreakRuntimeQueue *queue;
     PlatformMutex mutex;
     u32 subscriber_id;
     u32 max_connections;
+    u32 publish_connection_budget;
     bool closed;
     bool unsubscribed;
     bool lifecycle_bound;
@@ -35,9 +43,16 @@ struct BreakRuntimeWorldSession {
     u64 rejected;
     u64 stale_rejected;
     u64 transport_overloads;
+    u64 publish_overloads;
+    u64 publish_terminal;
     bool control_pending;
     BreakRuntimeWorldCommand pending_command;
     u64 pending_correlation_id;
+    bool publish_request;
+    bool publish_continuation;
+    u64 publish_request_level;
+    u64 publish_observed_epoch;
+    usize publish_cursor;
     RuntimeWorldConnection connections[];
 };
 
@@ -119,6 +134,38 @@ static BreakRuntimeError runtime_world_send_control(BreakRuntimeWorldSession *ad
     }
 }
 
+static bool runtime_world_publish_pending_locked(const BreakRuntimeWorldSession *adapter)
+{
+    return adapter->publish_request || adapter->publish_continuation;
+}
+
+static void runtime_world_clear_connection_publish(RuntimeWorldConnection *connection)
+{
+    connection->completed_publication_epoch = 0u;
+    connection->terminal_publication_epoch = 0u;
+    connection->attempt_publication_epoch = 0u;
+    connection->attempt_target_snapshot_id = 0u;
+    connection->attempt_target_tick = 0u;
+    connection->retry_publish = false;
+}
+
+static void runtime_world_clear_publish(BreakRuntimeWorldSession *adapter, bool clear_attempts)
+{
+    adapter->publish_request = false;
+    adapter->publish_continuation = false;
+    adapter->publish_request_level = 0u;
+    adapter->publish_observed_epoch = 0u;
+    adapter->publish_cursor = 0u;
+    if (!clear_attempts) return;
+    for (usize i = 0u; i < adapter->max_connections; ++i) {
+        RuntimeWorldConnection *connection = &adapter->connections[i];
+        connection->attempt_publication_epoch = 0u;
+        connection->attempt_target_snapshot_id = 0u;
+        connection->attempt_target_tick = 0u;
+        connection->retry_publish = false;
+    }
+}
+
 static BreakRuntimeError runtime_world_apply(BreakRuntimeWorldSession *adapter,
                                              const BreakRuntimeWorldCommand *command,
                                              u64 correlation_id)
@@ -131,9 +178,14 @@ static BreakRuntimeError runtime_world_apply(BreakRuntimeWorldSession *adapter,
         if (command->level_generation == 0u || command->level_generation <= level) {
             return BREAK_RUNTIME_STALE;
         }
-        return break_world_session_rebaseline(adapter->session, command->level_generation)
-                   ? BREAK_RUNTIME_OK
-                   : BREAK_RUNTIME_STALE;
+        if (!break_world_session_rebaseline(adapter->session, command->level_generation)) {
+            return BREAK_RUNTIME_STALE;
+        }
+        for (usize i = 0u; i < adapter->max_connections; ++i) {
+            runtime_world_clear_connection_publish(&adapter->connections[i]);
+        }
+        runtime_world_clear_publish(adapter, false);
+        return BREAK_RUNTIME_OK;
     }
     if (command->kind == BREAK_RUNTIME_WORLD_COMMAND_OPEN) {
         u64 epoch;
@@ -151,6 +203,7 @@ static BreakRuntimeError runtime_world_apply(BreakRuntimeWorldSession *adapter,
         if (!break_world_session_open(adapter->session, command->connection_key)) {
             return BREAK_RUNTIME_REJECTED;
         }
+        runtime_world_clear_connection_publish(&adapter->connections[slot]);
         adapter->connections[slot].key = command->connection_key;
         adapter->connections[slot].epoch = epoch;
         adapter->next_connection_epoch++;
@@ -167,10 +220,25 @@ static BreakRuntimeError runtime_world_apply(BreakRuntimeWorldSession *adapter,
         if (!break_world_session_close(adapter->session, command->connection_key)) {
             return BREAK_RUNTIME_REJECTED;
         }
+        runtime_world_clear_connection_publish(&adapter->connections[slot]);
         memset(&adapter->connections[slot], 0, sizeof(adapter->connections[slot]));
         return BREAK_RUNTIME_OK;
     }
     return runtime_world_send_control(adapter, command, correlation_id);
+}
+
+static BreakRuntimeError runtime_world_apply_notice(
+    BreakRuntimeWorldSession *adapter,
+    const BreakRuntimeWorldPublishCurrentNotice *notice)
+{
+    if (!notice || notice->reserved_zero != 0u) return BREAK_RUNTIME_INVALID;
+    if (notice->level_generation !=
+        break_world_session_level_generation(adapter->session)) {
+        return BREAK_RUNTIME_STALE;
+    }
+    adapter->publish_request = true;
+    adapter->publish_request_level = notice->level_generation;
+    return BREAK_RUNTIME_OK;
 }
 
 static BreakRuntimeError runtime_world_retry(BreakRuntimeWorldSession *adapter)
@@ -183,6 +251,139 @@ static BreakRuntimeError runtime_world_retry(BreakRuntimeWorldSession *adapter)
         memset(&adapter->pending_command, 0, sizeof(adapter->pending_command));
         adapter->pending_correlation_id = 0u;
     }
+    return result;
+}
+
+static bool runtime_world_publish_clean(const RuntimeWorldConnection *connection,
+                                        const BreakWorldSessionSenderState *state,
+                                        u64 publication_epoch)
+{
+    return !state->attempt_pending && !connection->retry_publish &&
+           (connection->completed_publication_epoch == publication_epoch ||
+            connection->terminal_publication_epoch == publication_epoch);
+}
+
+static BreakRuntimeError runtime_world_publish_connection(
+    BreakRuntimeWorldSession *adapter, usize slot,
+    const BreakWorldSnapshotLease *lease, bool *out_called)
+{
+    RuntimeWorldConnection *connection = &adapter->connections[slot];
+    BreakWorldSessionSenderState state;
+    BreakNetSendResult sent;
+    *out_called = false;
+    if (!break_world_session_sender_state(adapter->session, connection->key, &state)) {
+        connection->terminal_publication_epoch = lease->publication_epoch;
+        connection->retry_publish = false;
+        adapter->publish_terminal++;
+        return BREAK_RUNTIME_FAILED;
+    }
+    if (runtime_world_publish_clean(connection, &state, lease->publication_epoch)) {
+        return BREAK_RUNTIME_OK;
+    }
+
+    sent = break_world_session_publish_snapshot(
+        adapter->session, connection->key, lease->snapshot, lease->level_generation);
+    *out_called = true;
+    if (sent == BREAK_NET_SEND_OK) {
+        connection->completed_publication_epoch = lease->publication_epoch;
+        connection->retry_publish = false;
+        return BREAK_RUNTIME_OK;
+    }
+    if (sent == BREAK_NET_SEND_OVERLOAD) {
+        connection->retry_publish = true;
+        adapter->publish_overloads++;
+        return BREAK_RUNTIME_OVERLOAD;
+    }
+
+    connection->terminal_publication_epoch = lease->publication_epoch;
+    connection->retry_publish = false;
+    adapter->publish_terminal++;
+    if (sent == BREAK_NET_SEND_INVALID) return BREAK_RUNTIME_INVALID;
+    if (sent == BREAK_NET_SEND_CLOSED) return BREAK_RUNTIME_CLOSED;
+    return BREAK_RUNTIME_FAILED;
+}
+
+static bool runtime_world_recompute_continuation(
+    BreakRuntimeWorldSession *adapter, u64 current_epoch)
+{
+    for (usize i = 0u; i < adapter->max_connections; ++i) {
+        const RuntimeWorldConnection *connection = &adapter->connections[i];
+        if (connection->key == 0u) continue;
+        if (connection->retry_publish ||
+            (connection->completed_publication_epoch != current_epoch &&
+             connection->terminal_publication_epoch != current_epoch)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static BreakRuntimeError runtime_world_publish_current(
+    BreakRuntimeWorldSession *adapter)
+{
+    BreakWorldSnapshotLease lease;
+    BreakWorldSnapshotAcquireResult acquired;
+    BreakRuntimeError result = BREAK_RUNTIME_OK;
+    u32 budget;
+    u32 calls = 0u;
+    usize scanned = 0u;
+    if (!runtime_world_publish_pending_locked(adapter)) return BREAK_RUNTIME_OK;
+
+    memset(&lease, 0, sizeof(lease));
+    acquired = break_world_snapshot_publication_acquire(adapter->publication, &lease);
+    if (acquired == BREAK_WORLD_SNAPSHOT_ACQUIRE_EMPTY) {
+        runtime_world_clear_publish(adapter, true);
+        return BREAK_RUNTIME_OK;
+    }
+    if (acquired == BREAK_WORLD_SNAPSHOT_ACQUIRE_CLOSED) {
+        adapter->publish_terminal++;
+        runtime_world_clear_publish(adapter, true);
+        return BREAK_RUNTIME_CLOSED;
+    }
+    if (acquired != BREAK_WORLD_SNAPSHOT_ACQUIRE_OK) {
+        adapter->publish_terminal++;
+        runtime_world_clear_publish(adapter, true);
+        return BREAK_RUNTIME_INVALID;
+    }
+    if (lease.level_generation != break_world_session_level_generation(adapter->session)) {
+        adapter->publish_terminal++;
+        runtime_world_clear_publish(adapter, true);
+        result = BREAK_RUNTIME_STALE;
+        goto release;
+    }
+
+    adapter->publish_request = false;
+    adapter->publish_request_level = 0u;
+    adapter->publish_observed_epoch = lease.publication_epoch;
+    budget = adapter->publish_connection_budget < adapter->max_connections
+                 ? adapter->publish_connection_budget
+                 : adapter->max_connections;
+    if (adapter->publish_cursor >= adapter->max_connections) adapter->publish_cursor = 0u;
+    while (scanned < adapter->max_connections) {
+        usize slot = adapter->publish_cursor;
+        RuntimeWorldConnection *connection = &adapter->connections[slot];
+        bool called = false;
+        if (connection->key != 0u && calls == budget) {
+            BreakWorldSessionSenderState state;
+            if (!break_world_session_sender_state(adapter->session, connection->key, &state) ||
+                !runtime_world_publish_clean(connection, &state, lease.publication_epoch)) {
+                break;
+            }
+        } else if (connection->key != 0u) {
+            BreakRuntimeError connection_result = runtime_world_publish_connection(
+                adapter, slot, &lease, &called);
+            if (called) calls++;
+            if (result == BREAK_RUNTIME_OK && connection_result != BREAK_RUNTIME_OK) {
+                result = connection_result;
+            }
+        }
+        adapter->publish_cursor = (slot + 1u) % adapter->max_connections;
+        scanned++;
+    }
+    adapter->publish_continuation = runtime_world_recompute_continuation(
+        adapter, lease.publication_epoch);
+release:
+    break_world_snapshot_lease_release(&lease);
     return result;
 }
 
@@ -200,6 +401,8 @@ BreakRuntimeWorldSession *break_runtime_world_session_create(
     u32 capacity;
     u32 max_connections;
     if (!config || !config->session || !config->bus) return NULL;
+    if (!config->publication && config->publish_connection_budget != 0u) return NULL;
+    if (config->publish_connection_budget > 64u) return NULL;
     capacity = config->queue_capacity == 0u
                    ? RUNTIME_WORLD_DEFAULT_QUEUE_CAPACITY
                    : config->queue_capacity;
@@ -216,7 +419,10 @@ BreakRuntimeWorldSession *break_runtime_world_session_create(
     if (!adapter) return NULL;
     adapter->session = config->session;
     adapter->bus = config->bus;
+    adapter->publication = config->publication;
     adapter->max_connections = max_connections;
+    adapter->publish_connection_budget = config->publish_connection_budget == 0u
+        ? 8u : config->publish_connection_budget;
     adapter->next_connection_epoch = 1u;
     adapter->next_sequence = 1u;
     platform_mutex_init(&adapter->mutex);
@@ -256,7 +462,8 @@ static usize runtime_world_queued_locked(const BreakRuntimeWorldSession *adapter
 
 static usize runtime_world_pending_locked(const BreakRuntimeWorldSession *adapter)
 {
-    return runtime_world_queued_locked(adapter) + (adapter->control_pending ? 1u : 0u);
+    return runtime_world_queued_locked(adapter) + (adapter->control_pending ? 1u : 0u) +
+           (runtime_world_publish_pending_locked(adapter) ? 1u : 0u);
 }
 
 bool break_runtime_world_session_lifecycle_reserve(BreakRuntimeWorldSession *adapter)
@@ -419,6 +626,59 @@ BreakRuntimeError break_runtime_world_session_submit(
     return result;
 }
 
+BreakRuntimeError break_runtime_world_session_submit_publish_current(
+    BreakRuntimeWorldSession *adapter,
+    const BreakRuntimeWorldPublishCurrentNotice *notice,
+    u64 correlation_id)
+{
+    BreakRuntimeMessageView view;
+    BreakRuntimeOwnedMessage *message = NULL;
+    BreakRuntimeError result;
+    u64 sequence;
+    if (!adapter) return BREAK_RUNTIME_INVALID;
+    platform_mutex_lock(&adapter->mutex);
+    if (adapter->closed) {
+        platform_mutex_unlock(&adapter->mutex);
+        return BREAK_RUNTIME_CLOSED;
+    }
+    if (!adapter->publication) {
+        adapter->rejected++;
+        platform_mutex_unlock(&adapter->mutex);
+        return BREAK_RUNTIME_REJECTED;
+    }
+    if (!notice || notice->reserved_zero != 0u) {
+        adapter->rejected++;
+        platform_mutex_unlock(&adapter->mutex);
+        return BREAK_RUNTIME_INVALID;
+    }
+    if (adapter->next_sequence == 0u) {
+        platform_mutex_unlock(&adapter->mutex);
+        return BREAK_RUNTIME_OVERLOAD;
+    }
+    sequence = adapter->next_sequence;
+    memset(&view, 0, sizeof(view));
+    view.kind = BREAK_RUNTIME_WORLD_SESSION_PUBLISH_CURRENT_KIND;
+    view.version = BREAK_RUNTIME_WORLD_SESSION_PUBLISH_CURRENT_VERSION;
+    view.flags = BREAK_RUNTIME_MESSAGE_FLAG_CONTROL;
+    view.sequence = sequence;
+    view.correlation_id = correlation_id;
+    view.data = notice;
+    view.size = sizeof(*notice);
+    result = break_runtime_message_copy(&view, &message);
+    if (result == BREAK_RUNTIME_OK) {
+        result = break_runtime_queue_enqueue(
+            adapter->queue, message, break_runtime_queue_generation(adapter->queue));
+        if (result == BREAK_RUNTIME_OK) {
+            adapter->submitted++;
+            adapter->next_sequence++;
+        } else {
+            break_runtime_message_release(message);
+        }
+    }
+    platform_mutex_unlock(&adapter->mutex);
+    return result;
+}
+
 void break_runtime_world_session_close(BreakRuntimeWorldSession *adapter)
 {
     if (!adapter) return;
@@ -461,14 +721,24 @@ BreakRuntimeError break_runtime_world_session_drain(
         BreakRuntimeOwnedMessage *message = NULL;
         BreakRuntimeMessageView view;
         BreakRuntimeWorldCommand command;
+        BreakRuntimeWorldPublishCurrentNotice notice;
         BreakRuntimeError result;
         u64 correlation_id = 0u;
+        bool is_notice = false;
         result = break_runtime_queue_poll(adapter->queue, &message);
         if (result != BREAK_RUNTIME_OK || !message) break;
         memset(&command, 0, sizeof(command));
+        memset(&notice, 0, sizeof(notice));
         result = break_runtime_message_view(message, &view);
-        if (result == BREAK_RUNTIME_OK && view.kind == BREAK_RUNTIME_WORLD_SESSION_CONTROL_KIND &&
-            view.version == 1u && view.size == sizeof(command)) {
+        if (result == BREAK_RUNTIME_OK &&
+            view.kind == BREAK_RUNTIME_WORLD_SESSION_PUBLISH_CURRENT_KIND &&
+            view.version == BREAK_RUNTIME_WORLD_SESSION_PUBLISH_CURRENT_VERSION &&
+            view.size == sizeof(notice)) {
+            memcpy(&notice, view.data, sizeof(notice));
+            is_notice = true;
+        } else if (result == BREAK_RUNTIME_OK &&
+                   view.kind == BREAK_RUNTIME_WORLD_SESSION_CONTROL_KIND &&
+                   view.version == 1u && view.size == sizeof(command)) {
             memcpy(&command, view.data, sizeof(command));
             correlation_id = view.correlation_id;
         } else {
@@ -477,12 +747,17 @@ BreakRuntimeError break_runtime_world_session_drain(
         break_runtime_message_release(message);
         adapter->drained++;
         drained++;
-        if (result == BREAK_RUNTIME_OK) result = runtime_world_apply(adapter, &command, correlation_id);
+        if (result == BREAK_RUNTIME_OK) {
+            result = is_notice
+                         ? runtime_world_apply_notice(adapter, &notice)
+                         : runtime_world_apply(adapter, &command, correlation_id);
+        }
         runtime_world_record_result(adapter, result,
-                                    command.kind == BREAK_RUNTIME_WORLD_COMMAND_ACK ||
-                                    command.kind == BREAK_RUNTIME_WORLD_COMMAND_NEED_FULL);
+                                    !is_notice &&
+                                    (command.kind == BREAK_RUNTIME_WORLD_COMMAND_ACK ||
+                                     command.kind == BREAK_RUNTIME_WORLD_COMMAND_NEED_FULL));
         if (first_error == BREAK_RUNTIME_OK && result != BREAK_RUNTIME_OK) first_error = result;
-        if (result == BREAK_RUNTIME_OVERLOAD &&
+        if (result == BREAK_RUNTIME_OVERLOAD && !is_notice &&
             (command.kind == BREAK_RUNTIME_WORLD_COMMAND_ACK ||
              command.kind == BREAK_RUNTIME_WORLD_COMMAND_NEED_FULL)) {
             adapter->control_pending = true;
@@ -490,6 +765,10 @@ BreakRuntimeError break_runtime_world_session_drain(
             adapter->pending_correlation_id = correlation_id;
             break;
         }
+    }
+    if (runtime_world_publish_pending_locked(adapter)) {
+        BreakRuntimeError result = runtime_world_publish_current(adapter);
+        if (first_error == BREAK_RUNTIME_OK && result != BREAK_RUNTIME_OK) first_error = result;
     }
 done:
     if (out_drained) *out_drained = drained;
@@ -540,6 +819,9 @@ void break_runtime_world_session_stats(
     out_stats->next_sequence = adapter->next_sequence;
     out_stats->queued = runtime_world_queued_locked(adapter);
     out_stats->control_pending = adapter->control_pending;
+    out_stats->publish_overloads = adapter->publish_overloads;
+    out_stats->publish_terminal = adapter->publish_terminal;
+    out_stats->publish_pending = runtime_world_publish_pending_locked(adapter);
     platform_mutex_unlock((PlatformMutex *)(uintptr_t)&adapter->mutex);
 }
 

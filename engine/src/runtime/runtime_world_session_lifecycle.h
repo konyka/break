@@ -22,9 +22,11 @@ typedef struct {
  * adapter is REJECTED, even through another coordinator, and changes neither
  * owner. Allocation or coordinator registration failure rolls back the bind.
  *
- * Success transfers adapter close/destroy to the coordinator. The caller must
- * quiesce external producers through stop_producers/join and must not directly
- * close or destroy the registered adapter. Direct destroy returns false before
+ * Success transfers adapter close/destroy to the coordinator. Drain pending is
+ * the owned queue count plus one control retry plus one Boolean publish
+ * request/continuation. The caller must quiesce external producers through
+ * stop_producers/join and must not directly close or destroy the registered
+ * adapter. Direct destroy returns false before
  * close/unsubscribe while bound. STOPPED releases only the adapter, then calls
  * on_destroy once after successful release. TIMEOUT, FAILED and abandon do not
  * call on_destroy; a NULL hook preserves the original behavior. */

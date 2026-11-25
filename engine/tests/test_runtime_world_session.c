@@ -30,6 +30,11 @@ _Static_assert(offsetof(BreakRuntimeWorldCommand, level_generation) == 24u, "lev
 _Static_assert(offsetof(BreakRuntimeWorldCommand, delta_id) == 32u, "delta offset");
 _Static_assert(offsetof(BreakRuntimeWorldCommand, target_snapshot_id) == 40u, "target offset");
 _Static_assert(offsetof(BreakRuntimeWorldCommand, target_tick) == 48u, "tick offset");
+_Static_assert(sizeof(BreakRuntimeWorldPublishCurrentNotice) == 16u, "notice size");
+_Static_assert(offsetof(BreakRuntimeWorldPublishCurrentNotice, level_generation) == 0u,
+               "notice level offset");
+_Static_assert(offsetof(BreakRuntimeWorldPublishCurrentNotice, reserved_zero) == 8u,
+               "notice reserved offset");
 
 typedef struct {
     u32 value;
@@ -44,6 +49,7 @@ typedef struct {
     BreakRuntimeBus *bus;
     BreakRuntimeWorldSession *adapter;
     u64 now;
+    BreakWorldSnapshotPublication *publication;
 } Fixture;
 
 static u64 test_clock(void *user)
@@ -128,7 +134,10 @@ static bool fixture_init_without_adapter(Fixture *fixture, u64 level)
     return fixture->session != NULL;
 }
 
-static bool fixture_attach(Fixture *fixture, u32 queue_capacity, u32 max_connections)
+static bool fixture_attach_publication(Fixture *fixture, u32 queue_capacity,
+                                       u32 max_connections,
+                                       BreakWorldSnapshotPublication *publication,
+                                       u32 publish_connection_budget)
 {
     BreakRuntimeWorldSessionConfig config;
     memset(&config, 0, sizeof(config));
@@ -136,14 +145,35 @@ static bool fixture_attach(Fixture *fixture, u32 queue_capacity, u32 max_connect
     config.bus = fixture->bus;
     config.queue_capacity = queue_capacity;
     config.max_connections = max_connections;
+    config.publication = publication;
+    config.publish_connection_budget = publish_connection_budget;
     fixture->adapter = break_runtime_world_session_create(&config);
     return fixture->adapter != NULL;
+}
+
+static bool fixture_attach(Fixture *fixture, u32 queue_capacity, u32 max_connections)
+{
+    return fixture_attach_publication(fixture, queue_capacity, max_connections, NULL, 0u);
 }
 
 static bool fixture_init(Fixture *fixture, u64 level, u32 max_connections)
 {
     return fixture_init_without_adapter(fixture, level) &&
            fixture_attach(fixture, 0u, max_connections);
+}
+
+static bool fixture_init_publication(Fixture *fixture, u64 level,
+                                     u32 max_connections, u32 publish_connection_budget)
+{
+    BreakWorldSnapshotPublicationConfig config;
+    if (!fixture_init_without_adapter(fixture, level)) return false;
+    memset(&config, 0, sizeof(config));
+    config.schema_hash = break_schema_hash(fixture->schemas);
+    config.level_generation = level;
+    fixture->publication = break_world_snapshot_publication_create(&config);
+    return fixture->publication &&
+           fixture_attach_publication(fixture, 0u, max_connections,
+                                      fixture->publication, publish_connection_budget);
 }
 
 static void clear_outbound(Fixture *fixture)
@@ -166,6 +196,10 @@ static void fixture_dispose(Fixture *fixture)
             (void)break_runtime_world_session_drain(fixture->adapter, 256u, &drained);
         }
         (void)break_runtime_world_session_destroy(fixture->adapter);
+    }
+    if (fixture->publication) {
+        break_world_snapshot_publication_close(fixture->publication);
+        break_world_snapshot_publication_destroy(fixture->publication);
     }
     break_runtime_bus_destroy(fixture->bus);
     break_world_session_destroy(fixture->session);
@@ -203,6 +237,13 @@ static BreakRuntimeError publish_external(BreakRuntimeBus *bus,
     view.data = item;
     view.size = sizeof(*item);
     return break_runtime_bus_publish(bus, &view, out_delivered);
+}
+
+static BreakRuntimeError submit_current(Fixture *fixture, u64 level, u64 correlation_id)
+{
+    BreakRuntimeWorldPublishCurrentNotice notice = {level, 0u};
+    return break_runtime_world_session_submit_publish_current(
+        fixture->adapter, &notice, correlation_id);
 }
 
 static bool open_connection(Fixture *fixture, u64 key, u64 level, u64 *out_epoch)
@@ -313,6 +354,359 @@ static bool control_via_adapter(Fixture *fixture, u32 command_kind, u64 key, u64
     handled = break_world_session_handle_control(key, &outbound, fixture->session);
     break_net_message_release(&outbound);
     return handled;
+}
+
+TEST(publish_notice_layout_submit_and_external_bus_contract)
+{
+    {
+        Fixture fixture;
+        BreakRuntimeWorldPublishCurrentNotice notice = {7u, 0u};
+        BreakRuntimeWorldPublishCurrentNotice bad = {7u, 1u};
+        BreakRuntimeWorldSessionConfig config;
+        BreakRuntimeWorldSessionStats stats;
+        BreakRuntimeMessageView view;
+        BreakWorldSnapshotPublicationConfig publication_config;
+        BreakWorldSnapshotPublication *publication;
+        u32 delivered = 99u;
+        u32 budget;
+
+        ASSERT_TRUE(fixture_init_without_adapter(&fixture, 7u));
+        memset(&config, 0, sizeof(config));
+        memset(&publication_config, 0, sizeof(publication_config));
+        publication_config.schema_hash = break_schema_hash(fixture.schemas);
+        publication_config.level_generation = 7u;
+        publication = break_world_snapshot_publication_create(&publication_config);
+        ASSERT_NOT_NULL(publication);
+        fixture.publication = publication;
+
+        config.session = fixture.session;
+        config.bus = fixture.bus;
+        config.subscriber_name = NULL;
+        config.queue_capacity = 1u;
+        config.max_connections = 2u;
+        config.publication = NULL;
+        config.publish_connection_budget = 1u;
+        ASSERT_EQ(break_runtime_world_session_create(&config), NULL);
+        config.publication = publication;
+        config.publish_connection_budget = 65u;
+        ASSERT_EQ(break_runtime_world_session_create(&config), NULL);
+        for (budget = 1u; budget <= 64u; ++budget) {
+            config.publish_connection_budget = budget;
+            fixture.adapter = break_runtime_world_session_create(&config);
+            ASSERT_NOT_NULL(fixture.adapter);
+            ASSERT_TRUE(break_runtime_world_session_destroy(fixture.adapter));
+            fixture.adapter = NULL;
+        }
+
+        config.publish_connection_budget = 0u;
+        fixture.adapter = break_runtime_world_session_create(&config);
+        ASSERT_NOT_NULL(fixture.adapter);
+        ASSERT_EQ(break_runtime_world_session_submit_publish_current(
+                      fixture.adapter, NULL, HIGH_CID), BREAK_RUNTIME_INVALID);
+        ASSERT_EQ(break_runtime_world_session_submit_publish_current(
+                      fixture.adapter, &bad, HIGH_CID), BREAK_RUNTIME_INVALID);
+        ASSERT_EQ(break_runtime_world_session_submit_publish_current(
+                      fixture.adapter, &notice, HIGH_CID), BREAK_RUNTIME_OK);
+        ASSERT_EQ(break_runtime_world_session_submit_publish_current(
+                      fixture.adapter, &notice, HIGH_CID), BREAK_RUNTIME_OVERLOAD);
+        break_runtime_world_session_stats(fixture.adapter, &stats);
+        ASSERT_EQ(stats.submitted, 1u);
+        ASSERT_EQ(stats.drained, 0u);
+        ASSERT_EQ(stats.next_sequence, 2u);
+        ASSERT_EQ(stats.queued, 1u);
+        ASSERT_EQ(stats.publish_overloads, 0u);
+
+        memset(&view, 0, sizeof(view));
+        view.kind = BREAK_RUNTIME_WORLD_SESSION_PUBLISH_CURRENT_KIND;
+        view.version = BREAK_RUNTIME_WORLD_SESSION_PUBLISH_CURRENT_VERSION;
+        view.sequence = UINT64_MAX;
+        view.correlation_id = HIGH_CID;
+        view.data = &notice;
+        view.size = sizeof(notice);
+        ASSERT_EQ(break_runtime_bus_publish(fixture.bus, &view, &delivered),
+                  BREAK_RUNTIME_REJECTED);
+        ASSERT_EQ(delivered, 0u);
+        break_runtime_world_session_stats(fixture.adapter, &stats);
+        ASSERT_EQ(stats.queued, 1u);
+
+        break_runtime_world_session_close(fixture.adapter);
+        ASSERT_EQ(break_runtime_world_session_submit_publish_current(
+                      fixture.adapter, &notice, HIGH_CID), BREAK_RUNTIME_CLOSED);
+        fixture_dispose(&fixture);
+    }
+    {
+        Fixture fixture;
+        BreakRuntimeWorldPublishCurrentNotice notice = {7u, 0u};
+        BreakWorldSessionSenderState before;
+        BreakWorldSessionSenderState after;
+        BreakRuntimeWorldSessionStats stats_before;
+        BreakRuntimeWorldSessionStats stats_after;
+        u64 epoch = 0u;
+
+        ASSERT_TRUE(fixture_init(&fixture, 7u, 2u));
+        ASSERT_TRUE(open_connection(&fixture, KEY_A, 7u, &epoch));
+        ASSERT_TRUE(break_world_session_sender_state(fixture.session, KEY_A, &before));
+        break_runtime_world_session_stats(fixture.adapter, &stats_before);
+        ASSERT_EQ(break_runtime_world_session_submit_publish_current(
+                      fixture.adapter, &notice, HIGH_CID), BREAK_RUNTIME_REJECTED);
+        ASSERT_TRUE(break_world_session_sender_state(fixture.session, KEY_A, &after));
+        ASSERT_EQ(memcmp(&before, &after, sizeof(after)), 0);
+        break_runtime_world_session_stats(fixture.adapter, &stats_after);
+        ASSERT_EQ(stats_after.next_sequence, stats_before.next_sequence);
+        ASSERT_EQ(stats_after.submitted, stats_before.submitted);
+        ASSERT_EQ(stats_after.drained, stats_before.drained);
+        ASSERT_EQ(break_net_reactor_outbound_count(fixture.reactor), 0u);
+        fixture_dispose(&fixture);
+    }
+}
+
+TEST(publish_notice_basic_s1_full_has_no_pre_drain_effects)
+{
+    Fixture fixture;
+    BreakWorldSnapshot *s1;
+    BreakWorldSessionSenderState before;
+    BreakWorldSessionSenderState after;
+    BreakWorldSessionStats world_before;
+    BreakWorldSessionStats world_after;
+    BreakRuntimeWorldSessionStats stats;
+    u64 epoch_a = 0u;
+    usize drained = 0u;
+
+    ASSERT_TRUE(fixture_init_publication(&fixture, 7u, 2u, 0u));
+    ASSERT_TRUE(open_connection(&fixture, KEY_A, 7u, &epoch_a));
+    s1 = make_target(&fixture, 42u, 10u);
+    ASSERT_NOT_NULL(s1);
+    ASSERT_TRUE(break_world_snapshot_publication_publish(fixture.publication, s1, 7u));
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, KEY_A, &before));
+    break_world_session_stats(fixture.session, &world_before);
+    ASSERT_EQ(break_net_reactor_outbound_count(fixture.reactor), 0u);
+
+    ASSERT_EQ(submit_current(&fixture, 7u, HIGH_CID), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, KEY_A, &after));
+    break_world_session_stats(fixture.session, &world_after);
+    ASSERT_EQ(memcmp(&before, &after, sizeof(after)), 0);
+    ASSERT_EQ(memcmp(&world_before, &world_after, sizeof(world_after)), 0);
+    ASSERT_EQ(break_net_reactor_outbound_count(fixture.reactor), 0u);
+
+    ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 1u, &drained),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(drained, 1u);
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, KEY_A, &after));
+    ASSERT_EQ(after.history_count, 1u);
+    ASSERT_EQ(after.next_delta_id, 2u);
+    ASSERT_FALSE(after.attempt_pending);
+    break_world_session_stats(fixture.session, &world_after);
+    ASSERT_EQ(world_after.published_full_packets, 1u);
+    ASSERT_EQ(world_after.published_delta_packets, 0u);
+    break_runtime_world_session_stats(fixture.adapter, &stats);
+    ASSERT_FALSE(stats.publish_pending);
+    ASSERT_EQ(break_runtime_world_session_pending(fixture.adapter), 0u);
+    break_world_snapshot_release(s1);
+    fixture_dispose(&fixture);
+}
+
+TEST(publish_notice_connections_keep_independent_full_delta_and_dedup)
+{
+    Fixture fixture;
+    BreakWorldSnapshot *s1;
+    BreakWorldSnapshot *s2;
+    BreakWorldSessionSenderState a_state;
+    BreakWorldSessionSenderState b_state;
+    BreakWorldSessionStats before;
+    BreakWorldSessionStats after;
+    BreakRuntimeWorldSessionStats runtime_stats;
+    u64 submitted_before;
+    u64 drained_before;
+    u64 epoch_a = 0u;
+    u64 epoch_b = 0u;
+    usize drained = 0u;
+
+    ASSERT_TRUE(fixture_init_publication(&fixture, 7u, 2u, 0u));
+    ASSERT_TRUE(open_connection(&fixture, KEY_A, 7u, &epoch_a));
+    ASSERT_TRUE(open_connection(&fixture, KEY_B, 7u, &epoch_b));
+    s1 = make_target(&fixture, 42u, 10u);
+    ASSERT_NOT_NULL(s1);
+    ASSERT_TRUE(break_world_snapshot_publication_publish(fixture.publication, s1, 7u));
+    ASSERT_EQ(submit_current(&fixture, 7u, 0u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 1u, &drained),
+              BREAK_RUNTIME_OK);
+    break_world_session_stats(fixture.session, &after);
+    ASSERT_EQ(after.published_full_packets, 2u);
+    ASSERT_EQ(after.published_delta_packets, 0u);
+    ASSERT_TRUE(control_via_adapter(&fixture, BREAK_RUNTIME_WORLD_COMMAND_ACK,
+                                    KEY_A, epoch_a, 7u, 1u, s1, 0u));
+
+    s2 = make_target(&fixture, 43u, 20u);
+    ASSERT_NOT_NULL(s2);
+    ASSERT_TRUE(break_world_snapshot_publication_publish(fixture.publication, s2, 7u));
+    ASSERT_EQ(submit_current(&fixture, 7u, 0u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 1u, &drained),
+              BREAK_RUNTIME_OK);
+    break_world_session_stats(fixture.session, &after);
+    ASSERT_EQ(after.published_full_packets, 3u);
+    ASSERT_EQ(after.published_delta_packets, 1u);
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, KEY_A, &a_state));
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, KEY_B, &b_state));
+    ASSERT_EQ(a_state.confirmed_snapshot_id, break_world_snapshot_id(s1));
+    ASSERT_EQ(a_state.history_count, 1u);
+    ASSERT_EQ(a_state.next_delta_id, 3u);
+    ASSERT_EQ(b_state.confirmed_snapshot_id, 0u);
+    ASSERT_EQ(b_state.history_count, 1u);
+    ASSERT_EQ(b_state.next_delta_id, 3u);
+
+    before = after;
+    break_runtime_world_session_stats(fixture.adapter, &runtime_stats);
+    submitted_before = runtime_stats.submitted;
+    drained_before = runtime_stats.drained;
+    ASSERT_EQ(submit_current(&fixture, 7u, 0u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(submit_current(&fixture, 7u, 0u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 2u, &drained),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(drained, 2u);
+    break_runtime_world_session_stats(fixture.adapter, &runtime_stats);
+    ASSERT_EQ(runtime_stats.submitted, submitted_before + 2u);
+    ASSERT_EQ(runtime_stats.drained, drained_before + 2u);
+    ASSERT_FALSE(runtime_stats.publish_pending);
+    break_world_session_stats(fixture.session, &after);
+    ASSERT_EQ(memcmp(&before, &after, sizeof(after)), 0);
+    break_world_snapshot_release(s2);
+    break_world_snapshot_release(s1);
+    fixture_dispose(&fixture);
+}
+
+TEST(publish_notice_empty_closed_wrong_level_and_no_open_connections)
+{
+    {
+        Fixture fixture;
+        BreakWorldSnapshot *s1;
+        BreakWorldSessionStats world_after;
+        u64 epoch_a = 0u;
+        usize drained = 0u;
+
+        ASSERT_TRUE(fixture_init_publication(&fixture, 0u, 2u, 0u));
+        ASSERT_TRUE(open_connection(&fixture, KEY_A, 0u, &epoch_a));
+        s1 = make_target(&fixture, 42u, 10u);
+        ASSERT_NOT_NULL(s1);
+        ASSERT_TRUE(break_world_snapshot_publication_publish(fixture.publication, s1, 0u));
+        ASSERT_EQ(submit_current(&fixture, 0u, 0u), BREAK_RUNTIME_OK);
+        ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 1u, &drained),
+                  BREAK_RUNTIME_OK);
+        ASSERT_EQ(drained, 1u);
+        break_world_session_stats(fixture.session, &world_after);
+        ASSERT_EQ(world_after.published_full_packets, 1u);
+        break_world_snapshot_release(s1);
+        fixture_dispose(&fixture);
+    }
+    {
+        Fixture fixture;
+        BreakWorldSnapshotLease lease;
+        BreakWorldSessionSenderState sender;
+        u64 epoch_a = 0u;
+        usize drained = 0u;
+
+        ASSERT_TRUE(fixture_init_publication(&fixture, 7u, 2u, 0u));
+        ASSERT_TRUE(open_connection(&fixture, KEY_A, 7u, &epoch_a));
+        memset(&lease, 0, sizeof(lease));
+        ASSERT_EQ(break_world_snapshot_publication_acquire(fixture.publication, &lease),
+                  BREAK_WORLD_SNAPSHOT_ACQUIRE_EMPTY);
+        ASSERT_EQ(lease.snapshot, NULL);
+        ASSERT_EQ(submit_current(&fixture, 7u, 0u), BREAK_RUNTIME_OK);
+        ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 1u, &drained),
+                  BREAK_RUNTIME_OK);
+        ASSERT_EQ(drained, 1u);
+        ASSERT_EQ(break_runtime_world_session_pending(fixture.adapter), 0u);
+        ASSERT_TRUE(break_world_session_sender_state(fixture.session, KEY_A, &sender));
+        ASSERT_EQ(sender.next_delta_id, 1u);
+        fixture_dispose(&fixture);
+    }
+    {
+        Fixture fixture;
+        BreakWorldSnapshot *s1;
+        BreakWorldSessionSenderState sender;
+        BreakWorldSessionStats world_after;
+        BreakRuntimeWorldSessionStats stats;
+        u64 epoch_a = 0u;
+        usize drained = 0u;
+
+        ASSERT_TRUE(fixture_init_publication(&fixture, 7u, 2u, 0u));
+        ASSERT_TRUE(open_connection(&fixture, KEY_A, 7u, &epoch_a));
+        ASSERT_EQ(submit_current(&fixture, 8u, 0u), BREAK_RUNTIME_OK);
+        ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 1u, &drained),
+                  BREAK_RUNTIME_STALE);
+        ASSERT_EQ(drained, 1u);
+        ASSERT_EQ(break_runtime_world_session_pending(fixture.adapter), 0u);
+        ASSERT_EQ(break_net_reactor_outbound_count(fixture.reactor), 0u);
+        ASSERT_TRUE(break_world_session_sender_state(fixture.session, KEY_A, &sender));
+        ASSERT_EQ(sender.next_delta_id, 1u);
+
+        s1 = make_target(&fixture, 42u, 10u);
+        ASSERT_NOT_NULL(s1);
+        ASSERT_TRUE(break_world_snapshot_publication_publish(fixture.publication, s1, 7u));
+        ASSERT_EQ(submit_current(&fixture, 7u, 0u), BREAK_RUNTIME_OK);
+        ASSERT_EQ(submit_current(&fixture, 8u, 0u), BREAK_RUNTIME_OK);
+        ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 2u, &drained),
+                  BREAK_RUNTIME_STALE);
+        ASSERT_EQ(drained, 2u);
+        break_world_session_stats(fixture.session, &world_after);
+        ASSERT_EQ(world_after.published_full_packets, 1u);
+        ASSERT_EQ(break_runtime_world_session_pending(fixture.adapter), 0u);
+        break_runtime_world_session_stats(fixture.adapter, &stats);
+        ASSERT_EQ(stats.stale_rejected, 2u);
+        break_world_snapshot_release(s1);
+        fixture_dispose(&fixture);
+    }
+    {
+        Fixture fixture;
+        BreakWorldSnapshot *s1;
+        BreakWorldSessionSenderState sender;
+        BreakWorldSessionStats world_after;
+        u64 epoch_b = 0u;
+        usize drained = 0u;
+
+        ASSERT_TRUE(fixture_init_publication(&fixture, 7u, 2u, 0u));
+        s1 = make_target(&fixture, 42u, 10u);
+        ASSERT_NOT_NULL(s1);
+        ASSERT_TRUE(break_world_snapshot_publication_publish(fixture.publication, s1, 7u));
+        ASSERT_EQ(submit_current(&fixture, 7u, 0u), BREAK_RUNTIME_OK);
+        ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 1u, &drained),
+                  BREAK_RUNTIME_OK);
+        ASSERT_EQ(drained, 1u);
+        ASSERT_EQ(break_runtime_world_session_pending(fixture.adapter), 0u);
+        break_world_session_stats(fixture.session, &world_after);
+        ASSERT_EQ(world_after.published_full_packets, 0u);
+        ASSERT_EQ(world_after.published_delta_packets, 0u);
+        ASSERT_TRUE(open_connection(&fixture, KEY_B, 7u, &epoch_b));
+        ASSERT_TRUE(break_world_session_sender_state(fixture.session, KEY_B, &sender));
+        ASSERT_EQ(sender.next_delta_id, 1u);
+        break_world_snapshot_release(s1);
+        fixture_dispose(&fixture);
+    }
+    {
+        Fixture fixture;
+        BreakWorldSnapshotLease lease;
+        BreakWorldSessionSenderState sender;
+        BreakRuntimeWorldSessionStats stats;
+        u64 epoch_a = 0u;
+        usize drained = 0u;
+
+        ASSERT_TRUE(fixture_init_publication(&fixture, 7u, 2u, 0u));
+        ASSERT_TRUE(open_connection(&fixture, KEY_A, 7u, &epoch_a));
+        break_world_snapshot_publication_close(fixture.publication);
+        memset(&lease, 0, sizeof(lease));
+        ASSERT_EQ(break_world_snapshot_publication_acquire(fixture.publication, &lease),
+                  BREAK_WORLD_SNAPSHOT_ACQUIRE_CLOSED);
+        ASSERT_EQ(lease.snapshot, NULL);
+        ASSERT_EQ(submit_current(&fixture, 7u, 0u), BREAK_RUNTIME_OK);
+        ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 1u, &drained),
+                  BREAK_RUNTIME_CLOSED);
+        ASSERT_EQ(drained, 1u);
+        break_runtime_world_session_stats(fixture.adapter, &stats);
+        ASSERT_EQ(stats.publish_terminal, 1u);
+        ASSERT_FALSE(stats.publish_pending);
+        ASSERT_TRUE(break_world_session_sender_state(fixture.session, KEY_A, &sender));
+        ASSERT_EQ(sender.next_delta_id, 1u);
+        fixture_dispose(&fixture);
+    }
 }
 
 TEST(layout_registry_defaults_and_invalid_configs)
@@ -2720,6 +3114,10 @@ TEST(coordinator_abandon_failed_join_allows_manual_destroy)
 }
 
 TEST_MAIN_BEGIN()
+RUN_TEST(publish_notice_layout_submit_and_external_bus_contract);
+RUN_TEST(publish_notice_basic_s1_full_has_no_pre_drain_effects);
+RUN_TEST(publish_notice_connections_keep_independent_full_delta_and_dedup);
+RUN_TEST(publish_notice_empty_closed_wrong_level_and_no_open_connections);
 RUN_TEST(layout_registry_defaults_and_invalid_configs);
 RUN_TEST(stateless_validation_defers_connection_and_level_state);
 RUN_TEST(open_close_reopen_capacity_and_old_epoch_are_isolated);
