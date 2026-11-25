@@ -1013,6 +1013,7 @@ static void scenario_aspect(void) {
 #define NET_CLIENT_WORLD_MAX_FRAGMENTS 64u
 #define NET_CLIENT_WORLD_SERVER_WIRE_BYTES (BREAK_REPLICATION_WIRE_HEADER_SIZE + 64u)
 #define NET_CLIENT_WORLD_CONNECTION 1u
+#define NET_CLIENT_WORLD_SERVER_CONTROLS 3u
 
 typedef struct WorldPeer {
     BreakComponentSchemaRegistry *schemas;
@@ -1033,6 +1034,11 @@ typedef struct WorldPeer {
     u64 outbound_duplicates;
     u64 need_full;
     u64 recovered;
+    BreakWorldSessionControl server_controls[NET_CLIENT_WORLD_SERVER_CONTROLS];
+    u64 server_correlations[NET_CLIENT_WORLD_SERVER_CONTROLS];
+    u32 server_control_count;
+    u32 correlated_control_count;
+    u32 client_control_count;
 } WorldPeer;
 
 typedef struct WorldAttempt {
@@ -1129,39 +1135,59 @@ static void world_put64(u8 *out, u64 value) {
     for (u32 i = 0u; i < 8u; ++i) out[i] = (u8)(value >> (8u * i));
 }
 
-static bool world_send_control(NetClient *c, BreakWorldSessionControlKind kind,
+static bool world_send_control(NetClient *c, WorldPeer *peer, BreakWorldSessionControlKind kind,
                                const WorldAttempt *attempt) {
-    u8 payload[BREAK_WORLD_SESSION_CONTROL_WIRE_SIZE];
+    u8 payload[BREAK_WORLD_SESSION_CONTROL_WIRE_SIZE_V2];
+    bool sent;
     memset(payload, 0, sizeof(payload));
     memcpy(payload, "BRWC", 4u);
-    world_put16(payload + 4u, 1u);
+    world_put16(payload + 4u, 2u);
     world_put16(payload + 6u, (u16)kind);
     if (kind == BREAK_WORLD_SESSION_CONTROL_ACK) world_put64(payload + 8u, attempt->delta_id);
     world_put64(payload + 16u, attempt->target_snapshot_id);
     world_put64(payload + 24u, attempt->target_tick);
-    return client_send(c, BREAK_NET_MESSAGE_ID_WORLD_CONTROL, 1u, payload, sizeof(payload));
+    world_put64(payload + 32u, peer->level_generation);
+    sent = client_send(c, BREAK_NET_MESSAGE_ID_WORLD_CONTROL, 2u, payload, sizeof(payload));
+    if (sent) peer->client_control_count++;
+    return sent;
 }
 
 static bool world_decode_control(const BreakNetEnvelope *env, BreakWorldSessionControl *control) {
     const u8 *payload;
-    if (env->message_id != BREAK_NET_MESSAGE_ID_WORLD_CONTROL || env->protocol_version != 1u ||
-        env->payload_size != BREAK_WORLD_SESSION_CONTROL_WIRE_SIZE) {
+    if (env->message_id != BREAK_NET_MESSAGE_ID_WORLD_CONTROL || env->protocol_version != 2u ||
+        env->payload_size != BREAK_WORLD_SESSION_CONTROL_WIRE_SIZE_V2) {
         return false;
     }
     payload = (const u8 *)env->payload;
-    if (memcmp(payload, "BRWC", 4u) != 0 || payload[4] != 1u || payload[5] != 0u) return false;
+    if (memcmp(payload, "BRWC", 4u) != 0 || payload[4] != 2u || payload[5] != 0u) return false;
     memset(control, 0, sizeof(*control));
     control->kind = (BreakWorldSessionControlKind)((u16)payload[6] | ((u16)payload[7] << 8u));
     control->delta_id = le64(payload + 8u);
     control->target_snapshot_id = le64(payload + 16u);
     control->target_tick = le64(payload + 24u);
+    control->level_generation = le64(payload + 32u);
     if (control->kind == BREAK_WORLD_SESSION_CONTROL_NEED_FULL) return control->delta_id == 0u;
     return control->kind == BREAK_WORLD_SESSION_CONTROL_ACK && control->delta_id != 0u &&
            control->target_snapshot_id != 0u;
 }
 
-static bool world_wait_control(NetClient *c, BreakWorldSessionControlKind kind, u64 delta_id,
-                               u64 target_snapshot_id, u64 target_tick) {
+static bool world_control_is_new(const WorldPeer *peer, const BreakWorldSessionControl *control,
+                                 u64 correlation_id) {
+    for (u32 i = 0u; i < peer->server_control_count; ++i) {
+        const BreakWorldSessionControl *seen = &peer->server_controls[i];
+        if (peer->server_correlations[i] == correlation_id ||
+            (seen->kind == control->kind && seen->delta_id == control->delta_id &&
+             seen->target_snapshot_id == control->target_snapshot_id &&
+             seen->target_tick == control->target_tick &&
+             seen->level_generation == control->level_generation)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool world_wait_control(NetClient *c, WorldPeer *peer, BreakWorldSessionControlKind kind,
+                               u64 delta_id, u64 target_snapshot_id, u64 target_tick) {
     u64 deadline = now_ms() + 10000u;
     while (now_ms() < deadline) {
         BreakNetEnvelope env;
@@ -1170,9 +1196,62 @@ static bool world_wait_control(NetClient *c, BreakWorldSessionControlKind kind, 
         if (got < 0) return false;
         if (got == 0 || env.message_id != BREAK_NET_MESSAGE_ID_WORLD_CONTROL) continue;
         if (!world_decode_control(&env, &control)) return false;
-        if (control.kind == kind && control.delta_id == delta_id &&
-            control.target_snapshot_id == target_snapshot_id && control.target_tick == target_tick) {
-            return true;
+        check(env.correlation_id != 0u, "world_server_control_correlation_nonzero");
+        check(world_control_is_new(peer, &control, env.correlation_id),
+              "world_server_control_and_correlation_unique");
+        check(control.kind == kind && control.delta_id == delta_id &&
+                  control.target_snapshot_id == target_snapshot_id &&
+                  control.target_tick == target_tick &&
+                  control.level_generation == peer->level_generation,
+              "world_server_control_payload_target_and_level_preserved");
+        if (env.correlation_id == 0u ||
+            !world_control_is_new(peer, &control, env.correlation_id) ||
+            control.kind != kind || control.delta_id != delta_id ||
+            control.target_snapshot_id != target_snapshot_id || control.target_tick != target_tick ||
+            control.level_generation != peer->level_generation ||
+            peer->server_control_count >= NET_CLIENT_WORLD_SERVER_CONTROLS) {
+            return false;
+        }
+        peer->server_controls[peer->server_control_count] = control;
+        peer->server_correlations[peer->server_control_count] = env.correlation_id;
+        peer->server_control_count++;
+        peer->correlated_control_count++;
+        return true;
+    }
+    return false;
+}
+
+static bool world_controls_finished(NetClient *c, WorldPeer *peer) {
+    CoreAppClockProbe probe = {CORE_APP_CLOCK_PROBE_REQUEST, 0u, 0u, 0u};
+    u64 deadline;
+    probe.t0 = now_us();
+    if (!send_clock_probe(c, &probe, CORE_APP_CLOCK_PROBE_BYTES)) return false;
+    deadline = now_ms() + 10000u;
+    while (now_ms() < deadline) {
+        BreakNetEnvelope env;
+        int got = client_recv(c, &env, (u32)(deadline - now_ms()) + 1u);
+        if (got < 0) return false;
+        if (got == 0) continue;
+        if (env.message_id == BREAK_NET_MESSAGE_ID_WORLD_CONTROL) {
+            check(false, "world_no_duplicate_control_after_final_ack");
+            return false;
+        }
+        if (env.message_id == CORE_APP_CLOCK_PROBE_MESSAGE_ID) {
+            CoreAppClockProbe reply;
+            if (env.protocol_version != 1u ||
+                core_app_clock_probe_decode((const u8 *)env.payload, env.payload_size, &reply) !=
+                    CORE_APP_SNAPSHOT_OK) {
+                return false;
+            }
+            if (reply.kind == CORE_APP_CLOCK_PROBE_REPLY && reply.t0 == probe.t0) {
+                check(peer->server_control_count == NET_CLIENT_WORLD_SERVER_CONTROLS &&
+                          peer->correlated_control_count == NET_CLIENT_WORLD_SERVER_CONTROLS &&
+                          peer->client_control_count == 1u,
+                      "world_exactly_three_correlated_server_controls");
+                return peer->server_control_count == NET_CLIENT_WORLD_SERVER_CONTROLS &&
+                       peer->correlated_control_count == NET_CLIENT_WORLD_SERVER_CONTROLS &&
+                       peer->client_control_count == 1u;
+            }
         }
     }
     return false;
@@ -1504,8 +1583,8 @@ static void scenario_world(void) {
         check(got_full && full.kind == BREAK_WORLD_DELTA_WIRE_FULL,
               "world_received_server_full");
         if (got_full) {
-            check(world_send_control(&a, BREAK_WORLD_SESSION_CONTROL_ACK, &full),
-                  "world_acknowledged_server_full");
+            check(world_send_control(&a, &peer, BREAK_WORLD_SESSION_CONTROL_ACK, &full),
+                  "world_acknowledged_server_full_uncorrelated_v2");
             got_delta = world_receive_attempt(&a, &peer, &delta);
             check(got_delta && delta.kind == BREAK_WORLD_DELTA_WIRE_DELTA &&
                       delta.base_snapshot_id == full.target_snapshot_id,
@@ -1526,7 +1605,7 @@ static void scenario_world(void) {
         free(wire);
         wire = NULL;
         if (sent) {
-            sent = world_wait_control(&a, BREAK_WORLD_SESSION_CONTROL_ACK, 100u,
+            sent = world_wait_control(&a, &peer, BREAK_WORLD_SESSION_CONTROL_ACK, 100u,
                                       break_world_snapshot_id(base),
                                       break_world_snapshot_tick(base));
             check(sent, "world_server_drained_inbound_full_to_diagnostic_target");
@@ -1553,7 +1632,7 @@ static void scenario_world(void) {
         free(wire);
         wire = NULL;
         if (sent) {
-            sent = world_wait_control(&a, BREAK_WORLD_SESSION_CONTROL_NEED_FULL, 0u,
+            sent = world_wait_control(&a, &peer, BREAK_WORLD_SESSION_CONTROL_NEED_FULL, 0u,
                                       break_world_snapshot_id(base),
                                       break_world_snapshot_tick(base));
             check(sent, "world_base_mismatch_requested_full_with_last_good_baseline");
@@ -1570,11 +1649,15 @@ static void scenario_world(void) {
         free(wire);
         wire = NULL;
         if (sent) {
-            sent = world_wait_control(&a, BREAK_WORLD_SESSION_CONTROL_ACK, 102u,
+            sent = world_wait_control(&a, &peer, BREAK_WORLD_SESSION_CONTROL_ACK, 102u,
                                       break_world_snapshot_id(target),
                                       break_world_snapshot_tick(target));
             check(sent, "world_recovery_full_rebuilt_diagnostic_target");
             if (sent) peer.recovered++;
+        }
+        if (sent) {
+            sent = world_controls_finished(&a, &peer);
+            check(sent, "world_server_controls_quiesced_without_duplicates");
         }
     }
 
@@ -1597,6 +1680,8 @@ report:
             (unsigned long long)peer.outbound_fragments,
             (unsigned long long)peer.outbound_duplicates, (unsigned long long)peer.need_full,
             (unsigned long long)peer.recovered);
+    fprintf(g_report, "world_controls server=%u correlated=%u client_uncorrelated=%u\n",
+            peer.server_control_count, peer.correlated_control_count, peer.client_control_count);
     client_close(&a);
     world_peer_dispose(&peer);
 }

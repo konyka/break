@@ -518,3 +518,15 @@ World 控制 adapter 的 lifecycle binding 现在有明确唯一占用：同一 
 CREATED 或 FAILED 可调用 `break_runtime_world_session_abandon(adapter, coordinator)`：先按精确 user_data unregister，再 detach/free binding 并归还 adapter 所有权；错误状态或错误 Coordinator 返回 false 且 binding 不变。FAILED 若发生在 drain 前，abandon 不会清空 queue/control_pending，调用方必须继续手动 close/drain 到真实 pending=0 后再 destroy。Coordinator destroy 前若未 STOPPED，必须先执行该 abandon 路径并 quiesce 外部生产者与其他 adapter API。
 
 上述变化不改变 direct/external 消息计数、FIFO 或 TIMEOUT 恢复。前序阶段不重跑，TIMEOUT callback 精确重入；join/destroy 可重入，成功销毁一次。
+
+
+
+### 补充（2026-11-25）：core_app 生产控制消息映射
+
+core_app 复用既有 56 字节 `BreakRuntimeWorldCommand`，把连接 key、保存的 connection epoch、当前 level、delta id、target snapshot id 和 target tick 交给 `core_app_net_transport_world_submit`。OPEN/CLOSE 保持 uncorrelated；本地 ACK/NEED_FULL 首次提交使用 `break_runtime_correlation_next`，完整 u64 cid 经 Runtime owned message 和 envelope correlation extension 保留，OVERLOAD 重试不更换命令或 cid。
+
+submit 只复制并入队，真正的 open/close/rebaseline/control 仍只能由 CoreAppThread 的 owner drain 执行。transport pending 优先于后续 FIFO；pending OPEN/CLOSE 按保存 key 和实际 epoch 对账，不把其他命令的 drain 结果当成自己的目标结果。
+
+入站 0x400B 没有转成新的 Runtime 出站命令，仍直接 `break_world_session_handle_control`，只裁剪发送 history 或设置 force_full，不会回发 ACK。server 接受客户端 uncorrelated BRWC 的兼容路径不变，adapter 产生的发往对端控制才带非零 correlation。
+
+本接线不增加 wire payload，也不映射 snapshot/lease/BRWD/BRFG 数据面；共享 live World、权威 simulation 合并和默认全局公平调度仍未实现。本节不预写远端验收。

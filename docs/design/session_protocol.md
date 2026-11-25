@@ -431,3 +431,13 @@ OpenGL 最终为 **481** 而非机械计算的 480：当前旧 cache 的 Vulkan 
 CREATED/FAILED 的 `break_runtime_world_session_abandon` 通过通用 Coordinator 的精确 user_data unregister 摘除 binding，再 free 并归还 adapter 所有权；其他状态或错误 Coordinator 返回 false。销毁未达 STOPPED 的 Coordinator 前，调用方必须先 quiesce 外部生产者和其他 adapter API，再 abandon 并手动 close/drain/destroy adapter。FAILED 后剩余命令仍按真实 pending 排空，不改变 BRWC、connection epoch、level、cid 或网络 sequence。
 
 关闭恢复文案统一为：前序阶段不重跑，TIMEOUT callback 精确重入，成功销毁一次。该表述不要求 join/destroy callback 本身只进入一次。
+
+
+
+## 补充（2026-11-25）：core_app 使用 BRWC/v2 与 envelope correlation
+
+本次没有改变 0x400A/0x400B、BRWD 或 BRWC 布局。初始代仍可使用 32 字节 BRWC/v1，且 v1 接收仅限 current==initial；core_app 首 tick rebaseline 后，客户端和服务端都使用 40 字节 BRWC/v2，在 offset 32 携带当前 level，其余 delta id、target snapshot id 和 target tick 保持原偏移与含义。换代后的 v1 仍被服务端拒绝，没有通过放宽校验让旧客户端通过。
+
+Runtime adapter 出站控制使用非零 envelope correlation extension；该扩展位于 BRWC payload 之外，不改变 40 字节内容，也不要求对端回显同一 cid。真实 loopback 检查 ACK/NEED_FULL/ACK 的 payload、target、level 和唯一性，并以完整 64 位值比较 cid；transport 另以高位非零常量证明没有截断。客户端向服务端发送的 v2 ACK 继续 correlation=0，沿用既有 uncorrelated 入站兼容。
+
+入站 0x400B 仍只调用 `break_world_session_handle_control` 裁剪 history 或设置 force_full，不经过 adapter 再发 ACK。网络 at-least-once/final-consistency 语义不变，不新增 exactly-once、自动后续换级、Runtime BRWD 数据面、共享 live World 或权威 simulation 合并承诺。

@@ -536,3 +536,15 @@ destroy 在任何 pending 判定之前先关闭 queue admission 并退订，且�
 `break_runtime_world_session_abandon` 只在 CREATED/FAILED 可用：精确 unregister 成功后才清 binding 并 free，失败不改变 adapter 或 Coordinator。正常路径由 stop_producers/join 先停止并 join 外部生产者与 transport，再 stop 到 STOPPED。若 Coordinator 未 STOPPED 而要销毁，调用方必须先 quiesce 所有外部生产者及其他 adapter API，再 abandon；归还所有权后手动 close/drain/destroy adapter，不能借 abandon 丢弃网络 pending 或借用 Bus/Session/publication。
 
 该修订不改变 wire、BRWC correlation 或 transport OVERLOAD/CLOSED 语义，也不自动接入 core_app World adapter。
+
+
+
+## 补充（2026-11-25）：core_app World adapter 的真实网络路径
+
+生产 `--world-replication` 已把独立 Runtime adapter 注册在既有 `"network"` subsystem 之前。首 tick 对同一 World Session rebaseline 后，认证连接的 OPEN、本地 ACK/NEED_FULL 和 CLOSE 都经过 adapter submit/drain；BRWD publish、每连接 diagnostic World drain、simulation/physics 与权威 trace 边界保持原样。world off 不创建 adapter 或 subscription，仍只有原五子系统。
+
+真实 TLS/AUTH loopback 现在要求服务端 ACK、NEED_FULL、恢复 ACK 各出现一次，outer/payload 均为 BRWC v2，level、delta id、target id/tick 不变，envelope correlation 非零且控制/cid 均不重复。客户端用于确认服务端 full 的 BRWC v2 仍以 correlation=0 入站，证明旧 uncorrelated 兼容未被放宽或删除；完整高位的精确保留另由 transport 的高位常量用例验证。completion 在 adapter/Session drain 前不改 World，drain 后重建 target 一致，旧直接发送不会产生第二份控制。
+
+关闭时 adapter 先于 network，session/reactor 后于 adapter，net_bus 最后回收。CREATED/FAILED 先 abandon/manual drain/destroy；pending 未排空时 network 不得先销毁。`on_destroy` 只在 adapter 成功销毁后清指针，network 自身随后的 TIMEOUT 不影响该顺序。
+
+本项不做 snapshot/BRWD Runtime 数据面、自动后续换级、共享 live World、权威 simulation 合并或默认全局公平调度，不预写远端结果。

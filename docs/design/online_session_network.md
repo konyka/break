@@ -231,3 +231,15 @@ World 发布兼容也明确分层：legacy `break_world_session_publish` 在首 
 bridge 创建配置现在必须同时提供 payload 与动态分片元数据的每连接/总预算：`max_metadata_bytes_per_connection`、`max_total_metadata_bytes`。open 将前者传给重组池；连接乘积不能超过对应总预算。stats 的 `pending_metadata_bytes` 报告三个动态重组数组的实际字节，close/expire/reset 会释放。原 payload-only 统计不能代表总内存，两个预算需分别配置；上述 core_app transport 也设置这两个字段。
 
 此前主 CI 和默认 macOS 配置均关闭 `BREAK_ENABLE_SNOWFLAKE`，新增 session/aspect socket 测试不在这些“全量”计数内。主 CI 新增 `macOS Snowflake replication (Clang)`，显式检出固定 Snowflake，运行 bridge、aspect、World Session、core_app transport 和真实 aspect/World loopback 等十四项测试。私有仓库凭据缺失时记录 **UNAVAILABLE**，不将未运行记为通过。
+
+
+
+## 补充（2026-11-25）：生产 core_app 的 correlated World 控制验收
+
+`test_core_app_network_world` 继续走真实 TLS、AUTH-v2、认证 Session 和 BRFG 分片，不以 handler 直调替代网络。客户端首个 uncorrelated BRWC/v2 ACK 被服务端接受后，真实 tick 才从已确认 target 发布 delta；随后服务端对回传 full、base-mismatch delta 和恢复 full 分别给出 ACK、NEED_FULL、ACK。三个服务端控制均携带非零且不重复的 envelope correlation，BRWC/v2 的 level、delta/target/tick 与发送前一致，最终时钟 barrier 后没有重复控制。
+
+客户端仍在每个 completion  drain 前核对 World、baseline 和 applied 计数不变，只在 drain 后接受匹配 target。联网与同场景离线运行的 user/sim/actors 及其余非 network trace 必须逐行一致；每连接 diagnostic World、BRWD publish 和权威 simulation/physics 的边界没有改为共享状态。
+
+生产关闭顺序为 adapter→network→voice→audio→render→level，session/reactor 随 network 后于 adapter 回收，net_bus 最后关闭。CREATED/FAILED 回滚先 abandon、手动 drain 并销毁 adapter；`on_destroy` 成功后清指针，避免 network destroy TIMEOUT 后二次访问。
+
+本验收不覆盖 snapshot/BRWD Runtime 数据面、自动后续换级、共享 live World、权威 simulation 合并或默认全局公平调度，也不预写推送、CI 或其他平台结果。

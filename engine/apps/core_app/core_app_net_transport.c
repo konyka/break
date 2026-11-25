@@ -2347,6 +2347,16 @@ static BreakRuntimeError net_attach_bus(void *user, BreakRuntimeBus *bus) {
     return core_app_net_transport_attach_bus((CoreAppNetTransport *)user, bus);
 }
 
+static BreakRuntimeError net_world_adapter_register_hook(void *user, BreakRuntimeBus *bus,
+                                                         BreakRuntimeCoordinator *coordinator) {
+    return core_app_net_transport_world_adapter_register((CoreAppNetTransport *)user, bus,
+                                                         coordinator);
+}
+
+static BreakRuntimeWorldSession *net_world_adapter_hook(void *user) {
+    return core_app_net_transport_world_adapter((CoreAppNetTransport *)user);
+}
+
 void core_app_net_transport_hooks(CoreAppNetTransport *transport, CoreAppNetworkHooks *out) {
     if (!out) return;
     memset(out, 0, sizeof(*out));
@@ -2362,4 +2372,6 @@ void core_app_net_transport_hooks(CoreAppNetTransport *transport, CoreAppNetwork
     out->physics_correction = net_physics_correction;
     out->voice_frame = net_voice_frame;
     out->attach_bus = net_attach_bus;
+    out->world_adapter_register = net_world_adapter_register_hook;
+    out->world_adapter = net_world_adapter_hook;
 }

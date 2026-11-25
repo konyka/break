@@ -997,3 +997,18 @@ submit 不调用 World，owner drain 是唯一应用入口。queue OVERLOAD 时 
 远端 CI `45537875941`、windows-d3d12 `45537875813`、QUIC `45537875888`、Proton `45539232571` 均 completed/success；CI 为 **25 success、3 条件 skip、0 cancelled、0 failed**。Proton 上游 run-id=`45537875813`，device/pipeline contract 均为 77，只代表兼容通道。macOS Snowflake job 的私有依赖不可用，checkout/configure/build/14 项测试均 skipped 并记录 UNAVAILABLE，不将 job success 解释为这些测试通过。
 
 本节只关闭显式 binding、TIMEOUT 恢复和 CREATED/FAILED 回收；core_app World adapter 注册、Runtime snapshot/lease/BRWD/BRFG 数据面、共享 live World、权威 simulation 合并、预测回滚和跨 World 身份仍未关闭。既有 Lua longjmp、混合 TSan、条件 skip 和完整 sanitizer suite 的边界不变；本收据提交自身的工作流结果不在此预写。
+
+
+
+## 第 17 节补充（2026-11-25）：只关闭 core_app World adapter 注册与组合关闭
+
+生产 core_app 现在显式注册独立 `runtime_world_session`，不再是只有 `"network"` transport subsystem 的状态。world on 的六项顺序为 adapter→network→voice→audio→render→level；world off 不创建 adapter、kind 或 subscription，原五项不变。首 tick 不替换 World Session，OPEN/CLOSE 与本地 ACK/NEED_FULL 经 owner drain，入站 0x400B 仍只裁剪 history/设置 force_full。
+
+正常关闭和 CREATED/FAILED 回滚都保证 adapter 先于 network/session/reactor，net_bus 最后回收；pending 未排空不能先销毁 network，`on_destroy` 仅在成功销毁后清指针。真实 BRWC/v2 loopback 同时固定服务端 correlated 出站和客户端 uncorrelated 入站兼容，不代表线协议或数据面扩张。
+
+以下能力仍然缺失，不能由本切片推断完成：
+
+- **Runtime 数据面**：snapshot/lease/BRWD/BRFG 没有映射为新的 Runtime owned-message 流，诊断 World drain 不是权威数据面。
+- **换级与共享状态**：没有自动后续换级、混合 level、共享 live World、跨 World 持久身份或 authority handoff。
+- **权威与调度**：没有权威 simulation 合并、预测回滚或默认全局公平调度；fair admission 仍为显式 opt-in，控制投递也不是 exactly-once。
+- **验收范围**：focused sanitizer、条件 skip、既有 Lua longjmp 和混合 TSan 边界分别记录，不升级为完整 sanitizer、原生 GPU 或远端矩阵结论；本追加不预写远端结果。

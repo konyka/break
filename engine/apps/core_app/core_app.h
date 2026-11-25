@@ -9,6 +9,8 @@
 #include "core_app_network.h"
 
 struct BreakRuntimeBus;
+struct BreakRuntimeCoordinator;
+struct BreakRuntimeWorldSession;
 typedef struct CoreAppConfig CoreAppConfig;
 typedef struct CoreApp CoreApp;
 
@@ -68,6 +70,11 @@ typedef struct CoreAppNetworkHooks {
      * network event on it, which the CoreAppThread drains after every tick
      * and totals at stop ("event=network_events"). */
     BreakRuntimeError (*attach_bus)(void *user, struct BreakRuntimeBus *bus);
+    /* Optional World control adapter. Both hooks are present together in the
+     * real transport; NULL keeps the original five-subsystem composition. */
+    BreakRuntimeError (*world_adapter_register)(void *user, struct BreakRuntimeBus *bus,
+                                                struct BreakRuntimeCoordinator *coordinator);
+    struct BreakRuntimeWorldSession *(*world_adapter)(void *user);
 } CoreAppNetworkHooks;
 
 /* The network event notice kind (core_app_net_transport.h has the layout). */

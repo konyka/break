@@ -13848,3 +13848,14 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 在最终 HEAD 完整构建并运行：OpenGL **481 注册、477 执行通过、4 条件 skip、0 失败**（308.81 s）；Vulkan **482 注册、478 执行通过、4 条件 skip、0 失败**（310.24 s）。共同条件 skip 为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计执行通过。
 - 远端 CI run `45537875941`、windows-d3d12 run `45537875813`、QUIC run `45537875888`、Proton run `45539232571` 均 completed/success；CI 为 **25 success、3 条件 skip、0 cancelled、0 failed**。Proton 上游 run-id=`45537875813`，device/pipeline contract 均为 77，仅表示兼容通道，不是原生 GPU 通过。
 - 当前 macOS Snowflake replication job 的私有依赖 checkout、configure、build 和 14 项测试均为 skipped，并明确记录 UNAVAILABLE；这些测试不计为执行通过。本项仅关闭 Coordinator binding 所有权与恢复缺口，不关闭 core_app World adapter 接线、Runtime 数据面、共享 live World 或权威 simulation 合并。本收据提交自身的工作流结果不在此预写。
+
+
+
+## core_app World adapter 生产接线（2026-11-25）
+
+- **已交付**：`--world-replication` 的生产 core_app 注册独立 `runtime_world_session`，位于既有 `"network"` 之前；world on 为六项 subsystem，world off 保持原五项且无 adapter/subscription/trace。首 tick 原地 rebaseline，OPEN/CLOSE 和本地 ACK/NEED_FULL 经 owner drain，pending transition 以保存 key/epoch 对账。完整构建发现 concrete transport 直接引用导致 mock 目标链接失败后，注册/查询已改为可选 network hooks，恢复 runtime library 不链接 transport 的既有边界；`test_core_app_runtime` **65/65** 与真实 loopback 复验通过。
+- **协议与证据**：真实 loopback 的客户端改用 BRWC/v2 且入站 correlation=0，服务端 ACK/NEED_FULL/ACK 均为非零唯一 envelope correlation，payload/target/level 不变。客户端 41 项检查通过，包含 pre-drain 不变、drain 后 target 和最终无重复。直接 normal、ASan+UBSan（`detect_leaks=1`）、TSan 的 transport 均为 **33/33**，Runtime World Session 均为 **34/34**。
+- **关闭与反向控制**：CREATED/FAILED 都覆盖 abandon/manual drain 后才回收 network；adapter TIMEOUT 保留 network/session/reactor，成功 `on_destroy` 清指针后才允许 network 自身的 TIMEOUT 路径。首 tick 替换 session 在普通分配器下因地址复用未判红，但 ASan 下出现 1 个断言和 heap-use-after-free；绕过 adapter 为 **1/33 RED**；on_destroy 不清指针为 **19/33 RED**。三项均已恢复，生产源码无残留 diff。
+- **限制单列**：扩大 ASan focused 时，未修改的 `test_break_replication_session` 第 23 例报告 67,056 字节既有泄漏；本任务未越界修改该文件。core_app TSan 进程矩阵仍受既有 Lua `can't find longjmp buf` 限制，未计为通过；直接 TSan 与 World/Session/bridge 证据不替代完整 sanitizer suite。最终双后端命令和计数见本地 Task 2 报告，不预写远端结果。
+
+本切片不交付 snapshot/BRWD Runtime 数据面、自动后续换级、共享 live World、权威 simulation 合并、默认全局公平调度或完整资产链。

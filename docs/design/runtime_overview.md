@@ -267,3 +267,15 @@ drain 使用真实 `pending = queued + control_pending`。pending 非零或 tran
 World adapter 以同一 mutex 保护 binding 占用和 lifecycle_destroying。同/跨 Coordinator 重复注册均 REJECTED，失败注册回滚占用；已绑定 adapter 的直接 destroy 在 close/unsubscribe 前返回 false，只有 lifecycle destroy 可推进并在成功时清占用。`break_runtime_world_session_abandon` 仅在 CREATED/FAILED 先精确 unregister，再清 binding 并释放描述块，失败保持双方状态。
 
 正常关闭仍须 stop 到 STOPPED。若要在 CREATED/FAILED 销毁 Coordinator，调用方先 quiesce 外部生产者和其他 adapter API，再 abandon 每个 World adapter，随后手动 close/drain/destroy adapter；不得用 abandon 丢弃 pending。TIMEOUT 的 join/destroy callback 会按恢复点精确重入，前序阶段不重跑，成功销毁一次。
+
+
+
+## 补充（2026-11-25）：core_app 的 World adapter 组合生命周期
+
+`core_app --world-replication` 现在由生产 `app_register_subsystems` 经可选 network hooks 调用 `core_app_net_transport_world_adapter_register`，把独立 `runtime_world_session` 注册到同一个 Coordinator；runtime library 不直接链接 concrete transport。新 adapter 先于既有名为 `"network"` 的 transport subsystem，随后依次是 voice、audio、render、level，共六项；这两者不是同一个注册。world off 不创建 adapter、kind 或 subscription，也不改变既有五子系统和 trace。
+
+首个实际 level tick 只在原 `BreakWorldSession` 上 rebaseline，不再 destroy/recreate，因此 adapter 持有的 session 指针保持有效。OPEN/CLOSE 与本地 ACK/NEED_FULL 都由 CoreAppThread submit 后 owner drain；提交前没有 World 副作用，pending OPEN/CLOSE 以保存的 key 对账，旧 epoch 不与新连接混用。
+
+正常关闭先完成 adapter 六阶段，再执行 network/session/reactor 销毁，net_bus 最后关闭。adapter drain TIMEOUT 会阻断 network destroy；成功销毁后 `on_destroy` 清 transport 指针，所以后续 network destroy TIMEOUT 不会留下悬挂 adapter。CREATED/FAILED 回滚先 abandon、close、手动 drain 到 pending=0 并 destroy adapter，再进入 network 回收。
+
+本节只关闭生产控制面的组合缺口，不包括 snapshot/lease/BRWD/BRFG Runtime 数据面、自动后续换级、共享 live World、权威 simulation 合并或默认全局公平调度，不预写远端结果。

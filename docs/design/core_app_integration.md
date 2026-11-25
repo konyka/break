@@ -1834,3 +1834,14 @@ arm64 lane 新增 `test_core_app_network`（25/25）和 `test_core_app_network_o
 ### 最终 HEAD 验证补充（2026-11-24）
 
 代码与测试提交 `13d74092e52b084e8036c9d0324abd99079f584c` 的完整 CTest 实际结果：OpenGL 注册 **477**，**473 执行通过、4 条件 skip、0 失败**（310.06 s）；Vulkan 注册 **479**，**475 执行通过、4 条件 skip、0 失败**（297.11 s）。两项 skip 均为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计执行通过。World loopback、clean-room 与两个 core_app archive 契约在两套后端均实际通过。后续仅追加验证文档，最终文档 HEAD 的 naming 门禁为 **2/2**；不重跑已完整通过的套件，不预写远端结果。
+
+
+
+## 补充（2026-11-25）：World adapter 的生产注册、控制与回滚
+
+- **两个不同 subsystem**：既有 `"network"` 仍负责 transport 的 stop/drain/destroy；新增 `runtime_world_session` 由可选 network hooks 调用 `core_app_net_transport_world_adapter_register` 显式创建并先注册，runtime library 不直接链接 concrete transport。world on 的顺序为 adapter→network→voice→audio→render→level，共六项；world off 不创建 adapter/kind/subscription，保留原五项和 trace。
+- **首 tick 与控制路径**：首次实际 level 只对原 World Session rebaseline，不替换 session。OPEN/CLOSE 使用保存 key/epoch 经 adapter 对账，本地 ACK/NEED_FULL 保留 delta/target/tick/level 和首轮完整 cid，drain 前无副作用，重试不重复提交。入站 0x400B 仍直接裁剪 history/设置 force_full，不能再发 ACK。
+- **真实 loopback**：客户端已改用带当前 level 的 BRWC/v2，仍以 correlation=0 入站；服务端 ACK/NEED_FULL/ACK 使用非零唯一 envelope correlation。测试同时检查 pre-drain 不变、drain 后 target、每个控制恰好一次和离线/联网非 network trace 一致，没有放宽服务端 v1/v2 校验。
+- **组合关闭**：正常停止先 adapter，后 network/session/reactor，最后 net_bus。pending 或 adapter drain TIMEOUT 阻断 network destroy；`on_destroy` 只在成功销毁后清指针。CREATED/FAILED 回滚先 abandon、close、手动 drain 到 pending=0 并 destroy adapter，再回收 network。
+
+仍未实现 snapshot/lease/BRWD/BRFG Runtime 数据面、自动后续换级、共享 live World、权威 simulation 合并、默认全局公平调度和完整资产链。诊断 World 的恢复不等于 inbound 已合并到生产权威 World；本节不预写远端结果。

@@ -7,10 +7,6 @@
 #include "core_app_simulation.h"
 #include "core_app_voice.h"
 
-#if defined(CORE_APP_NET_TRANSPORT) && CORE_APP_NET_TRANSPORT
-#include "core_app_net_transport.h"
-#endif
-
 #include <ai/break_ai.h>
 #include <core/trace_core_app.h>
 #include <animation/anim_compression.h>
@@ -2714,19 +2710,18 @@ static BreakRuntimeError app_level_destroy_cb(void *user) {
 static BreakRuntimeError app_register_subsystems(CoreApp *app) {
     BreakRuntimeCoordinatorConfig config = {5u};
 #if defined(CORE_APP_NET_TRANSPORT) && CORE_APP_NET_TRANSPORT
-    if (app->network_live) config.max_subsystems = 6u;
+    const CoreAppNetworkHooks *network_hooks = app->config.network_hooks;
+    if (app->network_live && network_hooks->world_adapter_register) config.max_subsystems = 6u;
 #endif
     BreakRuntimeError result = break_runtime_coordinator_create(&config,
                                                                 &app->coordinator);
     if (result != BREAK_RUNTIME_OK) return result;
 #if defined(CORE_APP_NET_TRANSPORT) && CORE_APP_NET_TRANSPORT
-    if (app->network_live) {
-        result = core_app_net_transport_world_adapter_register(
-            (CoreAppNetTransport *)app->config.network_hooks->user,
-            app->net_bus, app->coordinator);
+    if (app->network_live && network_hooks->world_adapter_register) {
+        result = network_hooks->world_adapter_register(network_hooks->user, app->net_bus,
+                                                       app->coordinator);
         if (result != BREAK_RUNTIME_OK) return result;
-        app->network_world = core_app_net_transport_world_adapter(
-            (CoreAppNetTransport *)app->config.network_hooks->user) != NULL;
+        app->network_world = network_hooks->world_adapter(network_hooks->user) != NULL;
         if (!app->network_world) {
             break_runtime_coordinator_destroy(app->coordinator);
             app->coordinator = NULL;

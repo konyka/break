@@ -668,8 +668,9 @@ static bool world_fixture_start(AspectTransportFixture *fixture, const char *nam
     }
     core_app_net_transport_hooks(fixture->transport, &fixture->hooks);
     if (fixture->hooks.start(fixture->hooks.user, fixture->trace) != BREAK_RUNTIME_OK) return false;
-    if (core_app_net_transport_world_adapter_register(
-            fixture->transport, fixture->world_bus, fixture->world_coordinator) != BREAK_RUNTIME_OK) {
+    if (!fixture->hooks.world_adapter_register || !fixture->hooks.world_adapter ||
+        fixture->hooks.world_adapter_register(fixture->hooks.user, fixture->world_bus,
+                                              fixture->world_coordinator) != BREAK_RUNTIME_OK) {
         return false;
     }
     fixture->reactor = core_app_net_transport_reactor_for_test(fixture->transport);
@@ -1024,6 +1025,7 @@ TEST(world_adapter_registration_rebaseline_and_reopen_epochs) {
     ASSERT_TRUE(world_fixture_start(&fixture, "core_app_world_adapter_epoch.port", true, false));
     adapter = core_app_net_transport_world_adapter(fixture.transport);
     ASSERT_NOT_NULL(adapter);
+    ASSERT_TRUE(fixture.hooks.world_adapter(fixture.hooks.user) == adapter);
     ASSERT_TRUE(break_runtime_bus_kind_accepts(
         fixture.world_bus, BREAK_RUNTIME_WORLD_SESSION_CONTROL_KIND, 1u,
         sizeof(BreakRuntimeWorldCommand)));
@@ -1909,6 +1911,53 @@ TEST(world_transport_open_failure_rolls_back_aspect_and_world) {
     aspect_fixture_dispose(&fixture);
 }
 
+TEST(world_adapter_created_rollback_drains_before_network_destroy) {
+    AspectTransportFixture fixture;
+    CoreAppNetWorldTestView view;
+    BreakRuntimeWorldSession *adapter;
+    BreakRuntimeWorldSessionStats stats;
+    BreakWorldSnapshot *snapshot;
+    const BreakConnectionKey key = 0x840du;
+    ASSERT_TRUE(world_fixture_start(&fixture, "core_app_world_created_rollback.port", true, false));
+    ASSERT_TRUE(world_fixture_open(&fixture, key));
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    snapshot = break_world_snapshot_build(view.authoritative, view.schemas, 20u);
+    ASSERT_NOT_NULL(snapshot);
+    ASSERT_TRUE(world_queue_full(&fixture, key, snapshot, 73u));
+    for (usize i = 0u; i < BREAK_NET_OUTBOUND_QUEUE_CAPACITY; ++i) {
+        ASSERT_EQ(break_net_reactor_send(fixture.reactor, key, BREAK_NET_MESSAGE_ID_PING,
+                                         1u, "x", 1u),
+                  BREAK_NET_SEND_OK);
+    }
+    core_app_net_transport_world_drain_for_test(fixture.transport, 20u);
+    adapter = core_app_net_transport_world_adapter(fixture.transport);
+    break_runtime_world_session_stats(adapter, &stats);
+    ASSERT_TRUE(stats.control_pending);
+    ASSERT_EQ(break_runtime_coordinator_state(fixture.world_coordinator), BREAK_RUNTIME_CREATED);
+
+    ASSERT_EQ(fixture.hooks.destroy(fixture.hooks.user), BREAK_RUNTIME_TIMEOUT);
+    ASSERT_TRUE(core_app_net_transport_world_adapter(fixture.transport) == adapter);
+    ASSERT_TRUE(core_app_net_transport_reactor_for_test(fixture.transport) == fixture.reactor);
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    ASSERT_TRUE(view.created);
+    break_runtime_world_session_stats(adapter, &stats);
+    ASSERT_TRUE(stats.control_pending);
+    ASSERT_TRUE(break_runtime_bus_kind_accepts(
+        fixture.world_bus, BREAK_RUNTIME_WORLD_SESSION_CONTROL_KIND, 1u,
+        sizeof(BreakRuntimeWorldCommand)));
+
+    world_clear_outbound(&fixture);
+    ASSERT_EQ(fixture.hooks.destroy(fixture.hooks.user), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(core_app_net_transport_world_adapter(fixture.transport) == NULL);
+    ASSERT_TRUE(core_app_net_transport_reactor_for_test(fixture.transport) == NULL);
+    break_world_snapshot_release(snapshot);
+    break_runtime_coordinator_destroy(fixture.world_coordinator);
+    fixture.world_coordinator = NULL;
+    break_runtime_bus_destroy(fixture.world_bus);
+    fixture.world_bus = NULL;
+    aspect_fixture_dispose(&fixture);
+}
+
 TEST(world_adapter_failed_rollback_drains_before_network_destroy) {
     AspectTransportFixture fixture;
     CoreAppNetWorldTestView view;
@@ -1943,6 +1992,11 @@ TEST(world_adapter_failed_rollback_drains_before_network_destroy) {
     ASSERT_TRUE(core_app_net_transport_reactor_for_test(fixture.transport) == fixture.reactor);
     ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
     ASSERT_TRUE(view.created);
+    break_runtime_world_session_stats(adapter, &stats);
+    ASSERT_TRUE(stats.control_pending);
+    ASSERT_TRUE(break_runtime_bus_kind_accepts(
+        fixture.world_bus, BREAK_RUNTIME_WORLD_SESSION_CONTROL_KIND, 1u,
+        sizeof(BreakRuntimeWorldCommand)));
     world_clear_outbound(&fixture);
     ASSERT_EQ(fixture.hooks.destroy(fixture.hooks.user), BREAK_RUNTIME_OK);
     ASSERT_TRUE(core_app_net_transport_world_adapter(fixture.transport) == NULL);
@@ -1957,14 +2011,22 @@ TEST(world_adapter_failed_rollback_drains_before_network_destroy) {
 
 TEST(world_adapter_destroy_clears_pointer_before_network_timeout) {
     AspectTransportFixture fixture;
+    CoreAppNetWorldTestView view;
+    BreakRuntimeWorldSession *adapter_before_stop;
     BreakRuntimeWorldSession *adapter_after_stop;
     StepThreadArgs args;
     pthread_t thread;
     ASSERT_TRUE(world_fixture_start(&fixture, "core_app_world_network_timeout.port", true, false));
     ASSERT_TRUE(world_fixture_open(&fixture, 0x840bu));
+    adapter_before_stop = core_app_net_transport_world_adapter(fixture.transport);
+    ASSERT_NOT_NULL(adapter_before_stop);
     ASSERT_EQ(break_runtime_coordinator_start(fixture.world_coordinator), BREAK_RUNTIME_OK);
     ASSERT_EQ(break_runtime_coordinator_stop(fixture.world_coordinator), BREAK_RUNTIME_OK);
     adapter_after_stop = core_app_net_transport_world_adapter(fixture.transport);
+    ASSERT_TRUE(adapter_after_stop == NULL);
+    ASSERT_TRUE(break_runtime_bus_kind_accepts(
+        fixture.world_bus, BREAK_RUNTIME_WORLD_SESSION_CONTROL_KIND, 1u,
+        sizeof(BreakRuntimeWorldCommand)));
     ASSERT_TRUE(break_net_reactor_step_delay_for_test(fixture.reactor, 1500u));
     memset(&args, 0, sizeof(args));
     args.reactor = fixture.reactor;
@@ -1975,6 +2037,10 @@ TEST(world_adapter_destroy_clears_pointer_before_network_timeout) {
     }
     ASSERT_EQ(fixture.hooks.destroy(fixture.hooks.user), BREAK_RUNTIME_TIMEOUT);
     ASSERT_TRUE(core_app_net_transport_world_adapter(fixture.transport) == adapter_after_stop);
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    ASSERT_FALSE(view.created);
+    ASSERT_TRUE(view.session == NULL);
+    ASSERT_TRUE(core_app_net_transport_reactor_for_test(fixture.transport) == fixture.reactor);
     ASSERT_EQ(fixture.hooks.destroy(fixture.hooks.user), BREAK_RUNTIME_TIMEOUT);
     core_app_net_transport_free(fixture.transport);
     ASSERT_EQ(pthread_join(thread, NULL), 0);
@@ -2039,6 +2105,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(world_transport_terminal_error_releases_attempt_and_counts_drop);
     RUN_TEST(world_transport_two_connections_isolate_diagnostic_world_and_reopen);
     RUN_TEST(world_transport_open_failure_rolls_back_aspect_and_world);
+    RUN_TEST(world_adapter_created_rollback_drains_before_network_destroy);
     RUN_TEST(world_adapter_failed_rollback_drains_before_network_destroy);
     RUN_TEST(world_adapter_destroy_clears_pointer_before_network_timeout);
     RUN_TEST(world_transport_destroy_releases_enabled_state);
