@@ -259,6 +259,9 @@ static bool runtime_world_publish_clean(const RuntimeWorldConnection *connection
                                         u64 publication_epoch)
 {
     return !state->attempt_pending && !connection->retry_publish &&
+           connection->attempt_publication_epoch == 0u &&
+           connection->attempt_target_snapshot_id == 0u &&
+           connection->attempt_target_tick == 0u &&
            (connection->completed_publication_epoch == publication_epoch ||
             connection->terminal_publication_epoch == publication_epoch);
 }
@@ -268,35 +271,95 @@ static BreakRuntimeError runtime_world_publish_connection(
     const BreakWorldSnapshotLease *lease, bool *out_called)
 {
     RuntimeWorldConnection *connection = &adapter->connections[slot];
-    BreakWorldSessionSenderState state;
+    BreakWorldSessionSenderState before;
+    BreakWorldSessionSenderState after;
     BreakNetSendResult sent;
+    u64 lease_id = break_world_snapshot_id(lease->snapshot);
+    u64 lease_tick = break_world_snapshot_tick(lease->snapshot);
+    bool had_active;
+    u64 old_id;
+    u64 old_tick;
+    bool same_current;
+    bool same_saved;
     *out_called = false;
-    if (!break_world_session_sender_state(adapter->session, connection->key, &state)) {
+    if (!break_world_session_sender_state(adapter->session, connection->key, &before)) {
         connection->terminal_publication_epoch = lease->publication_epoch;
         connection->retry_publish = false;
+        connection->attempt_publication_epoch = 0u;
+        connection->attempt_target_snapshot_id = 0u;
+        connection->attempt_target_tick = 0u;
         adapter->publish_terminal++;
         return BREAK_RUNTIME_FAILED;
     }
-    if (runtime_world_publish_clean(connection, &state, lease->publication_epoch)) {
+    if (runtime_world_publish_clean(connection, &before, lease->publication_epoch)) {
         return BREAK_RUNTIME_OK;
     }
+
+    had_active = before.attempt_pending;
+    old_id = before.attempt_target_snapshot_id;
+    old_tick = before.attempt_target_tick;
+    same_current = had_active && old_id == lease_id && old_tick == lease_tick;
+    same_saved = had_active && connection->attempt_target_snapshot_id != 0u &&
+                 old_id == connection->attempt_target_snapshot_id &&
+                 old_tick == connection->attempt_target_tick;
 
     sent = break_world_session_publish_snapshot(
         adapter->session, connection->key, lease->snapshot, lease->level_generation);
     *out_called = true;
-    if (sent == BREAK_NET_SEND_OK) {
-        connection->completed_publication_epoch = lease->publication_epoch;
-        connection->retry_publish = false;
-        return BREAK_RUNTIME_OK;
-    }
+
     if (sent == BREAK_NET_SEND_OVERLOAD) {
-        connection->retry_publish = true;
         adapter->publish_overloads++;
+        connection->retry_publish = true;
+        if (break_world_session_sender_state(adapter->session, connection->key, &after) &&
+            after.attempt_pending) {
+            bool after_current = after.attempt_target_snapshot_id == lease_id &&
+                                 after.attempt_target_tick == lease_tick;
+            connection->attempt_target_snapshot_id = after.attempt_target_snapshot_id;
+            connection->attempt_target_tick = after.attempt_target_tick;
+            if (!had_active || after_current) {
+                connection->attempt_publication_epoch = lease->publication_epoch;
+            } else if (!same_saved) {
+                connection->attempt_publication_epoch = 0u; /* unknown old attempt */
+            } /* same_saved keeps the original attempt epoch, e.g. E1. */
+        } else {
+            connection->attempt_publication_epoch = 0u;
+            connection->attempt_target_snapshot_id = 0u;
+            connection->attempt_target_tick = 0u; /* no attempt created yet, keep retry */
+        }
         return BREAK_RUNTIME_OVERLOAD;
     }
 
-    connection->terminal_publication_epoch = lease->publication_epoch;
+    if (sent == BREAK_NET_SEND_OK) {
+        if (!break_world_session_sender_state(adapter->session, connection->key, &after) ||
+            after.attempt_pending) {
+            /* The Session contract is that OK ends the active attempt; a
+             * violation is treated as a terminal FAILED without a permanent
+             * continuation and without faking completed. */
+            connection->retry_publish = false;
+            connection->attempt_publication_epoch = 0u;
+            connection->attempt_target_snapshot_id = 0u;
+            connection->attempt_target_tick = 0u;
+            connection->terminal_publication_epoch = lease->publication_epoch;
+            adapter->publish_terminal++;
+            return BREAK_RUNTIME_FAILED;
+        }
+        if (!had_active || same_current) {
+            connection->completed_publication_epoch = lease->publication_epoch;
+        } else if (same_saved && connection->attempt_publication_epoch != 0u) {
+            connection->completed_publication_epoch = connection->attempt_publication_epoch;
+        } /* unknown old attempt: completed stays, current remains dirty. */
+        connection->retry_publish = false;
+        connection->attempt_publication_epoch = 0u;
+        connection->attempt_target_snapshot_id = 0u;
+        connection->attempt_target_tick = 0u;
+        return BREAK_RUNTIME_OK;
+    }
+
     connection->retry_publish = false;
+    connection->attempt_publication_epoch = 0u;
+    connection->attempt_target_snapshot_id = 0u;
+    connection->attempt_target_tick = 0u;
+    connection->terminal_publication_epoch = lease->publication_epoch;
     adapter->publish_terminal++;
     if (sent == BREAK_NET_SEND_INVALID) return BREAK_RUNTIME_INVALID;
     if (sent == BREAK_NET_SEND_CLOSED) return BREAK_RUNTIME_CLOSED;
@@ -308,10 +371,20 @@ static bool runtime_world_recompute_continuation(
 {
     for (usize i = 0u; i < adapter->max_connections; ++i) {
         const RuntimeWorldConnection *connection = &adapter->connections[i];
+        BreakWorldSessionSenderState state;
         if (connection->key == 0u) continue;
         if (connection->retry_publish ||
-            (connection->completed_publication_epoch != current_epoch &&
-             connection->terminal_publication_epoch != current_epoch)) {
+            connection->attempt_publication_epoch != 0u ||
+            connection->attempt_target_snapshot_id != 0u ||
+            connection->attempt_target_tick != 0u) {
+            return true;
+        }
+        if (break_world_session_sender_state(adapter->session, connection->key, &state) &&
+            state.attempt_pending) {
+            return true;
+        }
+        if (connection->completed_publication_epoch != current_epoch &&
+            connection->terminal_publication_epoch != current_epoch) {
             return true;
         }
     }
