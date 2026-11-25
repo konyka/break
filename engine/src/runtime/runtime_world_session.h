@@ -126,6 +126,31 @@ void break_runtime_world_session_stats(
     const BreakRuntimeWorldSession *adapter,
     BreakRuntimeWorldSessionStats *out_stats);
 
+/* Per-connection read-only view for diagnosis. The query copies adapter scalars
+ * under the adapter mutex; it never calls World Session, publication or queue and
+ * never advances the state machine. `publish_dirty` uses the same single-connection
+ * criterion as the fanout continuation, so it answers "this connection still owes a
+ * publication", not "the authoritative World differs". */
+typedef struct {
+    u64 connection_key;
+    u64 connection_epoch;
+    u64 completed_publication_epoch;
+    u64 terminal_publication_epoch;
+    u64 attempt_publication_epoch;
+    u64 attempt_target_snapshot_id;
+    u64 attempt_target_tick;
+    bool retry_publish;
+    bool publish_dirty;
+} BreakRuntimeWorldConnectionSnapshot;
+
+/* Writes up to `capacity` open connections in ascending slot order and returns the
+ * number of open connections, which may exceed `capacity`. A NULL `out_snapshots` or
+ * a zero capacity only reports the count. */
+usize break_runtime_world_session_connection_snapshots(
+    const BreakRuntimeWorldSession *adapter,
+    BreakRuntimeWorldConnectionSnapshot *out_snapshots,
+    usize capacity);
+
 #ifdef BREAK_RUNTIME_TESTING
 void break_runtime_world_session_set_next_connection_epoch_for_test(
     BreakRuntimeWorldSession *adapter, u64 next_epoch);

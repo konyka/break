@@ -4035,11 +4035,159 @@ TEST(coordinator_abandon_failed_join_allows_manual_destroy)
     fixture_dispose(&fixture);
 }
 
+TEST(connection_snapshots_report_per_connection_state)
+{
+    Fixture fixture;
+    BreakRuntimeWorldConnectionSnapshot snaps[4];
+    BreakRuntimeWorldSessionStats before_stats;
+    BreakRuntimeWorldSessionStats after_stats;
+    BreakWorldSessionSenderState before_a;
+    BreakWorldSessionSenderState after_a;
+    BreakWorldSnapshot *s1 = NULL;
+    BreakWorldSnapshot *s2 = NULL;
+    u64 epoch_a = 0u;
+    u64 epoch_b = 0u;
+    u64 epoch_c = 0u;
+    usize drained = 0u;
+
+    /* NULL adapter and empty adapter are safe in every capacity form. */
+    ASSERT_EQ(break_runtime_world_session_connection_snapshots(NULL, snaps, 4u), 0u);
+    ASSERT_TRUE(fixture_init_without_adapter_scaled(&fixture, 7u, 4u));
+    ASSERT_TRUE(fixture_attach(&fixture, 0u, 4u));
+    ASSERT_EQ(break_runtime_world_session_connection_snapshots(fixture.adapter, NULL, 0u), 0u);
+    ASSERT_EQ(break_runtime_world_session_connection_snapshots(fixture.adapter, snaps, 0u), 0u);
+    ASSERT_EQ(break_runtime_world_session_connection_snapshots(fixture.adapter, NULL, 4u), 0u);
+
+    ASSERT_TRUE(open_connection(&fixture, KEY_A, 7u, &epoch_a));
+    ASSERT_TRUE(open_connection(&fixture, KEY_B, 7u, &epoch_b));
+    ASSERT_TRUE(open_connection(&fixture, KEY_C, 7u, &epoch_c));
+
+    /* Truncated query reports the full open count, never the capacity. */
+    memset(snaps, 0, sizeof(snaps));
+    ASSERT_EQ(break_runtime_world_session_connection_snapshots(fixture.adapter, snaps, 1u), 3u);
+    ASSERT_EQ(snaps[0].connection_key, KEY_A);
+    ASSERT_EQ(snaps[1].connection_key, 0u);
+
+    memset(snaps, 0, sizeof(snaps));
+    ASSERT_EQ(break_runtime_world_session_connection_snapshots(fixture.adapter, snaps, 4u), 3u);
+    ASSERT_EQ(snaps[0].connection_key, KEY_A);
+    ASSERT_EQ(snaps[0].connection_epoch, epoch_a);
+    ASSERT_EQ(snaps[1].connection_key, KEY_B);
+    ASSERT_EQ(snaps[1].connection_epoch, epoch_b);
+    ASSERT_EQ(snaps[2].connection_key, KEY_C);
+    ASSERT_EQ(snaps[2].connection_epoch, epoch_c);
+    ASSERT_EQ(snaps[3].connection_key, 0u);
+
+    /* The query is read-only: aggregates and sender state are unchanged. */
+    break_runtime_world_session_stats(fixture.adapter, &before_stats);
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, KEY_A, &before_a));
+    memset(snaps, 0, sizeof(snaps));
+    ASSERT_EQ(break_runtime_world_session_connection_snapshots(fixture.adapter, snaps, 4u), 3u);
+    break_runtime_world_session_stats(fixture.adapter, &after_stats);
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, KEY_A, &after_a));
+    ASSERT_EQ(memcmp(&before_stats, &after_stats, sizeof(before_stats)), 0);
+    ASSERT_EQ(memcmp(&before_a, &after_a, sizeof(before_a)), 0);
+    fixture_dispose(&fixture);
+
+    /* Publication path: completed epoch is visible and dirty clears on clean skip. */
+    ASSERT_TRUE(fixture_init_publication(&fixture, 7u, 2u, 0u));
+    ASSERT_TRUE(open_connection(&fixture, KEY_A, 7u, &epoch_a));
+    ASSERT_TRUE(open_connection(&fixture, KEY_B, 7u, &epoch_b));
+    s1 = make_target(&fixture, 42u, 10u);
+    ASSERT_NOT_NULL(s1);
+    ASSERT_TRUE(break_world_snapshot_publication_publish(fixture.publication, s1, 7u));
+    ASSERT_EQ(submit_current(&fixture, 7u, 0u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 1u, &drained), BREAK_RUNTIME_OK);
+    ASSERT_EQ(drained, 1u);
+    ASSERT_EQ(break_runtime_world_session_connection_snapshots(fixture.adapter, snaps, 4u), 2u);
+    ASSERT_EQ(snaps[0].connection_key, KEY_A);
+    ASSERT_EQ(snaps[0].completed_publication_epoch, 1u);
+    ASSERT_FALSE(snaps[0].publish_dirty);
+
+    /* Global-full queue on A only: A stays dirty with its attempt identity.
+     * The earlier S1 fanout already queued A's and B's BRWD, so clear them first. */
+    clear_outbound(&fixture);
+    for (u32 i = 0u; i < BREAK_NET_OUTBOUND_QUEUE_CAPACITY; ++i) {
+        ASSERT_EQ(break_net_reactor_send(fixture.reactor, KEY_A, BREAK_NET_MESSAGE_ID_PING,
+                                         1u, "x", 1u),
+                  BREAK_NET_SEND_OK);
+    }
+    s2 = make_target(&fixture, 84u, 20u);
+    ASSERT_NOT_NULL(s2);
+    ASSERT_TRUE(break_world_snapshot_publication_publish(fixture.publication, s2, 7u));
+    ASSERT_EQ(submit_current(&fixture, 7u, 0u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 1u, &drained),
+              BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(break_runtime_world_session_connection_snapshots(fixture.adapter, snaps, 4u), 2u);
+    ASSERT_TRUE(snaps[0].retry_publish);
+    ASSERT_TRUE(snaps[0].publish_dirty);
+    ASSERT_EQ(snaps[0].attempt_target_snapshot_id, break_world_snapshot_id(s2));
+    /* Reading twice must not mutate retry state: the snapshot stays identical. */
+    {
+        BreakRuntimeWorldConnectionSnapshot again[2];
+        usize pending_before = break_runtime_world_session_pending(fixture.adapter);
+        BreakRuntimeWorldSessionStats stats_before;
+        BreakRuntimeWorldSessionStats stats_after;
+        break_runtime_world_session_stats(fixture.adapter, &stats_before);
+        memset(again, 0, sizeof(again));
+        ASSERT_EQ(break_runtime_world_session_connection_snapshots(fixture.adapter, again, 2u), 2u);
+        ASSERT_EQ(memcmp(&snaps[0], &again[0], sizeof(snaps[0])), 0);
+        ASSERT_EQ(memcmp(&snaps[1], &again[1], sizeof(snaps[1])), 0);
+        ASSERT_EQ(break_runtime_world_session_pending(fixture.adapter), pending_before);
+        break_runtime_world_session_stats(fixture.adapter, &stats_after);
+        ASSERT_EQ(memcmp(&stats_before, &stats_after, sizeof(stats_before)), 0);
+    }
+    ASSERT_EQ(snaps[0].attempt_target_tick, 20u);
+    /* A globally full outbound queue makes both connections dirty; A's attempt
+     * identity is what proves the snapshot reports real per-connection state. */
+    ASSERT_TRUE(snaps[1].publish_dirty);
+
+    /* CLOSE removes the connection; the count drops. */
+    /* Drain the OVERLOAD continuation to a terminal/complete state first, then close. */
+    {
+        BreakRuntimeWorldCommand close_a =
+            command(BREAK_RUNTIME_WORLD_COMMAND_CLOSE, KEY_A, epoch_a, 7u);
+        ASSERT_EQ(break_runtime_world_session_submit(fixture.adapter, &close_a, 0u),
+                  BREAK_RUNTIME_OK);
+        for (u32 round = 0u;
+             round < 16u && break_runtime_world_session_pending(fixture.adapter) != 0u; ++round) {
+            (void)break_runtime_world_session_drain(fixture.adapter, 4u, &drained);
+            clear_outbound(&fixture);
+        }
+        ASSERT_EQ(break_runtime_world_session_pending(fixture.adapter), 0u);
+    }
+    clear_outbound(&fixture);
+    ASSERT_EQ(break_runtime_world_session_connection_snapshots(fixture.adapter, snaps, 4u), 1u);
+    ASSERT_EQ(snaps[0].connection_key, KEY_B);
+
+    /* REBASELINE through the adapter resets per-connection publication accounting. */
+    {
+        BreakRuntimeWorldCommand rebaseline =
+            command(BREAK_RUNTIME_WORLD_COMMAND_REBASELINE, 0u, 0u, 8u);
+        ASSERT_EQ(break_runtime_world_session_submit(fixture.adapter, &rebaseline, 0u),
+                  BREAK_RUNTIME_OK);
+        ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 1u, &drained),
+                  BREAK_RUNTIME_OK);
+        ASSERT_EQ(break_world_session_level_generation(fixture.session), 8u);
+    }
+    ASSERT_EQ(break_runtime_world_session_connection_snapshots(fixture.adapter, snaps, 4u), 1u);
+    ASSERT_EQ(snaps[0].connection_key, KEY_B);
+    ASSERT_EQ(snaps[0].completed_publication_epoch, 0u);
+    ASSERT_EQ(snaps[0].terminal_publication_epoch, 0u);
+    ASSERT_FALSE(snaps[0].retry_publish);
+    ASSERT_FALSE(snaps[0].publish_dirty);
+
+    break_world_snapshot_release(s2);
+    break_world_snapshot_release(s1);
+    fixture_dispose(&fixture);
+}
+
 TEST_MAIN_BEGIN()
 RUN_TEST(publish_notice_layout_submit_and_external_bus_contract);
 RUN_TEST(publish_notice_basic_s1_full_has_no_pre_drain_effects);
 RUN_TEST(publish_notice_connections_keep_independent_full_delta_and_dedup);
 RUN_TEST(publish_notice_empty_closed_wrong_level_and_no_open_connections);
+RUN_TEST(connection_snapshots_report_per_connection_state);
 RUN_TEST(publish_budget_one_round_robin_continues_without_queue_message);
 RUN_TEST(publish_default_budget_eight_defers_ninth_connection);
 RUN_TEST(publish_overload_resumes_e1_before_latest_e2);

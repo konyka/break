@@ -881,6 +881,40 @@ bool break_runtime_world_session_connection_epoch(
     return found;
 }
 
+usize break_runtime_world_session_connection_snapshots(
+    const BreakRuntimeWorldSession *adapter,
+    BreakRuntimeWorldConnectionSnapshot *out_snapshots,
+    usize capacity)
+{
+    usize opened = 0u;
+    if (!adapter) return 0u;
+    platform_mutex_lock((PlatformMutex *)(uintptr_t)&adapter->mutex);
+    for (usize i = 0u; i < adapter->max_connections; ++i) {
+        const RuntimeWorldConnection *connection = &adapter->connections[i];
+        BreakRuntimeWorldConnectionSnapshot snapshot;
+        if (connection->key == 0u) continue;
+        memset(&snapshot, 0, sizeof(snapshot));
+        snapshot.connection_key = connection->key;
+        snapshot.connection_epoch = connection->epoch;
+        snapshot.completed_publication_epoch = connection->completed_publication_epoch;
+        snapshot.terminal_publication_epoch = connection->terminal_publication_epoch;
+        snapshot.attempt_publication_epoch = connection->attempt_publication_epoch;
+        snapshot.attempt_target_snapshot_id = connection->attempt_target_snapshot_id;
+        snapshot.attempt_target_tick = connection->attempt_target_tick;
+        snapshot.retry_publish = connection->retry_publish;
+        snapshot.publish_dirty =
+            connection->retry_publish ||
+            (adapter->publish_observed_epoch == 0u
+                 ? connection->attempt_publication_epoch != 0u
+                 : (connection->completed_publication_epoch != adapter->publish_observed_epoch &&
+                    connection->terminal_publication_epoch != adapter->publish_observed_epoch));
+        if (out_snapshots && opened < capacity) out_snapshots[opened] = snapshot;
+        ++opened;
+    }
+    platform_mutex_unlock((PlatformMutex *)(uintptr_t)&adapter->mutex);
+    return opened;
+}
+
 void break_runtime_world_session_stats(
     const BreakRuntimeWorldSession *adapter,
     BreakRuntimeWorldSessionStats *out_stats)
