@@ -13973,3 +13973,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **合同口径**：`publish_dirty` 镜像 continuation 中 adapter 自有的判据（retry、三个 attempt 标量、观察 epoch 比较），**不含** continuation 还会查的 Session `attempt_pending`；头注释、`runtime_network.md` 与设计文档已同步这一差异，避免把它读成 `pending()==0`。
 - **变异**：截断时返回 capacity、`publish_dirty` 恒为 false、查询内清 `retry_publish`、去掉查询 mutex 四项均实际判红后恢复（去锁项由 TSan 报 data race 判红）。
 - **边界**：仍缺远程指标导出、历史采样、告警和共享 live World；Proton 77、条件 skip、既有 Lua/TSan 与完整 sanitizer 限制不变，本节不预写远端结果。
+
+## Runtime World 逐连接诊断快照的远端收据（2026-11-26）
+
+- 推送 `d7a26154`（`80cf5421..d7a26154`，fast-forward）。该切片共 8 个提交：设计与计划、只读查询实现、并发用例、`publish_dirty` 判据修正、边界记录、评审修复与空白修正。独立评审的 Critical/Important 项均已关闭。
+- 本地最终 HEAD：`test_runtime_world_session` **49/49**，normal、ASan+UBSan（显式 `detect_leaks=1`）与 TSan 三树通过，TSan 连跑三次无 race；完整未过滤 CTest OpenGL **480 注册、480 通过、0 失败**（rc=0），Vulkan **482 注册、482 通过、0 失败**（rc=0）；命名 STAGE=4 与 Wayland 文档合同通过。
+- 远端 CI `45714760373` **25 success、3 条件 skip、0 cancelled、0 failed**；windows-d3d12 `45714760345` success；Proton `45716945025` success，上游 run-id=`45714760345`，device/pipeline contract 均为 77（仅兼容通道）。
+- 验收边界：`publish_dirty` 镜像 continuation 中 adapter 自有的判据，不含 Session `attempt_pending`，不能当作 `pending()==0` 或权威 World 一致性的证据。远程指标导出、历史采样、告警，以及共享 live World、权威 simulation 合并、跨 World 持久身份、AOI、自动换级、资产链与可靠每 epoch 广播仍未交付。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。本收据提交自身的工作流结果不在此预写。

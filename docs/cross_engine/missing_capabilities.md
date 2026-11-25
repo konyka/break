@@ -1079,3 +1079,9 @@ authority handoff 和默认全局公平调度仍未交付。正常断连顺序�
 `break_runtime_world_session_connection_snapshots()` 只提供库内只读的逐连接判账视图，用于定位“哪条连接还欠发布”。它不导出指标、不做历史采样、不产生告警，也不暴露 World Session 私有 attempt 字节或快照内容，因此不能替代远程可观测性。
 
 仍开放：远程指标与告警、共享 live World、权威 simulation 合并、跨 World 持久身份、AOI 裁剪、自动换级、完整资产链、inbound completion 映射与可靠每 epoch 广播；既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。
+
+### 第 17 节补充（2026-11-26）：诊断快照远端收据与剩余缺口
+
+`d7a26154` 已在远端 CI `45714760373`（25 success、3 条件 skip、0 failed）、windows-d3d12 `45714760345` 与 Proton `45716945025` 上通过，本地 OpenGL 480/480、Vulkan 482/482 与三树 49/49 亦通过。
+
+这仍只关闭库内只读的逐连接判账视图。远程指标导出、历史采样与告警，以及共享 live World、权威 simulation 合并、跨 World 持久身份、AOI 裁剪、自动换级、完整资产链、inbound completion 映射和可靠每 epoch 广播都未交付；`publish_dirty` 也不等同于 `pending()==0`。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。
