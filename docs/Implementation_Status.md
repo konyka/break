@@ -13806,3 +13806,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 主 CI run `45528191377`：completed/success，**28 个 job 中 25 success、3 个既有条件 skip**，0 failure。windows-d3d12 run `45528191200` 与 Proton run `45529718446` 均 success；Proton 只作兼容参考。
 - `macOS Snowflake replication (Clang)`（job `138916649716`）虽为 success，但 `SNOWFLAKE_READ_TOKEN` 未配置：Snowflake checkout、configure、build 和 14 项测试步骤全部 skipped，summary 明确记录 **UNAVAILABLE**。因此本次没有真实 Session/aspect/World socket 测试证据，不能把这 14 项或该 job 计为执行通过。需在仓库配置仅有 `contents:read` 权限的上述 secret 后重新运行。
 - 本收据提交自身会触发新工作流，其结果不在此预写。
+
+## World Session 与 rebaseline 复审（2026-11-25）
+
+- **同步与范围**：远程没有新提交，本地保持 `371f979a`。本轮审查 `break_replication_session_rebaseline`、按连接 completion 压缩与环形队列、World level rebaseline、ACK 历史裁剪、full/delta 发布、OVERLOAD 恢复和控制消息版本边界；未发现需要修改产品代码的新 Critical/Important 问题。
+- **生命周期核对**：pool rebaseline 经 reset 释放 payload 和元数据；bridge rebaseline 释放全部未取 completion。selective poll 保留其他连接的 FIFO 与 ownership；World close 同时释放 baseline、confirmed、attempt 和 history；ACK 先保留目标再裁剪历史；full 仅在发送完成后清理旧历史，发送错误可保留或重试 attempt。
+- **macOS 验证**：当前最终树 Metal 全量 **438/438**、MoltenVK 全量 **441/441**，各 **5 项既有条件 skip**，不计执行通过。本轮没有产品代码改动，未重复运行 sanitizer。
+- **上一轮收据的远端结果**：CI run `45530867288` completed/success，28 个 job 中 **25 success、3 条件 skip**；windows-d3d12 `45530867381` 和 Proton `45532518099` 均 success，Proton 只作兼容参考。Snowflake job `138925537774` 的 checkout/configure/build/test 仍全部 skipped 并记录 UNAVAILABLE，14 项真实网络测试没有执行，不计为通过。
+- **边界**：本轮结论不扩展为真实 Snowflake socket、Windows/Linux 实机或完整 sanitizer 验收。本复审记录提交自身的工作流结果不在此预写。
