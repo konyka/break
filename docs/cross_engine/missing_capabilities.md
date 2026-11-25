@@ -1073,3 +1073,9 @@ authority handoff 和默认全局公平调度仍未交付。正常断连顺序�
 `85a6e99e` 已推送并在远端 CI `45701310004` 上 completed/success：**25 success、3 条件 skip、0 cancelled、0 failed**，其中 `Linux arm64 cross-build + QEMU tests (GCC)` 由连续 failure 转为 success；windows-d3d12 `45701309975` 与 Proton `45703923624` 亦 success（Proton 上游 run-id=`45701309975`，contract 77 仅兼容通道）。
 
 这只关闭「arm64 依赖安装不可用」：arm64 交叉编译链路在远端已恢复，但 QEMU 套件的用例级覆盖仍以 CI 日志为准，不代表新增覆盖面。能力缺口与既有 Lua/TSan、条件 skip、完整 sanitizer 边界不变；本收据提交自身的工作流结果不在此预写。
+
+### 第 17 节补充（2026-11-26）：逐连接诊断不关闭的缺口
+
+`break_runtime_world_session_connection_snapshots()` 只提供库内只读的逐连接判账视图，用于定位“哪条连接还欠发布”。它不导出指标、不做历史采样、不产生告警，也不暴露 World Session 私有 attempt 字节或快照内容，因此不能替代远程可观测性。
+
+仍开放：远程指标与告警、共享 live World、权威 simulation 合并、跨 World 持久身份、AOI 裁剪、自动换级、完整资产链、inbound completion 映射与可靠每 epoch 广播；既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。

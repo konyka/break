@@ -13965,3 +13965,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - windows-d3d12 `45701309975` completed/success；Proton `45703923624` completed/success，上游 run-id=`45701309975`，device/pipeline contract 均为 77（仅兼容通道，不是原生 GPU 通过）。
 - 本地证据：Ubuntu 24.04 容器内旧脚本以 `mesa-libgallium:arm64 : Depends: libelf1t64:arm64 (>= 0.142)` 退出 100，新脚本成功安装 arm64 GL/EGL/OpenGL 开发包与 `aarch64-linux-gnu-gcc 13.3.0`；合同 `test_ci_execution_semantics`、`test_wayland_ci_migration_contract`、`test_repo_naming_contract` STAGE=4 与 YAML 解析均通过。
 - 边界：本次只修复依赖可安装性并验证 lane 在远端通过；arm64 QEMU 套件的用例级结果仍以 CI 日志为准，不单独宣称覆盖面扩大。条件 skip、既有 Lua/TSan 与完整 sanitizer suite 的限制不变。本收据提交自身的工作流结果不在此预写。
+
+## Runtime World 逐连接诊断快照（2026-11-26）
+
+- **交付**：新增只读 `break_runtime_world_session_connection_snapshots()`，在 adapter mutex 内复制每连接 key/epoch、completed/terminal/attempt publication epoch、adapter 记录的 attempt target id/tick、`retry_publish` 与 `publish_dirty`；按 slot 升序返回，`capacity` 不足时仍返回实际打开连接数。不调用 World Session、publication 或 queue，不改变 pending、统计、retry 或 drain 行为，不新增 wire。
+- **验证**：`test_runtime_world_session` 由 47 增至 **49/49**，新增空 adapter/容量边界、三连接截断与顺序、发布判账与只读性（`memcmp` 前后 `stats` 与 sender state 不变）、OVERLOAD/CLOSE/REBASELINE，以及生产者与两个查询线程的真线程竞态。normal、ASan+UBSan（显式 `detect_leaks=1`）、TSan 均 49/49，无 sanitizer、leak 或 race 报告。
+- **变异**：截断时返回 capacity、`publish_dirty` 恒为 false、查询内清 `retry_publish`、去掉查询 mutex 四项均实际判红后恢复（去锁项由 TSan 报 data race 判红）。
+- **边界**：仍缺远程指标导出、历史采样、告警和共享 live World；Proton 77、条件 skip、既有 Lua/TSan 与完整 sanitizer 限制不变，本节不预写远端结果。

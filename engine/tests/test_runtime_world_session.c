@@ -4182,12 +4182,152 @@ TEST(connection_snapshots_report_per_connection_state)
     fixture_dispose(&fixture);
 }
 
+#define RUNTIME_SNAPSHOT_RACE_ROUNDS 32u
+
+typedef struct {
+    Fixture *fixture;
+    _Atomic u32 ready;
+    _Atomic bool go;
+    _Atomic bool done;
+    _Atomic bool failed;
+    u32 accepted;
+} RuntimeSnapshotRace;
+
+static PLATFORM_THREAD_RET runtime_snapshot_race_producer(PLATFORM_THREAD_ARG argument)
+{
+    RuntimeSnapshotRace *race = (RuntimeSnapshotRace *)argument;
+    atomic_store_explicit(&race->ready, 1u, memory_order_release);
+    for (u64 spin = 0u; spin < 100000000u; ++spin) {
+        if (atomic_load_explicit(&race->go, memory_order_acquire)) break;
+        platform_thread_yield();
+    }
+    if (!atomic_load_explicit(&race->go, memory_order_acquire)) {
+        atomic_store_explicit(&race->failed, true, memory_order_release);
+        atomic_store_explicit(&race->done, true, memory_order_release);
+        return PLATFORM_THREAD_RETURN;
+    }
+    for (u32 i = 0u; i < RUNTIME_SNAPSHOT_RACE_ROUNDS; ++i) {
+        for (u32 spin = 0u; spin < 1000000u; ++spin) {
+            BreakRuntimeError result = submit_current(race->fixture, 7u,
+                                                       UINT64_C(0xD5755) + i);
+            if (result == BREAK_RUNTIME_OK) { race->accepted++; break; }
+            if (result != BREAK_RUNTIME_OVERLOAD || spin == 999999u) {
+                atomic_store_explicit(&race->failed, true, memory_order_release);
+                break;
+            }
+            platform_thread_yield();
+        }
+        if (atomic_load_explicit(&race->failed, memory_order_relaxed)) break;
+    }
+    atomic_store_explicit(&race->done, true, memory_order_release);
+    return PLATFORM_THREAD_RETURN;
+}
+
+typedef struct {
+    BreakRuntimeWorldSession *adapter;
+    _Atomic bool go;
+    _Atomic bool stop;
+    _Atomic bool failed;
+    u32 reads;
+} RuntimeSnapshotReader;
+
+static PLATFORM_THREAD_RET runtime_snapshot_reader(PLATFORM_THREAD_ARG argument)
+{
+    RuntimeSnapshotReader *reader = (RuntimeSnapshotReader *)argument;
+    BreakRuntimeWorldConnectionSnapshot snaps[4];
+    for (u64 spin = 0u; spin < 100000000u; ++spin) {
+        if (atomic_load_explicit(&reader->go, memory_order_acquire)) break;
+        platform_thread_yield();
+    }
+    while (!atomic_load_explicit(&reader->stop, memory_order_acquire)) {
+        usize count;
+        memset(snaps, 0, sizeof(snaps));
+        count = break_runtime_world_session_connection_snapshots(reader->adapter, snaps, 4u);
+        if (count > 2u) atomic_store_explicit(&reader->failed, true, memory_order_release);
+        for (usize i = 0u; i < count && i < 4u; ++i) {
+            if (snaps[i].connection_key == 0u) {
+                atomic_store_explicit(&reader->failed, true, memory_order_release);
+            }
+        }
+        reader->reads++;
+        platform_thread_yield();
+    }
+    return PLATFORM_THREAD_RETURN;
+}
+
+TEST(connection_snapshots_race_with_producer_without_corruption)
+{
+    Fixture fixture;
+    RuntimeSnapshotRace race;
+    RuntimeSnapshotReader reader;
+    PlatformThread thread;
+    PlatformThread reader_thread;
+    BreakRuntimeWorldConnectionSnapshot snaps[4];
+    usize last_count = 0u;
+    u64 epoch_a = 0u;
+    u64 epoch_b = 0u;
+    usize drained = 0u;
+
+    memset(&race, 0, sizeof(race));
+    ASSERT_TRUE(fixture_init_publication(&fixture, 7u, 2u, 0u));
+    ASSERT_TRUE(open_connection(&fixture, KEY_A, 7u, &epoch_a));
+    ASSERT_TRUE(open_connection(&fixture, KEY_B, 7u, &epoch_b));
+    race.fixture = &fixture;
+    memset(&reader, 0, sizeof(reader));
+    reader.adapter = fixture.adapter;
+    atomic_init(&reader.go, false);
+    atomic_init(&reader.stop, false);
+    atomic_init(&reader.failed, false);
+    ASSERT_TRUE(platform_thread_create(&reader_thread, runtime_snapshot_reader, &reader));
+    atomic_store_explicit(&reader.go, true, memory_order_release);
+    atomic_init(&race.ready, 0u);
+    atomic_init(&race.go, false);
+    atomic_init(&race.done, false);
+    atomic_init(&race.failed, false);
+    ASSERT_TRUE(platform_thread_create(&thread, runtime_snapshot_race_producer, &race));
+    for (u64 spin = 0u; spin < 100000000u; ++spin) {
+        if (atomic_load_explicit(&race.ready, memory_order_acquire) != 0u) break;
+        platform_thread_yield();
+    }
+    atomic_store_explicit(&race.go, true, memory_order_release);
+    for (u64 spin = 0u; spin < 1000000u; ++spin) {
+        usize count;
+        memset(snaps, 0, sizeof(snaps));
+        count = break_runtime_world_session_connection_snapshots(fixture.adapter, snaps, 4u);
+        ASSERT_TRUE(count <= 2u);
+        for (usize i = 0u; i < count && i < 4u; ++i) ASSERT_NEQ(snaps[i].connection_key, 0u);
+        last_count = count;
+        (void)break_runtime_world_session_drain(fixture.adapter, 4u, &drained);
+        if (atomic_load_explicit(&race.done, memory_order_acquire)) break;
+        platform_thread_yield();
+    }
+    platform_thread_join(thread);
+    atomic_store_explicit(&reader.stop, true, memory_order_release);
+    platform_thread_join(reader_thread);
+    ASSERT_FALSE(atomic_load_explicit(&reader.failed, memory_order_acquire));
+    ASSERT_TRUE(reader.reads > 0u);
+    ASSERT_FALSE(atomic_load_explicit(&race.failed, memory_order_acquire));
+    ASSERT_EQ(race.accepted, RUNTIME_SNAPSHOT_RACE_ROUNDS);
+    ASSERT_EQ(last_count, 2u);
+    for (u32 round = 0u;
+         round < 1024u && break_runtime_world_session_pending(fixture.adapter) != 0u; ++round) {
+        (void)break_runtime_world_session_drain(fixture.adapter, 16u, &drained);
+        clear_outbound(&fixture);
+    }
+    ASSERT_EQ(break_runtime_world_session_pending(fixture.adapter), 0u);
+    ASSERT_EQ(break_runtime_world_session_connection_snapshots(fixture.adapter, snaps, 4u), 2u);
+    ASSERT_EQ(snaps[0].connection_key, KEY_A);
+    ASSERT_EQ(snaps[1].connection_key, KEY_B);
+    fixture_dispose(&fixture);
+}
+
 TEST_MAIN_BEGIN()
 RUN_TEST(publish_notice_layout_submit_and_external_bus_contract);
 RUN_TEST(publish_notice_basic_s1_full_has_no_pre_drain_effects);
 RUN_TEST(publish_notice_connections_keep_independent_full_delta_and_dedup);
 RUN_TEST(publish_notice_empty_closed_wrong_level_and_no_open_connections);
 RUN_TEST(connection_snapshots_report_per_connection_state);
+RUN_TEST(connection_snapshots_race_with_producer_without_corruption);
 RUN_TEST(publish_budget_one_round_robin_continues_without_queue_message);
 RUN_TEST(publish_default_budget_eight_defers_ninth_connection);
 RUN_TEST(publish_overload_resumes_e1_before_latest_e2);

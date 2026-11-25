@@ -287,3 +287,9 @@ World adapter 以同一 mutex 保护 binding 占用和 lifecycle_destroying。�
 direct notice 架构保持不变：生产者只构造 16 字节 `0x5754/v1` publish-current notice 并 `submit_publish_current`，owner `drain` 才 acquire publication current 并对每个已 OPEN 的连接调用 World Session。多个代次在这里是分离的：level generation（Session rebaseline）、publication epoch（发布替换）、connection epoch（每连接 OPEN 身份）、queue generation（adapter FIFO）各自独立推进，adapter 以 publication epoch 判账、以 connection epoch 校验 OPEN、以 level generation 做 STALE 拒绝，互不混用。
 
 target 依赖边界不变：loopback 测试通过 `runtime_world_session_test`（PUBLIC 链接 `runtime_core_test break_net_test break_ecs_replication_test`）加 `runtime_core` 链接正式 adapter，不把 adapter/lifecycle 源直接编入可执行文件，`runtime_core` 的源与依赖也没有改变。**core_app 不自动接线这条数据面**：snapshot/lease/BRWD/BRFG 的 Runtime 数据面仍只在测试 fixture 中组合，生产 core_app 不会自动注册 publication 或把权威 World 接入 Runtime。
+
+## 聚合统计与逐连接诊断的分工（2026-11-26）
+
+`stats()` 与 `pending()` 回答“整体是否还有工作”（queue、control retry、publish request/continuation），而 `break_runtime_world_session_connection_snapshots()` 回答“是哪条连接、停在哪个判账阶段”。前者用于 shutdown 与背压判断，后者仅用于诊断，二者都不进入 wire，也不改变 `fair_outbound_admission` 默认值或 drain 行为。
+
+同一数据可能有多条连接：查询按 adapter slot 升序返回，调用方应使用 `connection_key`/`connection_epoch` 关联，而不是依赖数组下标作为持久身份。远程指标导出、历史采样与告警未实现。

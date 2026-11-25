@@ -556,3 +556,11 @@ destroy 在任何 pending 判定之前先关闭 queue admission 并退订，且�
 预算/cursor：`publish_connection_budget=1` 时一次 `drain` 只推进一个连接，round-robin cursor 下一次才轮到下一个连接；A 收到 full 后 pending 仍为 1，第二次 drain 才让 B 收到 full，A 不重复 full。full/delta/ACK/NEED_FULL 的选择由每连接的已确认 baseline 决定：已 ACK S1 的连接在 S2 发 DELTA/base=S1，未确认的连接发 FULL/base=0，两者 target 同为 S2；只 ACK 一个连接不裁剪另一个连接的 history。
 
 E1/E2：A 填满自身 share 后第一次 drain 返回 OVERLOAD，`attempt_target_snapshot_id==E1`、`publish_overloads==1`；显式 fair admission 下第二次 drain 让 B 收到 E1 full（A 饱和不阻断 B）。publication publish 用 E2 替换 current 后，不提交新 notice，continuation 自行 acquire E2，但 A 仍先续发旧 E1（resumed 字节等于 `encode_full(E1)`、不等于 E2），E2 此时不得 completed；后续 drain 才分别让两连接发 E2，pending 归零。fair admission 默认 false、测试显式 true；BRWC/BRWD/BRFG wire 不变。
+
+## 逐连接诊断快照（2026-11-26）
+
+`break_runtime_world_session_connection_snapshots()` 在 adapter mutex 内复制每条已打开连接的标量判账字段（key、connection epoch、completed/terminal/attempt publication epoch、adapter 记录的 attempt target id/tick、`retry_publish`、`publish_dirty`），按 slot 升序写入调用方数组，并返回**实际打开连接数**——`capacity` 不足时仍返回完整计数，便于调用方扩容重查。
+
+`publish_dirty` 与 fanout continuation 使用同一单连接判据：有 retry，或 completed/terminal 都不等于最近一次 drain 观察到的 publication epoch；它回答“该连接还欠一次发布”，不代表权威 World 与快照存在差异。查询只读：不调用 World Session、publication 或 queue，不推进状态机，也不改变 pending、聚合统计或 retry 状态。
+
+该 API 不提供指标导出、历史采样或告警，也不暴露 World Session 私有 attempt 字节；远程指标与告警仍是缺口。
