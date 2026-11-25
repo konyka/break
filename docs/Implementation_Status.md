@@ -13988,3 +13988,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **变异**：`dirty_connections` 恒 0 与查询内清 `continuation_pending` 两项均实际判红后恢复；注意清 `continuation_pending` 由正向断言（`continuation_pending==true`）捕获，只读性 `memcmp` 只比较 `stats` 与逐连接快照，不覆盖该字段。「锁外分两次统计」在单线程用例中无法稳定构造，记为**未能构造**，不作为已判红证据。
 - **口径修正**：`continuation_pending` 是最近一次 drain 末尾重算的标志，其判据含 Session `attempt_pending`，不能单独代表 adapter 欠账；`observed_publication_epoch == 0` 也不等于“从未 drain”，rebaseline 与空/关闭 publication 都会把它归零。判脏已抽成单一 `runtime_world_connection_dirty_locked()`，逐连接快照与摘要共用，结构上避免两处漂移。
 - **边界**：仍无指标协议、历史采样与告警；摘要不含 Session active attempt，不能替代 `pending()==0`。共享 live World、权威 simulation 合并、跨 World 持久身份、AOI、自动换级、资产链与可靠每 epoch 广播仍未交付；既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变，本节不预写远端结果。
+
+## Runtime World 发布进度摘要的远端收据（2026-11-26）
+
+- 推送 `038ffcac`（`3f77161d..038ffcac`，fast-forward）。共 5 个提交：设计、计划、只读摘要实现、四份文档、评审修复。独立评审为 Approved，两项 Important 措辞夸大已按实现事实收窄，判脏抽成共享 `runtime_world_connection_dirty_locked()`。
+- 本地最终 HEAD：`test_runtime_world_session` **50/50**，normal、ASan+UBSan（显式 `detect_leaks=1`）与 TSan 三树通过且无 race；完整未过滤 CTest OpenGL **480 注册、480 通过、0 失败**（rc=0），Vulkan **482 注册、482 通过、0 失败**（rc=0）；命名 STAGE=4 与 Wayland 文档合同通过。
+- 远端 CI `45721079110` **25 success、3 条件 skip、0 cancelled、0 failed**；windows-d3d12 `45721079010` success；Proton `45723273130` success，上游 run-id=`45721079010`，device/pipeline contract 均为 77（仅兼容通道）。
+- 验收边界：`continuation_pending` 是最近一次 drain 末尾重算的标志，判据含 Session `attempt_pending`，不能单独代表 adapter 欠账；`observed_publication_epoch == 0` 不等于“从未 drain”（rebaseline 与空/关闭 publication 都会归零）；摘要与逐连接快照都不查询 Session，不能替代 `pending()==0`。指标协议与远程采集、告警，以及共享 live World、权威 simulation 合并、跨 World 持久身份、AOI、自动换级、资产链与可靠每 epoch 广播仍未交付。本收据提交自身的工作流结果不在此预写。
