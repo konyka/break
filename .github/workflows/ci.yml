@@ -242,6 +242,17 @@ jobs:
           EOF
           sudo dpkg --add-architecture arm64
           sudo apt-get update
+          # The runner image already carries amd64 mesa, and Ubuntu's ports
+          # archive can publish a newer libelf1t64 than the amd64 archive.
+          # Multiarch then refuses mesa-libgallium:arm64. Align the arm64
+          # libelf1t64 with the amd64 version the image already has; if the
+          # amd64 side has none, install the candidate on both sides first.
+          amd64_elf=$(dpkg-query -W -f='${Version}' libelf1t64 2>/dev/null || true)
+          if [ -z "${amd64_elf}" ]; then
+            sudo apt-get install -y --no-install-recommends libelf1t64
+            amd64_elf=$(dpkg-query -W -f='${Version}' libelf1t64)
+          fi
+          sudo apt-get install -y --no-install-recommends "libelf1t64:arm64=${amd64_elf}"
           sudo apt-get install -y --no-install-recommends \
             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu ninja-build \
             pkg-config python3 file libwayland-dev wayland-protocols \

@@ -13949,3 +13949,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **根因**：runner 镜像滚动。success 的运行使用 `ubuntu24/20261116.133`，失败的运行使用 `ubuntu24/20261116.376`；新镜像上 amd64 `mesa-libgallium` 与 `ports.ubuntu.com` 的 arm64 `libelf1t64` 版本组合无法同时满足，属于上游包依赖漂移，不是本仓源码、workflow 逻辑或本次文档改动的结果（同一 commit 上其余 24 个 job、Windows-d3d12、Proton 均成功）。
 - **未修复原因**：本次改动纯粹是文档收窄，不修改依赖安装步骤；把镜像钉死或改写 arm64 依赖集合属于独立 CI 维护变更，应在单独提交中评估（例如固定 runner 镜像版本，或改用 `apt-get` 的 `--allow-downgrades`/显式版本约束并复验 QEMU 套件）。在此之前该 lane 记为**环境不可用**，其 `success` 与 `failure` 都不应被当作本切片代码正确性证据。
 - **证据边界**：`CI 45694815652` 为 **24 success、3 条件 skip、0 cancelled、1 failed（arm64 依赖安装）**；Windows-d3d12 `45694815630` 与 Proton `45697075787` 均 success，Proton 77 仍只表示兼容通道。本节不预写任何后续重跑或修复结果。
+
+
+## arm64 lane 依赖钉扎修复（2026-11-26）
+
+- **根因确认**：`Install the host and arm64 build dependencies` 在「镜像已装 amd64 `libelf1t64`」的状态下求解失败。真实复现于 Ubuntu 24.04 容器：`dpkg --add-architecture arm64` 后先装 amd64 `libelf1t64`/`libgl1`/`libglx-mesa0`，再执行原安装集合，得到与 CI 完全相同的 `mesa-libgallium:arm64 : Depends: libelf1t64:arm64 (>= 0.142) but it is not going to be installed` 与退出码 100。
+- **修复**：安装前读取已装 amd64 `libelf1t64` 版本（缺失时先装 amd64 侧），再以 `libelf1t64:arm64=${amd64_elf}` 显式装同版本 arm64，随后才安装 `libgl-dev:arm64` 等图形包。设计文档仍要求真实 arm64 OpenGL/EGL 开发包，因此依赖集合不减。
+- **验证**：同一容器中 RED（原脚本）退出 100，GREEN（新脚本）成功安装 `libgl-dev:arm64`、`libegl-dev:arm64`、`libopengl-dev:arm64`、`libelf1t64:arm64`，`aarch64-linux-gnu-gcc 13.3.0` 可用。合同新增两条：arm64 lane 必须出现 `libelf1t64:arm64=`，且该钉扎早于图形开发包安装；`test_ci_execution_semantics`、`test_wayland_ci_migration_contract` 与 YAML 解析均通过。
+- **边界**：本节只修安装步骤的可安装性，不宣称 arm64 QEMU 套件已在本次运行中执行；其真实结果以修复后触发的远端 CI 为准，不在此预写。

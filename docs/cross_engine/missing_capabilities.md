@@ -1059,3 +1059,10 @@ authority handoff 和默认全局公平调度仍未交付。正常断连顺序�
 `Linux arm64 cross-build + QEMU tests (GCC)` 目前因 runner 镜像 `ubuntu24/20261116.376` 上 `mesa-libgallium:arm64` 与 arm64 `libelf1t64` 的依赖冲突而在安装步骤失败（此前镜像 `...133` 上通过）。该 lane 的失败不提供代码正确性证据，其通过也不应被当作本切片证据；arm64 交叉编译与 QEMU 套件的实际可用性在修复镜像或依赖集合前保持**未验证**。
 
 本记录不改变任何能力边界：共享 live World、权威 simulation 合并、跨 World 持久身份、AOI 裁剪、自动换级、资产链、inbound completion 映射、可靠每 epoch 广播与默认全局公平调度仍未交付；既有 Lua/TSan、条件 skip 与完整 sanitizer suite 的限制同样不变。
+
+
+### 第 17 节更正（2026-11-26）：arm64 lane 可安装性已修复，套件结果待远端复验
+
+上一小节记录 arm64 lane 因镜像滚动而「环境不可用」。实际根因是 multiarch 版本冲突：镜像预装 amd64 `libelf1t64` 时，ports 上更新的 arm64 `libelf1t64` 使 `mesa-libgallium:arm64` 无法求解。lane 现改为先把 arm64 `libelf1t64` 钉到 amd64 已装版本，再安装 arm64 图形开发包；Ubuntu 24.04 容器内已复现旧脚本退出 100、新脚本成功。
+
+这只关闭「安装步骤不可用」，不关闭 arm64 交叉编译与 QEMU 套件本身的验证：其实际结果需由修复后触发的远端 CI 给出，未发生前仍记为未验证。其余能力缺口与既有 Lua/TSan、条件 skip、完整 sanitizer 边界不变。

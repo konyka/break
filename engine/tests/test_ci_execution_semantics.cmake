@@ -255,6 +255,24 @@ if(validate EQUAL -1 OR checkout EQUAL -1 OR validate GREATER checkout)
     fail("rollback validation must precede checkout")
 endif()
 
+# The arm64 lane installs arm64 graphics development packages on a runner that
+# already carries amd64 mesa. Ubuntu's ports archive can publish a newer
+# libelf1t64 than the amd64 archive, and multiarch then refuses to install
+# mesa-libgallium:arm64. The lane must pin the arm64 libelf1t64 to the amd64
+# version it already has before asking for libgl-dev:arm64 et al.
+extract_job("lane-cross-aarch64-linux" aarch64_block)
+string(FIND "${aarch64_block}" "apt-get install -y --no-install-recommends \\\n" aarch64_install)
+string(FIND "${aarch64_block}" "libelf1t64:arm64=" aarch64_pin)
+if(aarch64_install EQUAL -1)
+    fail("arm64 lane must keep its single no-install-recommends install")
+endif()
+if(aarch64_pin EQUAL -1)
+    fail("arm64 lane must pin libelf1t64:arm64 to the installed amd64 version")
+endif()
+if(aarch64_pin GREATER aarch64_install)
+    fail("arm64 libelf1t64 pin must precede the graphics development install")
+endif()
+
 get_property(failure_lines GLOBAL PROPERTY CI_EXECUTION_CONTRACT_FAILURES)
 if(failure_lines)
     string(REPLACE ";" "\n" failures "${failure_lines}")
