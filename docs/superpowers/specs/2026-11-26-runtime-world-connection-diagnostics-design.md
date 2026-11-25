@@ -90,3 +90,11 @@ RED 在前，用现有 `Fixture` 构造两种 adapter：
 
 1. **库级只读快照**：`runtime_world_session.h/.c` 增加结构与函数，`test_runtime_world_session.c` 覆盖上述 1–6，完成四项变异。
 2. **线程与文档**：真线程用例、两份设计文档、状态与缺口文档，最终本地与远端验收。
+
+## 实施记录：`publish_dirty` 的等价性与可测边界（2026-11-26）
+
+实现时发现 `publish_dirty` 初版只比较 completed/terminal 与已观察 epoch，遗漏了 attempt 标量分支，而 `runtime_world_recompute_continuation` 在 attempt 标量非零时直接判 dirty。两者在特定状态（已观察 epoch、completed 恰好等于该 epoch、却仍保留 attempt 标量）下会分叉，已补齐为完整等价判据。
+
+需要如实记录的边界：**该分支在当前状态机中不可独立观测**。ONLINE 路径上 attempt 标量总是与 `retry_publish` 同时设置、同时在 OK/终态时清除；OVERLOAD 后 drain 返回前 retry 已为真；续发成功时标量已被清空。因此不存在「retry=false 而标量非零」的可达状态，尝试构造的两次反例均被实测证伪并回滚，未保留假绿断言。
+
+结论：`publish_dirty` 现与 continuation 判据逐字等价，但其中 attempt 标量分支只有实现等价性论证，没有独立判红用例；若未来有写入方先清 retry 再清标量，应补一条对应回归。这一限制不影响该字段在现有状态机下的正确性。
