@@ -13823,3 +13823,12 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **外部 ingress**：direct 与外部 Bus 混合提交在 close 前恰好一次输出；close 后不增加 pending，退订后 delivered=0。queue-only 与 queue+control_pending 两类都覆盖 join 首次 TIMEOUT、STOPPING 和精确恢复，STOPPED 后重复 stop 不重复 callback。
 - **本地证据**：`test_runtime_world_session` 为 **27/27**；Runtime/World/adapter/Session/bridge focused normal、ASan+UBSan（显式 `detect_leaks=1`）和 TSan 各 **12/12**。core_app focused normal/ASan+UBSan 各 **15/15**；TSan core_app 为 **2/15**，其中 runtime 与 network library 通过，其余 13 个进程场景未通过。11 项日志直接显示既有 Lua `can't find longjmp buf` 退出 66，simulation/roundtrip 则在驱动层因缺少正常退出产物失败；这些场景均未记为通过，editor/core_app 的完整 sanitizer 进程验收也不由 focused 结果替代。
 - **当前集成边界**：core_app 已在 `app_register_subsystems` 注册 `"network"` subsystem，旧描述不再代表当前缺失；但 World adapter 尚未注册到 core_app。Runtime snapshot/lease/BRWD/BRFG 数据面、共享 live World、core_app authoritative World 与权威 simulation 合并仍未实现。三组定向变异及最终双后端命令、计数和日志见本地 Task 2 报告；本节保留全部历史收据，不预写远端结果。
+
+
+## Runtime World 完整 network 矩阵修正（2026-11-25）
+
+- **OFF 缩减根因**：前次 OpenGL 469 / Vulkan 470 的两套 cache 均为 `CORE_APP_ENABLE_NETWORK=OFF`，虽然 CTest 未过滤，但不能与旧 ON 完整矩阵等价。恢复原 backend、tests 和固定 Snowflake pin，仅切为 ON 后，两树均恢复 12 项：11 个 `test_core_app_network_*` 场景及独立 `test_core_app_net_transport` 目标/测试。
+- **OpenGL 481 的逐项解释**：当前旧 cache 还保留 `Vulkan_INCLUDE_DIR=/usr/include` 与 `Vulkan_LIBRARY=/usr/lib64/libvulkan.so`，因此注册 `test_rhi_device_type`。相同源码、ON、OpenGL、pin 的新探针没有这些 cache 项，注册 480；两列表差集只有 `test_rhi_device_type`。所以当前 481 是旧 cache 下完整矩阵，未为凑 480 删除或过滤测试。
+- **最终未过滤结果**：OpenGL 注册 **481**，**477 执行通过、4 条件 skip、0 失败**，build **11.72 s**、CTest **303.85 s**；Vulkan 注册 **482**，**478 执行通过、4 条件 skip、0 失败**，build **11.85 s**、CTest **306.76 s**。两套 CTest 均 `ctest_rc=0`。
+- **共同条件 skip**：`test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计执行通过。
+- **证据边界**：configure、OFF/ON 注册列表、差集、build、完整 CTest 和显式 rc 均保存在 Task 2 fix1 日志；中断的部分 OpenGL 日志没有用作通过证据。本轮没有生产源码修改，不改写前述历史记录，不预写远端结果。

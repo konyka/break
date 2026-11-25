@@ -249,3 +249,12 @@ arm64 lane 新增 profiler 28 例、clock offset 8 例、trace core 15 例、tra
 drain 使用真实 `pending = queued + control_pending`。pending 非零或 transport OVERLOAD 映射 TIMEOUT；有界 budget 下重试只恢复当前 drain，join TIMEOUT 后只恢复 join，不重跑 stop_admission、stop_producers 或 close。已消费的 STALE/INVALID/REJECTED/CLOSED 在 pending=0 时可继续；transport CLOSED 清掉 control_pending 并计 rejected 后，后续 queue 项仍能 drain 到 STOPPED。destroy=false 同样保留资源并允许重试，最终只销毁 adapter，借用的 Bus、World Session 和 snapshot publication 仍由调用方清理。
 
 本切片不包括 snapshot/lease/BRWD/BRFG 数据面、共享 live World、core_app authoritative World 或权威 simulation 合并。另，当前 core_app 已在 `app_register_subsystems` 注册名为 `"network"` 的既有 transport subsystem；较早“Network 未注册”描述不再代表当前缺失，但这不表示 World adapter 已注册到 core_app。本节不预写远端验收。
+
+
+## 修正（2026-11-25）：完整 network 矩阵配置恢复
+
+前次 OpenGL 469 / Vulkan 470 的两套 cache 均为 `CORE_APP_ENABLE_NETWORK=OFF`，因此只是 OFF 配置缩减下的未过滤结果，不等价于旧 ON 完整矩阵。恢复原 backend、`ENGINE_BUILD_TESTS=ON` 和固定 Snowflake pin，仅改 ON 后，两树注册差集均为 12 项：11 个 `test_core_app_network_*` 场景及独立 `test_core_app_net_transport` 目标/测试。
+
+当前 OpenGL 为 **481** 而非旧收据 480：其旧 cache 留有 `Vulkan_INCLUDE_DIR`/`Vulkan_LIBRARY`，满足 `test_rhi_device_type` 的注册条件。相同 ON/backend/pin 的新 OpenGL 探针无这些 cache 项，注册 480，名称差集仅此一项；当前 481 是旧 cache 下完整矩阵，未过滤该测试。
+
+最终未过滤 CTest：OpenGL **477 执行通过、4 条件 skip、0 失败**，build 11.72 s、CTest 303.85 s；Vulkan **478 执行通过、4 条件 skip、0 失败**，build 11.85 s、CTest 306.76 s。两树 skip 均为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`。本修正不改生产源码，不预写远端结果。

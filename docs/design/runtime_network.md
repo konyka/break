@@ -518,3 +518,12 @@ destroy 在任何 pending 判定之前先关闭 queue admission 并退订，且�
 有界 drain 和 OUTBOUND OVERLOAD 都以真实 pending 决定 TIMEOUT。ACK/NEED_FULL pending 在连续重试中保持 control、level、connection_epoch 与完整 cid，解除后 applied 只一次；transport CLOSED 则清 control_pending、计 rejected，并允许后续 queue 项继续 drain，最终 STOPPED。已消费且 pending=0 的 STALE/INVALID/REJECTED/CLOSED 不进入永久 TIMEOUT。join 首次 TIMEOUT 只从 join 重试；destroy=false 保留 binding，后续仅重试 destroy。成功 destroy 只释放 adapter，借用 Bus、World Session 和 publication 仍由调用方持有。
 
 本项没有新增 Runtime snapshot/BRWD/BRFG 数据面、共享 live World、core_app authoritative World 或权威 simulation 合并。当前 core_app 已有 `"network"` subsystem 注册，较早“未注册 network”文字只代表历史时点；该 transport 注册不能被写成 World adapter 已注册。详细本地验证见 Task 2 报告，本节不预写远端结果。
+
+
+## 修正（2026-11-25）：恢复真实网络场景后的完整矩阵
+
+前次 OpenGL 469 / Vulkan 470 来自 `CORE_APP_ENABLE_NETWORK=OFF`，缺少的不是 Runtime World 测试，而是同一 `_core_app_net_transport AND NOT WIN32` 条件块中的 12 项：loopback、aspect、world、single_session、late_auth、voice、voice_relay、voice_relay_off、voice_mute、voice_flood、start_failure 以及独立 `test_core_app_net_transport`。恢复原 backend、tests 和固定 Snowflake pin，仅以 ON 重新 configure 后，这 12 项全部注册并执行。
+
+当前 OpenGL 注册 **481**。旧 480 与它的名称差集是 `test_rhi_device_type`，由当前旧 cache 中残留的 Vulkan include/library 配置触发；同 ON/backend/pin 的新 OpenGL 探针无这些变量时为 480。该 RHI 条件差异与 network ON/OFF 差集分开记录，未删减网络或 transport 测试凑数。
+
+最终 OpenGL **477 执行通过、4 条件 skip、0 失败**，build 11.72 s、CTest 303.85 s；Vulkan **478 执行通过、4 条件 skip、0 失败**，build 11.85 s、CTest 306.76 s。共同 skip 为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`。所有最终 CTest 均未过滤且 rc=0；本修正不改生产源码，不预写远端结果。

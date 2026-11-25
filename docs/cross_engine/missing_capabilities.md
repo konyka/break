@@ -970,3 +970,12 @@ submit 不调用 World，owner drain 是唯一应用入口。queue OVERLOAD 时 
 `pending = queued + control_pending` 决定有界 drain、transport 背压和 destroy 是否可继续。pending 非零或 OVERLOAD 为 TIMEOUT，重试只恢复当前阶段；控制重试保持 level/epoch/cid，applied 只一次。已消费 STALE/INVALID/REJECTED/CLOSED 且 pending=0 不再阻塞 STOPPED，transport CLOSED 后剩余 queue 项也能排空。join TIMEOUT 与 destroy=false 都保留资源并精确重试，成功时只销毁 adapter，借用 Bus、World Session 和 publication 不归它释放。
 
 以下缺口仍然存在：没有 Runtime snapshot/lease/BRWD/BRFG 数据面，没有 core_app World adapter 自动注册、共享 live World、跨 World 持久身份、权威 simulation 合并、预测回滚或 authority handoff。core_app 的既有 transport 当前已经注册名为 `"network"` 的 subsystem，因此旧“network 未注册”描述不再代表现状；这不等于上述 World adapter 已注册。focused sanitizer、条件 skip 与既有 editor/core_app Lua longjmp 限制分别记录，不升级为完整 sanitizer、原生 GPU 或远端验收结论；本节不预写远端结果。
+
+
+## 第 17 节修正（2026-11-25）：完整 network 矩阵不是 OFF 子集
+
+前次 OpenGL 469 / Vulkan 470 的两套 cache 都关闭了 `CORE_APP_ENABLE_NETWORK`，导致 11 个真实 `test_core_app_network_*` 场景和独立 `test_core_app_net_transport` 未注册。恢复原 backend、tests 和固定 Snowflake pin，仅启用 ON 后，这 12 项全部恢复；前次结果只能称 OFF 配置全集，不能称与旧 ON 矩阵等价的完整验收。
+
+当前 OpenGL 为 **481**：相较旧 480 的唯一名称差异是 `test_rhi_device_type`，其注册来自当前旧 cache 中残留的 Vulkan include/library 变量。相同 ON/backend/pin 的新 OpenGL 探针没有这些变量而为 480。该配置差异与 network 差集分离记录，当前完整树仍执行全部 481 项，没有过滤 transport 或网络场景。
+
+最终 OpenGL **477 通过、4 skip、0 失败**，build 11.72 s、CTest 303.85 s；Vulkan **478 通过、4 skip、0 失败**，build 11.85 s、CTest 306.76 s。共同 skip 为 D3D12 dependency gate 和三个 core_app NM negative/unsupported 项，准确名称见 Task 2 报告。条件 skip 不计通过，本修正不关闭其他平台、完整 sanitizer 或远端能力缺口，也不改生产源码和历史收据。

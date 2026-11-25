@@ -413,3 +413,12 @@ destroy 先 close admission、退订再检查 pending；false 后 ingress 已关
 pending 是 queue occupancy 加 control_pending。budget 不足或 OUTBOUND 饱和返回 DRAINING/TIMEOUT，连续重试不越过 FIFO，也不改变 control/level/epoch/cid；join TIMEOUT 保持 STOPPING 并仅恢复 join，destroy=false 则仅恢复 destroy。已消费 STALE/INVALID/REJECTED/CLOSED 且 pending=0 可完成关闭；transport CLOSED 清 pending 并计 rejected 后，后续 queue 项仍 drain。只有 pending=0 才销毁 adapter，World Session、Bus、snapshot publication 仍由调用方最后清理。
 
 本切片不实现 snapshot/lease/BRWD/BRFG 的 Runtime 数据面、共享 live World、权威 simulation 合并或自动 core_app World 接线。core_app 现有 `"network"` subsystem 已注册，旧描述不再代表当前缺失；该既有 transport 注册不表示 World adapter 已注册。本节不预写推送、CI 或其他平台结果。
+
+
+## 修正（2026-11-25）：Session/network 全量矩阵的 ON 配置收据
+
+此前 469/470 是 `CORE_APP_ENABLE_NETWORK=OFF` 的缩减配置，不能代表旧 ON 的 480/482 完整验收。恢复原 RHI backend、`ENGINE_BUILD_TESTS=ON` 和固定 pin 后，ON/OFF 注册差集为 11 个 `test_core_app_network_*` 场景加 `test_core_app_net_transport`，共 12 项；这些真实 TLS/AUTH 与 transport 用例均已进入最终未过滤运行。
+
+OpenGL 最终为 **481** 而非机械计算的 480：当前旧 cache 的 Vulkan include/library 变量额外满足 `test_rhi_device_type` 注册条件。新同 ON/backend/pin OpenGL 探针为 480，逐项差集只有该 RHI 测试，因此当前 481 如实保留，未过滤任何 network/transport 项。
+
+最终 OpenGL **477 通过、4 skip、0 失败**，build 11.72 s、CTest 303.85 s；Vulkan **478 通过、4 skip、0 失败**，build 11.85 s、CTest 306.76 s。两树共同 skip 为 D3D12 dependency gate、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`，不计执行通过。完整名称、配置差集和 rc 见 Task 2 报告；不预写远端或其他平台结果。

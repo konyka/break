@@ -500,3 +500,12 @@ close 只停止 admission 并关闭 queue，已有 A1/B1/A2 仍可恰好一次 F
 `pending()` 继续使用真实 queue 计数加 control_pending，而不是 submitted-drained。budget 小于排队数或 transport 保留同一 control/level/epoch/cid 时为 DRAINING/TIMEOUT；后续 stop 只恢复 drain。STALE/INVALID/REJECTED/CLOSED 若已消费且 pending=0 不造成永久 TIMEOUT；CLOSED 清 control_pending 后，剩余 queue 项仍按 FIFO 处理。只有 pending=0 才允许 adapter-only destroy，Bus、World Session、publication 保持 borrowed。
 
 未做的是 Runtime snapshot/lease/BRWD/BRFG 数据面、共享 live World 与权威 simulation 合并。core_app 当前已有名为 `"network"` 的既有 transport subsystem 注册，旧描述不再表示该注册缺失；这与 World adapter 注册是不同事实，后者尚未接入 core_app。本节不预写远端结果。
+
+
+### 修正（2026-11-25）：network=ON 的全量注册与计数
+
+前述 469/470 是两套 `CORE_APP_ENABLE_NETWORK=OFF` cache 的缩减矩阵。恢复原 RHI backend、tests 和固定 pin 并启用 ON 后，OpenGL/Vulkan 均补回 11 个真实 `test_core_app_network_*` 场景和 `test_core_app_net_transport`，合计 12 项，不再把 OFF 结果称作等价完整验收。
+
+OpenGL 当前注册 **481**，比旧 480 多出的独立一项为 `test_rhi_device_type`：旧 cache 的 Vulkan include/library 变量满足其 CMake 注册条件。新同配置 OpenGL 探针没有这些变量而为 480，差集仅该测试；最终树保留并实际执行它。
+
+最终 OpenGL **477 通过、4 skip、0 失败（481 注册）**，build 11.72 s、CTest 303.85 s；Vulkan **478 通过、4 skip、0 失败（482 注册）**，build 11.85 s、CTest 306.76 s。四项条件 skip 两树相同：D3D12 dependency gate 及三个 core_app NM negative/unsupported 项，完整名称与 rc 日志见 Task 2 报告。本追加不改生产源码或历史收据，不预写远端。
