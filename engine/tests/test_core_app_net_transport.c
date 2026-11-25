@@ -1334,6 +1334,49 @@ TEST(world_adapter_cancel_pending_open_after_disconnect_closes_original_key) {
     aspect_fixture_dispose(&fixture);
 }
 
+TEST(world_adapter_disconnect_does_not_commit_old_open_to_reused_slot) {
+    AspectTransportFixture fixture;
+    CoreAppNetWorldTestView view;
+    BreakRuntimeWorldSession *adapter;
+    BreakRuntimeWorldSessionStats stats;
+    const BreakConnectionKey open_key = 0x140cu;
+    const BreakConnectionKey canceled_key = UINT64_C(0x300000005);
+    const BreakConnectionKey new_key = UINT64_C(0x400000006);
+    u64 epoch = 0u;
+    int old_slot;
+    int new_slot;
+    ASSERT_TRUE(world_fixture_start(&fixture, "core_app_world_slot_reuse.port", true, false));
+    ASSERT_TRUE(world_fixture_open(&fixture, open_key));
+    ASSERT_TRUE(world_make_control_pending(&fixture, open_key, 86u));
+    adapter = core_app_net_transport_world_adapter(fixture.transport);
+    (void)core_app_net_transport_world_open_for_test(fixture.transport, canceled_key);
+    old_slot = core_app_net_transport_world_slot_for_test(fixture.transport, canceled_key);
+    ASSERT_TRUE(old_slot >= 0);
+    core_app_net_transport_world_disconnect_for_test(fixture.transport, canceled_key);
+
+    (void)core_app_net_transport_world_open_for_test(fixture.transport, new_key);
+    new_slot = core_app_net_transport_world_slot_for_test(fixture.transport, new_key);
+    ASSERT_TRUE(new_slot >= 0);
+    world_clear_outbound(&fixture);
+    core_app_net_transport_world_drain_for_test(fixture.transport, 21u);
+    ASSERT_FALSE(break_runtime_world_session_connection_epoch(adapter, canceled_key, &epoch));
+    ASSERT_TRUE(break_runtime_world_session_connection_epoch(adapter, new_key, &epoch));
+    ASSERT_NEQ(epoch, 0u);
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    ASSERT_FALSE(break_world_session_baseline(view.session, canceled_key, NULL, NULL));
+    ASSERT_TRUE(break_world_session_baseline(view.session, new_key, NULL, NULL));
+    ASSERT_NEQ(new_slot, old_slot);
+    ASSERT_EQ(view.open_count, 2u);
+    ASSERT_EQ(view.opened, 3u);
+    ASSERT_EQ(view.closed, 1u);
+    ASSERT_NOT_NULL(view.diagnostic);
+    break_runtime_world_session_stats(adapter, &stats);
+    ASSERT_EQ(stats.queued, 0u);
+    ASSERT_FALSE(stats.control_pending);
+    ASSERT_TRUE(transport_fixture_destroy(&fixture));
+    aspect_fixture_dispose(&fixture);
+}
+
 TEST(world_adapter_close_failure_after_disconnect_is_not_misread_as_success) {
     AspectTransportFixture fixture;
     CoreAppNetWorldTestView view;
@@ -1985,6 +2028,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(world_adapter_reopen_pending_control_completes_second_open);
     RUN_TEST(world_adapter_close_pending_control_reconciles_epoch_slot_and_diagnostic);
     RUN_TEST(world_adapter_cancel_pending_open_after_disconnect_closes_original_key);
+    RUN_TEST(world_adapter_disconnect_does_not_commit_old_open_to_reused_slot);
     RUN_TEST(world_adapter_close_failure_after_disconnect_is_not_misread_as_success);
     RUN_TEST(world_transport_open_copies_fixed_pod_entities_independently);
     RUN_TEST(world_transport_bounded_tick_and_shutdown_drain_only_fill_diagnostic_world);

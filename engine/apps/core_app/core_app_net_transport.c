@@ -956,6 +956,9 @@ static CoreAppNetWorldTransitionResult net_world_open(CoreAppNetTransport *t, u3
                                                        BreakConnectionKey key) {
     if (!t->world_replication) return NET_WORLD_TRANSITION_OK;
     if (!t->world_level_initialized || !t->world_adapter) return NET_WORLD_TRANSITION_REJECTED;
+    if (t->world_transition_keys[slot] != 0u && key != t->world_transition_keys[slot]) {
+        return NET_WORLD_TRANSITION_REJECTED;
+    }
     if (t->world_desired_open[slot] && t->world_open[slot] &&
         t->world_transition_kind[slot] == 0u) {
         return NET_WORLD_TRANSITION_OK;
@@ -965,7 +968,6 @@ static CoreAppNetWorldTransitionResult net_world_open(CoreAppNetTransport *t, u3
         if (!t->world_pending_diagnostics[slot]) return NET_WORLD_TRANSITION_REJECTED;
     }
     t->world_desired_open[slot] = true;
-    (void)key;
     return net_world_reconcile_slot(t, slot);
 }
 
@@ -1084,7 +1086,9 @@ static bool net_world_on_control(BreakConnectionKey connection,
 
 static int net_slot_add(CoreAppNetTransport *t, BreakConnectionKey key) {
     for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
-        if (t->keys[i] == 0u) {
+        if (t->keys[i] == 0u && !t->world_open[i] &&
+            t->world_transition_kind[i] == 0u && t->world_transition_keys[i] == 0u &&
+            !t->world_admission_pending[i]) {
             t->keys[i] = key;
             t->authenticated[i] = false;
             t->welcomed[i] = false;
@@ -2204,15 +2208,7 @@ bool core_app_net_transport_world_open_for_test(CoreAppNetTransport *transport, 
         return false;
     }
     slot = net_slot_find(transport, key);
-    if (slot < 0) {
-        for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
-            if (transport->keys[i] == 0u) {
-                transport->keys[i] = key;
-                slot = (int)i;
-                break;
-            }
-        }
-    }
+    if (slot < 0) slot = net_slot_add(transport, key);
     return slot >= 0 && net_world_open(transport, (u32)slot, key) == NET_WORLD_TRANSITION_OK;
 }
 
@@ -2227,6 +2223,10 @@ void core_app_net_transport_world_disconnect_for_test(CoreAppNetTransport *trans
         net_world_close(transport, (u32)slot);
         transport->keys[slot] = 0u;
     }
+}
+
+int core_app_net_transport_world_slot_for_test(CoreAppNetTransport *transport, u64 key) {
+    return transport ? net_slot_find(transport, key) : -1;
 }
 
 World *core_app_net_transport_world_reopen_for_test(CoreAppNetTransport *transport, u64 key) {
