@@ -1066,3 +1066,10 @@ authority handoff 和默认全局公平调度仍未交付。正常断连顺序�
 上一小节记录 arm64 lane 因镜像滚动而「环境不可用」。实际根因是 multiarch 版本冲突：镜像预装 amd64 `libelf1t64` 时，ports 上更新的 arm64 `libelf1t64` 使 `mesa-libgallium:arm64` 无法求解。lane 现改为先把 arm64 `libelf1t64` 钉到 amd64 已装版本，再安装 arm64 图形开发包；Ubuntu 24.04 容器内已复现旧脚本退出 100、新脚本成功。
 
 这只关闭「安装步骤不可用」，不关闭 arm64 交叉编译与 QEMU 套件本身的验证：其实际结果需由修复后触发的远端 CI 给出，未发生前仍记为未验证。其余能力缺口与既有 Lua/TSan、条件 skip、完整 sanitizer 边界不变。
+
+
+### 第 17 节补充（2026-11-26）：arm64 lane 钉扎的远端结果
+
+`85a6e99e` 已推送并在远端 CI `45701310004` 上 completed/success：**25 success、3 条件 skip、0 cancelled、0 failed**，其中 `Linux arm64 cross-build + QEMU tests (GCC)` 由连续 failure 转为 success；windows-d3d12 `45701309975` 与 Proton `45703923624` 亦 success（Proton 上游 run-id=`45701309975`，contract 77 仅兼容通道）。
+
+这只关闭「arm64 依赖安装不可用」：arm64 交叉编译链路在远端已恢复，但 QEMU 套件的用例级覆盖仍以 CI 日志为准，不代表新增覆盖面。能力缺口与既有 Lua/TSan、条件 skip、完整 sanitizer 边界不变；本收据提交自身的工作流结果不在此预写。

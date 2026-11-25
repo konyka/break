@@ -13957,3 +13957,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **修复**：安装前读取已装 amd64 `libelf1t64` 版本（缺失时先装 amd64 侧），再以 `libelf1t64:arm64=${amd64_elf}` 显式装同版本 arm64，随后才安装 `libgl-dev:arm64` 等图形包。设计文档仍要求真实 arm64 OpenGL/EGL 开发包，因此依赖集合不减。
 - **验证**：同一容器中 RED（原脚本）退出 100，GREEN（新脚本）成功安装 `libgl-dev:arm64`、`libegl-dev:arm64`、`libopengl-dev:arm64`、`libelf1t64:arm64`，`aarch64-linux-gnu-gcc 13.3.0` 可用。合同新增两条：arm64 lane 必须出现 `libelf1t64:arm64=`，且该钉扎早于图形开发包安装；`test_ci_execution_semantics`、`test_wayland_ci_migration_contract` 与 YAML 解析均通过。
 - **边界**：本节只修安装步骤的可安装性，不宣称 arm64 QEMU 套件已在本次运行中执行；其真实结果以修复后触发的远端 CI 为准，不在此预写。
+
+
+## arm64 lane 钉扎修复的远端收据（2026-11-26）
+
+- 修复提交 `85a6e99e` 已 fast-forward 推送 `master`。远端 CI `45701310004` 在该 SHA 上 **completed/success**：**25 success、3 条件 skip、0 cancelled、0 failed**；其中此前连续失败的 `Linux arm64 cross-build + QEMU tests (GCC)` 已变为 **success**，即依赖钉扎在真实 runner 镜像上生效。
+- windows-d3d12 `45701309975` completed/success；Proton `45703923624` completed/success，上游 run-id=`45701309975`，device/pipeline contract 均为 77（仅兼容通道，不是原生 GPU 通过）。
+- 本地证据：Ubuntu 24.04 容器内旧脚本以 `mesa-libgallium:arm64 : Depends: libelf1t64:arm64 (>= 0.142)` 退出 100，新脚本成功安装 arm64 GL/EGL/OpenGL 开发包与 `aarch64-linux-gnu-gcc 13.3.0`；合同 `test_ci_execution_semantics`、`test_wayland_ci_migration_contract`、`test_repo_naming_contract` STAGE=4 与 YAML 解析均通过。
+- 边界：本次只修复依赖可安装性并验证 lane 在远端通过；arm64 QEMU 套件的用例级结果仍以 CI 日志为准，不单独宣称覆盖面扩大。条件 skip、既有 Lua/TSan 与完整 sanitizer suite 的限制不变。本收据提交自身的工作流结果不在此预写。
