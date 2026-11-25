@@ -514,7 +514,7 @@ ASSERT_EQ(a_state.confirmed_snapshot_id, break_world_snapshot_id(s1));
 ASSERT_EQ(a_state.history_count, 1u);
 ASSERT_EQ(a_state.next_delta_id, 3u);
 ASSERT_EQ(b_state.confirmed_snapshot_id, 0u);
-ASSERT_EQ(b_state.history_count, 2u);
+ASSERT_EQ(b_state.history_count, 1u); /* 已由实现修正为 1（full 会清旧 history），原计划写 2 */
 ASSERT_EQ(b_state.next_delta_id, 3u);
 
 before = after;
@@ -1507,7 +1507,7 @@ LOOPBACK_CHECK(break_runtime_world_session_pending(fixture.adapter) != 0u);
 
 - [ ] **Step 5: 写真实 socket 上生产线程/drain 的原子 barrier 竞态 RED 测试**
 
-新增 `RuntimeSocketNoticeRace`，复用 Task 3 的两阶段 `_Atomic u32 ready` + `_Atomic bool go` 模式，另有 `done/failed/accepted`。生产线程执行 8 轮：修改 fixture 的 authoritative World、build tick=i+1、publication publish、direct submit、release snapshot；它不得调用 Session、reactor、manager 或 remote World。主线程等待 ready、释放 go，在有界循环中 owner drain、`pump()` 和 `platform_thread_yield()`，join 后继续 drain 到 pending=0；不得使用固定 sleep 证明正确。
+新增 `RuntimeSocketNoticeRace`，复用 Task 3 的两阶段 `_Atomic u32 ready` + `_Atomic bool go` 模式，另有 `done/failed/accepted`。库级与 socket 生产者的 go-gate 都必须有界自旋（上限 100000000 次），不得写成无界 `while (!go) yield();`；超时后设置 `failed` 与 `done` 并返回，保证任何退出路径都置 `done`，主线程 `platform_thread_join` 不会挂死。生产线程执行 8 轮：修改 fixture 的 authoritative World、build tick=i+1、publication publish、direct submit、release snapshot；它不得调用 Session、reactor、manager 或 remote World。主线程等待 ready、释放 go，在有界循环中 owner drain、`pump()` 和 `platform_thread_yield()`，join 后继续 drain 到 pending=0；不得使用固定 sleep 证明正确。
 
 用 `break_world_snapshot_publication_acquire()` 读取 final current id 后 release。对每个连接，以 sender `next_delta_id-1` 得到实际创建的 attempt 数（中间 epoch 可 coalesce，不能假设 8 个），逐个 `socket_select_peer()` + `collect_published()` 读真实 BRFG，断言 target tick 严格递增且最后一个 target id=final current；A/B 分别验证。queue submit OVERLOAD 只允许用有界 yield retry，其他错误设置 failed。最终 `accepted==8`、`!failed`、`publish_pending==false`。
 

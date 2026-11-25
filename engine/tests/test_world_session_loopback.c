@@ -233,7 +233,11 @@ static void socket_dispose(SocketFixture *fixture)
             usize drained = 0u;
             (void)break_runtime_world_session_drain(fixture->adapter, 256u, &drained);
         }
-        (void)break_runtime_world_session_destroy(fixture->adapter);
+        if (!break_runtime_world_session_destroy(fixture->adapter)) {
+            printf("  FAIL: %s:%d: %s\n", __FILE__, __LINE__,
+                   "break_runtime_world_session_destroy(fixture->adapter)");
+            g_test_fail++;
+        }
         fixture->adapter = NULL;
     }
     if (fixture->publication) {

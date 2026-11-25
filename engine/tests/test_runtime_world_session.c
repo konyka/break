@@ -50,6 +50,9 @@ typedef struct {
     BreakRuntimeWorldSession *adapter;
     u64 now;
     BreakWorldSnapshotPublication *publication;
+    /* Runtime socketless fixtures never exercise fair-share admission; cross-connection
+     * isolation is covered by budget round-robin and the global full queue. The field is
+     * kept for future real-socket cases. */
     bool fair_outbound_admission;
 } Fixture;
 
@@ -2661,8 +2664,14 @@ static PLATFORM_THREAD_RET runtime_notice_race_producer(PLATFORM_THREAD_ARG argu
 {
     RuntimeNoticeRace *race = (RuntimeNoticeRace *)argument;
     atomic_store_explicit(&race->ready, 1u, memory_order_release);
-    while (!atomic_load_explicit(&race->go, memory_order_acquire)) {
+    for (u64 spin = 0u; spin < 100000000u; ++spin) {
+        if (atomic_load_explicit(&race->go, memory_order_acquire)) break;
         platform_thread_yield();
+    }
+    if (!atomic_load_explicit(&race->go, memory_order_acquire)) {
+        atomic_store_explicit(&race->failed, true, memory_order_release);
+        atomic_store_explicit(&race->done, true, memory_order_release);
+        return PLATFORM_THREAD_RETURN;
     }
     for (u32 i = 0u; i < RUNTIME_NOTICE_RACE_ROUNDS; ++i) {
         BreakWorldSnapshot *snapshot = make_target(race->fixture, 100u + i, (u64)i + 1u);

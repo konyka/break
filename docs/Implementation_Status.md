@@ -13912,3 +13912,14 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 三项高价值变异（真实 socket 路径，均实际判红并恢复，生产源最终 byte-identical sha256 `6125e367…223f6`）：任意 OK 标 current → E1/E2 用例 RED（A 不再续发 E2）；A OVERLOAD 中止 fanout → fair=true 的 B 收不到 E1 full，E1/E2 用例 RED；删除统一 `lease_release` → ASan 树 `detect_leaks=1` 直跑新 loopback，LeakSanitizer 报快照 lease 泄漏 RED；三项恢复后 ASan loopback **10/10** 无泄漏。
 - 提交前 focused（正则含 13 项）：normal **13/13（4.02 s）**、ASan+UBSan（显式 `detect_leaks=1`）**13/13（10.00 s）**、TSan（`halt_on_error=1`）**13/13（34.58 s）**，均实际执行、无 Not Run。
 - 限制：以上为提交前本地结果，最终提交 HEAD 的 focused 重跑与完整 OpenGL+Vulkan 未过滤 CTest、命名/Wayland 合同结果单列于本任务 report；既有 Lua longjmp、混合 TSan、条件 skip、Proton 77 不升级为原生 GPU 或完整 sanitizer 验收。远端 push 与收据不在本切片范围。
+
+### Runtime snapshot notice 数据面最终 HEAD 本地验证收据（2026-11-25）
+
+上一小节的“限制：最终提交 HEAD 结果单列于本任务 report”保留为当时的历史记录；该 report 位于被忽略的 `.superpowers/`，故在此补记最终 HEAD `9f21c28f` 已在本地实际运行的结果，并在整分支终审集中修复后于同目标复跑确认，不预写任何远端 CI/Windows/Proton 结论。
+
+- 库级 `test_runtime_world_session`：normal **47/47**、ASan+UBSan（显式 `detect_leaks=1`）**47/47**、TSan（`halt_on_error=1`）**47/47**，均为集中修复后同树直接运行可执行文件，无 sanitizer/leak/race 报告。
+- 真实双 socket `test_world_session_loopback`：final HEAD **10/10**，集中修复后 normal **10/10**、ASan+UBSan（显式 `detect_leaks=1`）**10/10**、TSan（`halt_on_error=1`）**10/10**，无 sanitizer/leak/race 报告。
+- focused 正则（13 项）：normal **13/13**、ASan+UBSan（显式 `detect_leaks=1`）**13/13**、TSan（`halt_on_error=1`）**13/13**，均实际执行、无 Not Run。
+- 完整未过滤 CTest：OpenGL **480 注册、476 执行通过、4 条件 skip、0 失败**；Vulkan **482 注册、478 执行通过、4 条件 skip、0 失败**。
+- 合同：`test_replication_target_contract` **3/3 Passed**；仓库命名合同 STAGE=4 与 Wayland CI 迁移合同均通过。
+- 限制不变：既有 Lua longjmp、混合 TSan、条件 skip、Proton 77 不升级为原生 GPU 或完整 sanitizer 验收；远端 push 与跨平台收据由后续控制流程记录。

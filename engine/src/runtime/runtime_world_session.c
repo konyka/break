@@ -50,6 +50,8 @@ struct BreakRuntimeWorldSession {
     u64 pending_correlation_id;
     bool publish_request;
     bool publish_continuation;
+    /* Retained diagnostics / future request-level dedup state: written but not read by
+     * the current accounting paths. Kept for existing tests and ABI stability. */
     u64 publish_request_level;
     u64 publish_observed_epoch;
     usize publish_cursor;
@@ -184,6 +186,10 @@ static BreakRuntimeError runtime_world_apply(BreakRuntimeWorldSession *adapter,
         for (usize i = 0u; i < adapter->max_connections; ++i) {
             runtime_world_clear_connection_publish(&adapter->connections[i]);
         }
+        /* Adapter-level request/continuation/cursor/observed epoch only: per-connection
+         * attempt scalars are healed by the Session rebaseline and the monotonic epoch,
+         * so false avoids duplicating the Session cleanup (dropping only the per-connection
+         * clear is an equivalent mutant; this line is the load-bearing one). */
         runtime_world_clear_publish(adapter, false);
         return BREAK_RUNTIME_OK;
     }
