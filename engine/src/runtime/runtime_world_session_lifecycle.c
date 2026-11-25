@@ -136,6 +136,9 @@ static BreakRuntimeError runtime_world_lifecycle_destroy(void *user_data)
         break_runtime_world_session_lifecycle_cancel_destroy(binding->adapter);
         return BREAK_RUNTIME_TIMEOUT;
     }
+    if (binding->lifecycle.on_destroy) {
+        binding->lifecycle.on_destroy(binding->lifecycle.user_data);
+    }
     free(binding);
     return BREAK_RUNTIME_OK;
 }

@@ -13,6 +13,7 @@ typedef struct {
     BreakRuntimeError (*stop_producers)(void *user_data);
     BreakRuntimeError (*join)(void *user_data);
     void *user_data;
+    void (*on_destroy)(void *user_data);
 } BreakRuntimeWorldSessionLifecycle;
 
 /* Copies lifecycle and its hooks. user_data and the adapter's Bus, World
@@ -24,7 +25,9 @@ typedef struct {
  * Success transfers adapter close/destroy to the coordinator. The caller must
  * quiesce external producers through stop_producers/join and must not directly
  * close or destroy the registered adapter. Direct destroy returns false before
- * close/unsubscribe while bound. STOPPED releases only the adapter. */
+ * close/unsubscribe while bound. STOPPED releases only the adapter, then calls
+ * on_destroy once after successful release. TIMEOUT, FAILED and abandon do not
+ * call on_destroy; a NULL hook preserves the original behavior. */
 BreakRuntimeError break_runtime_world_session_register_subsystem(
     BreakRuntimeWorldSession *adapter,
     BreakRuntimeCoordinator *coordinator,

@@ -1551,6 +1551,7 @@ typedef struct {
     u32 join_calls;
     u32 join_timeouts;
     u32 destroy_calls;
+    u32 on_destroy_calls;
     bool phase_overflow;
     bool admission_closed;
     bool pending_empty_at_join;
@@ -1572,6 +1573,12 @@ static void lifecycle_trace(void *user_data, const char *phase)
         probe->pending_empty_at_destroy =
             break_runtime_world_session_pending(probe->fixture->adapter) == 0u;
     }
+}
+
+static void lifecycle_on_destroy(void *user_data)
+{
+    LifecycleProbe *probe = (LifecycleProbe *)user_data;
+    probe->on_destroy_calls++;
 }
 
 static BreakRuntimeError lifecycle_stop_producers(void *user_data)
@@ -1683,6 +1690,7 @@ TEST(coordinator_runs_real_six_phase_shutdown_and_preserves_borrowed_owners)
     memset(&lifecycle, 0, sizeof(lifecycle));
     lifecycle.stop_producers = lifecycle_stop_producers;
     lifecycle.join = lifecycle_join;
+    lifecycle.on_destroy = lifecycle_on_destroy;
     lifecycle.user_data = &probe;
     ASSERT_EQ(break_runtime_world_session_register_subsystem(
                   fixture.adapter, coordinator, &lifecycle),
@@ -1699,6 +1707,7 @@ TEST(coordinator_runs_real_six_phase_shutdown_and_preserves_borrowed_owners)
 
     ASSERT_EQ(stop_result, BREAK_RUNTIME_OK);
     ASSERT_EQ(repeated_stop_result, BREAK_RUNTIME_OK);
+    ASSERT_EQ(probe.on_destroy_calls, 1u);
     ASSERT_EQ(break_runtime_coordinator_state(coordinator), BREAK_RUNTIME_STOPPED);
     ASSERT_EQ(probe.phase_count, 6u);
     ASSERT_FALSE(probe.phase_overflow);
@@ -1931,6 +1940,7 @@ TEST(coordinator_bounded_drain_external_join_retry_exactly_once)
     lifecycle.drain_budget = 2u;
     lifecycle.stop_producers = lifecycle_stop_producers;
     lifecycle.join = lifecycle_join;
+    lifecycle.on_destroy = lifecycle_on_destroy;
     lifecycle.user_data = &probe;
     ASSERT_EQ(break_runtime_coordinator_create(NULL, &coordinator), BREAK_RUNTIME_OK);
     ASSERT_EQ(break_runtime_world_session_register_subsystem(
@@ -2079,6 +2089,7 @@ TEST(coordinator_transport_retry_preserves_control_then_join_retry)
     lifecycle.drain_budget = 8u;
     lifecycle.stop_producers = lifecycle_stop_producers;
     lifecycle.join = lifecycle_join;
+    lifecycle.on_destroy = lifecycle_on_destroy;
     lifecycle.user_data = &probe;
     ASSERT_EQ(break_runtime_coordinator_create(NULL, &coordinator), BREAK_RUNTIME_OK);
     ASSERT_EQ(break_runtime_world_session_register_subsystem(
@@ -2217,6 +2228,7 @@ TEST(coordinator_transport_close_rejects_pending_and_still_drains_queue)
     lifecycle.drain_budget = 8u;
     lifecycle.stop_producers = lifecycle_stop_producers;
     lifecycle.join = lifecycle_join;
+    lifecycle.on_destroy = lifecycle_on_destroy;
     lifecycle.user_data = &probe;
     ASSERT_EQ(break_runtime_coordinator_create(NULL, &coordinator), BREAK_RUNTIME_OK);
     ASSERT_EQ(break_runtime_world_session_register_subsystem(
@@ -2374,6 +2386,7 @@ TEST(coordinator_destroy_false_times_out_and_retries_only_destroy)
     memset(&lifecycle, 0, sizeof(lifecycle));
     lifecycle.stop_producers = lifecycle_stop_producers;
     lifecycle.join = lifecycle_join;
+    lifecycle.on_destroy = lifecycle_on_destroy;
     lifecycle.user_data = &probe;
     ASSERT_EQ(break_runtime_coordinator_create(NULL, &coordinator), BREAK_RUNTIME_OK);
     ASSERT_EQ(break_runtime_world_session_register_subsystem(
@@ -2390,6 +2403,7 @@ TEST(coordinator_destroy_false_times_out_and_retries_only_destroy)
     ASSERT_EQ(probe.stop_producers_calls, 1u);
     ASSERT_EQ(probe.join_calls, 1u);
     ASSERT_EQ(probe.destroy_calls, 1u);
+    ASSERT_EQ(probe.on_destroy_calls, 0u);
     ASSERT_EQ(probe.phase_count, 6u);
     item = command(BREAK_RUNTIME_WORLD_COMMAND_OPEN, KEY_A, 0u, 7u);
     ASSERT_EQ(publish_external(fixture.bus, &item, HIGH_CID, &delivered),
@@ -2403,10 +2417,12 @@ TEST(coordinator_destroy_false_times_out_and_retries_only_destroy)
     ASSERT_EQ(probe.stop_producers_calls, 1u);
     ASSERT_EQ(probe.join_calls, 1u);
     ASSERT_EQ(probe.destroy_calls, 2u);
+    ASSERT_EQ(probe.on_destroy_calls, 1u);
     ASSERT_EQ(probe.phase_count, 7u);
     ASSERT_EQ(break_runtime_coordinator_stop(coordinator), BREAK_RUNTIME_OK);
     ASSERT_EQ(probe.phase_count, 7u);
     ASSERT_EQ(probe.destroy_calls, 2u);
+    ASSERT_EQ(probe.on_destroy_calls, 1u);
     break_runtime_world_session_lifecycle_set_trace_for_test(NULL, NULL);
 
     ASSERT_FALSE(probe.phase_overflow);
@@ -2537,14 +2553,18 @@ TEST(coordinator_abandon_created_restores_adapter_ownership)
 {
     Fixture fixture;
     BreakRuntimeCoordinator *coordinator = NULL;
+    BreakRuntimeWorldSessionLifecycle lifecycle;
     LifecycleProbe probe;
     u64 epoch = 0u;
 
     memset(&probe, 0, sizeof(probe));
     ASSERT_TRUE(fixture_init(&fixture, 7u, 2u));
     probe.fixture = &fixture;
+    memset(&lifecycle, 0, sizeof(lifecycle));
+    lifecycle.on_destroy = lifecycle_on_destroy;
+    lifecycle.user_data = &probe;
     ASSERT_EQ(break_runtime_coordinator_create(NULL, &coordinator), BREAK_RUNTIME_OK);
-    ASSERT_EQ(break_runtime_world_session_register_subsystem(fixture.adapter, coordinator, NULL),
+    ASSERT_EQ(break_runtime_world_session_register_subsystem(fixture.adapter, coordinator, &lifecycle),
               BREAK_RUNTIME_OK);
     break_runtime_world_session_lifecycle_set_trace_for_test(lifecycle_trace, &probe);
     ASSERT_FALSE(break_runtime_world_session_abandon(NULL, coordinator));
@@ -2561,6 +2581,7 @@ TEST(coordinator_abandon_created_restores_adapter_ownership)
     ASSERT_TRUE(open_connection(&fixture, KEY_A, 7u, &epoch));
     ASSERT_TRUE(break_runtime_world_session_destroy(fixture.adapter));
     fixture.adapter = NULL;
+    ASSERT_EQ(probe.on_destroy_calls, 0u);
     break_runtime_world_session_lifecycle_set_trace_for_test(NULL, NULL);
     break_runtime_coordinator_destroy(coordinator);
     fixture_dispose(&fixture);
@@ -2616,6 +2637,7 @@ TEST(coordinator_abandon_failed_stop_producers_allows_manual_drain_and_destroy)
     ASSERT_EQ(break_runtime_world_session_submit(fixture.adapter, &item, 0u), BREAK_RUNTIME_OK);
     memset(&lifecycle, 0, sizeof(lifecycle));
     lifecycle.stop_producers = lifecycle_fatal_stop_producers;
+    lifecycle.on_destroy = lifecycle_on_destroy;
     lifecycle.user_data = &probe;
     ASSERT_EQ(break_runtime_coordinator_create(NULL, &coordinator), BREAK_RUNTIME_OK);
     ASSERT_EQ(break_runtime_world_session_register_subsystem(
@@ -2628,6 +2650,7 @@ TEST(coordinator_abandon_failed_stop_producers_allows_manual_drain_and_destroy)
     ASSERT_EQ(break_runtime_coordinator_last_error(coordinator), BREAK_RUNTIME_UNAVAILABLE);
     ASSERT_EQ(probe.phase_count, 2u);
     ASSERT_EQ(probe.destroy_calls, 0u);
+    ASSERT_EQ(probe.on_destroy_calls, 0u);
     ASSERT_EQ(break_runtime_world_session_pending(fixture.adapter), 1u);
     ASSERT_TRUE(break_runtime_world_session_is_closed(fixture.adapter));
 
@@ -2645,6 +2668,7 @@ TEST(coordinator_abandon_failed_stop_producers_allows_manual_drain_and_destroy)
     ASSERT_EQ(break_runtime_world_session_pending(fixture.adapter), 0u);
     ASSERT_TRUE(break_runtime_world_session_destroy(fixture.adapter));
     fixture.adapter = NULL;
+    ASSERT_EQ(probe.on_destroy_calls, 0u);
     fixture_dispose(&fixture);
 }
 
@@ -2661,6 +2685,7 @@ TEST(coordinator_abandon_failed_join_allows_manual_destroy)
     probe.fixture = &fixture;
     memset(&lifecycle, 0, sizeof(lifecycle));
     lifecycle.join = lifecycle_fatal_join;
+    lifecycle.on_destroy = lifecycle_on_destroy;
     lifecycle.user_data = &probe;
     ASSERT_EQ(break_runtime_coordinator_create(NULL, &coordinator), BREAK_RUNTIME_OK);
     ASSERT_EQ(break_runtime_world_session_register_subsystem(
@@ -2674,6 +2699,7 @@ TEST(coordinator_abandon_failed_join_allows_manual_destroy)
     ASSERT_EQ(probe.phase_count, 5u);
     ASSERT_EQ(probe.join_calls, 1u);
     ASSERT_EQ(probe.destroy_calls, 0u);
+    ASSERT_EQ(probe.on_destroy_calls, 0u);
     ASSERT_EQ(break_runtime_world_session_pending(fixture.adapter), 0u);
 
     ASSERT_TRUE(break_runtime_world_session_abandon(fixture.adapter, coordinator));
@@ -2689,6 +2715,7 @@ TEST(coordinator_abandon_failed_join_allows_manual_destroy)
     ASSERT_EQ(drained, 0u);
     ASSERT_TRUE(break_runtime_world_session_destroy(fixture.adapter));
     fixture.adapter = NULL;
+    ASSERT_EQ(probe.on_destroy_calls, 0u);
     fixture_dispose(&fixture);
 }
 

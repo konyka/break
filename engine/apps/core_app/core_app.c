@@ -7,6 +7,10 @@
 #include "core_app_simulation.h"
 #include "core_app_voice.h"
 
+#if defined(CORE_APP_NET_TRANSPORT) && CORE_APP_NET_TRANSPORT
+#include "core_app_net_transport.h"
+#endif
+
 #include <ai/break_ai.h>
 #include <core/trace_core_app.h>
 #include <animation/anim_compression.h>
@@ -266,6 +270,7 @@ struct CoreApp {
     bool render_live;
     bool audio_live;
     bool network_live;
+    bool network_world;
     /* Network event notices (CORE_APP_NET_EVENT_KIND) the transport
      * publishes on the run's bus; drained on the CoreAppThread after every
      * tick, totalled at destroy. */
@@ -2564,6 +2569,7 @@ static BreakRuntimeError app_network_destroy_cb(void *user) {
     BreakRuntimeError result = hooks->destroy(hooks->user);
     if (result == BREAK_RUNTIME_OK) {
         app->network_live = false;
+        app->network_world = false;
         if (app->net_events) {
             app_network_drain_events(app);
             result = app_trace(app,
@@ -2707,9 +2713,29 @@ static BreakRuntimeError app_level_destroy_cb(void *user) {
 
 static BreakRuntimeError app_register_subsystems(CoreApp *app) {
     BreakRuntimeCoordinatorConfig config = {5u};
+#if defined(CORE_APP_NET_TRANSPORT) && CORE_APP_NET_TRANSPORT
+    if (app->network_live) config.max_subsystems = 6u;
+#endif
     BreakRuntimeError result = break_runtime_coordinator_create(&config,
                                                                 &app->coordinator);
     if (result != BREAK_RUNTIME_OK) return result;
+#if defined(CORE_APP_NET_TRANSPORT) && CORE_APP_NET_TRANSPORT
+    if (app->network_live) {
+        result = core_app_net_transport_world_adapter_register(
+            (CoreAppNetTransport *)app->config.network_hooks->user,
+            app->net_bus, app->coordinator);
+        if (result != BREAK_RUNTIME_OK) return result;
+        app->network_world = core_app_net_transport_world_adapter(
+            (CoreAppNetTransport *)app->config.network_hooks->user) != NULL;
+        if (!app->network_world) {
+            break_runtime_coordinator_destroy(app->coordinator);
+            app->coordinator = NULL;
+            config.max_subsystems = 5u;
+            result = break_runtime_coordinator_create(&config, &app->coordinator);
+            if (result != BREAK_RUNTIME_OK) return result;
+        }
+    }
+#endif
     BreakRuntimeSubsystem subsystems[5];
     memset(subsystems, 0, sizeof(subsystems));
     subsystems[0].name = "network";
@@ -2983,11 +3009,21 @@ static void app_rollback(CoreApp *app) {
     }
     if (app->network_live) {
         const CoreAppNetworkHooks *hooks = app->config.network_hooks;
-        (void)hooks->stop_admission(hooks->user);
-        (void)hooks->stop_producers(hooks->user);
-        (void)hooks->drain(hooks->user);
-        (void)hooks->destroy(hooks->user);
-        app->network_live = false;
+#if defined(CORE_APP_NET_TRANSPORT) && CORE_APP_NET_TRANSPORT
+        if (app->network_world) {
+            if (hooks->destroy(hooks->user) == BREAK_RUNTIME_OK) {
+                app->network_live = false;
+                app->network_world = false;
+            }
+        } else
+#endif
+        {
+            (void)hooks->stop_admission(hooks->user);
+            (void)hooks->stop_producers(hooks->user);
+            (void)hooks->drain(hooks->user);
+            (void)hooks->destroy(hooks->user);
+            app->network_live = false;
+        }
     }
     if (!app->network_live) app_network_close_events(app);
     if (app->voice.live) {

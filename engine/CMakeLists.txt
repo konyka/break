@@ -1810,6 +1810,9 @@ else()
 endif()
 # The ragdoll pulls skeleton.o, which calls the rhi_* buffer API; list engine
 # ahead of the backend archives (engine_demo order) so those resolve.
+if(CORE_APP_ENABLE_NETWORK AND BREAK_ENABLE_SNOWFLAKE)
+    target_link_libraries(core_app PRIVATE runtime_world_session runtime_core)
+endif()
 target_link_libraries(core_app PRIVATE engine)
 engine_link_rhi_backend(core_app)
 if(ENGINE_PLATFORM STREQUAL "windows")
@@ -1836,9 +1839,11 @@ if(CORE_APP_ENABLE_NETWORK AND BREAK_ENABLE_SNOWFLAKE)
         src/core/clock_offset.c)
     target_link_libraries(core_app PRIVATE break_net break_online break_ecs_replication)
     target_compile_definitions(core_app PRIVATE CORE_APP_NET_TRANSPORT=1)
+    target_compile_definitions(core_app_runtime PRIVATE CORE_APP_NET_TRANSPORT=1)
     set(_core_app_net_transport ON)
 else()
     target_compile_definitions(core_app PRIVATE CORE_APP_NET_TRANSPORT=0)
+    target_compile_definitions(core_app_runtime PRIVATE CORE_APP_NET_TRANSPORT=0)
     set(_core_app_net_transport OFF)
 endif()
 
@@ -5782,7 +5787,8 @@ endif()
         # runtime_core: the transport publishes reactor events on the bus,
         # and the bus records drops through the engine profiler.
         target_link_libraries(test_core_app_net_transport PRIVATE
-            core_app_network break_net_test break_online break_ecs_replication runtime_core m Threads::Threads)
+            core_app_network break_net_test break_online break_ecs_replication runtime_core
+            runtime_world_session_test m Threads::Threads)
         add_test(NAME test_core_app_net_transport COMMAND test_core_app_net_transport)
         set_tests_properties(test_core_app_net_transport PROPERTIES
             LABELS "network;snowflake;core_app" TIMEOUT 30)

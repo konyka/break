@@ -339,6 +339,18 @@ endif()
 if(all_symbols MATCHES "break_crash_upload_http")
     record_error("production core_app contains a break_crash_upload_http symbol")
 endif()
+if(NETWORK_TRANSPORT)
+    if(NOT all_symbols MATCHES "break_runtime_world_session_register_subsystem")
+        record_error("network World transport does not link runtime_world_session registration")
+    endif()
+    if(NOT all_symbols MATCHES "core_app_net_transport_world_adapter_register")
+        record_error("network World transport does not expose adapter registration to core_app")
+    endif()
+else()
+    if(all_symbols MATCHES "break_runtime_world_session_")
+        record_error("offline core_app unexpectedly links runtime_world_session")
+    endif()
+endif()
 
 file(REMOVE_RECURSE "${crash_validation_root}" "${crash_cli_work}/off-spool"
     "${crash_default_work}/pending" "${crash_default_work}/sent"

@@ -268,9 +268,15 @@ struct CoreAppNetTransport {
     World *world_authoritative;
     World *world_diagnostics[CORE_APP_NET_MAX_CONNECTIONS];
     BreakWorldSession *world_session;
+    BreakRuntimeWorldSession *world_adapter;
+    BreakRuntimeCoordinator *world_coordinator;
+    bool world_adapter_abandoned;
     Entity world_objects[CORE_APP_WORLD_OBJECT_COUNT];
     bool world_open[CORE_APP_NET_MAX_CONNECTIONS];
+    u64 world_connection_epochs[CORE_APP_NET_MAX_CONNECTIONS];
     bool world_control_pending[CORE_APP_NET_MAX_CONNECTIONS];
+    bool world_control_submitted[CORE_APP_NET_MAX_CONNECTIONS];
+    u64 world_control_correlations[CORE_APP_NET_MAX_CONNECTIONS];
     BreakWorldSessionControl world_controls[CORE_APP_NET_MAX_CONNECTIONS];
     bool world_force_full[CORE_APP_NET_MAX_CONNECTIONS];
     bool world_level_initialized;
@@ -682,21 +688,81 @@ static bool net_world_create(CoreAppNetTransport *t) {
     return t->world_session != NULL;
 }
 
+static void net_world_adapter_on_destroy(void *user_data) {
+    CoreAppNetTransport *t = (CoreAppNetTransport *)user_data;
+    if (t) {
+        t->world_adapter = NULL;
+        t->world_coordinator = NULL;
+        t->world_adapter_abandoned = false;
+    }
+}
+
+BreakRuntimeError core_app_net_transport_world_adapter_register(
+    CoreAppNetTransport *transport, BreakRuntimeBus *bus,
+    BreakRuntimeCoordinator *coordinator) {
+    BreakRuntimeWorldSessionConfig config;
+    BreakRuntimeWorldSessionLifecycle lifecycle;
+    BreakRuntimeWorldSession *adapter;
+    BreakRuntimeError result;
+    if (!transport) return BREAK_RUNTIME_INVALID;
+    if (!transport->world_replication) return BREAK_RUNTIME_OK;
+    if (!bus || !coordinator || !transport->world_session) return BREAK_RUNTIME_INVALID;
+    if (break_runtime_coordinator_state(coordinator) != BREAK_RUNTIME_CREATED ||
+        transport->world_adapter) {
+        return BREAK_RUNTIME_REJECTED;
+    }
+    memset(&config, 0, sizeof(config));
+    config.session = transport->world_session;
+    config.bus = bus;
+    config.subscriber_name = "core_app.world";
+    config.max_connections = CORE_APP_NET_MAX_CONNECTIONS;
+    adapter = break_runtime_world_session_create(&config);
+    if (!adapter) return BREAK_RUNTIME_OOM;
+    memset(&lifecycle, 0, sizeof(lifecycle));
+    lifecycle.drain_budget = 256u;
+    lifecycle.user_data = transport;
+    lifecycle.on_destroy = net_world_adapter_on_destroy;
+    result = break_runtime_world_session_register_subsystem(adapter, coordinator, &lifecycle);
+    if (result != BREAK_RUNTIME_OK) {
+        (void)break_runtime_world_session_destroy(adapter);
+        return result;
+    }
+    transport->world_adapter = adapter;
+    transport->world_coordinator = coordinator;
+    transport->world_adapter_abandoned = false;
+    return BREAK_RUNTIME_OK;
+}
+
+BreakRuntimeWorldSession *core_app_net_transport_world_adapter(
+    CoreAppNetTransport *transport) {
+    return transport ? transport->world_adapter : NULL;
+}
+
+BreakRuntimeError core_app_net_transport_world_submit(
+    CoreAppNetTransport *transport,
+    const BreakRuntimeWorldCommand *command, u64 correlation_id) {
+    if (!transport) return BREAK_RUNTIME_INVALID;
+    return break_runtime_world_session_submit(transport->world_adapter, command, correlation_id);
+}
+
+static BreakRuntimeError net_world_adapter_drain(CoreAppNetTransport *t) {
+    if (!t->world_adapter) return BREAK_RUNTIME_INVALID;
+    return break_runtime_world_session_drain(t->world_adapter, 256u, NULL);
+}
+
+static BreakRuntimeError net_world_adapter_submit_drain(
+    CoreAppNetTransport *t, const BreakRuntimeWorldCommand *command) {
+    BreakRuntimeError result = core_app_net_transport_world_submit(t, command, 0u);
+    if (result != BREAK_RUNTIME_OK) return result;
+    return net_world_adapter_drain(t);
+}
+
 static bool net_world_initialize_level(CoreAppNetTransport *t, u64 level_generation) {
-    BreakWorldSession *previous;
-    BreakWorldSession *replacement;
     if (!t->world_replication || t->world_level_initialized) return true;
-    replacement = net_world_session_create(t, level_generation);
-    if (!replacement) return false;
-    previous = t->world_session;
-    t->world_session = replacement;
-    if (!net_world_register_handlers(t)) {
-        t->world_session = previous;
-        break_world_session_destroy(replacement);
-        (void)net_world_register_handlers(t);
+    if (level_generation > break_world_session_level_generation(t->world_session) &&
+        !break_world_session_rebaseline(t->world_session, level_generation)) {
         return false;
     }
-    break_world_session_destroy(previous);
     t->world_level_generation = level_generation;
     t->world_level_initialized = true;
     return true;
@@ -704,13 +770,26 @@ static bool net_world_initialize_level(CoreAppNetTransport *t, u64 level_generat
 
 static void net_world_close(CoreAppNetTransport *t, u32 slot) {
     if (t->world_open[slot]) {
-        (void)break_world_session_close(t->world_session, t->keys[slot]);
+        if (t->world_adapter) {
+            BreakRuntimeWorldCommand command;
+            BreakRuntimeError result;
+            memset(&command, 0, sizeof(command));
+            command.kind = BREAK_RUNTIME_WORLD_COMMAND_CLOSE;
+            command.connection_key = t->keys[slot];
+            command.connection_epoch = t->world_connection_epochs[slot];
+            command.level_generation = t->world_level_generation;
+            result = net_world_adapter_submit_drain(t, &command);
+            if (result != BREAK_RUNTIME_OK) return;
+        }
         t->world_open[slot] = false;
+        t->world_connection_epochs[slot] = 0u;
         t->world_stats.closed++;
     }
     world_destroy(t->world_diagnostics[slot]);
     t->world_diagnostics[slot] = NULL;
     t->world_control_pending[slot] = false;
+    t->world_control_submitted[slot] = false;
+    t->world_control_correlations[slot] = 0u;
     t->world_force_full[slot] = false;
     memset(&t->world_controls[slot], 0, sizeof(t->world_controls[slot]));
 }
@@ -761,18 +840,27 @@ static void net_world_update(CoreAppNetTransport *t, const CoreAppSnapshotEntity
 
 static bool net_world_open(CoreAppNetTransport *t, u32 slot, BreakConnectionKey key) {
     World *diagnostic;
+    BreakRuntimeWorldCommand command;
+    u64 epoch = 0u;
     if (!t->world_replication) return true;
-    if (!t->world_level_initialized) return false;
+    if (!t->world_level_initialized || !t->world_adapter) return false;
     world_destroy(t->world_diagnostics[slot]);
     t->world_diagnostics[slot] = NULL;
     diagnostic = net_world_diagnostic_create(t);
     if (!diagnostic) return false;
-    if (!break_world_session_open(t->world_session, key)) {
+    memset(&command, 0, sizeof(command));
+    command.kind = BREAK_RUNTIME_WORLD_COMMAND_OPEN;
+    command.connection_key = key;
+    command.level_generation = t->world_level_generation;
+    if (net_world_adapter_submit_drain(t, &command) != BREAK_RUNTIME_OK ||
+        !break_runtime_world_session_connection_epoch(t->world_adapter, key, &epoch) ||
+        epoch == 0u) {
         world_destroy(diagnostic);
         return false;
     }
     t->world_diagnostics[slot] = diagnostic;
     t->world_open[slot] = true;
+    t->world_connection_epochs[slot] = epoch;
     t->world_stats.opened++;
     return true;
 }
@@ -814,23 +902,52 @@ static void net_world_tick_drain(CoreAppNetTransport *t, u64 now_ms) {
     (void)break_replication_session_bridge_tick(break_world_session_bridge(t->world_session),
                                                 now_ms);
     for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
-        BreakNetSendResult sent;
+        BreakRuntimeWorldCommand command;
+        BreakRuntimeError result;
         if (!t->world_open[i]) continue;
         (void)break_world_session_drain(t->world_session, t->keys[i], t->world_diagnostics[i],
                                         CORE_APP_WORLD_DRAIN_BUDGET);
+        if (!t->world_adapter) continue;
         if (!t->world_control_pending[i]) {
             t->world_control_pending[i] = break_world_session_poll_control(
                 t->world_session, t->keys[i], &t->world_controls[i]);
+            if (t->world_control_pending[i]) {
+                t->world_control_submitted[i] = false;
+                t->world_control_correlations[i] = break_runtime_correlation_next();
+            }
         }
         if (!t->world_control_pending[i]) continue;
-        sent = break_world_session_send_control(t->world_session, t->keys[i],
-                                                &t->world_controls[i]);
-        if (sent == BREAK_NET_SEND_OK) {
-            t->world_control_pending[i] = false;
-        } else if (sent != BREAK_NET_SEND_OVERLOAD) {
-            t->world_control_pending[i] = false;
-            t->world_stats.terminal_errors++;
+        memset(&command, 0, sizeof(command));
+        command.kind = t->world_controls[i].kind == BREAK_WORLD_SESSION_CONTROL_ACK
+                           ? BREAK_RUNTIME_WORLD_COMMAND_ACK
+                           : BREAK_RUNTIME_WORLD_COMMAND_NEED_FULL;
+        command.connection_key = t->keys[i];
+        command.connection_epoch = t->world_connection_epochs[i];
+        command.level_generation = t->world_controls[i].level_generation;
+        command.delta_id = t->world_controls[i].delta_id;
+        command.target_snapshot_id = t->world_controls[i].target_snapshot_id;
+        command.target_tick = t->world_controls[i].target_tick;
+        if (!t->world_control_submitted[i]) {
+            result = core_app_net_transport_world_submit(
+                t, &command, t->world_control_correlations[i]);
+            if (result == BREAK_RUNTIME_OK) {
+                t->world_control_submitted[i] = true;
+            } else if (result == BREAK_RUNTIME_OVERLOAD) {
+                (void)net_world_adapter_drain(t);
+                continue;
+            } else {
+                t->world_control_pending[i] = false;
+                t->world_control_correlations[i] = 0u;
+                t->world_stats.terminal_errors++;
+                continue;
+            }
         }
+        result = net_world_adapter_drain(t);
+        if (result == BREAK_RUNTIME_OVERLOAD) continue;
+        t->world_control_pending[i] = false;
+        t->world_control_submitted[i] = false;
+        t->world_control_correlations[i] = 0u;
+        if (result != BREAK_RUNTIME_OK) t->world_stats.terminal_errors++;
     }
 }
 
@@ -1776,6 +1893,30 @@ static void net_trace_stats(CoreAppNetTransport *t) {
     }
 }
 
+static BreakRuntimeError net_world_adapter_destroy_for_rollback(CoreAppNetTransport *t) {
+    BreakRuntimeWorldSession *adapter = t->world_adapter;
+    if (!adapter) return BREAK_RUNTIME_OK;
+    if (!t->world_adapter_abandoned) {
+        if (!break_runtime_world_session_abandon(adapter, t->world_coordinator)) {
+            return BREAK_RUNTIME_TIMEOUT;
+        }
+        t->world_adapter_abandoned = true;
+    }
+    break_runtime_world_session_close(adapter);
+    for (u32 round = 0u; round < 8u &&
+         break_runtime_world_session_pending(adapter) != 0u; ++round) {
+        (void)break_runtime_world_session_drain(adapter, 256u, NULL);
+    }
+    if (break_runtime_world_session_pending(adapter) != 0u ||
+        !break_runtime_world_session_destroy(adapter)) {
+        return BREAK_RUNTIME_TIMEOUT;
+    }
+    t->world_adapter = NULL;
+    t->world_coordinator = NULL;
+    t->world_adapter_abandoned = false;
+    return BREAK_RUNTIME_OK;
+}
+
 /* Idempotent. The reactor is stopped whenever it exists, whatever state a
  * failed start left it in: break_net_reactor_destroy is a no-op on a
  * started reactor, and the acceptor must not die while a live reactor still
@@ -1787,6 +1928,8 @@ static BreakRuntimeError net_destroy(void *user) {
     BreakRuntimeError result = BREAK_RUNTIME_OK;
     if (!t) return BREAK_RUNTIME_INVALID;
     if (t->leaked) return BREAK_RUNTIME_TIMEOUT;
+    result = net_world_adapter_destroy_for_rollback(t);
+    if (result != BREAK_RUNTIME_OK) return result;
     net_voice_release_all(t);
     net_aspect_close_all(t);
     net_world_close_all(t);
@@ -1952,6 +2095,10 @@ World *core_app_net_transport_world_reopen_for_test(CoreAppNetTransport *transpo
     net_world_close(transport, (u32)slot);
     if (!net_world_open(transport, (u32)slot, key)) return NULL;
     return transport->world_diagnostics[slot];
+}
+
+void core_app_net_transport_world_drain_for_test(CoreAppNetTransport *transport, u64 now_ms) {
+    net_world_tick_drain(transport, now_ms);
 }
 
 BreakNetReactor *core_app_net_transport_reactor_for_test(CoreAppNetTransport *transport) {

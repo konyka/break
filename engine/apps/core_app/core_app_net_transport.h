@@ -13,6 +13,8 @@
 
 #include "core_app.h"
 
+#include <runtime/runtime_world_session.h>
+
 typedef struct CoreAppNetTransport CoreAppNetTransport;
 
 typedef struct CoreAppNetTransportConfig {
@@ -70,6 +72,14 @@ typedef struct {
 } CoreAppNetEventStats;
 
 struct BreakRuntimeBus;
+BreakRuntimeError core_app_net_transport_world_adapter_register(
+    CoreAppNetTransport *transport, BreakRuntimeBus *bus,
+    BreakRuntimeCoordinator *coordinator);
+BreakRuntimeWorldSession *core_app_net_transport_world_adapter(
+    CoreAppNetTransport *transport);
+BreakRuntimeError core_app_net_transport_world_submit(
+    CoreAppNetTransport *transport,
+    const BreakRuntimeWorldCommand *command, u64 correlation_id);
 BreakRuntimeError core_app_net_transport_attach_bus(CoreAppNetTransport *transport,
                                                     struct BreakRuntimeBus *bus);
 BreakRuntimeError core_app_net_transport_event_stats(CoreAppNetTransport *transport,
@@ -131,6 +141,7 @@ BreakNetSendResult core_app_net_transport_world_publish_for_test(CoreAppNetTrans
 bool core_app_net_transport_world_control_for_test(CoreAppNetTransport *transport, u64 key,
                                                    const BreakNetOwnedMessage *message);
 World *core_app_net_transport_world_reopen_for_test(CoreAppNetTransport *transport, u64 key);
+void core_app_net_transport_world_drain_for_test(CoreAppNetTransport *transport, u64 now_ms);
 /* Test-only (test_core_app_net_transport): the live reactor, or NULL. */
 BreakNetReactor *core_app_net_transport_reactor_for_test(CoreAppNetTransport *transport);
 /* Test-only: after the step that blocked the stop has returned, stops and
