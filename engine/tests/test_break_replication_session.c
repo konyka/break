@@ -1672,6 +1672,7 @@ TEST(bridge_rebaseline_clears_nonzero_head_wrapped_completions)
     ASSERT_EQ(stats.rejected_fragments, 1u);
     ASSERT_EQ(stats.completed_packets, 7u);
     ASSERT_EQ(stats.dropped_completions, 3u);
+    break_replication_session_bridge_destroy(bridge);
 }
 
 TEST(bridge_metadata_budget_rejects_large_counts_before_allocation)
