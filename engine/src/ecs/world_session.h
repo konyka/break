@@ -48,6 +48,8 @@ typedef struct {
     u64 confirmed_tick;
     u64 next_delta_id;
     bool attempt_pending;
+    u64 attempt_target_snapshot_id;
+    u64 attempt_target_tick;
 } BreakWorldSessionSenderState;
 
 typedef struct {

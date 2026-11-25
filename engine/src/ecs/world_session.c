@@ -896,6 +896,10 @@ bool break_world_session_sender_state(const BreakWorldSession *session,
     out_state->confirmed_tick = break_world_snapshot_tick(state->confirmed);
     out_state->next_delta_id = state->next_delta_id;
     out_state->attempt_pending = state->attempt.active;
+    out_state->attempt_target_snapshot_id = state->attempt.active
+        ? break_world_snapshot_id(state->attempt.target) : 0u;
+    out_state->attempt_target_tick = state->attempt.active
+        ? break_world_snapshot_tick(state->attempt.target) : 0u;
     return true;
 }
 

@@ -876,6 +876,112 @@ TEST(world_session_overload_resumes_same_immutable_attempt)
     fixture_dispose(&fixture);
 }
 
+TEST(world_session_sender_state_reports_actual_active_snapshot_attempt)
+{
+    Fixture fixture;
+    BreakWorldSnapshot *e1 = NULL, *e2 = NULL, *e3 = NULL;
+    BreakWorldSessionSenderState state;
+    AttemptWire resumed;
+    BreakNetOwnedMessage outbound;
+    u64 outbound_key = 0u;
+
+    ASSERT_TRUE(fixture_init_scaled(&fixture, 4u, 16384u, 4096u, 64u, 8u, 64u));
+    ASSERT_TRUE(set_value(fixture.authoritative, 42u));
+    e1 = break_world_snapshot_build(fixture.authoritative, fixture.schemas, 10u);
+    ASSERT_TRUE(set_value(fixture.authoritative, 99u));
+    e2 = break_world_snapshot_build(fixture.authoritative, fixture.schemas, 20u);
+    ASSERT_TRUE(set_value(fixture.authoritative, 123u));
+    e3 = break_world_snapshot_build(fixture.authoritative, fixture.schemas, 30u);
+    ASSERT_NOT_NULL(e1);
+    ASSERT_NOT_NULL(e2);
+    ASSERT_NOT_NULL(e3);
+
+    for (usize i = 0u; i < BREAK_NET_OUTBOUND_QUEUE_CAPACITY; ++i) {
+        ASSERT_EQ(break_net_reactor_send(fixture.reactor, 11u,
+                                         BREAK_NET_MESSAGE_ID_PING, 1u, "x", 1u),
+                  BREAK_NET_SEND_OK);
+    }
+    ASSERT_EQ(break_world_session_publish_snapshot(fixture.session, 11u, e1, TEST_LEVEL),
+              BREAK_NET_SEND_OVERLOAD);
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, 11u, &state));
+    ASSERT_TRUE(state.attempt_pending);
+    ASSERT_EQ(state.attempt_target_snapshot_id, break_world_snapshot_id(e1));
+    ASSERT_EQ(state.attempt_target_tick, 10u);
+
+    /* E2 与错误 level 都不能替换 active E1。 */
+    ASSERT_EQ(break_world_session_publish_snapshot(fixture.session, 11u, e2, TEST_LEVEL),
+              BREAK_NET_SEND_OVERLOAD);
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, 11u, &state));
+    ASSERT_EQ(state.attempt_target_snapshot_id, break_world_snapshot_id(e1));
+    ASSERT_EQ(state.attempt_target_tick, 10u);
+    ASSERT_EQ(break_world_session_publish_snapshot(fixture.session, 11u, e2, 8u),
+              BREAK_NET_SEND_OVERLOAD);
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, 11u, &state));
+    ASSERT_EQ(state.attempt_target_snapshot_id, break_world_snapshot_id(e1));
+    ASSERT_EQ(state.attempt_target_tick, 10u);
+
+    while (break_net_reactor_poll_outbound_for_test(
+               fixture.reactor, &outbound_key, &outbound) == BREAK_NET_EVENT_OK) {
+        ASSERT_EQ(outbound.message_id, BREAK_NET_MESSAGE_ID_PING);
+        break_net_message_release(&outbound);
+    }
+    ASSERT_EQ(break_world_session_publish_snapshot(fixture.session, 11u, e2, 8u),
+              BREAK_NET_SEND_OK);
+    ASSERT_TRUE(collect_attempt_for_connection(&fixture, 11u, &resumed));
+    ASSERT_EQ(resumed.target_snapshot_id, break_world_snapshot_id(e1));
+    ASSERT_EQ(resumed.target_tick, 10u);
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, 11u, &state));
+    ASSERT_FALSE(state.attempt_pending);
+    ASSERT_EQ(state.attempt_target_snapshot_id, 0u);
+    ASSERT_EQ(state.attempt_target_tick, 0u);
+    clear_attempt(&resumed);
+
+    /* close/reopen 后身份归零。 */
+    for (usize i = 0u; i < BREAK_NET_OUTBOUND_QUEUE_CAPACITY; ++i) {
+        ASSERT_EQ(break_net_reactor_send(fixture.reactor, 11u,
+                                         BREAK_NET_MESSAGE_ID_PING, 1u, "x", 1u),
+                  BREAK_NET_SEND_OK);
+    }
+    ASSERT_EQ(break_world_session_publish_snapshot(fixture.session, 11u, e2, TEST_LEVEL),
+              BREAK_NET_SEND_OVERLOAD);
+    ASSERT_TRUE(break_world_session_close(fixture.session, 11u));
+    ASSERT_FALSE(break_world_session_sender_state(fixture.session, 11u, &state));
+    ASSERT_EQ(state.attempt_target_snapshot_id, 0u);
+    ASSERT_EQ(state.attempt_target_tick, 0u);
+    while (break_net_reactor_poll_outbound_for_test(
+               fixture.reactor, &outbound_key, &outbound) == BREAK_NET_EVENT_OK) {
+        break_net_message_release(&outbound);
+    }
+    ASSERT_TRUE(break_world_session_open(fixture.session, 11u));
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, 11u, &state));
+    ASSERT_FALSE(state.attempt_pending);
+    ASSERT_EQ(state.attempt_target_snapshot_id, 0u);
+    ASSERT_EQ(state.attempt_target_tick, 0u);
+
+    /* rebaseline 复用现有 attempt 清理路径，也必须归零。 */
+    for (usize i = 0u; i < BREAK_NET_OUTBOUND_QUEUE_CAPACITY; ++i) {
+        ASSERT_EQ(break_net_reactor_send(fixture.reactor, 11u,
+                                         BREAK_NET_MESSAGE_ID_PING, 1u, "x", 1u),
+                  BREAK_NET_SEND_OK);
+    }
+    ASSERT_EQ(break_world_session_publish_snapshot(fixture.session, 11u, e3, TEST_LEVEL),
+              BREAK_NET_SEND_OVERLOAD);
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, 11u, &state));
+    ASSERT_TRUE(state.attempt_pending);
+    ASSERT_EQ(state.attempt_target_snapshot_id, break_world_snapshot_id(e3));
+    ASSERT_EQ(state.attempt_target_tick, 30u);
+    ASSERT_TRUE(break_world_session_rebaseline(fixture.session, 8u));
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, 11u, &state));
+    ASSERT_FALSE(state.attempt_pending);
+    ASSERT_EQ(state.attempt_target_snapshot_id, 0u);
+    ASSERT_EQ(state.attempt_target_tick, 0u);
+
+    break_world_snapshot_release(e3);
+    break_world_snapshot_release(e2);
+    break_world_snapshot_release(e1);
+    fixture_dispose(&fixture);
+}
+
 TEST(world_session_reconnect_clears_sender_receiver_and_rate_state)
 {
     Fixture fixture;
@@ -1878,6 +1984,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(world_session_packet_limit_rejects_without_allocating_history);
     RUN_TEST(world_session_fragment_count_invalid_releases_attempt);
     RUN_TEST(world_session_overload_resumes_same_immutable_attempt);
+    RUN_TEST(world_session_sender_state_reports_actual_active_snapshot_attempt);
     RUN_TEST(world_session_reconnect_clears_sender_receiver_and_rate_state);
     RUN_TEST(world_session_rebaseline_resets_sender_and_requires_current_ack);
     RUN_TEST(world_session_rebaseline_discards_old_overload_attempt);
