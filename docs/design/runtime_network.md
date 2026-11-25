@@ -509,3 +509,12 @@ submit 不触碰 World，只有 owner drain 执行 open/close/rebaseline/control
 Runtime direct submit 改为自有 `message_copy + queue_enqueue`，不再经 Bus fan-out；合法外部生产者仍可直接 publish 已注册的 `0x5753`，每个 adapter 独立接收、drain 和关闭。统计上 submitted 只属于 direct 成功，外部消息只增加 drained/applied；queue occupancy 来自 `enqueued-dequeued`，所以共享 Bus 不再导致 pending 下溢或 destroy 永久拒绝。
 
 destroy 在任何 pending 判定之前先关闭 queue admission 并退订，且记录退订状态供后续重试跳过。false 返回后不会再接受 direct 或外部新命令，但已排队及 transport pending 仍由原 cid/内容 drain 清空，随后 destroy 重试成功。connection epoch 耗尽返回本地 `BREAK_RUNTIME_REJECTED` 并计 rejected，不进入网络重试，也不改变 BRWC/BRWD、correlation、wire sequence 或 admission 协议。
+
+
+## 补充（2026-11-25）：World 控制 Coordinator 的 TIMEOUT 恢复
+
+独立 Runtime World adapter 现可显式注册到真实 Coordinator，以六阶段完成 stop_admission、stop_producers、close_queues、drain、join、destroy。stop_producers/join 属于调用方外部生产者与 transport 的退出协议；adapter 没有因此获得 worker。close 是幂等准入关闭，direct 与外部 Bus 已接受命令继续 drain，close 后新命令不增加 pending，最终退订后 Bus 发布 delivered=0。
+
+有界 drain 和 OUTBOUND OVERLOAD 都以真实 pending 决定 TIMEOUT。ACK/NEED_FULL pending 在连续重试中保持 control、level、connection_epoch 与完整 cid，解除后 applied 只一次；transport CLOSED 则清 control_pending、计 rejected，并允许后续 queue 项继续 drain，最终 STOPPED。已消费且 pending=0 的 STALE/INVALID/REJECTED/CLOSED 不进入永久 TIMEOUT。join 首次 TIMEOUT 只从 join 重试；destroy=false 保留 binding，后续仅重试 destroy。成功 destroy 只释放 adapter，借用 Bus、World Session 和 publication 仍由调用方持有。
+
+本项没有新增 Runtime snapshot/BRWD/BRFG 数据面、共享 live World、core_app authoritative World 或权威 simulation 合并。当前 core_app 已有 `"network"` subsystem 注册，较早“未注册 network”文字只代表历史时点；该 transport 注册不能被写成 World adapter 已注册。详细本地验证见 Task 2 报告，本节不预写远端结果。

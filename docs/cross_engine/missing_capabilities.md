@@ -961,3 +961,12 @@ submit 不调用 World，owner drain 是唯一应用入口。queue OVERLOAD 时 
 上一实现中“每流 16 MiB 元数据上限”不足以约束多流总占用；仅发送一字节分片并声明很大的 count，就能在 64 条流上请求约 870 MiB 动态数组。现已增加池级共享元数据预算，Session 另以每连接和总预算的乘积做静态约束，不再只按 payload 字节准入。原 pool create 默认整个池 16 MiB 元数据，显式 create_with_metadata 可进一步收紧；上方 core_app 调用点也已配置该预算。
 
 此修复不完成可靠重传、持久高水位、World delta 或 editor 接线。主 CI 新增 Snowflake focused job 前，普通 CI 总数不包含这些条件编译测试；该 job 的私有依赖不可用时应记为未验证，而不是通过。
+
+
+## 第 17 节补充（2026-11-25）：仅关闭 Runtime World 控制的六阶段生命周期绑定
+
+较早“无 Runtime Coordinator 注册”描述之后，独立 adapter 现已提供显式 `break_runtime_world_session_register_subsystem`，由真实 Coordinator 执行 stop_admission、stop_producers、close_queues、drain、join、destroy。close 幂等；外部 stop_producers/join hooks 不虚构 adapter worker。direct/Bus 已接受控制在关闭前恰好一次 drain，关闭后不增加 pending，退订后 delivered=0。
+
+`pending = queued + control_pending` 决定有界 drain、transport 背压和 destroy 是否可继续。pending 非零或 OVERLOAD 为 TIMEOUT，重试只恢复当前阶段；控制重试保持 level/epoch/cid，applied 只一次。已消费 STALE/INVALID/REJECTED/CLOSED 且 pending=0 不再阻塞 STOPPED，transport CLOSED 后剩余 queue 项也能排空。join TIMEOUT 与 destroy=false 都保留资源并精确重试，成功时只销毁 adapter，借用 Bus、World Session 和 publication 不归它释放。
+
+以下缺口仍然存在：没有 Runtime snapshot/lease/BRWD/BRFG 数据面，没有 core_app World adapter 自动注册、共享 live World、跨 World 持久身份、权威 simulation 合并、预测回滚或 authority handoff。core_app 的既有 transport 当前已经注册名为 `"network"` 的 subsystem，因此旧“network 未注册”描述不再代表现状；这不等于上述 World adapter 已注册。focused sanitizer、条件 skip 与既有 editor/core_app Lua longjmp 限制分别记录，不升级为完整 sanitizer、原生 GPU 或远端验收结论；本节不预写远端结果。

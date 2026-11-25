@@ -15,12 +15,18 @@ typedef struct {
 #ifdef BREAK_RUNTIME_TESTING
 static BreakRuntimeWorldSessionLifecycleTrace runtime_world_lifecycle_trace;
 static void *runtime_world_lifecycle_trace_user_data;
+static u32 runtime_world_lifecycle_destroy_failures;
 
 void break_runtime_world_session_lifecycle_set_trace_for_test(
     BreakRuntimeWorldSessionLifecycleTrace trace, void *user_data)
 {
     runtime_world_lifecycle_trace = trace;
     runtime_world_lifecycle_trace_user_data = user_data;
+}
+
+void break_runtime_world_session_lifecycle_set_destroy_failures_for_test(u32 failures)
+{
+    runtime_world_lifecycle_destroy_failures = failures;
 }
 #endif
 
@@ -92,6 +98,17 @@ static BreakRuntimeError runtime_world_lifecycle_join(void *user_data)
     return BREAK_RUNTIME_OK;
 }
 
+static bool runtime_world_lifecycle_destroy_adapter(BreakRuntimeWorldSession *adapter)
+{
+#ifdef BREAK_RUNTIME_TESTING
+    if (runtime_world_lifecycle_destroy_failures != 0u) {
+        runtime_world_lifecycle_destroy_failures--;
+        return false;
+    }
+#endif
+    return break_runtime_world_session_destroy(adapter);
+}
+
 static BreakRuntimeError runtime_world_lifecycle_destroy(void *user_data)
 {
     RuntimeWorldSessionLifecycleBinding *binding = user_data;
@@ -99,7 +116,7 @@ static BreakRuntimeError runtime_world_lifecycle_destroy(void *user_data)
     if (break_runtime_world_session_pending(binding->adapter) != 0u) {
         return BREAK_RUNTIME_TIMEOUT;
     }
-    if (!break_runtime_world_session_destroy(binding->adapter)) {
+    if (!runtime_world_lifecycle_destroy_adapter(binding->adapter)) {
         return BREAK_RUNTIME_TIMEOUT;
     }
     free(binding);

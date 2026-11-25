@@ -240,3 +240,12 @@ arm64 lane 新增 `test_runtime_facade`（18 例）、`test_runtime_io`（16 例
 arm64 lane 新增 profiler 28 例、clock offset 8 例、trace core 15 例、trace merge 5 例及真实 trace_merge 工具契约，统一选择达到六十六项。四个单元测试使用既有 QEMU 命令；工具驱动新增可选 `TRACE_MERGE_RUNNER`，只启动目标工具，不模拟宿主 CMake 或 `/bin/sh`。
 
 原生与交叉 focused 均为 5/5，工具契约包含空参数、时钟偏移、多会话和错误输入。runner 的 shell 前缀逐项 POSIX 单引号转义，并由含空格/单引号路径的包装器实际验证。本项不构成实时远程会话或生产调试授权证据。
+
+
+## 补充（2026-11-25）：World Session adapter 的六阶段关闭
+
+`break_runtime_world_session_register_subsystem` 现在可把独立 `runtime_world_session` adapter 注册到调用方提供的真实 Coordinator，依次执行 stop_admission、stop_producers、close_queues、drain、join、destroy。两个 admission/queue 阶段共用幂等 close；stop_producers 与 join 是调用方外部生产者和 transport 的 quiesce hooks，不表示 adapter 自建 worker。注册是可选显式 API，不是 engine、demo 或 core_app 的自动接线。
+
+drain 使用真实 `pending = queued + control_pending`。pending 非零或 transport OVERLOAD 映射 TIMEOUT；有界 budget 下重试只恢复当前 drain，join TIMEOUT 后只恢复 join，不重跑 stop_admission、stop_producers 或 close。已消费的 STALE/INVALID/REJECTED/CLOSED 在 pending=0 时可继续；transport CLOSED 清掉 control_pending 并计 rejected 后，后续 queue 项仍能 drain 到 STOPPED。destroy=false 同样保留资源并允许重试，最终只销毁 adapter，借用的 Bus、World Session 和 snapshot publication 仍由调用方清理。
+
+本切片不包括 snapshot/lease/BRWD/BRFG 数据面、共享 live World、core_app authoritative World 或权威 simulation 合并。另，当前 core_app 已在 `app_register_subsystems` 注册名为 `"network"` 的既有 transport subsystem；较早“Network 未注册”描述不再代表当前缺失，但这不表示 World adapter 已注册到 core_app。本节不预写远端验收。

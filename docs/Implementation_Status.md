@@ -13814,3 +13814,12 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **macOS 验证**：当前最终树 Metal 全量 **438/438**、MoltenVK 全量 **441/441**，各 **5 项既有条件 skip**，不计执行通过。本轮没有产品代码改动，未重复运行 sanitizer。
 - **上一轮收据的远端结果**：CI run `45530867288` completed/success，28 个 job 中 **25 success、3 条件 skip**；windows-d3d12 `45530867381` 和 Proton `45532518099` 均 success，Proton 只作兼容参考。Snowflake job `138925537774` 的 checkout/configure/build/test 仍全部 skipped 并记录 UNAVAILABLE，14 项真实网络测试没有执行，不计为通过。
 - **边界**：本轮结论不扩展为真实 Snowflake socket、Windows/Linux 实机或完整 sanitizer 验收。本复审记录提交自身的工作流结果不在此预写。
+
+
+## Runtime World Coordinator TIMEOUT 恢复（2026-11-25）
+
+- **六阶段交付**：`runtime_world_session` 新增显式 subsystem 注册，真实执行 stop_admission → stop_producers → close_queues → drain → join → destroy；通用 Coordinator 状态机不变。stop_producers/join 是外部生产者与 transport hooks，adapter-only destroy 保留调用方拥有的 Bus、World Session 和 publication。
+- **pending 与恢复**：有界 budget、queue+control_pending 和 transport OVERLOAD 均按真实 pending 返回 TIMEOUT；重试只恢复超时阶段，不重跑 admission/close，也不重复 join/destroy。pending 控制保持 control/level/epoch/cid，CLOSED 清 pending 并计 rejected 后继续 queue drain。已消费 STALE/INVALID/REJECTED/CLOSED 且 pending=0，以及 destroy=false→TIMEOUT→retry，均有直接覆盖。
+- **外部 ingress**：direct 与外部 Bus 混合提交在 close 前恰好一次输出；close 后不增加 pending，退订后 delivered=0。queue-only 与 queue+control_pending 两类都覆盖 join 首次 TIMEOUT、STOPPING 和精确恢复，STOPPED 后重复 stop 不重复 callback。
+- **本地证据**：`test_runtime_world_session` 为 **27/27**；Runtime/World/adapter/Session/bridge focused normal、ASan+UBSan（显式 `detect_leaks=1`）和 TSan 各 **12/12**。core_app focused normal/ASan+UBSan 各 **15/15**；TSan core_app 为 **2/15**，其中 runtime 与 network library 通过，其余 13 个进程场景未通过。11 项日志直接显示既有 Lua `can't find longjmp buf` 退出 66，simulation/roundtrip 则在驱动层因缺少正常退出产物失败；这些场景均未记为通过，editor/core_app 的完整 sanitizer 进程验收也不由 focused 结果替代。
+- **当前集成边界**：core_app 已在 `app_register_subsystems` 注册 `"network"` subsystem，旧描述不再代表当前缺失；但 World adapter 尚未注册到 core_app。Runtime snapshot/lease/BRWD/BRFG 数据面、共享 live World、core_app authoritative World 与权威 simulation 合并仍未实现。三组定向变异及最终双后端命令、计数和日志见本地 Task 2 报告；本节保留全部历史收据，不预写远端结果。

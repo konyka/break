@@ -491,3 +491,12 @@ close 只停止 admission 并关闭 queue，已有 A1/B1/A2 仍可恰好一次 F
 `break_runtime_world_session_submit` 不再把自有命令 fan-out 到 Bus：它只复制消息并入队到该 adapter 的自有 queue，以 copy/enqueue 的实际结果推进 submitted 和 Runtime sequence。kind 注册及订阅仍允许外部生产者直接 publish `0x5753`；每个匹配 adapter 各收一份 copied bytes，direct submit 不会出现在其他 adapter 或 observer 中。`submitted` 只计 direct 成功，`drained` 同时计 direct 与外部消费，因此 drained 可以大于 submitted，不能再用二者差值表示占用。
 
 `stats.queued` 现在严格是 queue 的 `enqueued-dequeued`，`pending()` 是该 queued 加 `control_pending`。destroy 先 closed/queue_close，再 unsubscribe 并记录已退订，最后读取实际 pending；即使返回 false，后续 direct submit 也为 CLOSED、外部 Bus 不再投递到该 adapter，drain 和查询仍可继续，清零后的重试不会重复退订。可能成功的 destroy 必须由调用方先 quiesce 其他 adapter API；并发验收只让 destroy 在已知 pending 非零时与 submit/publish/drain 交错，并逐项核对 accepted cid 与内容的恰好一次输出。World 仍只有 owner drain 能调用。
+
+
+### 补充（2026-11-25）：World 控制消息的 Coordinator drain/join 恢复
+
+前述“不注册 Runtime Coordinator callback”是较早时点记录。现在调用方可通过 `break_runtime_world_session_register_subsystem` 显式注册六阶段关闭：stop_admission → stop_producers → close_queues → drain → join → destroy。direct submit 与外部 Bus publish 仍在关闭前各自入队并恰好一次消费；close 后 direct 返回 CLOSED，Bus 的关闭 queue 投递失败/丢弃不增加 pending，destroy 退订后发布 `delivered=0`。外部 join hook 的 TIMEOUT 保持 STOPPING，重试只恢复 join，STOPPED 后重复 stop 不重复 callback。
+
+`pending()` 继续使用真实 queue 计数加 control_pending，而不是 submitted-drained。budget 小于排队数或 transport 保留同一 control/level/epoch/cid 时为 DRAINING/TIMEOUT；后续 stop 只恢复 drain。STALE/INVALID/REJECTED/CLOSED 若已消费且 pending=0 不造成永久 TIMEOUT；CLOSED 清 control_pending 后，剩余 queue 项仍按 FIFO 处理。只有 pending=0 才允许 adapter-only destroy，Bus、World Session、publication 保持 borrowed。
+
+未做的是 Runtime snapshot/lease/BRWD/BRFG 数据面、共享 live World 与权威 simulation 合并。core_app 当前已有名为 `"network"` 的既有 transport subsystem 注册，旧描述不再表示该注册缺失；这与 World adapter 注册是不同事实，后者尚未接入 core_app。本节不预写远端结果。

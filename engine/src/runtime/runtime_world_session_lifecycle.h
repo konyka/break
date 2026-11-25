@@ -28,6 +28,7 @@ typedef void (*BreakRuntimeWorldSessionLifecycleTrace)(void *user_data,
                                                        const char *phase);
 void break_runtime_world_session_lifecycle_set_trace_for_test(
     BreakRuntimeWorldSessionLifecycleTrace trace, void *user_data);
+void break_runtime_world_session_lifecycle_set_destroy_failures_for_test(u32 failures);
 #endif
 
 #ifdef __cplusplus

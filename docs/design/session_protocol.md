@@ -404,3 +404,12 @@ publication 准入要求非空 snapshot、非零 tick、匹配 schema、未关�
 Runtime World 控制桥现在区分 direct submit 与外部 Bus publish：direct submit 只进入调用目标 adapter 的自有 queue，外部同 kind publish 才向各订阅 adapter fan-out。两者共用 56 字节命令和 owner-drain 状态校验，但只有 direct 成功增加 submitted/本地 Runtime sequence；外部消息可令 drained 大于 submitted。pending 使用真实 queue 计数加 control_pending，不再从这两个来源不同的累计值相减。
 
 destroy 先 close admission、退订再检查 pending；false 后 ingress 已关闭而 drain 保持可用，最终重试不会重复退订。bridge 本地 connection epoch 耗尽是 `BREAK_RUNTIME_REJECTED` 并计 rejected，而非可重试 OVERLOAD。该修订不改变 connection epoch 的非零单调分配、level 检查、32/40 字节 BRWC 或网络逐连接 sequence。
+
+
+## 补充（2026-11-25）：Runtime World 控制的六阶段关闭与终态恢复
+
+`break_runtime_world_session_register_subsystem` 在既有 32/40 字节 BRWC/v1/v2 之外提供本 adapter 的生命周期绑定，不改变线协议。真实 Coordinator 依次运行 stop_admission、stop_producers、close_queues、drain、join、destroy；stop_producers 和 join 是外部 hooks。close 前接受的 direct/Bus 命令恰好一次 drain，close 后 ingress 不增加 pending，destroy 退订后 delivered=0。
+
+pending 是 queue occupancy 加 control_pending。budget 不足或 OUTBOUND 饱和返回 DRAINING/TIMEOUT，连续重试不越过 FIFO，也不改变 control/level/epoch/cid；join TIMEOUT 保持 STOPPING 并仅恢复 join，destroy=false 则仅恢复 destroy。已消费 STALE/INVALID/REJECTED/CLOSED 且 pending=0 可完成关闭；transport CLOSED 清 pending 并计 rejected 后，后续 queue 项仍 drain。只有 pending=0 才销毁 adapter，World Session、Bus、snapshot publication 仍由调用方最后清理。
+
+本切片不实现 snapshot/lease/BRWD/BRFG 的 Runtime 数据面、共享 live World、权威 simulation 合并或自动 core_app World 接线。core_app 现有 `"network"` subsystem 已注册，旧描述不再代表当前缺失；该既有 transport 注册不表示 World adapter 已注册。本节不预写推送、CI 或其他平台结果。
