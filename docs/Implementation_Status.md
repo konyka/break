@@ -13915,10 +13915,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 
 ### Runtime snapshot notice 数据面最终 HEAD 本地验证收据（2026-11-25）
 
-上一小节的“限制：最终提交 HEAD 结果单列于本任务 report”保留为当时的历史记录；该 report 位于被忽略的 `.superpowers/`，故在此补记最终 HEAD `9f21c28f` 已在本地实际运行的结果，并在整分支终审集中修复后于同目标复跑确认，不预写任何远端 CI/Windows/Proton 结论。
+上一小节的“限制：最终提交 HEAD 结果单列于本任务 report”保留为当时的历史记录；该 report 位于被忽略的 `.superpowers/`，故在此补记。以下数字以 `9f21c28f` 为基线、在对整分支终审集中修复后的 `279bb082` 树上复跑确认，不预写任何远端 CI/Windows/Proton 结论。
 
 - 库级 `test_runtime_world_session`：normal **47/47**、ASan+UBSan（显式 `detect_leaks=1`）**47/47**、TSan（`halt_on_error=1`）**47/47**，均为集中修复后同树直接运行可执行文件，无 sanitizer/leak/race 报告。
-- 真实双 socket `test_world_session_loopback`：final HEAD **10/10**，集中修复后 normal **10/10**、ASan+UBSan（显式 `detect_leaks=1`）**10/10**、TSan（`halt_on_error=1`）**10/10**，无 sanitizer/leak/race 报告。
+- 真实双 socket `test_world_session_loopback`：normal **10/10**、ASan+UBSan（显式 `detect_leaks=1`）**10/10**、TSan（`halt_on_error=1`）**10/10**，无 sanitizer/leak/race 报告。
 - focused 正则（13 项）：normal **13/13**、ASan+UBSan（显式 `detect_leaks=1`）**13/13**、TSan（`halt_on_error=1`）**13/13**，均实际执行、无 Not Run。
 - 完整未过滤 CTest：OpenGL **480 注册、476 执行通过、4 条件 skip、0 失败**；Vulkan **482 注册、478 执行通过、4 条件 skip、0 失败**。
 - 合同：`test_replication_target_contract` **3/3 Passed**；仓库命名合同 STAGE=4 与 Wayland CI 迁移合同均通过。
