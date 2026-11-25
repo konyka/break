@@ -141,6 +141,8 @@ BreakNetSendResult core_app_net_transport_world_publish_for_test(CoreAppNetTrans
 bool core_app_net_transport_world_control_for_test(CoreAppNetTransport *transport, u64 key,
                                                    const BreakNetOwnedMessage *message);
 World *core_app_net_transport_world_reopen_for_test(CoreAppNetTransport *transport, u64 key);
+bool core_app_net_transport_world_open_for_test(CoreAppNetTransport *transport, u64 key);
+void core_app_net_transport_world_close_for_test(CoreAppNetTransport *transport, u64 key);
 void core_app_net_transport_world_drain_for_test(CoreAppNetTransport *transport, u64 now_ms);
 /* Test-only (test_core_app_net_transport): the live reactor, or NULL. */
 BreakNetReactor *core_app_net_transport_reactor_for_test(CoreAppNetTransport *transport);

@@ -1160,6 +1160,146 @@ TEST(world_adapter_submit_defers_open_close_and_fifo_controls) {
     aspect_fixture_dispose(&fixture);
 }
 
+static bool world_make_control_pending(AspectTransportFixture *fixture,
+                                       BreakConnectionKey key, u64 delta_id) {
+    CoreAppNetWorldTestView view;
+    BreakRuntimeWorldSessionStats stats;
+    BreakWorldSnapshot *snapshot;
+    bool ok = core_app_net_transport_world_for_test(fixture->transport, &view);
+    snapshot = ok ? break_world_snapshot_build(view.authoritative, view.schemas, 20u) : NULL;
+    if (!snapshot) return false;
+    ok = world_queue_full(fixture, key, snapshot, delta_id);
+    for (usize i = 0u; ok && i < BREAK_NET_OUTBOUND_QUEUE_CAPACITY; ++i) {
+        ok = break_net_reactor_send(fixture->reactor, key, BREAK_NET_MESSAGE_ID_PING,
+                                    1u, "x", 1u) == BREAK_NET_SEND_OK;
+    }
+    core_app_net_transport_world_drain_for_test(fixture->transport, 20u);
+    break_runtime_world_session_stats(
+        core_app_net_transport_world_adapter(fixture->transport), &stats);
+    break_world_snapshot_release(snapshot);
+    return ok && stats.control_pending && stats.queued == 0u;
+}
+
+TEST(world_adapter_open_pending_control_reconciles_epoch_slot_and_diagnostic) {
+    AspectTransportFixture fixture;
+    CoreAppNetWorldTestView view;
+    BreakRuntimeWorldSession *adapter;
+    BreakRuntimeWorldSessionStats stats;
+    const BreakConnectionKey open_key = 0x140au;
+    const BreakConnectionKey pending_key = UINT64_C(0x300000003);
+    u64 epoch = 0u;
+    ASSERT_TRUE(world_fixture_start(&fixture, "core_app_world_open_pending.port", true, false));
+    ASSERT_TRUE(world_fixture_open(&fixture, open_key));
+    ASSERT_TRUE(world_make_control_pending(&fixture, open_key, 81u));
+    adapter = core_app_net_transport_world_adapter(fixture.transport);
+
+    (void)core_app_net_transport_world_open_for_test(fixture.transport, pending_key);
+    break_runtime_world_session_stats(adapter, &stats);
+    ASSERT_EQ(stats.queued, 1u);
+    ASSERT_TRUE(stats.control_pending);
+    ASSERT_FALSE(break_runtime_world_session_connection_epoch(adapter, pending_key, &epoch));
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    ASSERT_EQ(view.open_count, 1u);
+    ASSERT_EQ(view.opened, 1u);
+    ASSERT_NOT_NULL(view.diagnostic);
+
+    world_clear_outbound(&fixture);
+    core_app_net_transport_world_drain_for_test(fixture.transport, 21u);
+    ASSERT_TRUE(break_runtime_world_session_connection_epoch(adapter, pending_key, &epoch));
+    ASSERT_NEQ(epoch, 0u);
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    ASSERT_EQ(view.open_count, 2u);
+    ASSERT_EQ(view.opened, 2u);
+    ASSERT_NOT_NULL(view.diagnostic);
+    ASSERT_TRUE(break_world_session_baseline(view.session, pending_key, NULL, NULL));
+    break_runtime_world_session_stats(adapter, &stats);
+    ASSERT_EQ(stats.queued, 0u);
+    ASSERT_FALSE(stats.control_pending);
+    ASSERT_TRUE(transport_fixture_destroy(&fixture));
+    aspect_fixture_dispose(&fixture);
+}
+
+TEST(world_adapter_reopen_pending_control_completes_second_open) {
+    AspectTransportFixture fixture;
+    CoreAppNetWorldTestView view;
+    BreakRuntimeWorldSession *adapter;
+    BreakRuntimeWorldSessionStats stats;
+    const BreakConnectionKey key = 0x240bu;
+    u64 old_epoch = 0u;
+    u64 new_epoch = 0u;
+    ASSERT_TRUE(world_fixture_start(&fixture, "core_app_world_reopen_pending.port", true, false));
+    ASSERT_TRUE(world_fixture_open(&fixture, key));
+    ASSERT_TRUE(world_make_control_pending(&fixture, key, 83u));
+    adapter = core_app_net_transport_world_adapter(fixture.transport);
+    ASSERT_TRUE(break_runtime_world_session_connection_epoch(adapter, key, &old_epoch));
+    ASSERT_NEQ(old_epoch, 0u);
+
+    ASSERT_TRUE(core_app_net_transport_world_reopen_for_test(fixture.transport, key) == NULL);
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    ASSERT_EQ(view.open_count, 1u);
+    ASSERT_EQ(view.opened, 1u);
+    ASSERT_EQ(view.closed, 0u);
+    ASSERT_NOT_NULL(view.diagnostic);
+    ASSERT_TRUE(break_runtime_world_session_connection_epoch(adapter, key, &new_epoch));
+    ASSERT_EQ(new_epoch, old_epoch);
+
+    world_clear_outbound(&fixture);
+    core_app_net_transport_world_drain_for_test(fixture.transport, 21u);
+    ASSERT_TRUE(break_runtime_world_session_connection_epoch(adapter, key, &new_epoch));
+    ASSERT_NEQ(new_epoch, 0u);
+    ASSERT_NEQ(new_epoch, old_epoch);
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    ASSERT_EQ(view.open_count, 1u);
+    ASSERT_EQ(view.opened, 2u);
+    ASSERT_EQ(view.closed, 1u);
+    ASSERT_NOT_NULL(view.diagnostic);
+    break_runtime_world_session_stats(adapter, &stats);
+    ASSERT_EQ(stats.queued, 0u);
+    ASSERT_FALSE(stats.control_pending);
+    ASSERT_TRUE(transport_fixture_destroy(&fixture));
+    aspect_fixture_dispose(&fixture);
+}
+
+TEST(world_adapter_close_pending_control_reconciles_epoch_slot_and_diagnostic) {
+    AspectTransportFixture fixture;
+    CoreAppNetWorldTestView view;
+    BreakRuntimeWorldSession *adapter;
+    BreakRuntimeWorldSessionStats stats;
+    const BreakConnectionKey key = 0x240au;
+    u64 epoch = 0u;
+    ASSERT_TRUE(world_fixture_start(&fixture, "core_app_world_close_pending.port", true, false));
+    ASSERT_TRUE(world_fixture_open(&fixture, key));
+    ASSERT_TRUE(world_make_control_pending(&fixture, key, 82u));
+    adapter = core_app_net_transport_world_adapter(fixture.transport);
+    ASSERT_TRUE(break_runtime_world_session_connection_epoch(adapter, key, &epoch));
+    ASSERT_NEQ(epoch, 0u);
+
+    core_app_net_transport_world_close_for_test(fixture.transport, key);
+    break_runtime_world_session_stats(adapter, &stats);
+    ASSERT_EQ(stats.queued, 1u);
+    ASSERT_TRUE(stats.control_pending);
+    ASSERT_TRUE(break_runtime_world_session_connection_epoch(adapter, key, &epoch));
+    ASSERT_NEQ(epoch, 0u);
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    ASSERT_EQ(view.open_count, 1u);
+    ASSERT_EQ(view.closed, 0u);
+    ASSERT_NOT_NULL(view.diagnostic);
+
+    world_clear_outbound(&fixture);
+    core_app_net_transport_world_drain_for_test(fixture.transport, 21u);
+    ASSERT_FALSE(break_runtime_world_session_connection_epoch(adapter, key, &epoch));
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    ASSERT_EQ(view.open_count, 0u);
+    ASSERT_EQ(view.closed, 1u);
+    ASSERT_TRUE(view.diagnostic == NULL);
+    ASSERT_FALSE(break_world_session_baseline(view.session, key, NULL, NULL));
+    break_runtime_world_session_stats(adapter, &stats);
+    ASSERT_EQ(stats.queued, 0u);
+    ASSERT_FALSE(stats.control_pending);
+    ASSERT_TRUE(transport_fixture_destroy(&fixture));
+    aspect_fixture_dispose(&fixture);
+}
+
 TEST(world_transport_open_copies_fixed_pod_entities_independently) {
     AspectTransportFixture fixture;
     CoreAppNetWorldTestView view;
@@ -1772,6 +1912,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(world_transport_default_off_creates_no_state_or_trace);
     RUN_TEST(world_adapter_registration_rebaseline_and_reopen_epochs);
     RUN_TEST(world_adapter_submit_defers_open_close_and_fifo_controls);
+    RUN_TEST(world_adapter_open_pending_control_reconciles_epoch_slot_and_diagnostic);
+    RUN_TEST(world_adapter_reopen_pending_control_completes_second_open);
+    RUN_TEST(world_adapter_close_pending_control_reconciles_epoch_slot_and_diagnostic);
     RUN_TEST(world_transport_open_copies_fixed_pod_entities_independently);
     RUN_TEST(world_transport_bounded_tick_and_shutdown_drain_only_fill_diagnostic_world);
     RUN_TEST(world_transport_local_ack_uses_adapter_exactly_once);

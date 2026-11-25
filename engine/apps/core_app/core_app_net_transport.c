@@ -273,7 +273,11 @@ struct CoreAppNetTransport {
     bool world_adapter_abandoned;
     Entity world_objects[CORE_APP_WORLD_OBJECT_COUNT];
     bool world_open[CORE_APP_NET_MAX_CONNECTIONS];
+    bool world_desired_open[CORE_APP_NET_MAX_CONNECTIONS];
+    bool world_admission_pending[CORE_APP_NET_MAX_CONNECTIONS];
+    u32 world_transition_kind[CORE_APP_NET_MAX_CONNECTIONS];
     u64 world_connection_epochs[CORE_APP_NET_MAX_CONNECTIONS];
+    World *world_pending_diagnostics[CORE_APP_NET_MAX_CONNECTIONS];
     bool world_control_pending[CORE_APP_NET_MAX_CONNECTIONS];
     bool world_control_submitted[CORE_APP_NET_MAX_CONNECTIONS];
     u64 world_control_correlations[CORE_APP_NET_MAX_CONNECTIONS];
@@ -750,11 +754,112 @@ static BreakRuntimeError net_world_adapter_drain(CoreAppNetTransport *t) {
     return break_runtime_world_session_drain(t->world_adapter, 256u, NULL);
 }
 
-static BreakRuntimeError net_world_adapter_submit_drain(
-    CoreAppNetTransport *t, const BreakRuntimeWorldCommand *command) {
-    BreakRuntimeError result = core_app_net_transport_world_submit(t, command, 0u);
-    if (result != BREAK_RUNTIME_OK) return result;
-    return net_world_adapter_drain(t);
+typedef enum CoreAppNetWorldTransitionResult {
+    NET_WORLD_TRANSITION_REJECTED = -1,
+    NET_WORLD_TRANSITION_PENDING = 0,
+    NET_WORLD_TRANSITION_OK = 1
+} CoreAppNetWorldTransitionResult;
+
+static void net_world_clear_control_state(CoreAppNetTransport *t, u32 slot) {
+    t->world_control_pending[slot] = false;
+    t->world_control_submitted[slot] = false;
+    t->world_control_correlations[slot] = 0u;
+    t->world_force_full[slot] = false;
+    memset(&t->world_controls[slot], 0, sizeof(t->world_controls[slot]));
+}
+
+static void net_world_reject_admission(CoreAppNetTransport *t, u32 slot) {
+    if (!t->world_admission_pending[slot]) return;
+    t->world_admission_pending[slot] = false;
+    t->stats.refused++;
+    net_aspect_close(t, slot);
+    (void)break_session_manager_close(t->manager, t->keys[slot], 0u);
+    (void)break_net_reactor_close(t->reactor, t->keys[slot]);
+    t->keys[slot] = 0u;
+    t->authenticated[slot] = false;
+    t->welcomed[slot] = false;
+    t->closing[slot] = false;
+    t->session_ids[slot] = 0u;
+    t->correction_pending[slot] = false;
+    physics_sync_baseline_release(&t->physics_baselines[slot]);
+}
+
+static CoreAppNetWorldTransitionResult net_world_reconcile_slot(CoreAppNetTransport *t,
+                                                                 u32 slot) {
+    if (!t->world_adapter) return NET_WORLD_TRANSITION_REJECTED;
+    for (u32 round = 0u; round < 2u; ++round) {
+        BreakRuntimeWorldCommand command;
+        BreakRuntimeError result;
+        u64 epoch = 0u;
+        u32 completed_kind;
+        if (t->world_transition_kind[slot] == 0u) {
+            if (t->world_desired_open[slot] == t->world_open[slot]) {
+                return NET_WORLD_TRANSITION_OK;
+            }
+            memset(&command, 0, sizeof(command));
+            command.kind = t->world_desired_open[slot]
+                               ? BREAK_RUNTIME_WORLD_COMMAND_OPEN
+                               : BREAK_RUNTIME_WORLD_COMMAND_CLOSE;
+            command.connection_key = t->keys[slot];
+            command.connection_epoch = t->world_desired_open[slot]
+                                           ? 0u
+                                           : t->world_connection_epochs[slot];
+            command.level_generation = t->world_level_generation;
+            result = core_app_net_transport_world_submit(t, &command, 0u);
+            if (result != BREAK_RUNTIME_OK) {
+                t->world_desired_open[slot] = t->world_open[slot];
+                world_destroy(t->world_pending_diagnostics[slot]);
+                t->world_pending_diagnostics[slot] = NULL;
+                if (!t->world_open[slot]) net_world_reject_admission(t, slot);
+                return NET_WORLD_TRANSITION_REJECTED;
+            }
+            t->world_transition_kind[slot] = command.kind;
+        }
+        (void)net_world_adapter_drain(t);
+        if (break_runtime_world_session_pending(t->world_adapter) != 0u) {
+            return NET_WORLD_TRANSITION_PENDING;
+        }
+        completed_kind = t->world_transition_kind[slot];
+        t->world_transition_kind[slot] = 0u;
+        if (completed_kind == BREAK_RUNTIME_WORLD_COMMAND_OPEN) {
+            if (break_runtime_world_session_connection_epoch(t->world_adapter, t->keys[slot],
+                                                             &epoch) &&
+                epoch != 0u) {
+                t->world_open[slot] = true;
+                t->world_connection_epochs[slot] = epoch;
+                t->world_diagnostics[slot] = t->world_pending_diagnostics[slot];
+                t->world_pending_diagnostics[slot] = NULL;
+                t->world_stats.opened++;
+                if (t->world_admission_pending[slot]) {
+                    t->world_admission_pending[slot] = false;
+                    if (t->world_desired_open[slot]) t->stats.opened++;
+                }
+                continue;
+            }
+            t->world_open[slot] = false;
+            t->world_connection_epochs[slot] = 0u;
+            t->world_desired_open[slot] = false;
+            world_destroy(t->world_pending_diagnostics[slot]);
+            t->world_pending_diagnostics[slot] = NULL;
+            net_world_reject_admission(t, slot);
+            return NET_WORLD_TRANSITION_REJECTED;
+        }
+        if (!break_runtime_world_session_connection_epoch(t->world_adapter, t->keys[slot],
+                                                          &epoch)) {
+            t->world_open[slot] = false;
+            t->world_connection_epochs[slot] = 0u;
+            t->world_stats.closed++;
+            world_destroy(t->world_diagnostics[slot]);
+            t->world_diagnostics[slot] = NULL;
+            net_world_clear_control_state(t, slot);
+            continue;
+        }
+        t->world_desired_open[slot] = true;
+        world_destroy(t->world_pending_diagnostics[slot]);
+        t->world_pending_diagnostics[slot] = NULL;
+        return NET_WORLD_TRANSITION_REJECTED;
+    }
+    return NET_WORLD_TRANSITION_PENDING;
 }
 
 static bool net_world_initialize_level(CoreAppNetTransport *t, u64 level_generation) {
@@ -769,29 +874,24 @@ static bool net_world_initialize_level(CoreAppNetTransport *t, u64 level_generat
 }
 
 static void net_world_close(CoreAppNetTransport *t, u32 slot) {
-    if (t->world_open[slot]) {
-        if (t->world_adapter) {
-            BreakRuntimeWorldCommand command;
-            BreakRuntimeError result;
-            memset(&command, 0, sizeof(command));
-            command.kind = BREAK_RUNTIME_WORLD_COMMAND_CLOSE;
-            command.connection_key = t->keys[slot];
-            command.connection_epoch = t->world_connection_epochs[slot];
-            command.level_generation = t->world_level_generation;
-            result = net_world_adapter_submit_drain(t, &command);
-            if (result != BREAK_RUNTIME_OK) return;
+    t->world_desired_open[slot] = false;
+    world_destroy(t->world_pending_diagnostics[slot]);
+    t->world_pending_diagnostics[slot] = NULL;
+    if (t->world_adapter) {
+        (void)net_world_reconcile_slot(t, slot);
+        if (t->world_open[slot] || t->world_transition_kind[slot] != 0u) return;
+    } else {
+        t->world_transition_kind[slot] = 0u;
+        if (t->world_open[slot]) {
+            t->world_open[slot] = false;
+            t->world_connection_epochs[slot] = 0u;
+            t->world_stats.closed++;
         }
-        t->world_open[slot] = false;
-        t->world_connection_epochs[slot] = 0u;
-        t->world_stats.closed++;
     }
+    t->world_admission_pending[slot] = false;
     world_destroy(t->world_diagnostics[slot]);
     t->world_diagnostics[slot] = NULL;
-    t->world_control_pending[slot] = false;
-    t->world_control_submitted[slot] = false;
-    t->world_control_correlations[slot] = 0u;
-    t->world_force_full[slot] = false;
-    memset(&t->world_controls[slot], 0, sizeof(t->world_controls[slot]));
+    net_world_clear_control_state(t, slot);
 }
 
 static void net_world_close_all(CoreAppNetTransport *t) {
@@ -838,31 +938,21 @@ static void net_world_update(CoreAppNetTransport *t, const CoreAppSnapshotEntity
     }
 }
 
-static bool net_world_open(CoreAppNetTransport *t, u32 slot, BreakConnectionKey key) {
-    World *diagnostic;
-    BreakRuntimeWorldCommand command;
-    u64 epoch = 0u;
-    if (!t->world_replication) return true;
-    if (!t->world_level_initialized || !t->world_adapter) return false;
-    world_destroy(t->world_diagnostics[slot]);
-    t->world_diagnostics[slot] = NULL;
-    diagnostic = net_world_diagnostic_create(t);
-    if (!diagnostic) return false;
-    memset(&command, 0, sizeof(command));
-    command.kind = BREAK_RUNTIME_WORLD_COMMAND_OPEN;
-    command.connection_key = key;
-    command.level_generation = t->world_level_generation;
-    if (net_world_adapter_submit_drain(t, &command) != BREAK_RUNTIME_OK ||
-        !break_runtime_world_session_connection_epoch(t->world_adapter, key, &epoch) ||
-        epoch == 0u) {
-        world_destroy(diagnostic);
-        return false;
+static CoreAppNetWorldTransitionResult net_world_open(CoreAppNetTransport *t, u32 slot,
+                                                       BreakConnectionKey key) {
+    if (!t->world_replication) return NET_WORLD_TRANSITION_OK;
+    if (!t->world_level_initialized || !t->world_adapter) return NET_WORLD_TRANSITION_REJECTED;
+    if (t->world_desired_open[slot] && t->world_open[slot] &&
+        t->world_transition_kind[slot] == 0u) {
+        return NET_WORLD_TRANSITION_OK;
     }
-    t->world_diagnostics[slot] = diagnostic;
-    t->world_open[slot] = true;
-    t->world_connection_epochs[slot] = epoch;
-    t->world_stats.opened++;
-    return true;
+    if (!t->world_pending_diagnostics[slot]) {
+        t->world_pending_diagnostics[slot] = net_world_diagnostic_create(t);
+        if (!t->world_pending_diagnostics[slot]) return NET_WORLD_TRANSITION_REJECTED;
+    }
+    t->world_desired_open[slot] = true;
+    (void)key;
+    return net_world_reconcile_slot(t, slot);
 }
 
 static BreakNetSendResult net_world_publish_slot(CoreAppNetTransport *t, u32 slot) {
@@ -904,6 +994,7 @@ static void net_world_tick_drain(CoreAppNetTransport *t, u64 now_ms) {
     for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
         BreakRuntimeWorldCommand command;
         BreakRuntimeError result;
+        (void)net_world_reconcile_slot(t, i);
         if (!t->world_open[i]) continue;
         (void)break_world_session_drain(t->world_session, t->keys[i], t->world_diagnostics[i],
                                         CORE_APP_WORLD_DRAIN_BUDGET);
@@ -1155,6 +1246,7 @@ static void net_pump(CoreAppNetTransport *t, int timeout_ms, u32 *budget, u32 ti
         }
         if (event.type == BREAK_NET_EVENT_CONNECTION_OPENED) {
             int slot = -1;
+            CoreAppNetWorldTransitionResult world_result = NET_WORLD_TRANSITION_OK;
             if (!t->admission_open || net_slot_find(t, event.connection_key) >= 0 ||
                 (slot = net_slot_add(t, event.connection_key)) < 0) {
                 t->stats.refused++;
@@ -1163,7 +1255,8 @@ static void net_pump(CoreAppNetTransport *t, int timeout_ms, u32 *budget, u32 ti
                 continue;
             }
             if (!net_aspect_open(t, (u32)slot, event.connection_key) ||
-                !net_world_open(t, (u32)slot, event.connection_key)) {
+                (world_result = net_world_open(t, (u32)slot, event.connection_key)) ==
+                    NET_WORLD_TRANSITION_REJECTED) {
                 net_world_close(t, (u32)slot);
                 net_aspect_close(t, (u32)slot);
                 t->keys[slot] = 0u;
@@ -1174,7 +1267,11 @@ static void net_pump(CoreAppNetTransport *t, int timeout_ms, u32 *budget, u32 ti
                 break_net_event_release(&event);
                 continue;
             }
-            t->stats.opened++;
+            if (world_result == NET_WORLD_TRANSITION_PENDING) {
+                t->world_admission_pending[slot] = true;
+            } else {
+                t->stats.opened++;
+            }
         }
         (void)break_session_manager_apply_adapter_event(t->manager, &event);
         if (event.type == BREAK_NET_EVENT_CONNECTION_CLOSED ||
@@ -2087,13 +2184,36 @@ bool core_app_net_transport_world_control_for_test(CoreAppNetTransport *transpor
     return net_world_on_control(key, message, transport);
 }
 
+bool core_app_net_transport_world_open_for_test(CoreAppNetTransport *transport, u64 key) {
+    int slot;
+    if (!transport || !transport->world_replication || !transport->world_session || key == 0u) {
+        return false;
+    }
+    slot = net_slot_find(transport, key);
+    if (slot < 0) {
+        for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
+            if (transport->keys[i] == 0u) {
+                transport->keys[i] = key;
+                slot = (int)i;
+                break;
+            }
+        }
+    }
+    return slot >= 0 && net_world_open(transport, (u32)slot, key) == NET_WORLD_TRANSITION_OK;
+}
+
+void core_app_net_transport_world_close_for_test(CoreAppNetTransport *transport, u64 key) {
+    int slot = transport ? net_slot_find(transport, key) : -1;
+    if (slot >= 0) net_world_close(transport, (u32)slot);
+}
+
 World *core_app_net_transport_world_reopen_for_test(CoreAppNetTransport *transport, u64 key) {
     int slot;
     if (!transport || !transport->world_replication || !transport->world_session) return NULL;
     slot = net_slot_find(transport, key);
     if (slot < 0 || !transport->world_open[slot]) return NULL;
     net_world_close(transport, (u32)slot);
-    if (!net_world_open(transport, (u32)slot, key)) return NULL;
+    if (net_world_open(transport, (u32)slot, key) != NET_WORLD_TRANSITION_OK) return NULL;
     return transport->world_diagnostics[slot];
 }
 
