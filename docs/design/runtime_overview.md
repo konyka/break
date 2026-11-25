@@ -293,3 +293,9 @@ target 依赖边界不变：loopback 测试通过 `runtime_world_session_test`�
 `stats()` 与 `pending()` 回答“整体是否还有工作”（queue、control retry、publish request/continuation），而 `break_runtime_world_session_connection_snapshots()` 回答“是哪条连接、停在哪个判账阶段”。前者用于 shutdown 与背压判断，后者仅用于诊断，二者都不进入 wire，也不改变 `fair_outbound_admission` 默认值或 drain 行为。
 
 同一数据可能有多条连接：查询按 adapter slot 升序返回，调用方应使用 `connection_key`/`connection_epoch` 关联，而不是依赖数组下标作为持久身份。远程指标导出、历史采样与告警未实现。
+
+## 三种诊断粒度的分工（2026-11-26）
+
+`stats()`/`pending()` 回答“整体是否还有工作”，用于 shutdown 与背压判断；逐连接快照回答“哪条连接停在哪个判账阶段”；`break_runtime_world_session_publish_progress()` 回答“发布链推进到哪个 epoch、剩几条连接、是否有待处理 request 或续发”。三者都不进入 wire，也不改变 `fair_outbound_admission` 默认值或 drain 行为。
+
+发布进度摘要与逐连接快照共用同一判脏表达式，但都不查询 Session 的 active attempt，因此只能表征 adapter 自身欠账；指标协议、历史采样与告警仍未实现。

@@ -564,3 +564,9 @@ E1/E2：A 填满自身 share 后第一次 drain 返回 OVERLOAD，`attempt_targe
 `publish_dirty` 镜像 fanout continuation 中 adapter 自己持有的判据：有 retry，或任一保存的 attempt 标量非零，或 completed/terminal 都不等于最近一次 drain 观察到的 publication epoch。它**不含** continuation 还会查的 Session `attempt_pending`，因此回答的是“该 adapter 还欠一次发布”，既不等于 `pending()==0`，也不代表权威 World 与快照存在差异。查询只读：不调用 World Session、publication 或 queue，不推进状态机，也不改变 pending、聚合统计或 retry 状态。
 
 该 API 不提供指标导出、历史采样或告警，也不暴露 World Session 私有 attempt 字节；远程指标与告警仍是缺口。
+
+## 发布进度摘要（2026-11-26）
+
+`break_runtime_world_session_publish_progress()` 返回 adapter 级只读摘要：`observed_publication_epoch` 是最近一次 drain acquire 到的 publication epoch（0 表示尚未 drain）；`open_connections` 与 `dirty_connections` 在同一临界区内统计；`request_pending`/`continuation_pending` 分别表示 notice 已消费未 fanout、以及跨 drain 续发未完成。
+
+`dirty_connections` 使用与 `BreakRuntimeWorldConnectionSnapshot.publish_dirty` 逐字相同的判据，两者不会分叉；但它同样**不含** Session `attempt_pending`，因此摘要不为零不代表 `pending()` 非零，反之亦然。`adapter` 或输出为 NULL 时返回 false 并清零输出；查询不调用 World Session、publication 或 queue，不推进状态机。

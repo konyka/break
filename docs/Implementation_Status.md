@@ -13980,3 +13980,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 本地最终 HEAD：`test_runtime_world_session` **49/49**，normal、ASan+UBSan（显式 `detect_leaks=1`）与 TSan 三树通过，TSan 连跑三次无 race；完整未过滤 CTest OpenGL **480 注册、480 通过、0 失败**（rc=0），Vulkan **482 注册、482 通过、0 失败**（rc=0）；命名 STAGE=4 与 Wayland 文档合同通过。
 - 远端 CI `45714760373` **25 success、3 条件 skip、0 cancelled、0 failed**；windows-d3d12 `45714760345` success；Proton `45716945025` success，上游 run-id=`45714760345`，device/pipeline contract 均为 77（仅兼容通道）。
 - 验收边界：`publish_dirty` 镜像 continuation 中 adapter 自有的判据，不含 Session `attempt_pending`，不能当作 `pending()==0` 或权威 World 一致性的证据。远程指标导出、历史采样、告警，以及共享 live World、权威 simulation 合并、跨 World 持久身份、AOI、自动换级、资产链与可靠每 epoch 广播仍未交付。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。本收据提交自身的工作流结果不在此预写。
+
+## Runtime World 发布进度摘要（2026-11-26）
+
+- **交付**：新增只读 `break_runtime_world_session_publish_progress()`，返回最近观察到的 publication epoch、打开连接数、脏连接数，以及 request/continuation 两个待处理标志。`dirty_connections` 与逐连接快照的 `publish_dirty` 使用同一表达式；`adapter` 或输出为 NULL 时返回 false 并清零。查询持 adapter mutex 复制标量，不调用 World Session、publication 或 queue，不改变 pending、统计或 drain，不新增 wire。
+- **验证**：`test_runtime_world_session` 由 49 增至 **50/50**，新增用例覆盖 NULL/空 adapter、三连接未发布、budget=1 下一连接已完成而两连接仍脏、只读性（`stats` 与逐连接快照前后 `memcmp` 不变）、摘要脏数等于快照脏数，以及排空后归零。normal、ASan+UBSan（显式 `detect_leaks=1`）与 TSan 均 50/50，TSan 连跑两次无 race。
+- **变异**：`dirty_connections` 恒 0 与查询内清 `continuation_pending` 两项均实际判红后恢复。「锁外分两次统计」在单线程用例中无法稳定构造，记为**未能构造**，不作为已判红证据。
+- **边界**：仍无指标协议、历史采样与告警；摘要不含 Session active attempt，不能替代 `pending()==0`。共享 live World、权威 simulation 合并、跨 World 持久身份、AOI、自动换级、资产链与可靠每 epoch 广播仍未交付；既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变，本节不预写远端结果。

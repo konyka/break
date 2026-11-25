@@ -1085,3 +1085,9 @@ authority handoff 和默认全局公平调度仍未交付。正常断连顺序�
 `d7a26154` 已在远端 CI `45714760373`（25 success、3 条件 skip、0 failed）、windows-d3d12 `45714760345` 与 Proton `45716945025` 上通过，本地 OpenGL 480/480、Vulkan 482/482 与三树 49/49 亦通过。
 
 这仍只关闭库内只读的逐连接判账视图。远程指标导出、历史采样与告警，以及共享 live World、权威 simulation 合并、跨 World 持久身份、AOI 裁剪、自动换级、完整资产链、inbound completion 映射和可靠每 epoch 广播都未交付；`publish_dirty` 也不等同于 `pending()==0`。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。
+
+### 第 17 节补充（2026-11-26）：发布进度摘要不关闭的可观测性缺口
+
+`break_runtime_world_session_publish_progress()` 只提供进程内、只读的 adapter 级发布进度，用于回答“推进到哪个 epoch、剩几条连接、是否有待处理 request/续发”。它不导出指标、不做历史采样、不产生告警、不监听网络，也不查询 Session active attempt，因此不能替代远程可观测性，也不等同 `pending()==0`。
+
+仍开放：指标协议与远程采集、告警，以及共享 live World、权威 simulation 合并、跨 World 持久身份、AOI 裁剪、自动换级、完整资产链、inbound completion 映射与可靠每 epoch 广播。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。
