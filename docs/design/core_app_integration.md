@@ -1851,7 +1851,8 @@ arm64 lane 新增 `test_core_app_network`（25/25）和 `test_core_app_network_o
 
 - **全槽 key 代际所有权**：旧槽仍持有某 key 的 OPEN、CLOSE 或补偿 CLOSE 时，其他槽的同 key
   World admission 保持 pending，不得抢先进入 Runtime queue；旧槽完成关闭并释放后才提交新
-  OPEN。断连后 CLOSE 失败且仍持有旧 epoch 的槽位继续保存 key。OPEN 对账要求非零 epoch
+  OPEN。保存的 transition key 只在命令完成对账后释放；若 CLOSE 已同步失败、随后断连清理把槽位
+  key 清零，已符合“完成对账”条件。OPEN 对账要求非零 epoch
   相对提交前发生变化，不能仅凭 key 当前存在 epoch 就认领别的连接。
 - **同 key 跨槽回归**：pending CLOSE→OPEN 与取消 OPEN→同 key OPEN 均检查旧槽
   key/epoch/transition/diagnostic 全部释放、新槽独立 epoch 和 diagnostic World，以及

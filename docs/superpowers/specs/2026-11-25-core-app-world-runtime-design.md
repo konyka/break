@@ -102,7 +102,8 @@ CREATED 或 FAILED 回滚先停止其他 adapter API，调用
 - connection key 的 World 代际所有权跨全部 transport 槽位生效。旧槽仍保存该 key 的
   OPEN、CLOSE 或取消 OPEN 后的补偿 CLOSE 时，其他槽位的同 key OPEN 只保持
   admission pending，不得进入 Runtime queue。旧连接及补偿关闭完成对账、旧槽释放后，
-  才允许新 OPEN 提交。断连后 CLOSE 失败且仍持有旧 epoch 的槽位继续保存 key，不能让
+  才允许新 OPEN 提交。保存的 transition key 只在命令完成对账后释放；若 CLOSE 已同步失败、
+  随后断连清理把槽位 key 清零，按“完成对账”处理，不会因此重新认领旧状态，也不能让
   新连接认领旧状态。该规则不新增 Runtime API、wire 消息或数据面。
 - OPEN 提交前记录该 key 的先前 epoch；对账成功要求非零且相对先前值已经变化，不能仅凭
   当前 key 存在任意 epoch 就认领连接。同 key pending CLOSE→OPEN 与取消 OPEN→同 key

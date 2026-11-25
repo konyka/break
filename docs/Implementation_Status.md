@@ -13932,3 +13932,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 远端 CI run `45684529232`、windows-d3d12 run `45684529198`、QUIC run `45684529212`、Proton run `45687424089` 均 completed/success；CI 为 **25 success、3 条件 skip、0 cancelled、0 failed**。Proton 上游 run-id=`45684529198`，device/pipeline contract 均为 77，仅表示兼容通道，不是原生 GPU 通过。
 - macOS Snowflake replication job 的私有依赖 checkout、configure、build 和 14 项测试均为 skipped 并记录 UNAVAILABLE，不计执行通过。共同条件 skip 为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`。既有 Lua longjmp、混合 TSan 边界与完整 sanitizer suite 未运行的限制不变。
 - 本项只关闭 outbound-only 的 snapshot notice 数据面：publication publish → 16 字节 direct notice（0x5754/v1 CONTROL）→ owner drain 单次 acquire → 有限 round-robin fanout → 既有 BRWD/BRFG，含 E1/E2 实际 attempt 判账与真实双 socket 验证。不关闭共享 live World、权威 simulation 合并、跨 World 持久身份、AOI 裁剪、自动换级、资产链、inbound completion 映射、可靠每 epoch 广播或默认全局公平调度。本收据提交自身的工作流结果不在此预写。
+
+
+## core_app World 保存 key 语义澄清（2026-11-26）
+
+- **澄清对象**：`core_app World 终审集中修复（2026-11-25）` 小节中“断连后 CLOSE 失败且仍持有旧 epoch 的槽位继续占有 key”的表述。该小节作为历史记录保持原样，本节只补充精确语义，不改写原文。
+- **实际代码行为**：`net_world_finish_transition` 在 `world_open[slot] && keys[slot] != 0` 时清除保存的 transition key；断连清理在 `net_world_close` 返回后才把槽位 key 清零。因此 CLOSE 同步失败、随后断连清理发生时，保存 key 会先释放，不会跨断连无限期占有。
+- **为何仍安全**：OPEN 对账要求非零 epoch 相对提交前发生变化，`net_world_key_owned_elsewhere` 在所有槽仍持有该 key 的 transition 时阻止同 key 新 admission。因此释放保存 key 不会重新引入同 key 跨槽认领旧 epoch 的问题，前一轮 Critical 的修复不依赖“失败后永久保存 key”。
+- **文档同步**：`docs/design/core_app_integration.md` 与 `docs/superpowers/specs/2026-11-25-core-app-world-runtime-design.md` 的当前约束已改为“保存 key 只在命令完成对账后释放；CLOSE 同步失败后断连清 key 按完成对账处理”。本澄清不改变任何生产行为、wire 或测试结论，也不预写远端结果。
