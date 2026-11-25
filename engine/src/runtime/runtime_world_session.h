@@ -160,11 +160,12 @@ usize break_runtime_world_session_connection_snapshots(
  * two views cannot disagree. Read-only: copies scalars under the adapter mutex, never
  * calls World Session, publication or queue. */
 typedef struct {
-    u64 observed_publication_epoch; /* last epoch acquired by a drain; 0 means never */
+    u64 observed_publication_epoch; /* no known epoch in this window; also reset to 0 by
+                                     * rebaseline and by an empty/closed publication */
     u32 open_connections;
     u32 dirty_connections;
-    bool request_pending;
-    bool continuation_pending;
+    bool request_pending;      /* notice consumed, not yet fanned out */
+    bool continuation_pending; /* latest drain's recomputed flag; includes Session attempt_pending */
 } BreakRuntimeWorldPublishProgress;
 
 /* Returns false with a zeroed output when the adapter (or output) is NULL. */

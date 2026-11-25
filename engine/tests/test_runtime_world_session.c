@@ -4423,9 +4423,16 @@ TEST(publish_progress_reports_adapter_level_state)
     ASSERT_NOT_NULL(s1);
     ASSERT_TRUE(break_world_snapshot_publication_publish(fixture.publication, s1, 7u));
     ASSERT_EQ(submit_current(&fixture, 7u, 0u), BREAK_RUNTIME_OK);
+    /* The notice sits in the queue: not consumed, so request_pending is still false;
+     * the flag becomes true only inside the drain that consumes it. */
+    ASSERT_TRUE(break_runtime_world_session_publish_progress(fixture.adapter, &progress));
+    ASSERT_FALSE(progress.request_pending);
+    ASSERT_EQ(progress.open_connections, 3u);
+    ASSERT_EQ(progress.observed_publication_epoch, 0u);
     ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 1u, &drained), BREAK_RUNTIME_OK);
     ASSERT_EQ(drained, 1u);
     ASSERT_TRUE(break_runtime_world_session_publish_progress(fixture.adapter, &progress));
+    ASSERT_FALSE(progress.request_pending);
     ASSERT_EQ(progress.observed_publication_epoch, 1u);
     ASSERT_FALSE(progress.request_pending);
     ASSERT_TRUE(progress.continuation_pending);
@@ -4454,6 +4461,7 @@ TEST(publish_progress_reports_adapter_level_state)
     }
     ASSERT_TRUE(break_runtime_world_session_publish_progress(fixture.adapter, &progress));
     ASSERT_FALSE(progress.continuation_pending);
+    ASSERT_FALSE(progress.request_pending);
     ASSERT_EQ(progress.dirty_connections, 0u);
     ASSERT_EQ(progress.observed_publication_epoch, 1u);
     ASSERT_EQ(progress.open_connections, 3u);

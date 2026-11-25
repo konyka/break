@@ -13985,5 +13985,6 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 
 - **交付**：新增只读 `break_runtime_world_session_publish_progress()`，返回最近观察到的 publication epoch、打开连接数、脏连接数，以及 request/continuation 两个待处理标志。`dirty_connections` 与逐连接快照的 `publish_dirty` 使用同一表达式；`adapter` 或输出为 NULL 时返回 false 并清零。查询持 adapter mutex 复制标量，不调用 World Session、publication 或 queue，不改变 pending、统计或 drain，不新增 wire。
 - **验证**：`test_runtime_world_session` 由 49 增至 **50/50**，新增用例覆盖 NULL/空 adapter、三连接未发布、budget=1 下一连接已完成而两连接仍脏、只读性（`stats` 与逐连接快照前后 `memcmp` 不变）、摘要脏数等于快照脏数，以及排空后归零。normal、ASan+UBSan（显式 `detect_leaks=1`）与 TSan 均 50/50，TSan 连跑两次无 race。
-- **变异**：`dirty_connections` 恒 0 与查询内清 `continuation_pending` 两项均实际判红后恢复。「锁外分两次统计」在单线程用例中无法稳定构造，记为**未能构造**，不作为已判红证据。
+- **变异**：`dirty_connections` 恒 0 与查询内清 `continuation_pending` 两项均实际判红后恢复；注意清 `continuation_pending` 由正向断言（`continuation_pending==true`）捕获，只读性 `memcmp` 只比较 `stats` 与逐连接快照，不覆盖该字段。「锁外分两次统计」在单线程用例中无法稳定构造，记为**未能构造**，不作为已判红证据。
+- **口径修正**：`continuation_pending` 是最近一次 drain 末尾重算的标志，其判据含 Session `attempt_pending`，不能单独代表 adapter 欠账；`observed_publication_epoch == 0` 也不等于“从未 drain”，rebaseline 与空/关闭 publication 都会把它归零。判脏已抽成单一 `runtime_world_connection_dirty_locked()`，逐连接快照与摘要共用，结构上避免两处漂移。
 - **边界**：仍无指标协议、历史采样与告警；摘要不含 Session active attempt，不能替代 `pending()==0`。共享 live World、权威 simulation 合并、跨 World 持久身份、AOI、自动换级、资产链与可靠每 epoch 广播仍未交付；既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变，本节不预写远端结果。

@@ -567,6 +567,6 @@ E1/E2：A 填满自身 share 后第一次 drain 返回 OVERLOAD，`attempt_targe
 
 ## 发布进度摘要（2026-11-26）
 
-`break_runtime_world_session_publish_progress()` 返回 adapter 级只读摘要：`observed_publication_epoch` 是最近一次 drain acquire 到的 publication epoch（0 表示尚未 drain）；`open_connections` 与 `dirty_connections` 在同一临界区内统计；`request_pending`/`continuation_pending` 分别表示 notice 已消费未 fanout、以及跨 drain 续发未完成。
+`break_runtime_world_session_publish_progress()` 返回 adapter 级只读摘要：`observed_publication_epoch` 是最近一次 drain acquire 到的 publication epoch（0 表示尚未 drain）；`open_connections` 与 `dirty_connections` 在同一临界区内统计；`request_pending` 表示 notice 已消费但尚未在批次末尾 fanout；`continuation_pending` 是最新一次 drain 末尾**重算**的 continuation 标志，其判据包含 Session `attempt_pending`，因此它不单独代表 adapter 欠账——与 `publish_dirty` 的边界说明并列看待。`observed_publication_epoch == 0` 表示当前观测窗口内没有已知 epoch：既可能是从未 drain，也可能是 rebaseline 或空/已关闭 publication 把它清回了 0。
 
 `dirty_connections` 使用与 `BreakRuntimeWorldConnectionSnapshot.publish_dirty` 逐字相同的判据，两者不会分叉；但它同样**不含** Session `attempt_pending`，因此摘要不为零不代表 `pending()` 非零，反之亦然。`adapter` 或输出为 NULL 时返回 false 并清零输出；查询不调用 World Session、publication 或 queue，不推进状态机。

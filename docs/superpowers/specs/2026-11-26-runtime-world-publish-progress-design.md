@@ -22,7 +22,8 @@ typedef struct {
     u32 open_connections;           /* 当前已打开连接数 */
     u32 dirty_connections;          /* 仍需发布的连接数，判据同 BreakRuntimeWorldConnectionSnapshot.publish_dirty */
     bool request_pending;           /* 有 notice 已消费但尚未在批次末尾 fanout */
-    bool continuation_pending;      /* 仍有跨 drain 的 fanout 未完成 */
+    bool continuation_pending;      /* 最近一次 drain 末尾重算的 continuation 标志（含 Session
+                                     * attempt_pending，故不单独代表 adapter 欠账） */
 } BreakRuntimeWorldPublishProgress;
 
 /* 持 adapter mutex 复制标量；adapter==NULL 时输出全零并返回 false。
@@ -34,7 +35,7 @@ bool break_runtime_world_session_publish_progress(
 
 ### 语义
 
-- `observed_publication_epoch` 为 adapter 最近一次在 drain 中 acquire 到的 lease epoch；与逐连接快照使用同一个值，因此两者的“当前 epoch”口径一致。
+- `observed_publication_epoch` 为 adapter 最近一次在 drain 中 acquire 到的 lease epoch，与逐连接快照同源；**0 不代表“从未 drain”**——`runtime_world_clear_publish()` 在 acquire 返回 EMPTY/CLOSED/非 OK 以及 REBASELINE 时都会把它归零。
 - `dirty_connections` 用与 `publish_dirty` 完全相同的单连接判据计数，避免两处口径分叉。
 - `open_connections` / `dirty_connections` 是同一临界区内的一致快照，不会出现“连接数小于脏连接数”这种跨快照错位。
 - `request_pending` / `continuation_pending` 直接取自 adapter 布尔字段，用于区分“还没开始处理 notice”与“处理到一半还在续发”。

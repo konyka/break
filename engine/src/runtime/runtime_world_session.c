@@ -881,6 +881,21 @@ bool break_runtime_world_session_connection_epoch(
     return found;
 }
 
+/* Single source of truth for a connection's adapter-owned dirty state; the
+ * per-connection snapshot and the adapter-level summary both call it so the two views
+ * cannot drift. It deliberately omits Session attempt_pending (see the header note). */
+static bool runtime_world_connection_dirty_locked(
+    const BreakRuntimeWorldSession *adapter, const RuntimeWorldConnection *connection)
+{
+    return connection->retry_publish ||
+           connection->attempt_publication_epoch != 0u ||
+           connection->attempt_target_snapshot_id != 0u ||
+           connection->attempt_target_tick != 0u ||
+           (adapter->publish_observed_epoch != 0u &&
+            connection->completed_publication_epoch != adapter->publish_observed_epoch &&
+            connection->terminal_publication_epoch != adapter->publish_observed_epoch);
+}
+
 usize break_runtime_world_session_connection_snapshots(
     const BreakRuntimeWorldSession *adapter,
     BreakRuntimeWorldConnectionSnapshot *out_snapshots,
@@ -902,21 +917,7 @@ usize break_runtime_world_session_connection_snapshots(
         snapshot.attempt_target_snapshot_id = connection->attempt_target_snapshot_id;
         snapshot.attempt_target_tick = connection->attempt_target_tick;
         snapshot.retry_publish = connection->retry_publish;
-        /* Mirrors runtime_world_recompute_continuation's adapter-owned terms for one
-         * connection: retry or any saved attempt scalar keeps it dirty regardless of
-         * the observed epoch; otherwise the epoch comparison decides, and a
-         * never-drained adapter has no epoch to compare. The continuation also
-         * consults Session sender_state().attempt_pending, which this read-only query
-         * deliberately does not call, so the two can differ only in that window and
-         * this field must not be read as a substitute for pending(). */
-        snapshot.publish_dirty =
-            connection->retry_publish ||
-            connection->attempt_publication_epoch != 0u ||
-            connection->attempt_target_snapshot_id != 0u ||
-            connection->attempt_target_tick != 0u ||
-            (adapter->publish_observed_epoch != 0u &&
-             connection->completed_publication_epoch != adapter->publish_observed_epoch &&
-             connection->terminal_publication_epoch != adapter->publish_observed_epoch);
+        snapshot.publish_dirty = runtime_world_connection_dirty_locked(adapter, connection);
         if (out_snapshots && opened < capacity) out_snapshots[opened] = snapshot;
         ++opened;
     }
@@ -940,14 +941,7 @@ bool break_runtime_world_session_publish_progress(
         bool dirty;
         if (connection->key == 0u) continue;
         ++out_progress->open_connections;
-        /* Same expression as BreakRuntimeWorldConnectionSnapshot.publish_dirty. */
-        dirty = connection->retry_publish ||
-                connection->attempt_publication_epoch != 0u ||
-                connection->attempt_target_snapshot_id != 0u ||
-                connection->attempt_target_tick != 0u ||
-                (adapter->publish_observed_epoch != 0u &&
-                 connection->completed_publication_epoch != adapter->publish_observed_epoch &&
-                 connection->terminal_publication_epoch != adapter->publish_observed_epoch);
+        dirty = runtime_world_connection_dirty_locked(adapter, connection);
         if (dirty) ++out_progress->dirty_connections;
     }
     platform_mutex_unlock((PlatformMutex *)(uintptr_t)&adapter->mutex);
