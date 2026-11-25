@@ -902,12 +902,13 @@ usize break_runtime_world_session_connection_snapshots(
         snapshot.attempt_target_snapshot_id = connection->attempt_target_snapshot_id;
         snapshot.attempt_target_tick = connection->attempt_target_tick;
         snapshot.retry_publish = connection->retry_publish;
-        /* Mirrors runtime_world_recompute_continuation for one connection: an
-         * unresolved attempt keeps the connection dirty regardless of the observed
-         * epoch; otherwise the epoch comparison decides, and a never-drained adapter
-         * has no epoch to compare. The saved attempt scalars are always paired with
-         * retry_publish in the current state machine, so listing them keeps this
-         * field defined for any future writer that clears retry first. */
+        /* Mirrors runtime_world_recompute_continuation's adapter-owned terms for one
+         * connection: retry or any saved attempt scalar keeps it dirty regardless of
+         * the observed epoch; otherwise the epoch comparison decides, and a
+         * never-drained adapter has no epoch to compare. The continuation also
+         * consults Session sender_state().attempt_pending, which this read-only query
+         * deliberately does not call, so the two can differ only in that window and
+         * this field must not be read as a substitute for pending(). */
         snapshot.publish_dirty =
             connection->retry_publish ||
             connection->attempt_publication_epoch != 0u ||

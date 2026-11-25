@@ -128,9 +128,11 @@ void break_runtime_world_session_stats(
 
 /* Per-connection read-only view for diagnosis. The query copies adapter scalars
  * under the adapter mutex; it never calls World Session, publication or queue and
- * never advances the state machine. `publish_dirty` uses the same single-connection
- * criterion as the fanout continuation, so it answers "this connection still owes a
- * publication", not "the authoritative World differs". */
+ * never advances the state machine. `publish_dirty` mirrors the adapter-owned terms of
+ * the fanout continuation for one connection (retry, saved attempt scalars, then the
+ * observed-epoch comparison); it deliberately omits the continuation's Session
+ * `attempt_pending` probe, so it answers "this adapter still owes a publication", not
+ * "the authoritative World differs" and not "pending() is zero". */
 typedef struct {
     u64 connection_key;
     u64 connection_epoch;

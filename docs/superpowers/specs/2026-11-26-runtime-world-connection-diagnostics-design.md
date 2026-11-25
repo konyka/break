@@ -46,7 +46,7 @@ usize break_runtime_world_session_connection_snapshots(
 - 顺序稳定：按 adapter 内部 slot 升序；同一时刻两次查询顺序一致。
 - `capacity < 打开连接数` 时写入前 `capacity` 项并返回**实际打开连接数**，让调用方据此扩容重查；不得返回被截断的计数。
 - `adapter == NULL` 返回 0。
-- `publish_dirty` 定义：`retry_publish || completed_publication_epoch != 最近观察到的 publication epoch || terminal_publication_epoch != 最近观察到的 publication epoch`，与 `runtime_world_recompute_continuation` 的单连接判据一致；从未 drain 过（`publish_observed_epoch == 0`）时为 `retry_publish || attempt_publication_epoch != 0`。
+- `publish_dirty` 定义：`retry_publish || attempt_publication_epoch != 0 || attempt_target_snapshot_id != 0 || attempt_target_tick != 0 || (已观察过 epoch 且 completed/terminal 都不等于它)`，镜像 `runtime_world_recompute_continuation` 中 adapter 自己持有的判据；从未 drain 过时没有 epoch 可比较。它**不包含** continuation 还会查询的 Session `attempt_pending`（该查询必须保持只读、不调用 Session），故两判据只在“adapter 标量已清但 Session 仍有 active attempt”的窗口内分叉，`publish_dirty` 不能替代 `pending()==0`。
 - 字段直接来自该连接的 `RuntimeWorldConnection` 标量，不展示 World Session 的真实 attempt 状态；`attempt_*` 为 adapter 记录的判账值，未知时为 0。
 
 ### 默认兼容

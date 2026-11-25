@@ -561,6 +561,6 @@ E1/E2：A 填满自身 share 后第一次 drain 返回 OVERLOAD，`attempt_targe
 
 `break_runtime_world_session_connection_snapshots()` 在 adapter mutex 内复制每条已打开连接的标量判账字段（key、connection epoch、completed/terminal/attempt publication epoch、adapter 记录的 attempt target id/tick、`retry_publish`、`publish_dirty`），按 slot 升序写入调用方数组，并返回**实际打开连接数**——`capacity` 不足时仍返回完整计数，便于调用方扩容重查。
 
-`publish_dirty` 与 fanout continuation 使用同一单连接判据：有 retry，或 completed/terminal 都不等于最近一次 drain 观察到的 publication epoch；它回答“该连接还欠一次发布”，不代表权威 World 与快照存在差异。查询只读：不调用 World Session、publication 或 queue，不推进状态机，也不改变 pending、聚合统计或 retry 状态。
+`publish_dirty` 镜像 fanout continuation 中 adapter 自己持有的判据：有 retry，或任一保存的 attempt 标量非零，或 completed/terminal 都不等于最近一次 drain 观察到的 publication epoch。它**不含** continuation 还会查的 Session `attempt_pending`，因此回答的是“该 adapter 还欠一次发布”，既不等于 `pending()==0`，也不代表权威 World 与快照存在差异。查询只读：不调用 World Session、publication 或 queue，不推进状态机，也不改变 pending、聚合统计或 retry 状态。
 
 该 API 不提供指标导出、历史采样或告警，也不暴露 World Session 私有 attempt 字节；远程指标与告警仍是缺口。

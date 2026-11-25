@@ -754,6 +754,21 @@ TEST(publish_budget_one_round_robin_continues_without_queue_message)
     ASSERT_TRUE(stats.publish_pending);
     ASSERT_FALSE(stats.control_pending);
 
+    /* Only A was served by this budget-1 drain: A is clean, B still owes the same
+     * publication. This is the per-connection isolation the OVERLOAD case cannot
+     * show with a globally full queue. */
+    {
+        BreakRuntimeWorldConnectionSnapshot pair[2];
+        ASSERT_EQ(break_runtime_world_session_connection_snapshots(fixture.adapter, pair, 2u), 2u);
+        ASSERT_EQ(pair[0].connection_key, KEY_A);
+        ASSERT_EQ(pair[1].connection_key, KEY_B);
+        ASSERT_FALSE(pair[0].publish_dirty);
+        ASSERT_FALSE(pair[0].retry_publish);
+        ASSERT_TRUE(pair[1].publish_dirty);
+        ASSERT_FALSE(pair[1].retry_publish);
+        ASSERT_EQ(pair[0].completed_publication_epoch, pair[1].completed_publication_epoch + 1u);
+    }
+
     ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 0u, &drained),
               BREAK_RUNTIME_OK);
     ASSERT_EQ(drained, 0u);
@@ -4068,6 +4083,14 @@ TEST(connection_snapshots_report_per_connection_state)
     ASSERT_EQ(snaps[0].connection_key, KEY_A);
     ASSERT_EQ(snaps[1].connection_key, 0u);
 
+    /* count-only with open connections, plus the intermediate capacity. */
+    ASSERT_EQ(break_runtime_world_session_connection_snapshots(fixture.adapter, NULL, 0u), 3u);
+    memset(snaps, 0, sizeof(snaps));
+    ASSERT_EQ(break_runtime_world_session_connection_snapshots(fixture.adapter, snaps, 2u), 3u);
+    ASSERT_EQ(snaps[0].connection_key, KEY_A);
+    ASSERT_EQ(snaps[1].connection_key, KEY_B);
+    ASSERT_EQ(snaps[2].connection_key, 0u);
+
     memset(snaps, 0, sizeof(snaps));
     ASSERT_EQ(break_runtime_world_session_connection_snapshots(fixture.adapter, snaps, 4u), 3u);
     ASSERT_EQ(snaps[0].connection_key, KEY_A);
@@ -4139,7 +4162,9 @@ TEST(connection_snapshots_report_per_connection_state)
     }
     ASSERT_EQ(snaps[0].attempt_target_tick, 20u);
     /* A globally full outbound queue makes both connections dirty; A's attempt
-     * identity is what proves the snapshot reports real per-connection state. */
+     * identity is what proves the snapshot reports real per-connection state.
+     * A budget-1 round-robin drain is where one connection can be clean while the
+     * other still owes a publication, so that isolation is asserted separately. */
     ASSERT_TRUE(snaps[1].publish_dirty);
 
     /* CLOSE removes the connection; the count drops. */
@@ -4228,7 +4253,7 @@ typedef struct {
     _Atomic bool go;
     _Atomic bool stop;
     _Atomic bool failed;
-    u32 reads;
+    _Atomic u32 reads;
 } RuntimeSnapshotReader;
 
 static PLATFORM_THREAD_RET runtime_snapshot_reader(PLATFORM_THREAD_ARG argument)
@@ -4249,7 +4274,7 @@ static PLATFORM_THREAD_RET runtime_snapshot_reader(PLATFORM_THREAD_ARG argument)
                 atomic_store_explicit(&reader->failed, true, memory_order_release);
             }
         }
-        reader->reads++;
+        atomic_fetch_add_explicit(&reader->reads, 1u, memory_order_relaxed);
         platform_thread_yield();
     }
     return PLATFORM_THREAD_RETURN;
@@ -4278,6 +4303,7 @@ TEST(connection_snapshots_race_with_producer_without_corruption)
     atomic_init(&reader.go, false);
     atomic_init(&reader.stop, false);
     atomic_init(&reader.failed, false);
+    atomic_init(&reader.reads, 0u);
     ASSERT_TRUE(platform_thread_create(&reader_thread, runtime_snapshot_reader, &reader));
     atomic_store_explicit(&reader.go, true, memory_order_release);
     atomic_init(&race.ready, 0u);
@@ -4290,22 +4316,39 @@ TEST(connection_snapshots_race_with_producer_without_corruption)
         platform_thread_yield();
     }
     atomic_store_explicit(&race.go, true, memory_order_release);
-    for (u64 spin = 0u; spin < 1000000u; ++spin) {
-        usize count;
-        memset(snaps, 0, sizeof(snaps));
-        count = break_runtime_world_session_connection_snapshots(fixture.adapter, snaps, 4u);
-        ASSERT_TRUE(count <= 2u);
-        for (usize i = 0u; i < count && i < 4u; ++i) ASSERT_NEQ(snaps[i].connection_key, 0u);
-        last_count = count;
-        (void)break_runtime_world_session_drain(fixture.adapter, 4u, &drained);
-        if (atomic_load_explicit(&race.done, memory_order_acquire)) break;
+    /* Let the reader actually observe at least one snapshot before the producer can
+     * finish, so the read assertion below is not a race with a fast producer. */
+    for (u64 spin = 0u;
+         spin < 1000000u &&
+         atomic_load_explicit(&reader.reads, memory_order_relaxed) == 0u;
+         ++spin) {
         platform_thread_yield();
     }
-    platform_thread_join(thread);
-    atomic_store_explicit(&reader.stop, true, memory_order_release);
-    platform_thread_join(reader_thread);
+    /* Record a mismatch in a local flag instead of asserting while the producer and
+     * reader threads still run; the fixture is a stack object and an early return
+     * here would leave both threads holding pointers into it. */
+    {
+        bool mismatch = false;
+        for (u64 spin = 0u; spin < 1000000u; ++spin) {
+            usize count;
+            memset(snaps, 0, sizeof(snaps));
+            count = break_runtime_world_session_connection_snapshots(fixture.adapter, snaps, 4u);
+            if (count > 2u) mismatch = true;
+            for (usize i = 0u; i < count && i < 4u; ++i) {
+                if (snaps[i].connection_key == 0u) mismatch = true;
+            }
+            last_count = count;
+            (void)break_runtime_world_session_drain(fixture.adapter, 4u, &drained);
+            if (mismatch || atomic_load_explicit(&race.done, memory_order_acquire)) break;
+            platform_thread_yield();
+        }
+        platform_thread_join(thread);
+        atomic_store_explicit(&reader.stop, true, memory_order_release);
+        platform_thread_join(reader_thread);
+        ASSERT_FALSE(mismatch);
+    }
     ASSERT_FALSE(atomic_load_explicit(&reader.failed, memory_order_acquire));
-    ASSERT_TRUE(reader.reads > 0u);
+    ASSERT_TRUE(atomic_load_explicit(&reader.reads, memory_order_relaxed) > 0u);
     ASSERT_FALSE(atomic_load_explicit(&race.failed, memory_order_acquire));
     ASSERT_EQ(race.accepted, RUNTIME_SNAPSHOT_RACE_ROUNDS);
     ASSERT_EQ(last_count, 2u);
