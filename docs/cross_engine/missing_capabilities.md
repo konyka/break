@@ -1043,3 +1043,12 @@ authority handoff 和默认全局公平调度仍未交付。正常断连顺序�
 本切片只关闭了「Runtime snapshot notice 数据面在真实双认证连接上的端到端 outbound-only 验证」这一项：真实 publication publish → direct notice → owner drain → 每连接 BRWD/BRFG → AUTH socket → 每连接独立入站 World drain，含 budget/cursor、独立 full/delta/ACK、E1/E2 续发、publication replace 后恢复与真线程竞态。
 
 仍未交付：共享 live World、权威 simulation 合并、跨 World 持久身份、AOI/可见性裁剪、自动后续换级、完整资产链、inbound completion 的 Runtime 数据面注入、可靠的每 epoch 广播（当前为非可靠、允许中间 epoch coalesce）、预测回滚与 authority handoff、默认全局公平调度（仍默认 false）。core_app 不自动接线该数据面。既有 Lua/TSan 进程限制与完整 sanitizer suite 边界不变。
+
+
+### 第 17 节补充（2026-11-26）：snapshot notice 数据面远端收据与剩余边界
+
+`48d383c8` 已完成任务级与整分支独立评审并推送。最终本地库级 **47/47**、真实双 socket **10/10**，normal / ASan+UBSan（显式 leak 检测）/ TSan 三树均通过，focused 13/13×3 无 Not Run。OpenGL 全量 **476/480 执行通过、4 条件 skip、0 失败**（291.35 s），Vulkan **478/482 执行通过、4 条件 skip、0 失败**（300.50 s）；条件 skip 不计执行通过。
+
+远端 CI `45684529232`、windows-d3d12 `45684529198`、QUIC `45684529212`、Proton `45687424089` 均 completed/success；CI 为 **25 success、3 条件 skip、0 cancelled、0 failed**。Proton 上游 run-id=`45684529198`，device/pipeline contract 均为 77，只代表兼容通道。macOS Snowflake job 的私有依赖不可用，checkout/configure/build/14 项测试均 skipped 并记录 UNAVAILABLE，不计执行通过。
+
+本切片只关闭 outbound-only 的 snapshot notice 数据面及真实双 socket 端到端验证，不关闭共享 live World、权威 simulation 合并、跨 World 持久身份、AOI/可见性裁剪、自动换级、完整资产链、inbound completion 的 Runtime 注入、可靠每 epoch 广播（仍允许中间 epoch coalesce）、预测回滚、authority handoff 或默认全局公平调度。core_app 不自动接线该数据面。既有 Lua/TSan 进程限制、条件 skip 与完整 sanitizer suite 边界不变；本收据提交自身的工作流结果不在此预写。

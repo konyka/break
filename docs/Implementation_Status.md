@@ -13923,3 +13923,12 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 完整未过滤 CTest：OpenGL **480 注册、476 执行通过、4 条件 skip、0 失败**；Vulkan **482 注册、478 执行通过、4 条件 skip、0 失败**。
 - 合同：`test_replication_target_contract` **3/3 Passed**；仓库命名合同 STAGE=4 与 Wayland CI 迁移合同均通过。
 - 限制不变：既有 Lua longjmp、混合 TSan、条件 skip、Proton 77 不升级为原生 GPU 或完整 sanitizer 验收；远端 push 与跨平台收据由后续控制流程记录。
+
+
+### Runtime snapshot notice 数据面远端收据（2026-11-26）
+
+- 产品推送 `48d383c88fbbf0e08cb751e37e9bf7d1c83fd526`（`b3ba024f..48d383c8`，fast-forward，未强推）。共 9 个提交：2 个设计/计划文档、4 个实现（active attempt 身份、direct notice、fanout 恢复、真实 socket+九份文档）、3 个终审修复（`279bb082` 收口两项 Important+6 项 Minor，`9f21c28f` 修正文档措辞与 race fixture，`48d383c8` 澄清收据基线 SHA）。任务级与整分支独立评审均关闭全部 Critical/Important，整分支为 Ready to merge。
+- 本地最终 HEAD：库级 `test_runtime_world_session` **47/47**、真实双 socket `test_world_session_loopback` **10/10**，normal / ASan+UBSan（显式 `detect_leaks=1`）/ TSan 三树均通过且无 sanitizer、leak、race 报告；focused 正则 13 项三树均 **13/13**、无 Not Run。完整未过滤 CTest：OpenGL **480 注册、476 执行通过、4 条件 skip、0 失败**（291.35 s）；Vulkan **482 注册、478 执行通过、4 条件 skip、0 失败**（300.50 s）。合同 `test_replication_target_contract` **3/3**，命名 STAGE=4 与 Wayland 文档合同通过。
+- 远端 CI run `45684529232`、windows-d3d12 run `45684529198`、QUIC run `45684529212`、Proton run `45687424089` 均 completed/success；CI 为 **25 success、3 条件 skip、0 cancelled、0 failed**。Proton 上游 run-id=`45684529198`，device/pipeline contract 均为 77，仅表示兼容通道，不是原生 GPU 通过。
+- macOS Snowflake replication job 的私有依赖 checkout、configure、build 和 14 项测试均为 skipped 并记录 UNAVAILABLE，不计执行通过。共同条件 skip 为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`。既有 Lua longjmp、混合 TSan 边界与完整 sanitizer suite 未运行的限制不变。
+- 本项只关闭 outbound-only 的 snapshot notice 数据面：publication publish → 16 字节 direct notice（0x5754/v1 CONTROL）→ owner drain 单次 acquire → 有限 round-robin fanout → 既有 BRWD/BRFG，含 E1/E2 实际 attempt 判账与真实双 socket 验证。不关闭共享 live World、权威 simulation 合并、跨 World 持久身份、AOI 裁剪、自动换级、资产链、inbound completion 映射、可靠每 epoch 广播或默认全局公平调度。本收据提交自身的工作流结果不在此预写。
