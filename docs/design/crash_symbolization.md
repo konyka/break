@@ -199,3 +199,27 @@ Windows 实机待办现已执行：Windows Clang 成功构建 D3D12 树，完整
 [windows-d3d12 45101195116](https://github.com/konyka/break/actions/runs/45101195116) 成功，Headless+contract、WARP floor、push-constant gate、Agility deployment、artifact upload 均成功；托管 Windows Clang 也成功。本机 scene_serial 单例失败仍未定位，本机全套不称通过。[QUIC 45101195104](https://github.com/konyka/break/actions/runs/45101195104) 虽 conclusion=success，但未配置 `SNOWFLAKE_READ_TOKEN`，UNAVAILABLE、No test ran，四个场景未执行，不能写成测试通过。[Proton 45102712864](https://github.com/konyka/break/actions/runs/45102712864) 成功，上游 run-id=`45101195116`、artifact ID `14785842612`，device/pipeline contract 均 77，仅兼容通道，不是 GPU 或原生 D3D12 通过。
 
 本收据文档提交后的主 CI、windows-d3d12、Proton 仍须实际核验，不预写成功或 run-id；上述 run 均只属于 `7fdcdfe318f43ce4f8620f0e455be795bb66e87b`。
+
+## 不可信符号文件的 fuzz 与对齐缺陷修复（2026-11-27）
+
+`break_crash_symbols_open` 解析服务端收到的符号文件（64 位 LE ELF 或 Mach-O，thin/universal），与
+仓库其它不可信解析器（image/wav/gltf/net packet/scene/pak/wire/metrics text）同属不可信输入，但
+此前只有手工敌对用例，没有变异 fuzz 目标。新增 `engine/tests/fuzz_crash_symbols.c`：以真实二进制
+为种子（独立运行时默认 `/proc/self/exe`），偏向结构区域（头部、load command、fat 条目表，以及 ELF
+位于文件末尾的 section header 表）做字节翻转/插入/删除/覆写，然后断言 `open` 对任意字节都不越界、
+返回 NULL 或可用句柄；拿到句柄后用一大一小两个缓冲遍历大范围地址做 `lookup`，短缓冲必须始终在
+`out_cap` 内以 NUL 结尾。`CRASH_SYMBOLS_LIBFUZZER=1` 可导出到 libFuzzer。注册为
+`fuzz_crash_symbols_smoke`（种子 59，2000 次），进 CI fuzz 列表。
+
+该 fuzzer 在约 53k/200k 接受率下立即暴露一个真实的生产缺陷：ELF 路径把 `file + e_shoff` 直接转成
+`const Elf64_Shdr *` 并索引解引用（符号表同理用 `file + sh_offset` 转 `const Elf64_Sym *`），而文件
+字节不保证 8 字节对齐，构成未定义行为（UBSan 报 `member access within misaligned address ... requires
+8 byte alignment`，`break_crash_symbolize.c:126`）。修复：新增 `elf_read_shdr`/`elf_read_sym`，用
+`memcpy` 把每个 section header 与符号按值读入对齐的局部变量再用（与 `Ehdr` 和整个 Mach-O 路径既有的
+`memcpy`/`mo_rd32/64` 字节读取一致）。Mach-O 路径本就是字节读取，无此问题。
+
+验证：`fuzz_crash_symbols` 在种子 59 跑 200000 次、种子 101 跑 50000 次，ASan+UBSan+leak 全程 clean；
+负向对照把 `elf_read_shdr` 改回未对齐解引用后，fuzzer 在首个探针即以 UBSan misaligned 失败，证明该
+目标确实能捕获这一类缺陷。`test_break_crash_symbolize` 修复后仍 45/45；`build-current-vk` 非 fuzz
+全量 462 项中崩溃相关 9 项全过（两项 `test_core_app_*contract` 失败仅因新源文件当时未被 `git archive
+HEAD` 收录，提交后消失，非回归）。

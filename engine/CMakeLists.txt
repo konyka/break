@@ -8453,6 +8453,24 @@ endif()
     target_include_directories(fuzz_runtime_metrics_decode PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(fuzz_runtime_metrics_decode PRIVATE runtime_core)
 
+    # Mutation fuzzer for break_crash_symbols_open, the untrusted ELF/Mach-O
+    # (thin or universal) symbol-file parser the server-side crash symbol store
+    # runs on files it is handed. Seeds from a real binary and checks open and
+    # lookups never read/write out of bounds on hostile bytes.
+    if(TARGET break_crash_symbolize)
+        add_executable(fuzz_crash_symbols EXCLUDE_FROM_ALL tests/fuzz_crash_symbols.c
+            src/platform/platform_fs.c src/core/break_version.c)
+        set_property(TARGET fuzz_crash_symbols PROPERTY C_STANDARD 11)
+        target_include_directories(fuzz_crash_symbols PRIVATE ${TEST_INCLUDE_DIRS})
+        if(ENGINE_PLATFORM STREQUAL "linux")
+            target_compile_definitions(fuzz_crash_symbols PRIVATE
+                ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+        elseif(ENGINE_PLATFORM STREQUAL "windows")
+            target_compile_definitions(fuzz_crash_symbols PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        endif()
+        target_link_libraries(fuzz_crash_symbols PRIVATE break_crash_symbolize)
+    endif()
+
     # Mutation fuzzer for the editor remote session wire path (ids 4..21):
     # mutated envelopes -> the real break_net codec -> the real session
     # manager -> the real editor_remote.c handlers on a live headless shell
@@ -8505,6 +8523,10 @@ endif()
         add_test(NAME fuzz_world_delta_wire_smoke COMMAND fuzz_world_delta_wire 2000 47)
         add_test(NAME fuzz_runtime_metrics_decode_smoke COMMAND fuzz_runtime_metrics_decode 2000 53)
         add_test(NAME fuzz_break_online_voice_smoke COMMAND fuzz_break_online_voice 2000 43)
+        if(TARGET fuzz_crash_symbols)
+            add_test(NAME fuzz_crash_symbols_smoke COMMAND fuzz_crash_symbols 2000 59)
+            set_tests_properties(fuzz_crash_symbols_smoke PROPERTIES LABELS "fuzz")
+        endif()
         # Checked-in wire samples, one per file; the name prefix is the expected
         # decode outcome. Regenerate with `fuzz_core_app_network --emit-corpus <dir>`.
         file(GLOB CORE_APP_NETWORK_CORPUS CONFIGURE_DEPENDS

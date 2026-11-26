@@ -14365,3 +14365,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **实现**：把第 28 节的聚合逻辑重构为内部 `metrics_history_aggregate_at(..., offset, ...)`（公开 `history_aggregate` 变为其 offset 0 包装），新增 `break_runtime_metrics_history_aggregate_alert_edges` 比较最新窗口与前移一帧窗口的触发状态，输出 STEADY/RAISED/CLEARED。`window` 须小于 history 深度，证据不足记未触发故首个可证触发报 RAISED；校验/OVERLOAD 同 `history_alert_edges`，另加未知 stat 的 INVALID，错误不写 edges。设计见 `docs/design/runtime_metrics.md` 第 30 节。
 - **TDD 与变异**：`test_runtime_metrics` 新增 2 例，先以未定义引用链接失败为 RED。8 项变异判红：before 用 offset 0、RAISED/CLEARED 对调、`>=`depth 改 `>`、去掉 stat 校验、去掉 OVERLOAD、helper 忽略 offset 下界、helper 从 age 0 起、跳过规则校验。首轮漏掉「首帧即触发」场景使 E6 存活，补一条「单帧 STEADY→满窗 RAISED」断言后判红。
 - **验证**：`test_runtime_metrics` 52/52（normal/ASan+UBSan 含 leak 检测/TSan）；`runtime_core` 12/12（ASan）；`build-current-vk` 非 fuzz 全量 462/462。本收据提交自身的远端工作流结果不在此预写。
+
+## 崩溃符号文件解析器的 fuzz 目标与 ELF 对齐缺陷修复（2026-11-27）
+
+- **缺口**：`break_crash_symbols_open`（服务端对不可信符号文件的 ELF/Mach-O 解析）此前只有手工敌对用例，没有变异 fuzz 目标，而仓库其余不可信解析器都有。
+- **实现**：新增 `engine/tests/fuzz_crash_symbols.c`，以真实二进制为种子、偏向结构区域变异，断言 open 不越界、lookup 不越写短缓冲；注册 `fuzz_crash_symbols_smoke`（种子 59）进三处 fuzz 列表，`CRASH_SYMBOLS_LIBFUZZER` 可导出到 libFuzzer。目标链接 `break_crash_symbolize` + `platform_fs` + `break_version`，仅在 `TARGET break_crash_symbolize` 时构建。
+- **缺陷**：fuzzer 立即暴露 ELF 路径把 `file + e_shoff`/`sh_offset` 直接转 `Elf64_Shdr*`/`Elf64_Sym*` 解引用的未定义行为（UBSan misaligned，`break_crash_symbolize.c:126`）。修复以 `elf_read_shdr`/`elf_read_sym` 经 `memcpy` 按值读入对齐局部变量；Mach-O 路径本为字节读取无此问题。
+- **验证**：`fuzz_crash_symbols` 种子 59×200000、种子 101×50000 在 ASan+UBSan+leak 全程 clean；负向对照（改回未对齐解引用）在首个探针即 UBSan 失败，证明目标可检出该类缺陷。`test_break_crash_symbolize` 45/45；`build-current-vk` 非 fuzz 全量崩溃相关 9/9。两项 `test_core_app_*contract` 的失败仅因新源文件当时未被 `git archive HEAD` 收录（提交后消失），非回归。本收据提交自身的远端工作流结果不在此预写。

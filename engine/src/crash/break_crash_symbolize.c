@@ -42,6 +42,21 @@ static int sym_cmp(const void *a, const void *b) {
     return 0;
 }
 
+/* The section header `i` and symbol `i`, copied out by value: the file bytes
+ * are not guaranteed to be aligned for the struct, so a direct cast-and-deref
+ * is undefined (UBSan catches it on a misaligned symbol file). */
+static Elf64_Shdr elf_read_shdr(const u8 *file, u64 shoff, unsigned i) {
+    Elf64_Shdr sh;
+    memcpy(&sh, file + shoff + (u64)i * sizeof(Elf64_Shdr), sizeof(sh));
+    return sh;
+}
+
+static Elf64_Sym elf_read_sym(const u8 *file, u64 symoff, u64 i) {
+    Elf64_Sym sym;
+    memcpy(&sym, file + symoff + i * sizeof(Elf64_Sym), sizeof(sym));
+    return sym;
+}
+
 /* NT_GNU_BUILD_ID from a SHT_NOTE section, as lowercase hex. */
 static void read_build_id(const u8 *file, u64 size, const Elf64_Shdr *sh, char out[129]) {
     u64 pos = 0;
@@ -106,7 +121,6 @@ static u8 *load_file(const char *path, u64 min, u64 *out_size) {
 static BreakElfSymbols *elf_from_bytes(const u8 *file, u64 size) {
     BreakElfSymbols *s = NULL;
     Elf64_Ehdr eh;
-    const Elf64_Shdr *sh;
     int sym_idx = -1, dyn_idx = -1;
     if (size < sizeof(eh)) return NULL;
     memcpy(&eh, file, sizeof(eh));
@@ -118,55 +132,55 @@ static BreakElfSymbols *elf_from_bytes(const u8 *file, u64 size) {
         !in_file(eh.e_shoff, (u64)eh.e_shnum * sizeof(Elf64_Shdr), size)) {
         return NULL;
     }
-    sh = (const Elf64_Shdr *)(const void *)(file + eh.e_shoff);
     s = (BreakElfSymbols *)calloc(1u, sizeof(*s));
     if (s == NULL) return NULL;
     s->is_exec = eh.e_type == ET_EXEC;
     for (unsigned i = 0; i < eh.e_shnum; i++) {
-        if (sh[i].sh_type == SHT_NOBITS) continue;
-        if (sh[i].sh_type != SHT_NULL && !in_file(sh[i].sh_offset, sh[i].sh_size, size)) {
+        Elf64_Shdr shi = elf_read_shdr(file, eh.e_shoff, i);
+        if (shi.sh_type == SHT_NOBITS) continue;
+        if (shi.sh_type != SHT_NULL && !in_file(shi.sh_offset, shi.sh_size, size)) {
             goto fail; /* a section that claims bytes outside the file: the file is not trustworthy */
         }
-        if (sh[i].sh_type == SHT_SYMTAB && sym_idx < 0) sym_idx = (int)i;
-        if (sh[i].sh_type == SHT_DYNSYM && dyn_idx < 0) dyn_idx = (int)i;
-        if (sh[i].sh_type == SHT_NOTE && s->build_id[0] == '\0') {
-            read_build_id(file, size, &sh[i], s->build_id);
+        if (shi.sh_type == SHT_SYMTAB && sym_idx < 0) sym_idx = (int)i;
+        if (shi.sh_type == SHT_DYNSYM && dyn_idx < 0) dyn_idx = (int)i;
+        if (shi.sh_type == SHT_NOTE && s->build_id[0] == '\0') {
+            read_build_id(file, size, &shi, s->build_id);
         }
     }
     {
         int use = sym_idx >= 0 ? sym_idx : dyn_idx;   /* a stripped file keeps only .dynsym */
         if (use >= 0) {
-            const Elf64_Shdr *symsec = &sh[use];
-            const Elf64_Shdr *strsec;
+            Elf64_Shdr symsec = elf_read_shdr(file, eh.e_shoff, (unsigned)use);
+            Elf64_Shdr strsec;
             u64 n_syms;
-            const Elf64_Sym *syms;
             u32 kept = 0;
-            if (symsec->sh_entsize != sizeof(Elf64_Sym) || symsec->sh_link >= eh.e_shnum) goto fail;
-            strsec = &sh[symsec->sh_link];
-            if (strsec->sh_type != SHT_STRTAB || strsec->sh_size == 0u) goto fail;
-            n_syms = symsec->sh_size / sizeof(Elf64_Sym);
+            if (symsec.sh_entsize != sizeof(Elf64_Sym) || symsec.sh_link >= eh.e_shnum) goto fail;
+            strsec = elf_read_shdr(file, eh.e_shoff, (unsigned)symsec.sh_link);
+            if (strsec.sh_type != SHT_STRTAB || strsec.sh_size == 0u) goto fail;
+            n_syms = symsec.sh_size / sizeof(Elf64_Sym);
             if (n_syms > SYM_MAX_SYMBOLS) goto fail;
-            syms = (const Elf64_Sym *)(const void *)(file + symsec->sh_offset);
-            s->strtab = (char *)malloc((size_t)strsec->sh_size);
+            s->strtab = (char *)malloc((size_t)strsec.sh_size);
             s->syms = (SymEntry *)malloc((size_t)(n_syms ? n_syms : 1u) * sizeof(SymEntry));
             if (s->strtab == NULL || s->syms == NULL) goto fail;
-            memcpy(s->strtab, file + strsec->sh_offset, (size_t)strsec->sh_size);
-            s->strtab[strsec->sh_size - 1u] = '\0';       /* every name now ends inside the table */
-            s->strtab_size = strsec->sh_size;
+            memcpy(s->strtab, file + strsec.sh_offset, (size_t)strsec.sh_size);
+            s->strtab[strsec.sh_size - 1u] = '\0';        /* every name now ends inside the table */
+            s->strtab_size = strsec.sh_size;
             for (u64 i = 0; i < n_syms; i++) {
-                unsigned type = ELF64_ST_TYPE(syms[i].st_info);
-                if (syms[i].st_shndx == SHN_UNDEF || syms[i].st_shndx >= SHN_LORESERVE) continue;
-                if (syms[i].st_shndx >= eh.e_shnum) continue;
+                Elf64_Sym sym = elf_read_sym(file, symsec.sh_offset, i);
+                unsigned type = ELF64_ST_TYPE(sym.st_info);
+                if (sym.st_shndx == SHN_UNDEF || sym.st_shndx >= SHN_LORESERVE) continue;
+                if (sym.st_shndx >= eh.e_shnum) continue;
                 if (type != STT_FUNC && type != STT_GNU_IFUNC && type != STT_NOTYPE) continue;
                 if (type != STT_FUNC && type != STT_GNU_IFUNC) {
                     /* untyped symbols count only when they sit in an executable section */
-                    if (!(sh[syms[i].st_shndx].sh_flags & SHF_EXECINSTR)) continue;
+                    Elf64_Shdr secn = elf_read_shdr(file, eh.e_shoff, sym.st_shndx);
+                    if (!(secn.sh_flags & SHF_EXECINSTR)) continue;
                 }
-                if (syms[i].st_size == 0u || syms[i].st_value > UINT64_MAX - syms[i].st_size) continue;
-                if (syms[i].st_name >= s->strtab_size || s->strtab[syms[i].st_name] == '\0') continue;
-                s->syms[kept].addr = syms[i].st_value;
-                s->syms[kept].size = syms[i].st_size;
-                s->syms[kept].name_off = syms[i].st_name;
+                if (sym.st_size == 0u || sym.st_value > UINT64_MAX - sym.st_size) continue;
+                if (sym.st_name >= s->strtab_size || s->strtab[sym.st_name] == '\0') continue;
+                s->syms[kept].addr = sym.st_value;
+                s->syms[kept].size = sym.st_size;
+                s->syms[kept].name_off = sym.st_name;
                 kept++;
             }
             qsort(s->syms, kept, sizeof(SymEntry), sym_cmp);
