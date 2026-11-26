@@ -14074,3 +14074,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：`test_runtime_facade.c` 新增 1 用例（3 enqueue/1 poll/1 stale 后导出 6 gauge 值校验、再导出幂等含值不增、第二前缀并存至 12 槽、NULL/空/过长 prefix 的 INVALID）。两项变异判红：改 counter+add（再导出值翻倍，幂等值断言红）、吞掉 set 错误（过长 prefix 的 INVALID 断言红）。
 - **验证**：`test_runtime_facade` 22/22（normal/ASan+UBSan/TSan 均 22/22）；`test_runtime_bus`、`test_runtime_metrics`、`test_runtime_core_target_contract`、io/reload/mainloop 全绿。
 - **边界**：不改变指标协议边界——仍无远程传输、历史采样与告警；bus（上一节）与 queue 为前两处子系统绑定，task、world session 等后续接线。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。本收据提交自身的远端工作流结果不在此预写。
+
+## Bus 聚合导出切片的远端收据（2026-11-26）
+
+- 推送 `38a97592..d3b5f9a4`（fast-forward），提交 `feat(runtime): export bus aggregate counters into the metrics registry`。
+- 远端 CI `45792669354` **completed success：25 success、3 条件 skip、0 failed**。`Linux arm64 cross-build + QEMU tests (GCC)` success，`windows-d3d12` success。3 条 skip 为 Steam Deck 真机基准、Proton 兼容参考通道与 `lane-gpu-runtime-windows-d3d12`。
+- 本地已记：`test_runtime_bus` 17/17（normal/ASan+UBSan/TSan）。
+- 边界同本切片收据：远程传输、历史采样与告警未交付；queue 绑定（后续提交）之外的 task/world session 等子系统尚未接线。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。
