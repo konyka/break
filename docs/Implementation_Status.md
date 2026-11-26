@@ -14253,3 +14253,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：`test_world_session_recovery` 新增 2 例（共享 target 按 scope fan-out、NULL keep 等同未过滤）。先以未定义引用链接失败为 RED。两项变异判红：忽略过滤直接用 target、NULL keep 也走过滤路径。
 - **验证**：`test_world_session_recovery` 29/29（normal/ASan+UBSan 含 leak 检测/TSan 均 29/29）。Snowflake 树 pin `4ab761fc`。
 - **边界**：core_app `net_world_publish_runtime` 与 Runtime adapter 尚未调用它；scope 的生产组装与启用由后续切片接入。本收据提交自身的远端工作流结果不在此预写。
+
+## 按连接过滤发布回传目标身份（2026-11-26）
+
+- **实现**：`break_world_session_publish_snapshot_filtered_id`（`engine/src/ecs/world_session.{h,c}`）回传该连接实际 target 的 id/tick（过滤视图或共享 target），供 Runtime adapter 的 attempt/epoch 对账使用；`publish_snapshot_filtered` 改为其 `(NULL,NULL)` 薄封装。输出仅在 OK/OVERLOAD 时写入，续发从 `attempt.target` 读取，out 指针可为 NULL。设计见 `docs/design/ecs_snapshot_replication_aoi.md` 与 `docs/design/runtime_world_aoi_integration.md`。
+- **TDD 与变异**：`test_world_session_recovery` 新增 2 例（过滤回传视图 id/tick、NULL keep 回传 target id/tick 且允许 NULL 输出）。先以未定义引用链接失败为 RED。两项变异判红：回传 target id 而非视图 id、不写输出。
+- **验证**：`test_world_session_recovery` 31/31（normal/ASan+UBSan 含 leak 检测/TSan 均 31/31）。
+- **边界**：Runtime adapter 改用它对账、core_app 启用过滤由后续切片实施。本收据提交自身的远端工作流结果不在此预写。

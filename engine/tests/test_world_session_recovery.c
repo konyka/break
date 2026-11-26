@@ -2218,6 +2218,68 @@ TEST(world_session_publish_snapshot_filtered_null_keep_matches_unfiltered)
     fixture_dispose(&fixture);
 }
 
+TEST(world_session_publish_snapshot_filtered_id_reports_view_identity)
+{
+    Fixture fixture;
+    AttemptWire attempt;
+    BreakWorldSnapshot *full;
+    BreakWorldSnapshot *view;
+    u32 limit = 100u;
+    u64 out_id = 0u;
+    u64 out_tick = 0u;
+
+    ASSERT_TRUE(fixture_init(&fixture));
+    (void)spawn_value(fixture.authoritative, 10u);
+    (void)spawn_value(fixture.authoritative, 200u);
+    full = break_world_snapshot_build(fixture.authoritative, fixture.schemas, 10u);
+    ASSERT_NOT_NULL(full);
+    view = break_world_snapshot_filter(full, keep_value_below, &limit);
+    ASSERT_NOT_NULL(view);
+    ASSERT_NEQ(break_world_snapshot_id(view), break_world_snapshot_id(full));
+
+    /* Filtered: the reported id/tick are the connection's view, not the shared target. */
+    ASSERT_EQ(break_world_session_publish_snapshot_filtered_id(fixture.session, 11u, full,
+                                                               TEST_LEVEL, keep_value_below,
+                                                               &limit, &out_id, &out_tick),
+              BREAK_NET_SEND_OK);
+    ASSERT_EQ(out_id, break_world_snapshot_id(view));
+    ASSERT_EQ(out_tick, break_world_snapshot_tick(view));
+    ASSERT_TRUE(collect_attempt_for_connection(&fixture, 11u, &attempt));
+    ASSERT_EQ(attempt.target_snapshot_id, break_world_snapshot_id(view));
+    clear_attempt(&attempt);
+
+    break_world_snapshot_release(view);
+    break_world_snapshot_release(full);
+    fixture_dispose(&fixture);
+}
+
+TEST(world_session_publish_snapshot_filtered_id_null_keep_reports_target_identity)
+{
+    Fixture fixture;
+    AttemptWire attempt;
+    BreakWorldSnapshot *full;
+    u64 out_id = 7u;
+    u64 out_tick = 7u;
+
+    ASSERT_TRUE(fixture_init(&fixture));
+    (void)spawn_value(fixture.authoritative, 10u);
+    full = break_world_snapshot_build(fixture.authoritative, fixture.schemas, 10u);
+    ASSERT_NOT_NULL(full);
+
+    /* NULL keep: reported id/tick are the shared target's own; NULL outs are allowed. */
+    ASSERT_EQ(break_world_session_publish_snapshot_filtered_id(fixture.session, 11u, full,
+                                                               TEST_LEVEL, NULL, NULL, &out_id,
+                                                               &out_tick),
+              BREAK_NET_SEND_OK);
+    ASSERT_EQ(out_id, break_world_snapshot_id(full));
+    ASSERT_EQ(out_tick, break_world_snapshot_tick(full));
+    ASSERT_TRUE(collect_attempt_for_connection(&fixture, 11u, &attempt));
+    ASSERT_EQ(attempt.target_snapshot_id, break_world_snapshot_id(full));
+    clear_attempt(&attempt);
+    break_world_snapshot_release(full);
+    fixture_dispose(&fixture);
+}
+
 TEST(world_session_publish_filtered_delta_chain_follows_scope_changes)
 {
     Fixture fixture;
@@ -2286,6 +2348,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(world_session_publish_filtered_delta_chain_follows_scope_changes);
     RUN_TEST(world_session_publish_snapshot_filtered_fans_shared_target_per_scope);
     RUN_TEST(world_session_publish_snapshot_filtered_null_keep_matches_unfiltered);
+    RUN_TEST(world_session_publish_snapshot_filtered_id_reports_view_identity);
+    RUN_TEST(world_session_publish_snapshot_filtered_id_null_keep_reports_target_identity);
     RUN_TEST(world_session_publish_filtered_sends_only_scoped_entities);
     RUN_TEST(world_session_publish_filtered_null_keep_matches_unfiltered);
     RUN_TEST(world_session_publish_filtered_scopes_each_connection_independently);

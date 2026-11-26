@@ -910,21 +910,43 @@ BreakNetSendResult break_world_session_publish_snapshot_filtered(
     BreakWorldSnapshot *target, u64 level_generation,
     BreakWorldSnapshotEntityFilter keep, void *keep_user)
 {
+    return break_world_session_publish_snapshot_filtered_id(
+        session, connection, target, level_generation, keep, keep_user, NULL, NULL);
+}
+
+BreakNetSendResult break_world_session_publish_snapshot_filtered_id(
+    BreakWorldSession *session, BreakConnectionKey connection,
+    BreakWorldSnapshot *target, u64 level_generation,
+    BreakWorldSnapshotEntityFilter keep, void *keep_user,
+    u64 *out_target_id, u64 *out_target_tick)
+{
     size_t slot;
     BreakWorldSessionConnection *state;
     BreakWorldSnapshot *view;
-    if (!keep) {
-        return break_world_session_publish_snapshot(session, connection, target,
-                                                    level_generation);
-    }
+    BreakNetSendResult result;
     if (!session || !session->reactor) return BREAK_NET_SEND_CLOSED;
     slot = world_session_connection_index(session, connection);
     if (slot == session->max_connections) return BREAK_NET_SEND_CLOSED;
     state = &session->connections[slot];
-    if (state->attempt.active) return world_session_resume_attempt(session, state);
+    if (state->attempt.active) {
+        result = world_session_resume_attempt(session, state);
+        if ((result == BREAK_NET_SEND_OK || result == BREAK_NET_SEND_OVERLOAD) &&
+            state->attempt.active && state->attempt.target) {
+            if (out_target_id) *out_target_id = break_world_snapshot_id(state->attempt.target);
+            if (out_target_tick) *out_target_tick = break_world_snapshot_tick(state->attempt.target);
+        }
+        return result;
+    }
     if (!target) return BREAK_NET_SEND_INVALID;
-    view = break_world_snapshot_filter(target, keep, keep_user);
-    if (!view) return BREAK_NET_SEND_INVALID;
+    if (keep) {
+        view = break_world_snapshot_filter(target, keep, keep_user);
+        if (!view) return BREAK_NET_SEND_INVALID;
+    } else {
+        break_world_snapshot_retain(target);
+        view = target;
+    }
+    if (out_target_id) *out_target_id = break_world_snapshot_id(view);
+    if (out_target_tick) *out_target_tick = break_world_snapshot_tick(view);
     if (!world_session_build_attempt_from_snapshot(session, state, view, level_generation,
                                                    true)) {
         return BREAK_NET_SEND_INVALID;

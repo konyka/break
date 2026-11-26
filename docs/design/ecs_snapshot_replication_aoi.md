@@ -397,3 +397,20 @@ World 的 `Entity{index, generation}` 只在所属 World 内有效，随 World �
 验证：`test_world_session_recovery` 29/29（原 27 例，新增 2 例；normal/ASan+UBSan 含 leak 检测/TSan 均 29/29）：一份共享 target fan-out 给两条连接、各自得到与独立 `break_world_snapshot_filter` 视图相同的 target id 且共享 target 实体数不变、`keep == NULL` 等同未过滤。两项变异判红：忽略过滤直接用 target、NULL keep 也走过滤路径。
 
 边界：这是共享 fan-out 路径的按连接裁剪原语；core_app `net_world_publish_runtime` 与 Runtime adapter 尚未调用它（仍发送完整视图），AOI scope 到谓词由 `break_net_entity_scope_keep` 提供、scope 的生产组装与启用由后续切片接入。本节不预写远端结果。
+
+## 补充（2026-11-26）：按连接过滤发布回传目标身份
+
+`break_world_session_publish_snapshot_filtered_id`（`engine/src/ecs/world_session.{h,c}`）与
+`break_world_session_publish_snapshot_filtered` 行为相同，但回传该连接实际 target 的 id/tick：
+`keep` 非空时是过滤视图的 id/tick，`keep` 为 NULL 时是共享 target 自身的。这解决
+`docs/design/runtime_world_aoi_integration.md` 记录的约束——Runtime adapter 的 attempt/epoch
+对账需要“该连接应得的目标 id”，而各连接过滤视图的 id 互不相同。`publish_snapshot_filtered`
+现在是 `_id(..., NULL, NULL)` 的薄封装。输出只在 OK/OVERLOAD（存在新建或续发 attempt）时写入，
+续发路径从 `state->attempt.target` 读取，两个 out 指针均可为 NULL。
+
+验证：`test_world_session_recovery` 31/31（原 29 例，新增 2 例；normal/ASan+UBSan 含 leak 检测/
+TSan 均 31/31）：过滤发布回传视图 id/tick（≠ 共享 target）、NULL keep 回传 target 自身 id/tick
+且允许 NULL 输出。两项变异判红：回传 target id 而非视图 id、完全不写输出。
+
+边界：仅库级原语与回传；Runtime adapter 改用它对账、core_app 启用过滤仍由后续切片按
+`runtime_world_aoi_integration.md` 实施。本节不预写远端结果。

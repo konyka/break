@@ -138,6 +138,19 @@ BreakNetSendResult break_world_session_publish_snapshot_filtered(
     BreakWorldSession *session, BreakConnectionKey connection,
     BreakWorldSnapshot *target, u64 level_generation,
     BreakWorldSnapshotEntityFilter keep, void *keep_user);
+/* As break_world_session_publish_snapshot_filtered, but reports the id and tick
+ * of the snapshot this connection actually targets: the filtered view's id/tick
+ * when `keep` is set, or `target`'s own id/tick when `keep` is NULL. Callers
+ * that track per-connection target identity (the Runtime adapter's attempt/epoch
+ * bookkeeping) must use these, since each connection's filtered view has its own
+ * id. Outputs are written only on BREAK_NET_SEND_OK or BREAK_NET_SEND_OVERLOAD
+ * (a new or resumed attempt exists); otherwise they are left unchanged. Either
+ * out pointer may be NULL. */
+BreakNetSendResult break_world_session_publish_snapshot_filtered_id(
+    BreakWorldSession *session, BreakConnectionKey connection,
+    BreakWorldSnapshot *target, u64 level_generation,
+    BreakWorldSnapshotEntityFilter keep, void *keep_user,
+    u64 *out_target_id, u64 *out_target_tick);
 bool break_world_session_sender_state(const BreakWorldSession *session,
                                       BreakConnectionKey connection,
                                       BreakWorldSessionSenderState *out_state);
