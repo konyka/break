@@ -3,6 +3,7 @@
 #include <runtime/runtime_thread.h>
 #include <runtime/runtime_io.h>
 #include <runtime/runtime_bus.h>
+#include <runtime/runtime_metrics.h>
 #include <runtime/runtime_test_hooks.h>
 #include <core/platform_thread.h>
 #include <asset/vfs.h>
@@ -1480,12 +1481,86 @@ TEST(io_shutdown_drain_sends_cancelled_notices)
     vfs_destroy(vfs);
 }
 
+static u64 io_metric_of(BreakRuntimeMetrics *m, const char *name)
+{
+    BreakRuntimeMetricSample out[32];
+    u32 n = 0u, i;
+    if (break_runtime_metrics_snapshot(m, out, 32u, &n) != BREAK_RUNTIME_OK) return UINT64_MAX;
+    for (i = 0u; i < n; i++)
+        if (strcmp(out[i].name, name) == 0) return out[i].value;
+    return UINT64_MAX;
+}
+
+TEST(io_export_metrics_mirrors_counters_as_idempotent_gauges)
+{
+    VFS *vfs = fixture_setup();
+    BreakRuntimeIoConfig cfg;
+    BreakRuntimeMetrics *m = NULL;
+    BreakRuntimeMetricSample out[32];
+    BreakRuntimeIoStats stats;
+    ASSERT_NOT_NULL(vfs);
+
+    ASSERT_EQ(break_runtime_metrics_create(NULL, &m), BREAK_RUNTIME_OK);
+
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.vfs = vfs;
+    cfg.worker_count = 1u;
+    cfg.request_capacity = 4u;
+    ASSERT_EQ(break_runtime_io_init(&cfg), BREAK_RUNTIME_OK);
+
+    /* One real completed read so submitted/completed/bytes_published are
+     * nonzero and the idempotency value check can bite a counter+add mutant. */
+    {
+        BreakRuntimeIoRequest *req = NULL;
+        BreakRuntimeOwnedMessage *msg = NULL;
+        ASSERT_EQ(break_runtime_io_submit(&req, "payload.bin", 0u, 0u), BREAK_RUNTIME_OK);
+        ASSERT_EQ(break_runtime_io_wait_completion(req, 5000u, &msg), BREAK_RUNTIME_OK);
+        break_runtime_io_request_release(req);
+        break_runtime_message_release(msg);
+    }
+    ASSERT_EQ(break_runtime_io_stats(&stats), BREAK_RUNTIME_OK);
+    ASSERT_EQ(stats.submitted, 1u);
+    ASSERT_EQ(stats.completed, 1u);
+
+    ASSERT_EQ(break_runtime_io_export_metrics(NULL, "io"), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_io_export_metrics(m, NULL), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_io_export_metrics(m, ""), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_io_export_metrics(m, "io"), BREAK_RUNTIME_OK);
+    ASSERT_EQ(io_metric_of(m, "io.submitted"), stats.submitted);
+    ASSERT_EQ(io_metric_of(m, "io.completed"), stats.completed);
+    ASSERT_EQ(io_metric_of(m, "io.overload_rejects"), stats.overload_rejects);
+    ASSERT_EQ(io_metric_of(m, "io.bytes_published"), stats.bytes_published);
+    ASSERT_EQ(io_metric_of(m, "io.active"), (u64)stats.active);
+    ASSERT_EQ(io_metric_of(m, "io.high_water"), (u64)stats.high_water);
+    {
+        u32 n = 0u;
+        ASSERT_EQ(break_runtime_metrics_snapshot(m, out, 32u, &n), BREAK_RUNTIME_OK);
+        ASSERT_EQ(n, 13u);
+        /* idempotent re-export */
+        ASSERT_EQ(break_runtime_io_export_metrics(m, "io"), BREAK_RUNTIME_OK);
+        ASSERT_EQ(break_runtime_metrics_snapshot(m, out, 32u, &n), BREAK_RUNTIME_OK);
+        ASSERT_EQ(n, 13u);
+        ASSERT_EQ(io_metric_of(m, "io.submitted"), stats.submitted);
+    }
+    {
+        char longp[48];
+        memset(longp, 'p', sizeof longp);
+        longp[sizeof longp - 1u] = '\0';
+        ASSERT_EQ(break_runtime_io_export_metrics(m, longp), BREAK_RUNTIME_INVALID);
+    }
+
+    ASSERT_EQ(break_runtime_io_shutdown(1000u), BREAK_RUNTIME_OK);
+    break_runtime_metrics_destroy(m);
+    vfs_destroy(vfs);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(thread_create_validation_and_oom);
     RUN_TEST(thread_start_runs_and_owner_stops);
     RUN_TEST(thread_self_exit_owner_completion);
     RUN_TEST(thread_stop_timeout_retains_live_ownership);
     RUN_TEST(io_submit_validation);
+    RUN_TEST(io_export_metrics_mirrors_counters_as_idempotent_gauges);
     RUN_TEST(io_read_completion_owned_bytes);
     RUN_TEST(io_missing_file_failed_completion);
     RUN_TEST(io_empty_file_completion);

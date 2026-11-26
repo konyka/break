@@ -232,3 +232,20 @@ BreakRuntimeError break_runtime_io_notice_view(
 /* Facade observability snapshot. INVALID on NULL argument or before any
  * init; remains queryable after shutdown. */
 BreakRuntimeError break_runtime_io_stats(BreakRuntimeIoStats *out_stats);
+
+struct BreakRuntimeMetrics; /* runtime_metrics.h */
+
+/* Mirrors the process-wide IO facade's observability counters into `metrics` as
+ * GAUGES named "<prefix>.submitted", ".completed", ".failed", ".cancelled",
+ * ".timed_out", ".overload_rejects", ".closed_rejects", ".stale_drops",
+ * ".bytes_published", ".notices_published", ".notices_dropped", ".active",
+ * ".high_water". Gauges (not counters) so re-exporting the same cumulative
+ * counters is idempotent. `prefix` must be non-empty and short enough that the
+ * longest name "<prefix>.notices_published" fits the metric-name budget; an
+ * over-long prefix surfaces the INVALID that break_runtime_metrics_set returns.
+ * Any set error stops the export. INVALID on a NULL `metrics`/prefix or empty
+ * prefix, and the INVALID that break_runtime_io_stats returns before init.
+ * The metrics registry must be owned by the calling thread. */
+BreakRuntimeError break_runtime_io_export_metrics(
+    struct BreakRuntimeMetrics *metrics,
+    const char *prefix);

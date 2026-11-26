@@ -14113,3 +14113,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 其余 **23 success、3 条件 skip**：`Linux arm64 cross-build + QEMU tests (GCC)` success（`test_runtime_facade` 的 queue 导出用例随 QEMU 运行）、`windows-d3d12` success、全部 Linux 与 iOS 构建 success。
 - 本地已记：`test_runtime_facade` 22/22（normal/ASan+UBSan/TSan）。
 - 边界同本切片收据。后续提交（task/world-session/reload 绑定）会触发新 CI run，自然重试 macOS lane。
+
+
+## IO facade 计数导出到指标注册表（指标协议：第六处子系统 name 绑定，runtime_core stats 子系统全覆盖）（2026-11-26）
+
+- **实现**：`runtime_io` 新增 `break_runtime_io_export_metrics(metrics, prefix)`（`engine/src/runtime/runtime_io.{c,h}`），把进程级 IO facade 13 个观测计数按 `prefix` 写为 GAUGE（submitted/completed/failed/cancelled/timed_out/overload_rejects/closed_rejects/stale_drops/bytes_published/notices_published/notices_dropped/active/high_water）。单例无句柄，仍按 prefix 命名；gauge 幂等、过长 prefix 回 INVALID、未 init 的 stats INVALID 透传。设计见 `docs/design/runtime_metrics.md` 第 13 节。至此 runtime_core 六个带 stats 的子系统（bus/queue/task/world-session/reload/io）全部完成 name 绑定。
+- **TDD 与变异**：`test_runtime_io.c` 新增 1 用例（init + 一次真实 submit/wait 完成读使计数非零，导出 13 gauge 对齐 stats()、再导出幂等含值不增、NULL/空/过长 prefix 的 INVALID；排在 `io_submit_validation` 之后以不破坏其 pristine-singleton 前置）。两项变异判红：改 counter+add（幂等值翻倍，4 用例红）、吞掉 set 错误（过长 prefix 的 INVALID）。
+- **验证**：`test_runtime_io` 22/22（normal/ASan+UBSan/TSan 均 22/22）；`test_runtime_metrics`、`test_runtime_core_target_contract`、`test_runtime_facade`、`test_runtime_bus`、`test_runtime_reload`、`test_runtime_world_session` 全绿。
+- **边界**：指标协议边界不变——仍无远程传输、历史采样与告警；子系统 name 绑定现已覆盖 runtime_core 全部带 stats 子系统。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。本收据提交自身的远端工作流结果不在此预写。

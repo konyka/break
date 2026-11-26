@@ -3,6 +3,7 @@
 #include <runtime/runtime_thread.h>
 
 #include <core/platform_thread.h>
+#include <runtime/runtime_metrics.h>
 #include <runtime/runtime_test_hooks.h>
 
 #include <asset/vfs.h>
@@ -1193,5 +1194,54 @@ BreakRuntimeError break_runtime_io_stats(BreakRuntimeIoStats *out_stats)
     out_stats->active = facade->active;
     out_stats->high_water = facade->high_water;
     platform_mutex_unlock(&facade->mutex);
+    return BREAK_RUNTIME_OK;
+}
+
+BreakRuntimeError break_runtime_io_export_metrics(
+    struct BreakRuntimeMetrics *metrics,
+    const char *prefix)
+{
+    BreakRuntimeIoStats stats;
+    BreakRuntimeError rc;
+    struct {
+        const char *suffix;
+        u64 value;
+    } gauges[13];
+    char name[128];
+    u32 i;
+    if (!metrics || !prefix || prefix[0] == '\0') {
+        return BREAK_RUNTIME_INVALID;
+    }
+    rc = break_runtime_io_stats(&stats);
+    if (rc != BREAK_RUNTIME_OK) {
+        return rc;
+    }
+    gauges[0].suffix = "submitted";         gauges[0].value = stats.submitted;
+    gauges[1].suffix = "completed";         gauges[1].value = stats.completed;
+    gauges[2].suffix = "failed";            gauges[2].value = stats.failed;
+    gauges[3].suffix = "cancelled";         gauges[3].value = stats.cancelled;
+    gauges[4].suffix = "timed_out";         gauges[4].value = stats.timed_out;
+    gauges[5].suffix = "overload_rejects";  gauges[5].value = stats.overload_rejects;
+    gauges[6].suffix = "closed_rejects";    gauges[6].value = stats.closed_rejects;
+    gauges[7].suffix = "stale_drops";       gauges[7].value = stats.stale_drops;
+    gauges[8].suffix = "bytes_published";   gauges[8].value = stats.bytes_published;
+    gauges[9].suffix = "notices_published"; gauges[9].value = stats.notices_published;
+    gauges[10].suffix = "notices_dropped";  gauges[10].value = stats.notices_dropped;
+    gauges[11].suffix = "active";           gauges[11].value = (u64)stats.active;
+    gauges[12].suffix = "high_water";       gauges[12].value = (u64)stats.high_water;
+    for (i = 0; i < 13u; i++) {
+        BreakRuntimeError result;
+        int n = snprintf(name, sizeof(name), "%s.%s", prefix, gauges[i].suffix);
+        if (n < 0) {
+            return BREAK_RUNTIME_FAILED;
+        }
+        /* The registry rejects an over-long name with INVALID; let that be the
+         * reported error rather than silently truncating here. */
+        result = break_runtime_metrics_set(metrics, name, BREAK_RUNTIME_METRIC_GAUGE,
+                                           gauges[i].value);
+        if (result != BREAK_RUNTIME_OK) {
+            return result;
+        }
+    }
     return BREAK_RUNTIME_OK;
 }
