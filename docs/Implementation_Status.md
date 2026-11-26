@@ -14198,3 +14198,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：`test_runtime_metrics.c` 新增 2 用例（只列转变且按规则顺序含 UINT64_MAX 阈值、所需长度与 NUL 余量、非法 name/op/边沿/NULL）；`test_runtime_metrics_push_http.c` 新增 3 用例（POST /alerts 的请求行、Content-Type 与 body；全 STEADY 不连接；503 为 FAILED、非法边沿/NULL/尾斜杠在连接前 INVALID）。均先以未声明函数编译失败为 RED。六项变异判红：编码不跳过 STEADY、去掉 name 校验、缓冲判定丢掉 NUL 余量；投递不跳过空编码、投到 /metrics、吞掉编码器 INVALID。
 - **验证**：`test_runtime_metrics` 30/30、`test_runtime_metrics_push_http` 9/9（normal/ASan+UBSan/TSan 均通过）。
 - **边界**：指标协议的远程传输与告警投递均已具备基本通路；不做重试队列、去重、批量、压缩与多渠道路由；HTTP 推送仅 POSIX。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。本收据提交自身的远端工作流结果不在此预写。
+
+## 持续告警/边沿/窗口增量/严格解码切片的远端收据（2026-11-26）
+
+- 推送 `c65a642b..c29d6b48`（fast-forward），含 `a71b73dc`（持续告警）、`aee4b181`（告警边沿）、`5b6941e5`（计数器窗口增量）、`cef0adca`（采集端严格解码）与收据提交 `c29d6b48`。
+- 远端 CI `45808036662` 结论 **success**：25 success、3 条件 skip（Steam Deck、Proton、`lane-gpu-runtime-windows-d3d12`），0 失败；四条 macOS lane、`Linux arm64 cross-build + QEMU tests (GCC)`、三条 Windows headless lane 均 success。
+- 独立的 windows-d3d12 工作流 `45808036561` success。
+- 边界同各切片收据。
