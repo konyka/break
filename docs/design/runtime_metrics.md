@@ -262,3 +262,18 @@ Winsock（`WSAStartup`、`SOCKET`、`WSAPoll`、错误码映射、TLS 的平台�
 网络子系统移植。本机无 Windows 环境、Windows CI 通道当前排队未执行，无法在此验证，故不在此
 实现，如实记为前置条件未满足；待 `break_http` 具备 Windows 传输后，推送层预计只需放宽
 `_POSIX_C_SOURCE` 守卫即可复用。
+
+## 27. 推送 + 重试队列 + 排空的组合（集成测试）
+
+第 20/22/23 节的部件（HTTP 推送、重试队列、排空循环）按设计分别把重试调度留给调用方。
+`test_runtime_metrics_push_http` 新增一个集成用例，证明它们按文档描述的方式组合成 at-least-once
+投递，而不在库里新增编排代码（那会违反各自「重试由调用方安排」的边界）：
+
+1. 向回环假采集端推送，采集端答 503 → `FAILED`；调用方把该次 `encode` 的字节 `enqueue` 进
+   重试队列。
+2. 稍后采集端恢复答 200，`retry_drain` 的 send 回调把队首字节解码重建为临时注册表并
+   `push_http`；成功即 `delivered` 并 `release`，队列清空。
+
+断言覆盖：失败后 `queued==1`；排空后 `delivered==1`、`failed==0`、`queued==0`、`released==1`，
+且第二个采集端确实收到 `POST /metrics`。normal/ASan+UBSan（含 leak 检测）/TSan 均 10/10
+（回环 socket + 线程，TSan 有意义）。这是集成证据，不改产品代码。

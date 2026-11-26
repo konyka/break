@@ -307,6 +307,88 @@ TEST(alert_delivery_failures_and_local_refusals) {
     ASSERT_EQ(f.got_len, 0u);
 }
 
+
+/* Best-effort delivery: a failed push parks its encoded body in the retry
+ * queue; a later drain re-POSTs it and releases it on success. This is the
+ * caller-side composition the push and retry docs describe (the library does
+ * not retry on its own). */
+typedef struct {
+    int port;
+    u32 sends;
+} DrainSendCtx;
+
+static BreakRuntimeError drain_send_post(void *user, const void *bytes, usize len) {
+    DrainSendCtx *d = (DrainSendCtx *)user;
+    BreakRuntimeMetrics *tmp = NULL;
+    BreakRuntimeMetricSample rows[8];
+    u32 n = 0u;
+    BreakRuntimeMetricsPushHttp c;
+    BreakRuntimeError r;
+    d->sends++;
+    /* Rebuild a registry from the queued encoding, then POST it. */
+    if (break_runtime_metrics_decode((const char *)bytes, len, rows, 8u, &n) != BREAK_RUNTIME_OK)
+        return BREAK_RUNTIME_INVALID;
+    if (break_runtime_metrics_create(NULL, &tmp) != BREAK_RUNTIME_OK) return BREAK_RUNTIME_OOM;
+    for (u32 i = 0u; i < n; i++) {
+        BreakRuntimeError put = rows[i].kind == BREAK_RUNTIME_METRIC_COUNTER
+            ? break_runtime_metrics_add(tmp, rows[i].name, BREAK_RUNTIME_METRIC_COUNTER, rows[i].value)
+            : break_runtime_metrics_set(tmp, rows[i].name, BREAK_RUNTIME_METRIC_GAUGE, rows[i].value);
+        if (put != BREAK_RUNTIME_OK) { break_runtime_metrics_destroy(tmp); return put; }
+    }
+    ctx_for(&c, d->port);
+    r = break_runtime_metrics_push_http(&c, tmp);
+    break_runtime_metrics_destroy(tmp);
+    return r;
+}
+
+TEST(a_failed_push_is_parked_and_a_later_drain_delivers_it) {
+    static Fake down;
+    static Fake up;
+    BreakRuntimeMetrics *m = sample_registry();
+    BreakRuntimeMetricsRetryQueue *q = NULL;
+    BreakRuntimeMetricsRetryConfig qc;
+    BreakRuntimeMetricsRetryStats st;
+    BreakRuntimeMetricsRetryDrainResult dr;
+    BreakRuntimeMetricsPushHttp c;
+    DrainSendCtx d;
+    char body[8192];
+    usize body_len = 0u;
+    int down_port = 0, up_port = 0;
+    ASSERT_NOT_NULL(m);
+    memset(&qc, 0, sizeof(qc));
+    qc.capacity = 8u;
+    qc.max_payload_bytes = sizeof(body);
+    ASSERT_EQ(break_runtime_metrics_retry_create(&qc, &q), BREAK_RUNTIME_OK);
+
+    /* 1) Push to a collector that answers 503 -> FAILED, so we park the body. */
+    ASSERT_TRUE(fake_start(&down, "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", &down_port));
+    ctx_for(&c, down_port);
+    ASSERT_EQ(break_runtime_metrics_push_http(&c, m), BREAK_RUNTIME_FAILED);
+    fake_stop(&down);
+    ASSERT_EQ(break_runtime_metrics_encode(m, body, sizeof(body), &body_len), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, body, body_len), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_stats(q, &st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(st.queued, 1u);
+
+    /* 2) Drain against a collector that now answers 200 -> delivered, queue empty. */
+    ASSERT_TRUE(fake_start(&up, OK200, &up_port));
+    d.port = up_port;
+    d.sends = 0u;
+    ASSERT_EQ(break_runtime_metrics_retry_drain(q, drain_send_post, &d, 4u, 0u, &dr),
+              BREAK_RUNTIME_OK);
+    fake_stop(&up);
+    ASSERT_EQ(dr.delivered, 1u);
+    ASSERT_EQ(dr.failed, 0u);
+    ASSERT_EQ(d.sends, 1u);
+    ASSERT_NOT_NULL(strstr(up.got, "POST /metrics HTTP/1.1\r\n"));
+    ASSERT_EQ(break_runtime_metrics_retry_stats(q, &st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(st.queued, 0u);
+    ASSERT_EQ(st.released, 1u);
+
+    break_runtime_metrics_retry_destroy(q);
+    break_runtime_metrics_destroy(m);
+}
+
 TEST_MAIN_BEGIN()
     signal(SIGPIPE, SIG_IGN);
     RUN_TEST(a_200_answer_is_ok_and_the_body_decodes_to_the_snapshot);
@@ -318,4 +400,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(alert_edges_are_posted_to_the_alerts_endpoint);
     RUN_TEST(all_steady_edges_send_nothing_and_succeed);
     RUN_TEST(alert_delivery_failures_and_local_refusals);
+    RUN_TEST(a_failed_push_is_parked_and_a_later_drain_delivers_it);
 TEST_MAIN_END()
