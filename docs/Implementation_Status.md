@@ -14337,3 +14337,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD**：`test_world_snapshot_filter` 新增 1 例逐预算扫描 build 与 filter 的全部分配点，先崩溃（RED）后通过；`test_world_snapshot_filter` 6/6，ASan 含 leak 检测无泄漏。
 - **文档更正**：前一条复查记录把「依赖 calloc 故安全」写得像覆盖整个 OOM 路径；实际只对 filter 成立，build 的清理正是崩溃点。已在设计文档中更正。
 - 本收据提交自身的远端工作流结果不在此预写。
+
+## 指标采集端解码的 fuzz 目标（2026-11-26）
+
+- **缺口**：`break_runtime_metrics_decode` 的头文件明确说明它解析「远程采集端的不可信字节」，但此前没有 fuzz 目标，而仓库其余不可信输入解析器（image/wav/gltf/net packet/scene/pak/wire）都有。
+- **实现**：新增 `engine/tests/fuzz_runtime_metrics_decode.c`，仿照 `fuzz_world_delta_wire.c` 的自驱 harness（也可用 `RUNTIME_METRICS_DECODE_LIBFUZZER` 导出到 libFuzzer）。不变量：解码不越界不越写（ASan/UBSan）；被拒输入 `out_count=0` 且不接受部分输出；被接受的文档必须**逐字节**重新编码回它自己的输入（严格解码意味着接受的即规范形式）。注册为 `fuzz_runtime_metrics_decode_smoke`（种子 53），并加入 CI 的三处 fuzz 构建/冒烟列表。
+- **负向对照**：去掉解码器的前导零拒绝后，fuzzer 在第 ~11487 次迭代以「accepted input is not canonical」失败（exit 1），证明该不变量确实可检出放宽；恢复后 200000 次迭代在 ASan+UBSan+leak 下干净（约 11k 接受 / 189k 拒绝）。
+- **边界**：这是测试覆盖补强，不改产品代码；`runtime_core` 归档不受影响。本收据提交自身的远端工作流结果不在此预写。

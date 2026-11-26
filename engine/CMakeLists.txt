@@ -8445,6 +8445,14 @@ endif()
     target_include_directories(fuzz_world_delta_wire PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(fuzz_world_delta_wire PRIVATE break_ecs_replication m)
 
+    # Mutation fuzzer for break_runtime_metrics_decode, the strict BRKM1 parser
+    # a remote collector runs on untrusted text. Accepted documents must
+    # re-encode to exactly their own bytes.
+    add_executable(fuzz_runtime_metrics_decode EXCLUDE_FROM_ALL
+        tests/fuzz_runtime_metrics_decode.c)
+    target_include_directories(fuzz_runtime_metrics_decode PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(fuzz_runtime_metrics_decode PRIVATE runtime_core)
+
     # Mutation fuzzer for the editor remote session wire path (ids 4..21):
     # mutated envelopes -> the real break_net codec -> the real session
     # manager -> the real editor_remote.c handlers on a live headless shell
@@ -8495,6 +8503,7 @@ endif()
         add_test(NAME fuzz_core_app_scenario_smoke COMMAND fuzz_core_app_scenario 500 37)
         add_test(NAME fuzz_core_app_network_smoke COMMAND fuzz_core_app_network 2000 41)
         add_test(NAME fuzz_world_delta_wire_smoke COMMAND fuzz_world_delta_wire 2000 47)
+        add_test(NAME fuzz_runtime_metrics_decode_smoke COMMAND fuzz_runtime_metrics_decode 2000 53)
         add_test(NAME fuzz_break_online_voice_smoke COMMAND fuzz_break_online_voice 2000 43)
         # Checked-in wire samples, one per file; the name prefix is the expected
         # decode outcome. Regenerate with `fuzz_core_app_network --emit-corpus <dir>`.
@@ -8526,6 +8535,7 @@ endif()
             fuzz_mycompose_tree_smoke fuzz_mycompose_intent_smoke
             fuzz_core_app_checkpoint_smoke fuzz_core_app_scenario_smoke
             fuzz_core_app_network_smoke fuzz_world_delta_wire_smoke
+            fuzz_runtime_metrics_decode_smoke
             fuzz_break_online_voice_smoke
             PROPERTIES LABELS "fuzz")
         if(ENGINE_BUILD_LIBFUZZER)
