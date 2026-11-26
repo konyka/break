@@ -55,7 +55,7 @@
 
 ## 7. 边界
 
-本块只交付进程内注册表与文本编码。远程传输（把编码推给采集器）、历史采样（时间序列保留）与聚合窗口仍未实现（阈值告警求值见第 14 节）；指标值的语义绑定（哪些子系统注册哪些 name）由各消费者在后续切片接线，本库不预置任何业务 name。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。
+本块只交付进程内注册表与文本编码。远程传输（把编码推给采集器）与聚合窗口仍未实现（阈值告警求值见第 14 节，有界历史采样见第 15 节）；指标值的语义绑定（哪些子系统注册哪些 name）由各消费者在后续切片接线，本库不预置任何业务 name。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。
 
 ## 8. 子系统接线：Bus 聚合导出（第一处 name 绑定）
 
@@ -105,4 +105,13 @@
 
 - `fired` 不足 → `OVERLOAD`，`*out_count` 为所需数量，`fired` 不写。
 - `INVALID`（`*out_count = 0`）：`out_count` 为 NULL；计数非零而 samples/rules/fired 为 NULL；规则 name 为 NULL 或 op 未知；样本数或规则数超过 `BREAK_RUNTIME_METRICS_MAX_CAPACITY`。所有规则先校验后求值，不会部分写出。
-- 不保留状态：不做去抖、持续时长、恢复通知或告警投递；这些与历史采样一起留待后续。
+- 不保留状态：不做去抖、持续时长、恢复通知或告警投递；这些留待后续，可在第 15 节的历史帧上组合实现。
+
+## 15. 有界历史采样
+
+`BreakRuntimeMetricsHistory` 是调用方持有的定长环：`depth` 帧（1..`BREAK_RUNTIME_METRICS_HISTORY_MAX_DEPTH`=256），每帧至多 `width` 个样本（0 取默认 64，上限 `BREAK_RUNTIME_METRICS_MAX_CAPACITY`），仅在 create 时分配。单线程、无锁；`record()` 内部调用 `break_runtime_metrics_snapshot`，因此必须在该注册表的拥有线程上调用。
+
+- `break_runtime_metrics_history_record(history, metrics, tick)`：快照注册表写入新帧并打上调用方提供的 `tick`；环满时覆盖最旧帧（计入 `evicted`）。`tick` 必须严格大于上一帧，否则 `INVALID`。快照宽于 `width` → `OVERLOAD`（计入 `width_drops`），环不变；非拥有线程的 `REJECTED` 透传，环不变。快照先写入独立 scratch，成功后才提交，失败不会污染已有帧。
+- `break_runtime_metrics_history_frame(history, age, out, capacity, out_count, out_tick)`：取回第 `age` 新的帧（0 为最新）。无该帧 → `STALE`、`*out_count = 0`；`out` 不足 → `OVERLOAD` 并报所需数量；`out_tick` 可为 NULL。
+- `break_runtime_metrics_history_stats`：`recorded`/`evicted`/`width_drops`/`frames`。
+- 边界：不做降采样、聚合窗口或速率计算，也不持久化；帧可直接交给第 14 节的告警求值。

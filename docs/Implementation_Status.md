@@ -14135,3 +14135,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：`test_runtime_metrics.c` 新增 4 用例（严格阈值与规则顺序、输出不足的所需数量、参数校验、对真实快照的 4→5 跨越）。先以未定义类型编译失败为 RED。两项变异判红：`>` 改 `>=`（2 用例红）、去掉 op 校验（1 用例红）。
 - **验证**：`test_runtime_metrics` 14/14（normal/ASan+UBSan/TSan 均 14/14）；`test_runtime_core_target_contract`、`test_runtime_bus`、`test_runtime_facade` 全绿。
 - **边界**：仍无远程传输、历史采样、聚合窗口；告警不做去抖、持续时长、恢复通知与投递。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。本收据提交自身的远端工作流结果不在此预写。
+
+## 指标有界历史采样（指标协议：快照时间序列环）（2026-11-26）
+
+- **实现**：`runtime_metrics` 新增 `BreakRuntimeMetricsHistory`（`engine/src/runtime/runtime_metrics.{c,h}`）：调用方持有的定长快照环（depth ≤ 256，width ≤ 1024），create 时一次分配；`history_record` 在注册表拥有线程上快照并按严格递增 tick 入环、满则覆盖最旧帧；`history_frame` 按 age 取回帧（无帧 STALE、缓冲不足 OVERLOAD 报所需数量）；`history_stats` 报 recorded/evicted/width_drops/frames。快照先进 scratch，失败（过宽 OVERLOAD、非拥有线程 REJECTED）不改动环。设计见 `docs/design/runtime_metrics.md` 第 15 节。
+- **TDD 与变异**：`test_runtime_metrics.c` 新增 4 用例（配置校验、最新优先与淘汰、非递增 tick 与过宽快照、帧缓冲不足）。先以未定义类型编译失败为 RED。两项变异判红：去掉 tick 单调校验、取帧忽略 age。
+- **验证**：`test_runtime_metrics` 18/18（normal/ASan+UBSan/TSan 均 18/18）；runtime_core 相关 9 项 ctest 全绿。
+- **边界**：仍无远程传输、聚合窗口、降采样与持久化；告警仍无去抖与投递。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。本收据提交自身的远端工作流结果不在此预写。

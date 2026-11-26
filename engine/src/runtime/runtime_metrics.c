@@ -307,3 +307,124 @@ BreakRuntimeError break_runtime_metrics_evaluate_alerts(
     *out_count = written;
     return BREAK_RUNTIME_OK;
 }
+
+struct BreakRuntimeMetricsHistory {
+    BreakRuntimeMetricSample *samples; /* depth * width, frame-major */
+    BreakRuntimeMetricSample *scratch; /* width; snapshot target before commit */
+    u32 *counts;                       /* samples per frame */
+    u64 *ticks;
+    u32 depth;
+    u32 width;
+    u32 head;   /* next frame slot to write */
+    u32 frames; /* retained frames */
+    u64 recorded;
+    u64 evicted;
+    u64 width_drops;
+};
+
+BreakRuntimeError break_runtime_metrics_history_create(
+    const BreakRuntimeMetricsHistoryConfig *config,
+    BreakRuntimeMetricsHistory **out) {
+    BreakRuntimeMetricsHistory *history;
+    u32 width;
+    if (!out) return BREAK_RUNTIME_INVALID;
+    *out = NULL;
+    if (!config || config->depth == 0u ||
+        config->depth > BREAK_RUNTIME_METRICS_HISTORY_MAX_DEPTH ||
+        config->width > BREAK_RUNTIME_METRICS_MAX_CAPACITY)
+        return BREAK_RUNTIME_INVALID;
+    width = config->width != 0u ? config->width : BREAK_RUNTIME_METRICS_DEFAULT_CAPACITY;
+    history = (BreakRuntimeMetricsHistory *)calloc(1u, sizeof(*history));
+    if (!history) return BREAK_RUNTIME_OOM;
+    history->samples = (BreakRuntimeMetricSample *)calloc(
+        (usize)config->depth * (usize)width, sizeof(*history->samples));
+    history->scratch = (BreakRuntimeMetricSample *)calloc(width, sizeof(*history->scratch));
+    history->counts = (u32 *)calloc(config->depth, sizeof(*history->counts));
+    history->ticks = (u64 *)calloc(config->depth, sizeof(*history->ticks));
+    if (!history->samples || !history->scratch || !history->counts || !history->ticks) {
+        break_runtime_metrics_history_destroy(history);
+        return BREAK_RUNTIME_OOM;
+    }
+    history->depth = config->depth;
+    history->width = width;
+    *out = history;
+    return BREAK_RUNTIME_OK;
+}
+
+void break_runtime_metrics_history_destroy(BreakRuntimeMetricsHistory *history) {
+    if (!history) return;
+    free(history->samples);
+    free(history->scratch);
+    free(history->counts);
+    free(history->ticks);
+    free(history);
+}
+
+BreakRuntimeError break_runtime_metrics_history_record(
+    BreakRuntimeMetricsHistory *history,
+    BreakRuntimeMetrics *metrics,
+    u64 tick) {
+    BreakRuntimeError err;
+    u32 count = 0u;
+    u32 slot;
+    if (!history || !metrics) return BREAK_RUNTIME_INVALID;
+    if (history->frames > 0u) {
+        u32 newest = (history->head + history->depth - 1u) % history->depth;
+        if (tick <= history->ticks[newest]) return BREAK_RUNTIME_INVALID;
+    }
+    err = break_runtime_metrics_snapshot(metrics, history->scratch, history->width, &count);
+    if (err == BREAK_RUNTIME_OVERLOAD) {
+        history->width_drops++;
+        return BREAK_RUNTIME_OVERLOAD;
+    }
+    if (err != BREAK_RUNTIME_OK) return err;
+    slot = history->head;
+    memcpy(&history->samples[(usize)slot * history->width], history->scratch,
+           (usize)count * sizeof(*history->scratch));
+    history->counts[slot] = count;
+    history->ticks[slot] = tick;
+    history->head = (slot + 1u) % history->depth;
+    if (history->frames == history->depth)
+        history->evicted++;
+    else
+        history->frames++;
+    history->recorded++;
+    return BREAK_RUNTIME_OK;
+}
+
+BreakRuntimeError break_runtime_metrics_history_frame(
+    const BreakRuntimeMetricsHistory *history,
+    u32 age,
+    BreakRuntimeMetricSample *out,
+    u32 capacity,
+    u32 *out_count,
+    u64 *out_tick) {
+    u32 slot;
+    u32 count;
+    if (!history || !out_count || (!out && capacity != 0u)) return BREAK_RUNTIME_INVALID;
+    *out_count = 0u;
+    if (age >= history->frames) return BREAK_RUNTIME_STALE;
+    slot = (history->head + history->depth - 1u - age) % history->depth;
+    count = history->counts[slot];
+    if (count > capacity) {
+        *out_count = count;
+        return BREAK_RUNTIME_OVERLOAD;
+    }
+    if (count > 0u)
+        memcpy(out, &history->samples[(usize)slot * history->width],
+               (usize)count * sizeof(*out));
+    *out_count = count;
+    if (out_tick) *out_tick = history->ticks[slot];
+    return BREAK_RUNTIME_OK;
+}
+
+BreakRuntimeError break_runtime_metrics_history_stats(
+    const BreakRuntimeMetricsHistory *history,
+    BreakRuntimeMetricsHistoryStats *out_stats) {
+    if (!history || !out_stats) return BREAK_RUNTIME_INVALID;
+    out_stats->recorded = history->recorded;
+    out_stats->evicted = history->evicted;
+    out_stats->width_drops = history->width_drops;
+    out_stats->frames = history->frames;
+    return BREAK_RUNTIME_OK;
+}

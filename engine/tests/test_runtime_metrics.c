@@ -324,6 +324,111 @@ TEST(alerts_evaluate_a_live_snapshot) {
     break_runtime_metrics_destroy(m);
 }
 
+static BreakRuntimeMetricsHistory *make_history(u32 depth, u32 width) {
+    BreakRuntimeMetricsHistoryConfig cfg = {depth, width};
+    BreakRuntimeMetricsHistory *h = NULL;
+    return break_runtime_metrics_history_create(&cfg, &h) == BREAK_RUNTIME_OK ? h : NULL;
+}
+
+TEST(history_create_validates_config) {
+    BreakRuntimeMetricsHistoryConfig zero = {0u, 4u};
+    BreakRuntimeMetricsHistoryConfig wide = {4u, BREAK_RUNTIME_METRICS_MAX_CAPACITY + 1u};
+    BreakRuntimeMetricsHistoryConfig deep = {BREAK_RUNTIME_METRICS_HISTORY_MAX_DEPTH + 1u, 4u};
+    BreakRuntimeMetricsHistory *h = (BreakRuntimeMetricsHistory *)1;
+    ASSERT_EQ(break_runtime_metrics_history_create(&zero, NULL), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_history_create(NULL, &h), BREAK_RUNTIME_INVALID);
+    ASSERT_TRUE(h == NULL);
+    ASSERT_EQ(break_runtime_metrics_history_create(&zero, &h), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_history_create(&wide, &h), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_history_create(&deep, &h), BREAK_RUNTIME_INVALID);
+    ASSERT_TRUE(h == NULL);
+    break_runtime_metrics_history_destroy(NULL);
+}
+
+TEST(history_records_frames_newest_first_and_evicts_oldest) {
+    BreakRuntimeMetrics *m = make_metrics(8u);
+    BreakRuntimeMetricsHistory *h = make_history(2u, 4u);
+    BreakRuntimeMetricSample out[4];
+    BreakRuntimeMetricsHistoryStats stats;
+    u32 n = 0u;
+    u64 tick = 0u;
+    ASSERT_NOT_NULL(m);
+    ASSERT_NOT_NULL(h);
+    ASSERT_EQ(break_runtime_metrics_history_frame(h, 0u, out, 4u, &n, &tick),
+              BREAK_RUNTIME_STALE);
+    for (u64 v = 1u; v <= 3u; ++v) {
+        ASSERT_EQ(break_runtime_metrics_set(m, "q.depth", BREAK_RUNTIME_METRIC_GAUGE, v * 10u),
+                  BREAK_RUNTIME_OK);
+        ASSERT_EQ(break_runtime_metrics_history_record(h, m, v * 100u), BREAK_RUNTIME_OK);
+    }
+    ASSERT_EQ(break_runtime_metrics_history_frame(h, 0u, out, 4u, &n, &tick), BREAK_RUNTIME_OK);
+    ASSERT_EQ(n, 1u);
+    ASSERT_EQ(tick, 300u);
+    ASSERT_EQ(sample_value(out, n, "q.depth"), 30u);
+    ASSERT_EQ(break_runtime_metrics_history_frame(h, 1u, out, 4u, &n, &tick), BREAK_RUNTIME_OK);
+    ASSERT_EQ(tick, 200u);
+    ASSERT_EQ(sample_value(out, n, "q.depth"), 20u);
+    ASSERT_EQ(break_runtime_metrics_history_frame(h, 2u, out, 4u, &n, &tick),
+              BREAK_RUNTIME_STALE);
+    ASSERT_EQ(n, 0u);
+    ASSERT_EQ(break_runtime_metrics_history_stats(h, &stats), BREAK_RUNTIME_OK);
+    ASSERT_EQ(stats.recorded, 3u);
+    ASSERT_EQ(stats.evicted, 1u);
+    ASSERT_EQ(stats.frames, 2u);
+    ASSERT_EQ(stats.width_drops, 0u);
+    break_runtime_metrics_history_destroy(h);
+    break_runtime_metrics_destroy(m);
+}
+
+TEST(history_rejects_non_increasing_ticks_and_wide_snapshots) {
+    BreakRuntimeMetrics *m = make_metrics(8u);
+    BreakRuntimeMetricsHistory *h = make_history(4u, 1u);
+    BreakRuntimeMetricsHistoryStats stats;
+    ASSERT_NOT_NULL(m);
+    ASSERT_NOT_NULL(h);
+    ASSERT_EQ(break_runtime_metrics_history_record(h, NULL, 1u), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_history_record(NULL, m, 1u), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_set(m, "a", BREAK_RUNTIME_METRIC_GAUGE, 1u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_history_record(h, m, 5u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_history_record(h, m, 5u), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_history_record(h, m, 4u), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_set(m, "b", BREAK_RUNTIME_METRIC_GAUGE, 2u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_history_record(h, m, 6u), BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(break_runtime_metrics_history_stats(h, &stats), BREAK_RUNTIME_OK);
+    ASSERT_EQ(stats.recorded, 1u);
+    ASSERT_EQ(stats.frames, 1u);
+    ASSERT_EQ(stats.width_drops, 1u);
+    ASSERT_EQ(break_runtime_metrics_history_stats(h, NULL), BREAK_RUNTIME_INVALID);
+    break_runtime_metrics_history_destroy(h);
+    break_runtime_metrics_destroy(m);
+}
+
+TEST(history_frame_reports_required_count_when_too_small) {
+    BreakRuntimeMetrics *m = make_metrics(8u);
+    BreakRuntimeMetricsHistory *h = make_history(2u, 4u);
+    BreakRuntimeMetricSample out[1];
+    u32 n = 0u;
+    u64 tick = 9u;
+    ASSERT_NOT_NULL(m);
+    ASSERT_NOT_NULL(h);
+    ASSERT_EQ(break_runtime_metrics_set(m, "a", BREAK_RUNTIME_METRIC_GAUGE, 1u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_add(m, "b", BREAK_RUNTIME_METRIC_COUNTER, 2u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_history_record(h, m, 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_history_frame(h, 0u, out, 1u, &n, &tick),
+              BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(n, 2u);
+    ASSERT_EQ(break_runtime_metrics_history_frame(h, 0u, NULL, 1u, &n, &tick),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_history_frame(h, 0u, out, 1u, NULL, &tick),
+              BREAK_RUNTIME_INVALID);
+    break_runtime_metrics_history_destroy(h);
+    break_runtime_metrics_destroy(m);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(create_validates_config_and_defaults);
     RUN_TEST(counter_adds_accumulate_and_saturate);
@@ -339,4 +444,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(alerts_report_required_count_when_output_too_small);
     RUN_TEST(alerts_validate_arguments);
     RUN_TEST(alerts_evaluate_a_live_snapshot);
+    RUN_TEST(history_create_validates_config);
+    RUN_TEST(history_records_frames_newest_first_and_evicts_oldest);
+    RUN_TEST(history_rejects_non_increasing_ticks_and_wide_snapshots);
+    RUN_TEST(history_frame_reports_required_count_when_too_small);
 TEST_MAIN_END()

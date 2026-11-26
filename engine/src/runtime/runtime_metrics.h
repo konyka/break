@@ -158,3 +158,61 @@ BreakRuntimeError break_runtime_metrics_evaluate_alerts(
     u32 *fired,
     u32 fired_capacity,
     u32 *out_count);
+
+/* Bounded history of snapshots: a caller-owned ring of `depth` frames, each a
+ * copy of up to `width` samples stamped with a caller-supplied tick. It is
+ * single-threaded (no lock) and allocates only at create. record() snapshots a
+ * registry, so it must run on that registry's owner thread. */
+typedef struct BreakRuntimeMetricsHistory BreakRuntimeMetricsHistory; /* opaque */
+
+#define BREAK_RUNTIME_METRICS_HISTORY_MAX_DEPTH 256u
+
+typedef struct BreakRuntimeMetricsHistoryConfig {
+    u32 depth; /* frames retained; 1..BREAK_RUNTIME_METRICS_HISTORY_MAX_DEPTH */
+    u32 width; /* samples per frame; 0 = BREAK_RUNTIME_METRICS_DEFAULT_CAPACITY */
+} BreakRuntimeMetricsHistoryConfig;
+
+typedef struct BreakRuntimeMetricsHistoryStats {
+    u64 recorded;    /* frames accepted */
+    u64 evicted;     /* oldest frames overwritten by a newer one */
+    u64 width_drops; /* records rejected OVERLOAD: snapshot wider than `width` */
+    u32 frames;      /* frames retained right now */
+} BreakRuntimeMetricsHistoryStats;
+
+/* On success *out is newly owned; on failure it is set to NULL. INVALID on
+ * NULL arguments, depth 0 or above the max, width above
+ * BREAK_RUNTIME_METRICS_MAX_CAPACITY. OOM on allocation failure. */
+BreakRuntimeError break_runtime_metrics_history_create(
+    const BreakRuntimeMetricsHistoryConfig *config,
+    BreakRuntimeMetricsHistory **out);
+
+/* NULL is a no-op. */
+void break_runtime_metrics_history_destroy(BreakRuntimeMetricsHistory *history);
+
+/* Snapshots `metrics` into a new frame stamped `tick`, evicting the oldest
+ * frame when full. `tick` must be strictly greater than the last recorded
+ * tick (INVALID otherwise). A snapshot wider than `width` -> OVERLOAD
+ * (counted) with the ring unchanged. The registry's REJECTED (non-owner
+ * thread) passes through with the ring unchanged. */
+BreakRuntimeError break_runtime_metrics_history_record(
+    BreakRuntimeMetricsHistory *history,
+    BreakRuntimeMetrics *metrics,
+    u64 tick);
+
+/* Copies the frame `age` steps back (0 = newest) into `out` and its tick into
+ * *out_tick (which may be NULL). *out_count receives the sample count. No such
+ * frame -> STALE with *out_count = 0. `out` too small -> OVERLOAD with
+ * *out_count = required count and `out` untouched. INVALID on NULL history or
+ * out_count, or NULL `out` with non-zero capacity. */
+BreakRuntimeError break_runtime_metrics_history_frame(
+    const BreakRuntimeMetricsHistory *history,
+    u32 age,
+    BreakRuntimeMetricSample *out,
+    u32 capacity,
+    u32 *out_count,
+    u64 *out_tick);
+
+/* INVALID on NULL arguments. */
+BreakRuntimeError break_runtime_metrics_history_stats(
+    const BreakRuntimeMetricsHistory *history,
+    BreakRuntimeMetricsHistoryStats *out_stats);
