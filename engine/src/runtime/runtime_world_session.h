@@ -140,6 +140,25 @@ void break_runtime_world_session_stats(
     const BreakRuntimeWorldSession *adapter,
     BreakRuntimeWorldSessionStats *out_stats);
 
+struct BreakRuntimeMetrics; /* runtime_metrics.h */
+
+/* Mirrors the adapter's observability counters into `metrics` as GAUGES named
+ * "<prefix>.submitted", ".drained", ".applied", ".rejected", ".stale_rejected",
+ * ".transport_overloads", ".queued", ".publish_overloads", ".publish_terminal",
+ * ".control_pending", ".publish_pending" (the two Booleans as 0/1 gauges). The
+ * monotonic next_sequence is not exported (it is an identity, not a metric).
+ * Gauges (not counters) so re-exporting the same cumulative counters is
+ * idempotent. `prefix` must be non-empty and short enough that the longest name
+ * "<prefix>.transport_overloads" fits the metric-name budget; an over-long
+ * prefix surfaces the INVALID that break_runtime_metrics_set returns. Any set
+ * error stops the export. INVALID on a NULL argument or NULL/empty prefix. The
+ * metrics registry must be owned by the calling thread. May run on any thread
+ * (reads a stats snapshot, like stats()). */
+BreakRuntimeError break_runtime_world_session_export_metrics(
+    const BreakRuntimeWorldSession *adapter,
+    struct BreakRuntimeMetrics *metrics,
+    const char *prefix);
+
 /* Per-connection read-only view for diagnosis. The query copies adapter scalars
  * under the adapter mutex; it never calls World Session, publication or queue and
  * never advances the state machine. `publish_dirty` mirrors the adapter-owned terms of

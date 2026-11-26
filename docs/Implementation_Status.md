@@ -14089,3 +14089,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：`test_runtime_facade.c` 新增 1 用例（2 submit + 1 overload 后导出 8 gauge 值校验、再导出幂等含值不增、NULL/空/过长 prefix 的 INVALID）。两项变异判红：改 counter+add（幂等值翻倍）、吞掉 set 错误（过长 prefix 的 INVALID）。
 - **验证**：`test_runtime_facade` 23/23（normal/ASan+UBSan/TSan 均 23/23）；`test_runtime_bus`、`test_runtime_metrics`、`test_runtime_core_target_contract`、io/reload/mainloop 全绿。
 - **边界**：指标协议边界不变——仍无远程传输、历史采样与告警；bus/queue/task 为前三处子系统绑定，world session 等后续接线。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。本收据提交自身的远端工作流结果不在此预写。
+
+
+## World Session 适配器计数导出到指标注册表（指标协议：第四处子系统 name 绑定）（2026-11-26）
+
+- **实现**：`runtime_world_session` 新增 `break_runtime_world_session_export_metrics(adapter, metrics, prefix)`（`engine/src/runtime/runtime_world_session.{c,h}`），把适配器 11 个观测计数按 `prefix` 写为 GAUGE（`submitted`/`drained`/`applied`/`rejected`/`stale_rejected`/`transport_overloads`/`queued`/`publish_overloads`/`publish_terminal`/`control_pending`/`publish_pending`，后两个 Boolean 作 0/1）；单调 `next_sequence` 不导出。与 queue/task 绑定同构：gauge 幂等、多前缀并存、取 stats 快照后进注册表 leaf 锁、过长 prefix 回 INVALID。设计见 `docs/design/runtime_metrics.md` 第 11 节。
+- **TDD 与变异**：`test_runtime_world_session.c` 新增 1 用例（open 一条连接 + 一个 stale rebaseline 后导出 11 gauge 对齐 stats()、再导出幂等含值不增、NULL/空/过长 prefix 的 INVALID）。两项变异判红：改 counter+add（幂等值翻倍）、吞掉 set 错误（过长 prefix 的 INVALID）。
+- **验证**：`test_runtime_world_session` 57/57（normal/ASan+UBSan/TSan 均 57/57）；`test_runtime_world_session_target_contract`、`test_runtime_bus`、`test_runtime_facade`、`test_runtime_metrics` 全绿。
+- **边界**：指标协议边界不变——仍无远程传输、历史采样与告警；bus/queue/task/world-session 为前四处子系统绑定。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。本收据提交自身的远端工作流结果不在此预写。

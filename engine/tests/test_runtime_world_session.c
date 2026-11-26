@@ -3,6 +3,7 @@
 #include <core/platform_thread.h>
 #include <ecs/world_snapshot_publication.h>
 #include <network/break_net_message_registry.h>
+#include <runtime/runtime_metrics.h>
 #include <runtime/runtime_world_session.h>
 #include <runtime/runtime_world_session_lifecycle.h>
 #include <snow/acceptor.h>
@@ -4783,7 +4784,80 @@ TEST(publish_progress_reports_adapter_level_state)
     fixture_dispose(&fixture);
 }
 
+static u64 ws_metric_of(BreakRuntimeMetrics *m, const char *name)
+{
+    BreakRuntimeMetricSample out[32];
+    u32 n = 0u, i;
+    if (break_runtime_metrics_snapshot(m, out, 32u, &n) != BREAK_RUNTIME_OK) return UINT64_MAX;
+    for (i = 0u; i < n; i++)
+        if (strcmp(out[i].name, name) == 0) return out[i].value;
+    return UINT64_MAX;
+}
+
+TEST(export_metrics_mirrors_adapter_counters_as_idempotent_gauges)
+{
+    Fixture fixture;
+    BreakRuntimeMetrics *m = NULL;
+    BreakRuntimeMetricSample out[32];
+    BreakRuntimeWorldSessionStats stats;
+    u64 epoch = 0u;
+    u32 n = 0u;
+
+    ASSERT_TRUE(fixture_init(&fixture, 7u, 2u));
+    ASSERT_EQ(break_runtime_metrics_create(NULL, &m), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(open_connection(&fixture, 0x11u, 7u, &epoch)); /* submitted+drained+applied */
+    /* a stale command so rejected/stale_rejected are nonzero */
+    {
+        BreakRuntimeWorldCommand bad = command(BREAK_RUNTIME_WORLD_COMMAND_REBASELINE, 0u, 0u, 1u);
+        usize drained = 0u;
+        ASSERT_EQ(break_runtime_world_session_submit(fixture.adapter, &bad, 0u),
+                  BREAK_RUNTIME_OK);
+        (void)break_runtime_world_session_drain(fixture.adapter, 1u, &drained);
+    }
+    break_runtime_world_session_stats(fixture.adapter, &stats);
+
+    ASSERT_EQ(break_runtime_world_session_export_metrics(NULL, m, "ws"), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_world_session_export_metrics(fixture.adapter, NULL, "ws"),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_world_session_export_metrics(fixture.adapter, m, NULL),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_world_session_export_metrics(fixture.adapter, m, ""),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_world_session_export_metrics(fixture.adapter, m, "ws"),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(ws_metric_of(m, "ws.submitted"), stats.submitted);
+    ASSERT_EQ(ws_metric_of(m, "ws.drained"), stats.drained);
+    ASSERT_EQ(ws_metric_of(m, "ws.applied"), stats.applied);
+    ASSERT_EQ(ws_metric_of(m, "ws.rejected"), stats.rejected);
+    ASSERT_EQ(ws_metric_of(m, "ws.stale_rejected"), stats.stale_rejected);
+    ASSERT_EQ(ws_metric_of(m, "ws.queued"), (u64)stats.queued);
+    ASSERT_EQ(ws_metric_of(m, "ws.control_pending"), stats.control_pending ? 1u : 0u);
+    ASSERT_EQ(ws_metric_of(m, "ws.publish_pending"), stats.publish_pending ? 1u : 0u);
+    ASSERT_EQ(break_runtime_metrics_snapshot(m, out, 32u, &n), BREAK_RUNTIME_OK);
+    ASSERT_EQ(n, 11u);
+
+    /* idempotent re-export: gauges, no slot or value growth */
+    ASSERT_EQ(break_runtime_world_session_export_metrics(fixture.adapter, m, "ws"),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_snapshot(m, out, 32u, &n), BREAK_RUNTIME_OK);
+    ASSERT_EQ(n, 11u);
+    ASSERT_EQ(ws_metric_of(m, "ws.applied"), stats.applied);
+
+    /* an over-long prefix overflows the longest name; INVALID surfaces */
+    {
+        char longp[48];
+        memset(longp, 'p', sizeof longp);
+        longp[sizeof longp - 1u] = '\0';
+        ASSERT_EQ(break_runtime_world_session_export_metrics(fixture.adapter, m, longp),
+                  BREAK_RUNTIME_INVALID);
+    }
+
+    break_runtime_metrics_destroy(m);
+    fixture_dispose(&fixture);
+}
+
 TEST_MAIN_BEGIN()
+RUN_TEST(export_metrics_mirrors_adapter_counters_as_idempotent_gauges);
 RUN_TEST(publish_notice_layout_submit_and_external_bus_contract);
 RUN_TEST(publish_notice_basic_s1_full_has_no_pre_drain_effects);
 RUN_TEST(publish_notice_connections_keep_independent_full_delta_and_dedup);
