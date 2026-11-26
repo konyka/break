@@ -127,6 +127,17 @@ BreakNetSendResult break_world_session_publish_filtered(
 BreakNetSendResult break_world_session_publish_snapshot(
     BreakWorldSession *session, BreakConnectionKey connection,
     BreakWorldSnapshot *target, u64 level_generation);
+/* Like break_world_session_publish_snapshot, but culls the shared immutable
+ * `target` to this connection's AOI scope before it enters the attempt/delta
+ * chain. `target` is borrowed and unchanged (the connection retains its own
+ * filtered view); callers can fan one published snapshot out to many
+ * connections with different scopes. A NULL `keep` behaves like
+ * break_world_session_publish_snapshot. An active attempt resumes without
+ * refiltering. Returns INVALID when the filtered view cannot be built. */
+BreakNetSendResult break_world_session_publish_snapshot_filtered(
+    BreakWorldSession *session, BreakConnectionKey connection,
+    BreakWorldSnapshot *target, u64 level_generation,
+    BreakWorldSnapshotEntityFilter keep, void *keep_user);
 bool break_world_session_sender_state(const BreakWorldSession *session,
                                       BreakConnectionKey connection,
                                       BreakWorldSessionSenderState *out_state);

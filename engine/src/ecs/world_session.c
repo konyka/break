@@ -905,6 +905,33 @@ BreakNetSendResult break_world_session_publish_snapshot(
     return world_session_resume_attempt(session, state);
 }
 
+BreakNetSendResult break_world_session_publish_snapshot_filtered(
+    BreakWorldSession *session, BreakConnectionKey connection,
+    BreakWorldSnapshot *target, u64 level_generation,
+    BreakWorldSnapshotEntityFilter keep, void *keep_user)
+{
+    size_t slot;
+    BreakWorldSessionConnection *state;
+    BreakWorldSnapshot *view;
+    if (!keep) {
+        return break_world_session_publish_snapshot(session, connection, target,
+                                                    level_generation);
+    }
+    if (!session || !session->reactor) return BREAK_NET_SEND_CLOSED;
+    slot = world_session_connection_index(session, connection);
+    if (slot == session->max_connections) return BREAK_NET_SEND_CLOSED;
+    state = &session->connections[slot];
+    if (state->attempt.active) return world_session_resume_attempt(session, state);
+    if (!target) return BREAK_NET_SEND_INVALID;
+    view = break_world_snapshot_filter(target, keep, keep_user);
+    if (!view) return BREAK_NET_SEND_INVALID;
+    if (!world_session_build_attempt_from_snapshot(session, state, view, level_generation,
+                                                   true)) {
+        return BREAK_NET_SEND_INVALID;
+    }
+    return world_session_resume_attempt(session, state);
+}
+
 bool break_world_session_sender_state(const BreakWorldSession *session,
                                       BreakConnectionKey connection,
                                       BreakWorldSessionSenderState *out_state)

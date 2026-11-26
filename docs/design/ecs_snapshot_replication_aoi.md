@@ -387,3 +387,13 @@ World 的 `Entity{index, generation}` 只在所属 World 内有效，随 World �
 验证：`test_net_entity_map` 新增 2 例（共 10 例，normal/ASan+UBSan 含 leak 检测/TSan 均 10/10）：范围外实体被裁、未绑定实体与错误 world_key 被裁、NULL 参数保留空。两项变异判红：成员判定恒真、NULL map 不拒绝。第三项“去掉查找失败的早返回”是等价变异：查找失败时 id 保持 0，而分配的 id 恒为非零，成员循环本就返回 false。`ctest -R "test_net_entity_map|test_world_snapshot_filter|test_ecs_replication"` 3/3。
 
 边界：这是把 scope 接到过滤发布的最后一块库级胶水；`BreakNetEntityId` 与 Entity 的绑定（bind/adopt/rebind）仍由调用方维护，`break_aoi_compute` 输出到 `BreakNetEntityScope` 的组装、以及 Publication/Runtime adapter/core_app `--world-replication` 是否启用过滤，仍由各自后续切片决定。本节不预写远端结果。
+
+## 补充（2026-11-26）：共享发布 target 的按连接 AOI 过滤
+
+`break_world_session_publish_snapshot_filtered(session, connection, target, level_generation, keep, keep_user)`（`engine/src/ecs/world_session.{h,c}`）是 `break_world_session_publish_snapshot` 的 AOI 版本：对一个共享的 immutable `target` 按该连接的谓词裁剪出私有视图，再进入 attempt/delta 链（strict_tick，同非过滤版本）。`target` 是借用且不被修改，所以调用方可以把一份已发布的快照 fan-out 给多条连接，每条用不同 scope 得到各自的视图；这正是 publication 共享 fan-out 路径（`BreakWorldSnapshotPublication` + Runtime adapter）需要的按连接裁剪原语，区别于 `break_world_session_publish_filtered`（对权威 World 现场构建再裁剪）。
+
+行为约束：`keep` 为 NULL 时与 `break_world_session_publish_snapshot` 完全相同；已有未完成 attempt 时只续发，不重新过滤；过滤视图拥有权交给 attempt，`target` 的引用计数不变；过滤失败返回 INVALID。
+
+验证：`test_world_session_recovery` 29/29（原 27 例，新增 2 例；normal/ASan+UBSan 含 leak 检测/TSan 均 29/29）：一份共享 target fan-out 给两条连接、各自得到与独立 `break_world_snapshot_filter` 视图相同的 target id 且共享 target 实体数不变、`keep == NULL` 等同未过滤。两项变异判红：忽略过滤直接用 target、NULL keep 也走过滤路径。
+
+边界：这是共享 fan-out 路径的按连接裁剪原语；core_app `net_world_publish_runtime` 与 Runtime adapter 尚未调用它（仍发送完整视图），AOI scope 到谓词由 `break_net_entity_scope_keep` 提供、scope 的生产组装与启用由后续切片接入。本节不预写远端结果。

@@ -14246,3 +14246,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 推送 `a7b1ae43..f75d479e`（AOI 过滤发布）与 `f75d479e..6a16139e`（AOI scope→谓词适配器），fast-forward 到 `master`。
 - `f75d479e` 远端 CI `45827056626` 结论为 failure，但唯一非成功项是 `macOS + Clang (rule engine with native Redis provider)` 被 **cancelled**（startedAt 到 completedAt 约 15 分钟、**steps 为 0**、从未进入执行）——等待 macOS runner 容量而取消的基础设施问题，非测试失败；其余 **24 success、3 条件 skip、0 failed**，含 `windows-d3d12`（独立 run `45827056624` 亦 success）与 `Linux arm64 cross-build + QEMU tests (GCC)`。改动是 `engine/src/ecs` 纯 C 代码，与 macOS Cocoa/Metal 或 rule-engine/Redis 无关。令牌对 Actions 只读，无法 rerun；后续 `6a16139e` 会触发新的 macOS lane 自然重试。
 - `6a16139e` 的 CI（`45829350618`）与 windows-d3d12（`45829350314`）结论待后续记录。
+
+## 共享发布 target 的按连接 AOI 过滤（2026-11-26）
+
+- **实现**：`break_world_session_publish_snapshot_filtered`（`engine/src/ecs/world_session.{h,c}`）：对借用的共享 immutable target 按连接谓词裁剪出私有视图再进入 attempt 链（strict_tick），target 不被修改，可 fan-out 给多条连接。`keep == NULL` 等同 `break_world_session_publish_snapshot`。设计见 `docs/design/ecs_snapshot_replication_aoi.md`「共享发布 target 的按连接 AOI 过滤」。
+- **TDD 与变异**：`test_world_session_recovery` 新增 2 例（共享 target 按 scope fan-out、NULL keep 等同未过滤）。先以未定义引用链接失败为 RED。两项变异判红：忽略过滤直接用 target、NULL keep 也走过滤路径。
+- **验证**：`test_world_session_recovery` 29/29（normal/ASan+UBSan 含 leak 检测/TSan 均 29/29）。Snowflake 树 pin `4ab761fc`。
+- **边界**：core_app `net_world_publish_runtime` 与 Runtime adapter 尚未调用它；scope 的生产组装与启用由后续切片接入。本收据提交自身的远端工作流结果不在此预写。

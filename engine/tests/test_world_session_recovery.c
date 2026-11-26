@@ -2154,6 +2154,70 @@ TEST(world_session_publish_filtered_scopes_each_connection_independently)
     fixture_dispose(&fixture);
 }
 
+TEST(world_session_publish_snapshot_filtered_fans_shared_target_per_scope)
+{
+    Fixture fixture;
+    AttemptWire a_attempt;
+    AttemptWire b_attempt;
+    BreakWorldSnapshot *full;
+    BreakWorldSnapshot *low_view;
+    BreakWorldSnapshot *high_view;
+    u32 limit = 100u;
+
+    ASSERT_TRUE(fixture_init(&fixture));
+    ASSERT_TRUE(break_world_session_open(fixture.session, 22u));
+    (void)spawn_value(fixture.authoritative, 10u);
+    (void)spawn_value(fixture.authoritative, 200u);
+    full = break_world_snapshot_build(fixture.authoritative, fixture.schemas, 10u);
+    ASSERT_NOT_NULL(full);
+    low_view = break_world_snapshot_filter(full, keep_value_below, &limit);
+    high_view = break_world_snapshot_filter(full, keep_value_above, &limit);
+    ASSERT_NOT_NULL(low_view);
+    ASSERT_NOT_NULL(high_view);
+
+    ASSERT_EQ(break_world_session_publish_snapshot_filtered(fixture.session, 11u, full,
+                                                            TEST_LEVEL, keep_value_below, &limit),
+              BREAK_NET_SEND_OK);
+    ASSERT_TRUE(collect_attempt_for_connection(&fixture, 11u, &a_attempt));
+    ASSERT_EQ(break_world_session_publish_snapshot_filtered(fixture.session, 22u, full,
+                                                            TEST_LEVEL, keep_value_above, &limit),
+              BREAK_NET_SEND_OK);
+    ASSERT_TRUE(collect_attempt_for_connection(&fixture, 22u, &b_attempt));
+    ASSERT_EQ(a_attempt.target_snapshot_id, break_world_snapshot_id(low_view));
+    ASSERT_EQ(b_attempt.target_snapshot_id, break_world_snapshot_id(high_view));
+    ASSERT_EQ(break_world_snapshot_entity_count(full), 2u);
+
+    clear_attempt(&b_attempt);
+    clear_attempt(&a_attempt);
+    break_world_snapshot_release(high_view);
+    break_world_snapshot_release(low_view);
+    break_world_snapshot_release(full);
+    fixture_dispose(&fixture);
+}
+
+TEST(world_session_publish_snapshot_filtered_null_keep_matches_unfiltered)
+{
+    Fixture fixture;
+    AttemptWire attempt;
+    BreakWorldSnapshot *full;
+
+    ASSERT_TRUE(fixture_init(&fixture));
+    (void)spawn_value(fixture.authoritative, 10u);
+    (void)spawn_value(fixture.authoritative, 200u);
+    full = break_world_snapshot_build(fixture.authoritative, fixture.schemas, 10u);
+    ASSERT_NOT_NULL(full);
+
+    ASSERT_EQ(break_world_session_publish_snapshot_filtered(fixture.session, 11u, full,
+                                                            TEST_LEVEL, NULL, NULL),
+              BREAK_NET_SEND_OK);
+    ASSERT_TRUE(collect_attempt_for_connection(&fixture, 11u, &attempt));
+    ASSERT_EQ(attempt.target_snapshot_id, break_world_snapshot_id(full));
+
+    clear_attempt(&attempt);
+    break_world_snapshot_release(full);
+    fixture_dispose(&fixture);
+}
+
 TEST(world_session_publish_filtered_delta_chain_follows_scope_changes)
 {
     Fixture fixture;
@@ -2220,6 +2284,8 @@ TEST(world_session_publish_filtered_delta_chain_follows_scope_changes)
 
 TEST_MAIN_BEGIN()
     RUN_TEST(world_session_publish_filtered_delta_chain_follows_scope_changes);
+    RUN_TEST(world_session_publish_snapshot_filtered_fans_shared_target_per_scope);
+    RUN_TEST(world_session_publish_snapshot_filtered_null_keep_matches_unfiltered);
     RUN_TEST(world_session_publish_filtered_sends_only_scoped_entities);
     RUN_TEST(world_session_publish_filtered_null_keep_matches_unfiltered);
     RUN_TEST(world_session_publish_filtered_scopes_each_connection_independently);
