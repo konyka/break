@@ -14562,3 +14562,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **验证**：ASan+UBSan/TSan 12/12；`build-current-vk` 非 fuzz 468/468，fuzz 24/24；Windows 实机 MSVC 全量构建通过，相关测试 10/10。
 - **仍未完成**：接入 manifest 加载与 `runtime_reload`，编入正式目标。本提交自身的远端工作流结果不在此预写。
 
+
+## 依赖驱动的热重载 `runtime_reload_deps`（2026-11-27）
+
+- **缺口**：热重载协调器只重载变化的那个路径，依赖它的材质和场景不会重建；资产依赖图只由测试编译。
+- **实现**：新增 `engine/src/runtime/runtime_reload_deps.{h,c}`，与 `asset_graph.c` 一起编入正式 `runtime_core` 和 `runtime_core_test`。协调器提交某资产后，依赖者按依赖在前的顺序逐个重载，同一时刻最多一个在途；协调器满时下次重试；失败的依赖者保留旧版本，依赖它的项被跳过；链运行中的新提交合并且不重复。设计见 `docs/design/runtime_hot_reload.md` 2026-11-27「依赖驱动的热重载」。
+- **TDD 与变异**：`test_runtime_reload_deps` 9 例，先以链接失败为 RED，使用真实 VFS 和真实协调器。存活的重试变异靠补测试判红；剩余 1 项存活为等价变异，理由见设计文档。
+- **验证**：ASan+UBSan 9/9，TSan 连跑 3 次 9/9；`build-current-vk` 非 fuzz 469/469，fuzz 24/24；Windows 实机 MSVC 全量构建通过，本测试 9/9（同次唯一失败的 `test_platform_win32_runtime` 需要交互桌面，属已记录的环境限制）。
+- **仍未完成**：依赖图接入 manifest 与场景加载。本提交自身的远端工作流结果不在此预写。

@@ -347,3 +347,27 @@ arm64 lane 新增 `test_hotreload`（7 例），与 VFS、异步加载和 filewa
 完整 Vulkan 为 **458/462**、OpenGL 为 **449/453** 实际通过，各 **4 条件 skip、0 失败**；跳过项同为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`。ASan+UBSan（含显式 leak 检测）与 TSan focused 均 **28/28**、无诊断，未声称完整 sanitizer suite。
 
 本切片只关闭周期调度原语缺口。热重载所有者仍须显式 tick 或经 `push_at` 驱动，没有后台线程；真实热重载资产链、session/网络接线和生产验收仍未完成。
+
+## 补充（2026-11-27）：依赖驱动的热重载
+
+热重载协调器（`runtime_reload`）一次只重载一个路径。纹理变化后，用到它的材质、用到这些材质的场景也要重建，并且依赖要在前。新增 `engine/src/runtime/runtime_reload_deps.{h,c}`，编入正式 `runtime_core` 与 `runtime_core_test`。它把资产依赖图（`engine/src/asset/asset_graph.{h,c}`，同时编入 `runtime_core`）接到协调器上：
+
+- `break_runtime_reload_deps_set_path(id, path)` 为图中每个资产 id 记录重载用的 VFS 路径。替换路径返回 OK；超过 `max_assets` 返回 OVERLOAD；id 为 0、路径为空或过长返回 INVALID。
+- 协调器提交了 `id` 之后，所有者调用 `break_runtime_reload_deps_committed(id)`。它取 `break_asset_graph_dependents` 给出的重建顺序并入队。`id` 不在图中返回 INVALID；任一依赖者没有路径返回 FAILED；放不下返回 OVERLOAD。这三种情况都不入队任何项。
+- `break_runtime_reload_deps_pump` 每个 tick 在 `commit_owner` 之后调用。它先轮询在途请求，到达终态后再发出下一个排队项，且只发出没有排队中依赖的项。因此同一时刻最多一个依赖者在途，依赖者不会从仍在加载的依赖重建。协调器满（请求返回 OVERLOAD）时该项留在队列，下次 pump 重试，不计为失败。
+- 依赖者以 FAILED_KEEP_OLD、TIMEOUT、OOM 或 CANCELLED 结束时保留旧版本，链在此停止：排队中依赖它的项被移出并计入 `skipped`，因为它们会从过期输入重建。与它无关的项照常进行。
+- 链运行期间的新提交会合并：已排队的 id 不重复入队，"无排队依赖"规则对并集排序。在途的 id 会再次入队，因为它的依赖在该次重载开始后又变了。
+- 只允许所有者线程调用，与 `pump_events`/`commit_owner` 相同；图和协调器都是借用的。只在 create 时分配内存。
+
+**TDD**：`test_runtime_reload_deps` 9 例，先以链接失败为 RED。测试使用真实 VFS 临时目录和真实协调器，验证器拒绝路径含 `bad` 的文件。覆盖：纹理变化依次重建材质与场景；共享依赖使每个依赖者只重建一次且场景最后；失败的依赖者保留旧版本并跳过场景；同一时刻只有一个在途；链运行中的新提交合并且不重复；协调器满时重试；参数、路径与容量校验；依赖者超过容量返回 OVERLOAD。
+
+**变异**：脚本变异中，`if (j == i) continue;` 存活，属等价变异：资产从不是自己的依赖者，这一行只省去一次遍历，源码已注释说明。移除 OVERLOAD 重试的变异起初存活，补测试 `a_refused_request_is_retried_on_a_later_pump` 后判红。该测试须先轮询占位请求直到 COMMITTED，因为协调器只在所有者读取终态后才释放槽位。其余变异均判红，另有 1 项无法编译。
+
+**验证**：
+- ASan+UBSan 下 9/9，TSan 下连跑 3 次均为 9/9，无诊断。
+- `build-current-vk` 非 fuzz 469/469（4 项条件 skip），fuzz 24/24。
+- Windows 实机 MSVC 全量构建通过，本测试 9/9。同次相关测试为 28/29，唯一失败项 `test_platform_win32_runtime` 需要交互桌面，在 SSH 会话下失败，属已记录的环境限制，与本切片无关。
+
+仍未完成：依赖图接入 manifest 与场景加载；文件监视产生的提交还要由所有者手动转给 `committed`。
+
+本提交自身的远端工作流结果不在此预写。

@@ -474,3 +474,11 @@ focused 测试 **22/22**，包含三流过期/复位、交织 pending 字节、d
 
 本提交自身的远端工作流结果不在此预写。
 
+
+## 补充（2026-11-27）：依赖图编入正式目标并接入热重载
+
+`asset_graph.c` 已编入正式 `runtime_core` 与 `runtime_core_test`，`test_asset_graph` 改为链接 `runtime_core`。新增 `runtime_reload_deps`：协调器提交某资产后，按依赖图对所有依赖者发起重载，依赖在前、一次一个，失败的依赖者保留旧版本并跳过依赖它的项。设计与测试见 `docs/design/runtime_hot_reload.md` 2026-11-27「依赖驱动的热重载」。
+
+仍未完成：依赖图接入 manifest 与场景加载。
+
+本提交自身的远端工作流结果不在此预写。

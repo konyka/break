@@ -1,0 +1,382 @@
+/* Dependency-driven hot reload: after a changed asset commits, everything
+ * that depends on it is reloaded through the real coordinator, dependencies
+ * first and one at a time; a failed dependent keeps its old version and
+ * stops what depends on it. */
+#include "test_framework.h"
+#include <asset/vfs.h>
+#include <core/platform_thread.h>
+#include <runtime/runtime_reload_deps.h>
+
+#include <stdio.h>
+#include <string.h>
+#if !defined(_WIN32)
+#include <sys/stat.h>
+#include <sys/types.h>
+#endif
+
+enum { kScene = 1u, kMatA = 10u, kMatB = 11u, kTex = 20u, kShader = 30u, kOther = 40u };
+
+static char g_dir[512];
+static const char *const k_files[] = {"scene.bin", "mat_a.bin", "mat_b.bin", "tex.bin",
+                                      "shader.bin", "other.bin", "bad_mat.bin"};
+
+typedef struct {
+    char order[16][32]; /* committed paths, in commit order */
+    u32 count;
+    u32 validated;
+} Probe;
+
+static Probe g_probe;
+
+static BreakRuntimeError probe_validate(const char *path, const void *bytes, usize size,
+                                        void *user) {
+    (void)bytes;
+    (void)size;
+    (void)user;
+    g_probe.validated++;
+    return strstr(path, "bad") ? BREAK_RUNTIME_FAILED : BREAK_RUNTIME_OK;
+}
+
+static BreakRuntimeError probe_commit(const char *path, const void *bytes, usize size,
+                                      void *user) {
+    (void)bytes;
+    (void)size;
+    (void)user;
+    if (g_probe.count < 16u) {
+        snprintf(g_probe.order[g_probe.count], sizeof(g_probe.order[0]), "%s", path);
+        g_probe.count++;
+    }
+    return BREAK_RUNTIME_OK;
+}
+
+static VFS *fixture_setup(void) {
+    VFS *vfs;
+    test_tmp(g_dir, sizeof(g_dir), "rtreload_deps");
+    TEST_MKDIR(g_dir);
+    for (usize i = 0; i < sizeof(k_files) / sizeof(k_files[0]); ++i) {
+        char file[640];
+        FILE *fp;
+        snprintf(file, sizeof(file), "%s/%s", g_dir, k_files[i]);
+        fp = fopen(file, "wb");
+        if (!fp) return NULL;
+        fputs("asset", fp);
+        fclose(fp);
+    }
+    vfs = vfs_create();
+    if (!vfs || !vfs_mount_dir(vfs, g_dir)) return NULL;
+    return vfs;
+}
+
+static void fixture_remove(void) {
+    for (usize i = 0; i < sizeof(k_files) / sizeof(k_files[0]); ++i) {
+        char file[640];
+        snprintf(file, sizeof(file), "%s/%s", g_dir, k_files[i]);
+        (void)remove(file);
+    }
+    (void)TEST_RMDIR(g_dir);
+}
+
+typedef struct {
+    VFS *vfs;
+    BreakRuntimeReload *reload;
+    BreakAssetGraph *graph;
+    BreakRuntimeReloadDeps *deps;
+} Fx;
+
+/* scene -> {matA, matB}; matA -> {tex, shader}; matB -> {shader}; other alone */
+static u32 g_request_capacity; /* 0: the coordinator default */
+
+static bool fx_init(Fx *fx, u32 max_assets) {
+    BreakRuntimeReloadConfig rc;
+    BreakAssetGraphConfig gc;
+    BreakRuntimeReloadDepsConfig dc;
+    const BreakAssetId scene[] = {kMatA, kMatB};
+    const BreakAssetId mat_a[] = {kTex, kShader};
+    const BreakAssetId mat_b[] = {kShader};
+    memset(fx, 0, sizeof(*fx));
+    memset(&g_probe, 0, sizeof(g_probe));
+    fx->vfs = fixture_setup();
+    if (!fx->vfs) return false;
+    memset(&rc, 0, sizeof(rc));
+    rc.vfs = fx->vfs;
+    rc.hooks.validate = probe_validate;
+    rc.hooks.commit = probe_commit;
+    rc.request_capacity = g_request_capacity;
+    if (break_runtime_reload_create(&rc, &fx->reload) != BREAK_RUNTIME_OK) return false;
+    memset(&gc, 0, sizeof(gc));
+    gc.capacity = 16u;
+    gc.max_edges = 16u;
+    if (break_asset_graph_create(&gc, &fx->graph) != BREAK_ASSET_GRAPH_OK ||
+        break_asset_graph_add(fx->graph, kScene, scene, 2u) != BREAK_ASSET_GRAPH_OK ||
+        break_asset_graph_add(fx->graph, kMatA, mat_a, 2u) != BREAK_ASSET_GRAPH_OK ||
+        break_asset_graph_add(fx->graph, kMatB, mat_b, 1u) != BREAK_ASSET_GRAPH_OK ||
+        break_asset_graph_add(fx->graph, kTex, NULL, 0u) != BREAK_ASSET_GRAPH_OK ||
+        break_asset_graph_add(fx->graph, kShader, NULL, 0u) != BREAK_ASSET_GRAPH_OK ||
+        break_asset_graph_add(fx->graph, kOther, NULL, 0u) != BREAK_ASSET_GRAPH_OK) {
+        return false;
+    }
+    memset(&dc, 0, sizeof(dc));
+    dc.reload = fx->reload;
+    dc.graph = fx->graph;
+    dc.max_assets = max_assets;
+    if (break_runtime_reload_deps_create(&dc, &fx->deps) != BREAK_RUNTIME_OK) return false;
+    return break_runtime_reload_deps_set_path(fx->deps, kScene, "scene.bin") == BREAK_RUNTIME_OK &&
+           break_runtime_reload_deps_set_path(fx->deps, kMatA, "mat_a.bin") == BREAK_RUNTIME_OK &&
+           break_runtime_reload_deps_set_path(fx->deps, kMatB, "mat_b.bin") == BREAK_RUNTIME_OK &&
+           break_runtime_reload_deps_set_path(fx->deps, kTex, "tex.bin") == BREAK_RUNTIME_OK &&
+           break_runtime_reload_deps_set_path(fx->deps, kShader, "shader.bin") == BREAK_RUNTIME_OK &&
+           break_runtime_reload_deps_set_path(fx->deps, kOther, "other.bin") == BREAK_RUNTIME_OK;
+}
+
+static void fx_dispose(Fx *fx) {
+    break_runtime_reload_deps_destroy(fx->deps);
+    if (fx->reload) {
+        (void)break_runtime_reload_shutdown(fx->reload, 2000u);
+        break_runtime_reload_destroy(fx->reload);
+    }
+    break_asset_graph_destroy(fx->graph);
+    if (fx->vfs) vfs_destroy(fx->vfs);
+    fixture_remove();
+}
+
+/* Drives the coordinator and the chain until nothing is queued or in flight. */
+static bool run_until_idle(Fx *fx) {
+    for (u32 spin = 0u; spin < 200000u; ++spin) {
+        BreakRuntimeReloadDepsStats st;
+        u32 commits = 0u;
+        (void)break_runtime_reload_commit_owner(fx->reload, 16u, &commits);
+        if (break_runtime_reload_deps_pump(fx->deps) != BREAK_RUNTIME_OK) return false;
+        if (break_runtime_reload_deps_stats(fx->deps, &st) != BREAK_RUNTIME_OK) return false;
+        if (st.queued == 0u && !st.in_flight) return true;
+        platform_thread_yield();
+    }
+    return false;
+}
+
+static i32 committed_at(const char *path) {
+    for (u32 i = 0u; i < g_probe.count; ++i) {
+        if (strcmp(g_probe.order[i], path) == 0) return (i32)i;
+    }
+    return -1;
+}
+
+TEST(a_changed_texture_rebuilds_its_material_then_the_scene) {
+    Fx fx;
+    BreakRuntimeReloadDepsStats st;
+    ASSERT_TRUE(fx_init(&fx, 16u));
+    ASSERT_EQ(break_runtime_reload_deps_committed(fx.deps, kTex), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(run_until_idle(&fx));
+    ASSERT_EQ(g_probe.count, 2u);
+    ASSERT_STR_EQ(g_probe.order[0], "mat_a.bin");
+    ASSERT_STR_EQ(g_probe.order[1], "scene.bin");
+    ASSERT_EQ(committed_at("mat_b.bin"), -1);
+    ASSERT_EQ(break_runtime_reload_deps_stats(fx.deps, &st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(st.chains, 1u);
+    ASSERT_EQ(st.requested, 2u);
+    ASSERT_EQ(st.rebuilt, 2u);
+    ASSERT_EQ(st.failed, 0u);
+    fx_dispose(&fx);
+}
+
+TEST(a_shared_dependency_rebuilds_each_dependent_once_in_order) {
+    Fx fx;
+    ASSERT_TRUE(fx_init(&fx, 16u));
+    ASSERT_EQ(break_runtime_reload_deps_committed(fx.deps, kShader), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(run_until_idle(&fx));
+    ASSERT_EQ(g_probe.count, 3u);
+    ASSERT_TRUE(committed_at("mat_a.bin") >= 0);
+    ASSERT_TRUE(committed_at("mat_b.bin") >= 0);
+    ASSERT_EQ(committed_at("scene.bin"), 2);
+    fx_dispose(&fx);
+}
+
+TEST(a_failed_dependent_keeps_its_old_version_and_stops_what_needs_it) {
+    Fx fx;
+    BreakRuntimeReloadDepsStats st;
+    ASSERT_TRUE(fx_init(&fx, 16u));
+    /* matB now loads from a file the validator refuses */
+    ASSERT_EQ(break_runtime_reload_deps_set_path(fx.deps, kMatB, "bad_mat.bin"), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_committed(fx.deps, kShader), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(run_until_idle(&fx));
+    ASSERT_TRUE(committed_at("mat_a.bin") >= 0);
+    ASSERT_EQ(committed_at("bad_mat.bin"), -1);
+    ASSERT_EQ(committed_at("scene.bin"), -1); /* it needs the failed matB */
+    ASSERT_EQ(break_runtime_reload_deps_stats(fx.deps, &st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(st.failed, 1u);
+    ASSERT_EQ(st.skipped, 1u);
+    ASSERT_EQ(st.rebuilt, 1u);
+    fx_dispose(&fx);
+}
+
+TEST(only_one_dependent_is_in_flight_at_a_time) {
+    Fx fx;
+    BreakRuntimeReloadDepsStats st;
+    BreakRuntimeReloadStats rs;
+    ASSERT_TRUE(fx_init(&fx, 16u));
+    ASSERT_EQ(break_runtime_reload_deps_committed(fx.deps, kShader), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_pump(fx.deps), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_pump(fx.deps), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_stats(fx.deps, &st), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(st.in_flight);
+    ASSERT_EQ(st.requested, 1u);
+    ASSERT_EQ(st.queued, 2u);
+    ASSERT_EQ(break_runtime_reload_stats(fx.reload, &rs), BREAK_RUNTIME_OK);
+    ASSERT_EQ(rs.requested, 1u);
+    ASSERT_TRUE(run_until_idle(&fx));
+    fx_dispose(&fx);
+}
+
+TEST(a_new_commit_during_a_chain_merges_without_duplicates) {
+    Fx fx;
+    BreakRuntimeReloadDepsStats st;
+    ASSERT_TRUE(fx_init(&fx, 16u));
+    ASSERT_EQ(break_runtime_reload_deps_committed(fx.deps, kTex), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_pump(fx.deps), BREAK_RUNTIME_OK); /* matA in flight */
+    ASSERT_EQ(break_runtime_reload_deps_committed(fx.deps, kShader), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(run_until_idle(&fx));
+    /* matA (in flight, then again since the shader changed after it started),
+     * matB, scene once at the end */
+    ASSERT_EQ(committed_at("scene.bin"), (i32)g_probe.count - 1);
+    ASSERT_TRUE(committed_at("mat_b.bin") >= 0);
+    for (u32 i = 0u; i + 1u < g_probe.count; ++i) ASSERT_TRUE(strcmp(g_probe.order[i], "scene.bin") != 0);
+    ASSERT_EQ(break_runtime_reload_deps_stats(fx.deps, &st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(st.chains, 2u);
+    ASSERT_EQ(st.failed, 0u);
+    fx_dispose(&fx);
+}
+
+/* The coordinator is full: the dependent stays queued and is issued once a
+ * slot frees, instead of being dropped as failed. */
+TEST(a_refused_request_is_retried_on_a_later_pump) {
+    Fx fx;
+    BreakRuntimeReloadDepsStats st;
+    BreakRuntimeReloadRequest busy = 0u;
+    g_request_capacity = 1u;
+    ASSERT_TRUE(fx_init(&fx, 16u));
+    g_request_capacity = 0u;
+    /* occupy the only slot until commit_owner runs */
+    ASSERT_EQ(break_runtime_reload_request(fx.reload, "other.bin", &busy), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_committed(fx.deps, kTex), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_pump(fx.deps), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_stats(fx.deps, &st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(st.requested, 0u);
+    ASSERT_EQ(st.queued, 2u);
+    ASSERT_FALSE(st.in_flight);
+    ASSERT_EQ(st.failed, 0u);
+    {
+        /* the slot frees only once the owner of the busy request consumes it */
+        BreakRuntimeReloadState state = BREAK_RUNTIME_RELOAD_LOADING;
+        for (u32 spin = 0u; spin < 200000u && state != BREAK_RUNTIME_RELOAD_COMMITTED; ++spin) {
+            u32 commits = 0u;
+            (void)break_runtime_reload_commit_owner(fx.reload, 16u, &commits);
+            ASSERT_EQ(break_runtime_reload_poll(fx.reload, busy, &state), BREAK_RUNTIME_OK);
+            if (state != BREAK_RUNTIME_RELOAD_COMMITTED) platform_thread_yield();
+        }
+        ASSERT_EQ(state, BREAK_RUNTIME_RELOAD_COMMITTED);
+    }
+    ASSERT_TRUE(run_until_idle(&fx));
+    ASSERT_EQ(committed_at("other.bin"), 0);
+    ASSERT_EQ(committed_at("mat_a.bin"), 1);
+    ASSERT_EQ(committed_at("scene.bin"), 2);
+    ASSERT_EQ(break_runtime_reload_deps_stats(fx.deps, &st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(st.rebuilt, 2u);
+    ASSERT_EQ(st.failed, 0u);
+    fx_dispose(&fx);
+}
+
+TEST(validation_paths_and_capacity) {
+    Fx fx;
+    BreakRuntimeReloadDepsConfig dc;
+    BreakRuntimeReloadDeps *other = (BreakRuntimeReloadDeps *)&fx;
+    BreakRuntimeReloadDepsStats st;
+    char long_path[BREAK_RUNTIME_RELOAD_MAX_PATH + 1u];
+    ASSERT_TRUE(fx_init(&fx, 6u));
+    memset(long_path, 'a', sizeof(long_path) - 1u);
+    long_path[sizeof(long_path) - 1u] = '\0';
+    ASSERT_EQ(break_runtime_reload_deps_set_path(fx.deps, 0u, "x.bin"), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_reload_deps_set_path(fx.deps, kTex, NULL), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_reload_deps_set_path(fx.deps, kTex, ""), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_reload_deps_set_path(fx.deps, kTex, long_path), BREAK_RUNTIME_INVALID);
+    long_path[BREAK_RUNTIME_RELOAD_MAX_PATH - 1u] = '\0';
+    ASSERT_EQ(break_runtime_reload_deps_set_path(fx.deps, kTex, long_path), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_set_path(fx.deps, kTex, "tex.bin"), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_set_path(fx.deps, 99u, "x.bin"), BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(break_runtime_reload_deps_committed(fx.deps, 99u), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_reload_deps_committed(fx.deps, kOther), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_stats(fx.deps, &st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(st.chains, 0u); /* nothing depends on it */
+    ASSERT_EQ(st.queued, 0u);
+    ASSERT_EQ(break_runtime_reload_deps_committed(NULL, kTex), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_reload_deps_pump(NULL), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_reload_deps_stats(NULL, &st), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_reload_deps_stats(fx.deps, NULL), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_reload_deps_set_path(NULL, kTex, "x"), BREAK_RUNTIME_INVALID);
+    memset(&dc, 0, sizeof(dc));
+    ASSERT_EQ(break_runtime_reload_deps_create(NULL, &other), BREAK_RUNTIME_INVALID);
+    ASSERT_TRUE(other == NULL);
+    dc.reload = fx.reload;
+    dc.graph = fx.graph;
+    dc.max_assets = 0u;
+    ASSERT_EQ(break_runtime_reload_deps_create(&dc, &other), BREAK_RUNTIME_INVALID);
+    dc.max_assets = BREAK_RUNTIME_RELOAD_DEPS_MAX_ASSETS + 1u;
+    ASSERT_EQ(break_runtime_reload_deps_create(&dc, &other), BREAK_RUNTIME_INVALID);
+    dc.max_assets = 4u;
+    dc.reload = NULL;
+    ASSERT_EQ(break_runtime_reload_deps_create(&dc, &other), BREAK_RUNTIME_INVALID);
+    dc.reload = fx.reload;
+    dc.graph = NULL;
+    ASSERT_EQ(break_runtime_reload_deps_create(&dc, &other), BREAK_RUNTIME_INVALID);
+    dc.graph = fx.graph;
+    ASSERT_EQ(break_runtime_reload_deps_create(&dc, NULL), BREAK_RUNTIME_INVALID);
+    dc.max_assets = BREAK_RUNTIME_RELOAD_DEPS_MAX_ASSETS;
+    ASSERT_EQ(break_runtime_reload_deps_create(&dc, &other), BREAK_RUNTIME_OK);
+    break_runtime_reload_deps_destroy(other);
+    break_runtime_reload_deps_destroy(NULL);
+    fx_dispose(&fx);
+}
+
+TEST(a_dependent_without_a_path_fails_the_commit_and_queues_nothing) {
+    Fx fx;
+    BreakRuntimeReloadDepsStats st;
+    BreakAssetGraphConfig gc;
+    ASSERT_TRUE(fx_init(&fx, 16u));
+    (void)gc;
+    {
+        const BreakAssetId deps[] = {kTex};
+        ASSERT_EQ(break_asset_graph_add(fx.graph, 77u, deps, 1u), BREAK_ASSET_GRAPH_OK);
+    }
+    ASSERT_EQ(break_runtime_reload_deps_committed(fx.deps, kTex), BREAK_RUNTIME_FAILED);
+    ASSERT_EQ(break_runtime_reload_deps_stats(fx.deps, &st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(st.queued, 0u);
+    ASSERT_EQ(st.chains, 0u);
+    fx_dispose(&fx);
+}
+
+TEST(more_dependents_than_fit_is_overload) {
+    Fx fx;
+    BreakRuntimeReloadDepsStats st;
+    ASSERT_TRUE(fx_init(&fx, 6u));
+    /* six paths recorded; a queue of 6 holds the shader's 3 dependents twice
+     * over, so overload needs a graph wider than max_assets: chain 1..8 */
+    for (u32 i = 0u; i < 8u; ++i) {
+        BreakAssetId dep = 100u + i;
+        ASSERT_EQ(break_asset_graph_add(fx.graph, 101u + i, &dep, 1u), BREAK_ASSET_GRAPH_OK);
+    }
+    ASSERT_EQ(break_asset_graph_add(fx.graph, 100u, NULL, 0u), BREAK_ASSET_GRAPH_OK);
+    ASSERT_EQ(break_runtime_reload_deps_committed(fx.deps, 100u), BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(break_runtime_reload_deps_stats(fx.deps, &st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(st.queued, 0u);
+    fx_dispose(&fx);
+}
+
+TEST_MAIN_BEGIN()
+    RUN_TEST(a_changed_texture_rebuilds_its_material_then_the_scene);
+    RUN_TEST(a_shared_dependency_rebuilds_each_dependent_once_in_order);
+    RUN_TEST(a_failed_dependent_keeps_its_old_version_and_stops_what_needs_it);
+    RUN_TEST(only_one_dependent_is_in_flight_at_a_time);
+    RUN_TEST(a_new_commit_during_a_chain_merges_without_duplicates);
+    RUN_TEST(a_refused_request_is_retried_on_a_later_pump);
+    RUN_TEST(validation_paths_and_capacity);
+    RUN_TEST(a_dependent_without_a_path_fails_the_commit_and_queues_nothing);
+    RUN_TEST(more_dependents_than_fit_is_overload);
+TEST_MAIN_END()

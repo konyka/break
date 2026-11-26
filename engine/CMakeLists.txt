@@ -965,7 +965,9 @@ add_library(runtime_core STATIC
     src/runtime/runtime_reload.c
     src/runtime/runtime_profiler.c
     src/runtime/runtime_metrics.c
-    src/runtime/runtime_mainloop.c)
+    src/runtime/runtime_mainloop.c
+    src/runtime/runtime_reload_deps.c
+    src/asset/asset_graph.c)
 set_property(TARGET runtime_core PROPERTY C_STANDARD 11)
 target_include_directories(runtime_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -6173,8 +6175,9 @@ endif()
 
     # test_asset_graph: asset dependency graph (load order, missing and cyclic
     # dependencies, dependents, external ids; docs/design/runtime_asset_streaming.md).
-    add_executable(test_asset_graph tests/test_asset_graph.c src/asset/asset_graph.c)
+    add_executable(test_asset_graph tests/test_asset_graph.c)
     target_include_directories(test_asset_graph PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_asset_graph PRIVATE runtime_core)
     add_test(NAME test_asset_graph COMMAND test_asset_graph)
     set_tests_properties(test_asset_graph PROPERTIES TIMEOUT 30 LABELS "headless;asset")
 
@@ -6789,7 +6792,9 @@ endif()
         src/runtime/runtime_reload.c
         src/runtime/runtime_profiler.c
         src/runtime/runtime_metrics.c
-        src/runtime/runtime_mainloop.c)
+        src/runtime/runtime_mainloop.c
+        src/runtime/runtime_reload_deps.c
+        src/asset/asset_graph.c)
     set_property(TARGET runtime_core_test PROPERTY C_STANDARD 11)
     target_include_directories(runtime_core_test PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -6976,6 +6981,25 @@ endif()
     add_test(NAME test_runtime_reload COMMAND test_runtime_reload)
     set_tests_properties(test_runtime_reload PROPERTIES
         LABELS "headless;runtime_core")
+
+    # test_runtime_reload_deps: dependency-driven hot reload through the real
+    # coordinator (docs/design/runtime_hot_reload.md).
+    add_executable(test_runtime_reload_deps tests/test_runtime_reload_deps.c
+        src/asset/vfs.c src/core/log.c src/core/profiler.c src/platform/time.c)
+    target_include_directories(test_runtime_reload_deps PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_runtime_reload_deps PRIVATE
+            ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_runtime_reload_deps PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_runtime_reload_deps PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_runtime_reload_deps PRIVATE kernel32)
+    endif()
+    target_link_libraries(test_runtime_reload_deps PRIVATE runtime_core)
+    add_test(NAME test_runtime_reload_deps COMMAND test_runtime_reload_deps)
+    set_tests_properties(test_runtime_reload_deps PROPERTIES
+        TIMEOUT 60 LABELS "headless;runtime_core;asset")
 
     # test_ecs_system: needs ecs.c + ecs_system.c + task.c + log.c
     add_executable(test_ecs_system tests/test_ecs_system.c
