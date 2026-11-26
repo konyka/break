@@ -14554,3 +14554,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **验证**：ASan+UBSan/TSan 10/10；`build-current-vk` 非 fuzz 467/467，fuzz 24/24；Windows 实机 MSVC 全量构建通过，相关测试 23/23。
 - **仍未完成**：core_app 接入。本提交自身的远端工作流结果不在此预写。
 
+## 资产依赖图 `asset_graph`（2026-11-27）
+
+- **缺口**：完整资产链和跨 World 资产依赖解析未实现。
+- **实现**：新增 `engine/src/asset/asset_graph.{h,c}`。提供依赖在前、每项一次的加载顺序；MISSING 和 CYCLE 都给出出问题的 id；受影响资产按依赖在前的顺序列出，供热重载重建；外部 id 经回调做跨 World 解析。遍历不用递归，受影响集合的计算是线性的。设计见 `docs/design/runtime_asset_streaming.md` 2026-11-27「资产依赖图」。
+- **TDD 与变异**：`test_asset_graph` 12 例，先以链接失败为 RED。43 项变异全部判红或编译失败，其中 9 项靠补测试判红。测试过程中还发现，直接倒排后序得到的重建顺序是错的，已修正。
+- **验证**：ASan+UBSan/TSan 12/12；`build-current-vk` 非 fuzz 468/468，fuzz 24/24；Windows 实机 MSVC 全量构建通过，相关测试 10/10。
+- **仍未完成**：接入 manifest 加载与 `runtime_reload`，编入正式目标。本提交自身的远端工作流结果不在此预写。
+

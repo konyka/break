@@ -6171,6 +6171,13 @@ endif()
         target_link_libraries(break_ecs_replication_test PUBLIC m)
     endif()
 
+    # test_asset_graph: asset dependency graph (load order, missing and cyclic
+    # dependencies, dependents, external ids; docs/design/runtime_asset_streaming.md).
+    add_executable(test_asset_graph tests/test_asset_graph.c src/asset/asset_graph.c)
+    target_include_directories(test_asset_graph PRIVATE ${TEST_INCLUDE_DIRS})
+    add_test(NAME test_asset_graph COMMAND test_asset_graph)
+    set_tests_properties(test_asset_graph PROPERTIES TIMEOUT 30 LABELS "headless;asset")
+
     # test_world_merge: authoritative merge of peer-written World state
     # (docs/design/ecs_snapshot_replication_aoi.md "权威合并").
     add_executable(test_world_merge tests/test_world_merge.c)

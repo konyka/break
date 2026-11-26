@@ -426,3 +426,51 @@ focused 测试 **22/22**，包含三流过期/复位、交织 pending 字节、d
 完整 Vulkan **458/462**、OpenGL **449/453** 实际通过，各 **4 个既有条件 skip、0 失败**；skip 为 `test_d3d12_dependency_gate`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`。ASan+UBSan（显式 leak 检测）和 TSan focused 均 **28/28**、无诊断，不是完整 sanitizer suite。
 
 周期调度器不再列为本项缺口；资产路径仍需应用在 owner tick/frame 显式 tick，或依靠 `push_at` 触发，不存在后台维护。session/网络、真实资产流与生产服务接线及验收不在本切片内。
+
+## 补充（2026-11-27）：资产依赖图
+
+「完整资产链」缺少的核心是依赖关系：材质需要纹理和着色器，场景需要网格和材质，跨 World 的资产来自别的 World 或包。新增 `engine/src/asset/asset_graph.{h,c}`，纯 C，只在 create 时分配内存，由单一所有者使用，回答资产链需要的三个问题。
+
+- **加载顺序**：`break_asset_graph_load_order(root)` 列出 root 需要的全部资产。依赖在被依赖者之前，每个资产只出现一次，root 在最后。
+- **完整性**：
+  - 依赖了从未声明的 id，返回 MISSING。
+  - 形成依赖环，返回 CYCLE。
+
+  两种情况都通过 `out_problem` 给出出问题的 id，并且只影响受牵连的 root，其他 root 照常可用。root 本身未声明时返回 NOT_FOUND，`out_problem` 为该 root。
+- **失效传播**：`break_asset_graph_dependents(changed)` 列出直接或间接依赖 changed 的所有资产，供热重载按依赖在前的顺序重建。实现分两步：先用反向边做一次广度搜索，标记受影响的集合；再在这个集合内沿正向边做后序遍历。第二步保证每个资产都排在它依赖的所有已列出资产之后。之所以没有直接把反向后序倒过来，是因为测试证明：当两条路径长度不同时，那样会把场景排到它依赖的材质前面。反向边每次调用时用计数排序重建，总代价是线性的。原先的逐节点扫描是 O(N²)，2 万节点的链需要 1 秒，改后约 5 毫秒。
+- **外部 id（跨 World 资产依赖）**：`add_external(id, world_key)` 表示该资产由另一个 World 或包提供，通过配置中的 resolve 回调解析。解析不到，或者没有配置回调，都返回 MISSING。外部 id 会出现在加载顺序里（由调用方到它所在的 World 加载），但不会展开它的依赖；外部 id 不能 set_deps。
+- **编辑**：`set_deps` 替换依赖列表，任何失败都保留旧列表。`remove` 在仍被其他资产依赖时返回 IN_USE。id 为 0、依赖自身、依赖重复都返回 INVALID。节点数或边数达到上限返回 OVERLOAD。
+- **实现**：节点放在固定数组里，id 用开放寻址表索引，删除时留墓碑。遍历用显式栈而不是递归，深度受容量限制，不受 C 栈限制。
+
+**测试**：`test_asset_graph` 12 例，先以链接失败为 RED。覆盖：
+- 共享依赖只列一次。
+- 缺失依赖按 id 报告，补上声明后恢复。
+- 依赖环被报告且不影响其他 root，断开环后顺序正确。
+- 受影响资产的重建顺序，包括两条长度不同的路径、无关分支、changed 自身处在环上的情况。
+- 外部 id 的解析与解析失败。
+- set_deps 和 remove 的一致性。
+- 容量与参数校验。
+- 2 万层的链（证明不依赖递归）。
+- 50 轮填满、清空、再填满（墓碑与计数保持准确）。
+
+**变异**：43 项全部判红或编译失败。初轮存活 9 项，补测试后判红：
+- 哈希表大小。
+- 删除时的计数。
+- 空闲槽回收。
+- 墓碑。
+- 反向边的计数与前缀和。
+- changed 自身不被列出。
+- 外部计数。
+- 成功时清空 problem。
+
+**验证**：
+- ASan+UBSan、TSan 下 12/12。
+- `build-current-vk` 非 fuzz 468/468，fuzz 24/24。
+- Windows 实机 MSVC 全量构建通过，本测试 12/12，相关测试 10/10。
+
+仍未完成：
+- 把依赖图接入 manifest 加载和热重载协调器（`runtime_reload`）。
+- 依赖图目前只由测试编译，还没有编入正式目标。
+
+本提交自身的远端工作流结果不在此预写。
+
