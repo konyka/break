@@ -183,6 +183,7 @@ typedef struct CoreAppNetWorldStats {
     u64 snapshot_build_failures;
     u64 publish_rejected;
     u64 notice_overloads;
+    u64 level_rebaselines;
 } CoreAppNetWorldStats;
 
 typedef struct CoreAppNetRelayFrame {
@@ -773,9 +774,26 @@ BreakRuntimeError core_app_net_transport_world_submit(
     return break_runtime_world_session_submit(transport->world_adapter, command, correlation_id);
 }
 
+/* The Session level is the confirmed one. Any drain can apply a queued
+ * REBASELINE, so the transport copies the level back whenever the Session is
+ * ahead; one counted rebaseline per observed advance. A Session that is behind
+ * (or equal) is left alone: the level never goes back. */
+static void net_world_sync_level(CoreAppNetTransport *t) {
+    u64 confirmed;
+    if (!t->world_replication || !t->world_level_initialized || !t->world_session) return;
+    confirmed = break_world_session_level_generation(t->world_session);
+    if (confirmed > t->world_level_generation) {
+        t->world_level_generation = confirmed;
+        t->world_stats.level_rebaselines++;
+    }
+}
+
 static BreakRuntimeError net_world_adapter_drain(CoreAppNetTransport *t) {
+    BreakRuntimeError result;
     if (!t->world_adapter) return BREAK_RUNTIME_INVALID;
-    return break_runtime_world_session_drain(t->world_adapter, 256u, NULL);
+    result = break_runtime_world_session_drain(t->world_adapter, 256u, NULL);
+    net_world_sync_level(t);
+    return result;
 }
 
 typedef enum CoreAppNetWorldTransitionResult {
@@ -836,6 +854,13 @@ static CoreAppNetWorldTransitionResult net_world_reconcile_slot(CoreAppNetTransp
             }
             if (t->world_transition_keys[slot] == 0u) {
                 t->world_transition_keys[slot] = t->keys[slot];
+            }
+            /* A queued REBASELINE ahead of this command would advance the Session
+             * level before an OPEN/CLOSE stamped with the old level is applied,
+             * making it STALE. Flush that queued work and resync the level first
+             * so the command carries the Session's confirmed generation. */
+            if (break_runtime_world_session_pending(t->world_adapter) != 0u) {
+                (void)net_world_adapter_drain(t);
             }
             memset(&command, 0, sizeof(command));
             command.kind = t->world_desired_open[slot]
@@ -926,6 +951,39 @@ static bool net_world_initialize_level(CoreAppNetTransport *t, u64 level_generat
     t->world_level_generation = level_generation;
     t->world_level_initialized = true;
     return true;
+}
+
+/* The core may reload into a higher level after ticks have started. Rebaseline
+ * through the adapter so its publish request/continuation/cursor and the Session
+ * streams move together; the Session then forces a fresh full for every open
+ * connection. A lower or equal generation is ignored (no going back). The level
+ * only advances once the Session confirms the new generation, and that is read
+ * back by net_world_sync_level after every drain: a submit that overloads queues
+ * nothing and is retried next tick, while a queued command that a later drain
+ * completes is picked up by the sync rather than resubmitted. */
+static void net_world_advance_level(CoreAppNetTransport *t, u64 level_generation) {
+    if (!t->world_replication || !t->world_level_initialized) return;
+    net_world_sync_level(t);
+    if (level_generation <= t->world_level_generation) return;
+    if (break_world_session_level_generation(t->world_session) < level_generation) {
+        if (!t->world_adapter) {
+            (void)break_world_session_rebaseline(t->world_session, level_generation);
+            net_world_sync_level(t);
+        } else {
+            BreakRuntimeWorldCommand command;
+            BreakRuntimeError result;
+            memset(&command, 0, sizeof(command));
+            command.kind = BREAK_RUNTIME_WORLD_COMMAND_REBASELINE;
+            command.level_generation = level_generation;
+            result = core_app_net_transport_world_submit(t, &command, 0u);
+            if (result == BREAK_RUNTIME_OVERLOAD) return;
+            if (result == BREAK_RUNTIME_OK &&
+                net_world_adapter_drain(t) == BREAK_RUNTIME_OVERLOAD) {
+                return;
+            }
+        }
+    }
+    if (t->world_level_generation < level_generation) t->world_stats.terminal_errors++;
 }
 
 static void net_world_close(CoreAppNetTransport *t, u32 slot) {
@@ -1969,6 +2027,9 @@ static void net_tick(void *user, u32 tick, u64 level_generation,
     if (t->world_replication && !t->world_level_initialized &&
         !net_world_initialize_level(t, level_generation)) {
         t->world_stats.terminal_errors++;
+    } else if (t->world_replication && t->world_level_initialized &&
+               level_generation > t->world_level_generation) {
+        net_world_advance_level(t, level_generation);
     }
     if (t->producing) {
         net_aspect_update(t, entities, entity_count);
@@ -2386,6 +2447,7 @@ bool core_app_net_transport_world_for_test(CoreAppNetTransport *transport,
     out->snapshot_build_failures = transport->world_stats.snapshot_build_failures;
     out->publish_rejected = transport->world_stats.publish_rejected;
     out->notice_overloads = transport->world_stats.notice_overloads;
+    out->level_rebaselines = transport->world_stats.level_rebaselines;
     for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
         if (transport->world_open[i]) out->open_count++;
         if (transport->world_diagnostics[i]) out->diagnostic = transport->world_diagnostics[i];

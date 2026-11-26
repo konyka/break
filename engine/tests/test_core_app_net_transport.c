@@ -2359,6 +2359,15 @@ static void world_fixture_tick_with_index(AspectTransportFixture *fixture, u32 i
     fixture->hooks.tick(fixture->hooks.user, fixture->tick, 9u, entities, 2u, 0u);
 }
 
+static void world_fixture_tick_level(AspectTransportFixture *fixture, u64 level, u32 index) {
+    const CoreAppSnapshotEntity entities[2] = {
+        {index, 3u, 1.5f, -2.0f, 3.25f, 11u},
+        {8u, 4u, -4.0f, 5.5f, 6.0f, 22u},
+    };
+    fixture->tick++;
+    fixture->hooks.tick(fixture->hooks.user, fixture->tick, level, entities, 2u, 0u);
+}
+
 static bool world_fixture_welcome(AspectTransportFixture *fixture, BreakConnectionKey key) {
     CoreAppNetConnectionTestView connection;
     int slot = core_app_net_transport_world_slot_for_test(fixture->transport, key);
@@ -2666,6 +2675,170 @@ TEST(world_publication_notice_overload_recovers_next_tick) {
     aspect_fixture_dispose(&fixture);
 }
 
+TEST(world_publication_level_advance_rebaselines_and_republishes_full) {
+    AspectTransportFixture fixture;
+    CoreAppNetWorldTestView view;
+    BreakRuntimeWorldSession *adapter;
+    BreakRuntimeWorldConnectionSnapshot snapshot;
+    BreakWorldSnapshotPublication *publication;
+    BreakWorldSnapshotLease lease;
+    WorldAttempt initial;
+    WorldAttempt rebased;
+    WorldAttempt next;
+    const BreakConnectionKey key = 0x9411u;
+    ASSERT_TRUE(world_fixture_start(&fixture, "core_app_world_publication_level.port", true,
+                                    false));
+    publication = core_app_net_transport_world_publication(fixture.transport);
+    adapter = core_app_net_transport_world_adapter(fixture.transport);
+    ASSERT_NOT_NULL(publication);
+    ASSERT_NOT_NULL(adapter);
+    ASSERT_TRUE(world_fixture_open(&fixture, key));
+    ASSERT_TRUE(world_fixture_welcome(&fixture, key));
+    world_clear_outbound(&fixture);
+    world_fixture_tick_level(&fixture, 9u, 7u);
+    ASSERT_TRUE(world_collect_attempt(&fixture, key, NULL, 0u, &initial));
+    ASSERT_EQ(initial.kind, BREAK_WORLD_DELTA_WIRE_FULL);
+    ASSERT_TRUE(world_send_control(&fixture, key, BREAK_WORLD_SESSION_CONTROL_ACK, &initial));
+    world_clear_outbound(&fixture);
+
+    world_fixture_tick_level(&fixture, 10u, 7u);
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    ASSERT_EQ(view.level_generation, 10u);
+    ASSERT_EQ(break_world_session_level_generation(view.session), 10u);
+    ASSERT_EQ(view.level_rebaselines, 1u);
+    ASSERT_TRUE(world_collect_attempt(&fixture, key, NULL, 0u, &rebased));
+    ASSERT_EQ(rebased.kind, BREAK_WORLD_DELTA_WIRE_FULL);
+    ASSERT_EQ(rebased.delta_id, 1u);
+    ASSERT_EQ(break_runtime_world_session_connection_snapshots(adapter, &snapshot, 1u), 1u);
+    ASSERT_TRUE(snapshot.publish_ready);
+    ASSERT_EQ(break_world_snapshot_publication_acquire(publication, &lease),
+              BREAK_WORLD_SNAPSHOT_ACQUIRE_OK);
+    ASSERT_EQ(lease.level_generation, 10u);
+    ASSERT_EQ(break_world_snapshot_id(lease.snapshot), rebased.target_snapshot_id);
+    break_world_snapshot_lease_release(&lease);
+
+    ASSERT_TRUE(world_send_control(&fixture, key, BREAK_WORLD_SESSION_CONTROL_ACK, &rebased));
+    world_fixture_tick_level(&fixture, 10u, 31u);
+    ASSERT_TRUE(world_collect_attempt(&fixture, key, NULL, 0u, &next));
+    ASSERT_EQ(next.kind, BREAK_WORLD_DELTA_WIRE_DELTA);
+    ASSERT_EQ(next.base_snapshot_id, rebased.target_snapshot_id);
+    ASSERT_TRUE(world_send_control(&fixture, key, BREAK_WORLD_SESSION_CONTROL_ACK, &next));
+
+    world_fixture_tick_level(&fixture, 9u, 32u);
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    ASSERT_EQ(view.level_generation, 10u);
+    ASSERT_EQ(view.level_rebaselines, 1u);
+    ASSERT_EQ(view.publish_rejected, 0u);
+    ASSERT_EQ(view.terminal_errors, 0u);
+    ASSERT_TRUE(transport_fixture_destroy(&fixture));
+    aspect_fixture_dispose(&fixture);
+}
+
+TEST(world_publication_level_advance_resumes_after_submit_overload) {
+    AspectTransportFixture fixture;
+    CoreAppNetWorldTestView view;
+    BreakRuntimeWorldCommand stale;
+    WorldAttempt initial;
+    WorldAttempt rebased;
+    u32 queued = 0u;
+    const BreakConnectionKey key = 0x9412u;
+    ASSERT_TRUE(world_fixture_start(&fixture, "core_app_world_level_overload.port", true,
+                                    false));
+    ASSERT_TRUE(world_fixture_open(&fixture, key));
+    ASSERT_TRUE(world_fixture_welcome(&fixture, key));
+    world_clear_outbound(&fixture);
+    world_fixture_tick_level(&fixture, 9u, 7u);
+    ASSERT_TRUE(world_collect_attempt(&fixture, key, NULL, 0u, &initial));
+    ASSERT_EQ(initial.kind, BREAK_WORLD_DELTA_WIRE_FULL);
+    ASSERT_TRUE(world_send_control(&fixture, key, BREAK_WORLD_SESSION_CONTROL_ACK, &initial));
+    world_clear_outbound(&fixture);
+
+    /* Saturate the adapter queue so the rebaseline submit overloads this tick. */
+    memset(&stale, 0, sizeof(stale));
+    stale.kind = BREAK_RUNTIME_WORLD_COMMAND_ACK;
+    stale.connection_key = key;
+    stale.connection_epoch = UINT64_C(0xFFFF);
+    stale.level_generation = 9u;
+    stale.delta_id = 1u;
+    stale.target_snapshot_id = 1u;
+    stale.target_tick = 1u;
+    while (core_app_net_transport_world_submit(fixture.transport, &stale, 0u) ==
+           BREAK_RUNTIME_OK) {
+        ASSERT_TRUE(++queued < 1024u);
+    }
+    ASSERT_TRUE(queued != 0u);
+
+    world_fixture_tick_level(&fixture, 10u, 7u);
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    ASSERT_EQ(view.level_generation, 9u);
+    ASSERT_EQ(view.level_rebaselines, 0u);
+
+    world_fixture_tick_level(&fixture, 10u, 7u);
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    ASSERT_EQ(view.level_generation, 10u);
+    ASSERT_EQ(view.level_rebaselines, 1u);
+    ASSERT_EQ(break_world_session_level_generation(view.session), 10u);
+    ASSERT_TRUE(world_collect_attempt(&fixture, key, NULL, 0u, &rebased));
+    ASSERT_EQ(rebased.kind, BREAK_WORLD_DELTA_WIRE_FULL);
+    ASSERT_EQ(rebased.delta_id, 1u);
+    ASSERT_TRUE(transport_fixture_destroy(&fixture));
+    aspect_fixture_dispose(&fixture);
+}
+
+/* A rebaseline can reach the Session from a drain the transport did not make
+ * itself (a queued command completed by tick drain or publish). The transport
+ * must resync its level from the Session instead of keeping the old one for the
+ * rest of the tick, or OPEN/CLOSE and the publish notice go out stale. */
+TEST(world_publication_level_resyncs_from_session_after_foreign_rebaseline) {
+    AspectTransportFixture fixture;
+    CoreAppNetWorldTestView view;
+    BreakRuntimeWorldCommand rebase;
+    WorldAttempt initial;
+    WorldAttempt rebased;
+    const BreakConnectionKey key = 0x9413u;
+    const BreakConnectionKey late = 0x9414u;
+    ASSERT_TRUE(world_fixture_start(&fixture, "core_app_world_level_resync.port", true, false));
+    ASSERT_TRUE(world_fixture_open(&fixture, key));
+    ASSERT_TRUE(world_fixture_welcome(&fixture, key));
+    world_clear_outbound(&fixture);
+    world_fixture_tick_level(&fixture, 9u, 7u);
+    ASSERT_TRUE(world_collect_attempt(&fixture, key, NULL, 0u, &initial));
+    ASSERT_EQ(initial.kind, BREAK_WORLD_DELTA_WIRE_FULL);
+    ASSERT_TRUE(world_send_control(&fixture, key, BREAK_WORLD_SESSION_CONTROL_ACK, &initial));
+    world_clear_outbound(&fixture);
+
+    /* Queue a rebaseline the transport did not originate, then tick at the old
+     * level: a drain inside this tick applies it to the Session. */
+    memset(&rebase, 0, sizeof(rebase));
+    rebase.kind = BREAK_RUNTIME_WORLD_COMMAND_REBASELINE;
+    rebase.level_generation = 11u;
+    ASSERT_EQ(core_app_net_transport_world_submit(fixture.transport, &rebase, 0u),
+              BREAK_RUNTIME_OK);
+    ASSERT_TRUE(break_net_reactor_enqueue_opened_for_test(fixture.reactor, late));
+    world_fixture_tick_level(&fixture, 9u, 7u);
+
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    ASSERT_EQ(break_world_session_level_generation(view.session), 11u);
+    ASSERT_EQ(view.level_generation, 11u);
+    ASSERT_EQ(view.level_rebaselines, 1u);
+    /* The connection that arrived in the stale window must not be refused. */
+    ASSERT_EQ(view.open_count, 2u);
+    ASSERT_EQ(view.terminal_errors, 0u);
+
+    /* The rebaselined full for the welcomed connection goes out in this same
+     * tick (publish runs after the drain that applied the rebaseline). */
+    ASSERT_TRUE(world_collect_attempt(&fixture, key, NULL, 0u, &rebased));
+    ASSERT_EQ(rebased.kind, BREAK_WORLD_DELTA_WIRE_FULL);
+    ASSERT_EQ(rebased.delta_id, 1u);
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    ASSERT_EQ(view.level_generation, 11u);
+    ASSERT_EQ(view.level_rebaselines, 1u);
+    ASSERT_EQ(view.publish_rejected, 0u);
+    ASSERT_EQ(view.terminal_errors, 0u);
+    ASSERT_TRUE(transport_fixture_destroy(&fixture));
+    aspect_fixture_dispose(&fixture);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(destroy_reports_stop_timeout_and_keeps_the_reactor);
     RUN_TEST(voice_frame_counts_invalid_and_skipped_frames);
@@ -2711,4 +2884,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(world_publication_survives_adapter_destroy_timeout);
     RUN_TEST(world_publication_reopen_starts_unready_with_new_epoch);
     RUN_TEST(world_publication_notice_overload_recovers_next_tick);
+    RUN_TEST(world_publication_level_advance_rebaselines_and_republishes_full);
+    RUN_TEST(world_publication_level_advance_resumes_after_submit_overload);
+    RUN_TEST(world_publication_level_resyncs_from_session_after_foreign_rebaseline);
 TEST_MAIN_END()

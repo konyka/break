@@ -1128,3 +1128,13 @@ authority handoff 和默认全局公平调度仍未交付。正常断连顺序�
 证据：在 `ubuntu:24.04` 容器中先装 amd64 `libelf1t64 0.190-1.1ubuntu0.1`、再加 arm64 ports 源，旧逻辑复现同一 exit 100，新 step 文本（从 `ci.yml` 原样提取）exit 0，两侧 `libelf1t64` 均为 `0.190-1.1ubuntu0.2`，`mesa-libgallium:arm64` 与 `aarch64-linux-gnu-gcc` 可用。这只证明安装步骤；QEMU 套件在真实 runner 上的结果以后续远端 CI 为准。
 
 能力边界不变：权威 simulation 合并、inbound apply、预测/回滚、共享 live World、AOI 裁剪、自动换级、完整资产链、指标协议与远程采集、告警仍未交付。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。
+
+## 第 17 节补充（2026-11-26）：core_app transport 自动换级已交付
+
+此前 `net_world_initialize_level` 在首个 tick 把 `world_level_generation` 锁定，`net_tick` 不会在核心随后汇报更高 `level_generation` 时重定基线——这正是历次收据所记的「自动换级」缺口在 core_app 侧的表现。
+
+本切片新增 `net_world_advance_level`：当 replication 已初始化且核心 tick 汇报的 `level_generation` 高于当前锁定值时，经 Runtime adapter 提交 `REBASELINE` 命令并 drain，使 adapter 的发布 request/continuation/cursor/observed epoch 与 Session 流一起前进，Session 随之为每条打开连接强制新的 full；仅当 Session 确认新代际后才推进 `world_level_generation` 并计 `level_rebaselines`。更低或相等的代际被忽略（不回退）。无 adapter 的回退路径直接调用 `break_world_session_rebaseline`。TDD 的 `world_publication_level_advance_rebaselines_and_republishes_full` 先写 RED，覆盖「换级后发 full→ACK→发 delta」「随后更低 level 不回退」，三项变异（不推进代际、不计数、去掉不回退守卫）均实际判红；第二个用例 `world_publication_level_advance_resumes_after_submit_overload` 守住「换级当 tick OVERLOAD 则保持旧代际、下一 tick 自动同步」。决策读 Session 已确认代际而非单次 drain 结果，OVERLOAD 不丢换级也不误报 terminal。
+
+因此「自动换级」在 core_app 发布路径上关闭：历次收据中「`world_level_generation` 首 tick 锁定，自动换级接入时须同步更新否则发布持续被拒」的告警不再适用于 core_app transport。
+
+仍未交付：权威 simulation 合并、inbound apply 到权威 World、预测/回滚、共享 live World、跨 World 持久身份、AOI 裁剪、完整资产链、可靠每 epoch 广播、指标协议与远程采集、告警。rebaseline 的触发仍由核心 tick 汇报的 `level_generation` 驱动，资产选择/加载与混合 level 不在本切片。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。

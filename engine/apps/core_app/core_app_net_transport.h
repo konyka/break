@@ -143,6 +143,7 @@ typedef struct CoreAppNetWorldTestView {
     u64 snapshot_build_failures;
     u64 publish_rejected;
     u64 notice_overloads;
+    u64 level_rebaselines;
 } CoreAppNetWorldTestView;
 
 typedef struct CoreAppNetConnectionTestView {
