@@ -163,3 +163,19 @@ BreakNetEntityResult break_net_entity_map_stats(const BreakNetEntityMap *map,
     out_stats->overloads = map->overloads;
     return BREAK_NET_ENTITY_OK;
 }
+
+bool break_net_entity_scope_keep(void *user, const struct BreakWorldSnapshot *snapshot,
+                                 Entity entity) {
+    const BreakNetEntityScope *scope = (const BreakNetEntityScope *)user;
+    BreakNetEntityId id = 0u;
+    (void)snapshot;
+    if (!scope || !scope->map || !snapshot) return false;
+    if (break_net_entity_map_id(scope->map, scope->world_key, entity, &id) !=
+        BREAK_NET_ENTITY_OK) {
+        return false;
+    }
+    for (usize i = 0u; i < scope->count; ++i) {
+        if (scope->ids && scope->ids[i] == id) return true;
+    }
+    return false;
+}

@@ -85,6 +85,25 @@ BreakNetEntityResult break_net_entity_map_id(const BreakNetEntityMap *map, u32 w
 BreakNetEntityResult break_net_entity_map_stats(const BreakNetEntityMap *map,
                                                 BreakNetEntityMapStats *out_stats);
 
+/* AOI scope driven by persistent ids. `ids`/`count` are a connection's visible
+ * BreakNetEntityId set (e.g. break_aoi_compute output); `map` resolves each
+ * World Entity in `world_key` to its id. Pass a pointer to this struct as the
+ * `user` of break_world_snapshot_filter / break_world_session_publish_filtered
+ * via break_net_entity_scope_keep. Borrowed; the caller owns map and ids. */
+typedef struct BreakNetEntityScope {
+    const BreakNetEntityMap *map;
+    u32 world_key;
+    const BreakNetEntityId *ids;
+    usize count;
+} BreakNetEntityScope;
+
+/* BreakWorldSnapshotEntityFilter: keeps `entity` when it has a bound id in
+ * `world_key` and that id is in the scope's id set. An entity with no id, or an
+ * id outside the set, is culled. A NULL scope or map keeps nothing. */
+struct BreakWorldSnapshot;
+bool break_net_entity_scope_keep(void *user, const struct BreakWorldSnapshot *snapshot,
+                                 Entity entity);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

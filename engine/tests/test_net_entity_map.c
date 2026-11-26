@@ -3,7 +3,14 @@
 #include "test_framework.h"
 #include <ecs/ecs.h>
 #include <ecs/net_entity_map.h>
+#include <ecs/world_snapshot.h>
 #include <string.h>
+
+#define SCOPE_COMPONENT 11u
+
+typedef struct {
+    u32 value;
+} ScopeValue;
 
 static BreakNetEntityMap *make_map(u32 capacity) {
     BreakNetEntityMapConfig cfg = {capacity, 1u};
@@ -180,6 +187,122 @@ TEST(id_space_exhaustion_fails_closed) {
     world_destroy(w);
 }
 
+static BreakComponentSchemaRegistry *make_scope_schemas(void) {
+    BreakComponentSchemaRegistry *schemas = break_schema_registry_create();
+    BreakComponentSchema schema;
+    memset(&schema, 0, sizeof(schema));
+    schema.component_id = SCOPE_COMPONENT;
+    schema.version = 1u;
+    schema.size = sizeof(ScopeValue);
+    schema.alignment = _Alignof(ScopeValue);
+    schema.flags = BREAK_SCHEMA_FLAG_DETERMINISTIC_POD | BREAK_SCHEMA_FLAG_RAW_BYTES;
+    if (!schemas) return NULL;
+    if (break_schema_register(schemas, &schema) != BREAK_SCHEMA_OK) {
+        break_schema_registry_destroy(schemas);
+        return NULL;
+    }
+    return schemas;
+}
+
+static Entity scope_spawn(World *world, u32 value) {
+    Entity e = world_create_entity(world);
+    ScopeValue *v = (ScopeValue *)world_add_component(world, e, SCOPE_COMPONENT);
+    if (v) v->value = value;
+    return e;
+}
+
+TEST(scope_keep_culls_entities_outside_the_persistent_id_set) {
+    BreakComponentSchemaRegistry *schemas = make_scope_schemas();
+    World *world = world_create();
+    BreakNetEntityMap *m = make_map(8u);
+    Entity a, b, c;
+    BreakNetEntityId ia = 0u, ib = 0u, ic = 0u;
+    BreakNetEntityId scope_ids[2];
+    BreakNetEntityScope scope;
+    BreakWorldSnapshot *full;
+    BreakWorldSnapshot *view;
+    ASSERT_NOT_NULL(schemas);
+    ASSERT_NOT_NULL(world);
+    ASSERT_NOT_NULL(m);
+    world_register_component(world, SCOPE_COMPONENT, sizeof(ScopeValue));
+    a = scope_spawn(world, 10u);
+    b = scope_spawn(world, 20u);
+    c = scope_spawn(world, 30u);
+    ASSERT_EQ(break_net_entity_map_bind_new(m, 1u, a, &ia), BREAK_NET_ENTITY_OK);
+    ASSERT_EQ(break_net_entity_map_bind_new(m, 1u, b, &ib), BREAK_NET_ENTITY_OK);
+    ASSERT_EQ(break_net_entity_map_bind_new(m, 1u, c, &ic), BREAK_NET_ENTITY_OK);
+    scope_ids[0] = ia;
+    scope_ids[1] = ic; /* b is out of scope */
+    scope.map = m;
+    scope.world_key = 1u;
+    scope.ids = scope_ids;
+    scope.count = 2u;
+    full = break_world_snapshot_build(world, schemas, 5u);
+    ASSERT_NOT_NULL(full);
+    view = break_world_snapshot_filter(full, break_net_entity_scope_keep, &scope);
+    ASSERT_NOT_NULL(view);
+    ASSERT_EQ(break_world_snapshot_entity_count(view), 2u);
+    ASSERT_TRUE(break_world_snapshot_has_entity(view, a));
+    ASSERT_TRUE(!break_world_snapshot_has_entity(view, b));
+    ASSERT_TRUE(break_world_snapshot_has_entity(view, c));
+    break_world_snapshot_release(view);
+    break_world_snapshot_release(full);
+    break_net_entity_map_destroy(m);
+    world_destroy(world);
+    break_schema_registry_destroy(schemas);
+}
+
+TEST(scope_keep_culls_unbound_entities_and_wrong_world_and_bad_args) {
+    BreakComponentSchemaRegistry *schemas = make_scope_schemas();
+    World *world = world_create();
+    BreakNetEntityMap *m = make_map(8u);
+    Entity bound, unbound;
+    BreakNetEntityId id = 0u;
+    BreakNetEntityId scope_ids[1];
+    BreakNetEntityScope scope;
+    BreakWorldSnapshot *full;
+    BreakWorldSnapshot *view;
+    BreakWorldSnapshot *wrong_world_view;
+    ASSERT_NOT_NULL(schemas);
+    ASSERT_NOT_NULL(world);
+    ASSERT_NOT_NULL(m);
+    world_register_component(world, SCOPE_COMPONENT, sizeof(ScopeValue));
+    bound = scope_spawn(world, 10u);
+    unbound = scope_spawn(world, 20u);
+    ASSERT_EQ(break_net_entity_map_bind_new(m, 1u, bound, &id), BREAK_NET_ENTITY_OK);
+    scope_ids[0] = id;
+    scope.map = m;
+    scope.world_key = 1u;
+    scope.ids = scope_ids;
+    scope.count = 1u;
+    full = break_world_snapshot_build(world, schemas, 5u);
+    ASSERT_NOT_NULL(full);
+    /* The unbound entity has no id, so it is never in scope. */
+    view = break_world_snapshot_filter(full, break_net_entity_scope_keep, &scope);
+    ASSERT_NOT_NULL(view);
+    ASSERT_EQ(break_world_snapshot_entity_count(view), 1u);
+    ASSERT_TRUE(break_world_snapshot_has_entity(view, bound));
+    ASSERT_TRUE(!break_world_snapshot_has_entity(view, unbound));
+    break_world_snapshot_release(view);
+    /* A scope naming another world_key resolves no ids, so nothing is kept. */
+    scope.world_key = 2u;
+    wrong_world_view = break_world_snapshot_filter(full, break_net_entity_scope_keep, &scope);
+    ASSERT_NOT_NULL(wrong_world_view);
+    ASSERT_EQ(break_world_snapshot_entity_count(wrong_world_view), 0u);
+    break_world_snapshot_release(wrong_world_view);
+    /* NULL user / NULL map / NULL snapshot keep nothing and never crash. */
+    ASSERT_FALSE(break_net_entity_scope_keep(NULL, full, bound));
+    scope.world_key = 1u;
+    scope.map = NULL;
+    ASSERT_FALSE(break_net_entity_scope_keep(&scope, full, bound));
+    scope.map = m;
+    ASSERT_FALSE(break_net_entity_scope_keep(&scope, NULL, bound));
+    break_world_snapshot_release(full);
+    break_net_entity_map_destroy(m);
+    world_destroy(world);
+    break_schema_registry_destroy(schemas);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(create_validates_config);
     RUN_TEST(allocated_ids_are_unique_monotonic_and_never_reused);
@@ -189,4 +312,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(a_full_map_is_overload_and_release_frees_room);
     RUN_TEST(adopt_registers_a_remote_identity_without_allocating);
     RUN_TEST(id_space_exhaustion_fails_closed);
+    RUN_TEST(scope_keep_culls_entities_outside_the_persistent_id_set);
+    RUN_TEST(scope_keep_culls_unbound_entities_and_wrong_world_and_bad_args);
 TEST_MAIN_END()

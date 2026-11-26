@@ -14233,3 +14233,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：`test_world_session_recovery` 新增 4 例（范围内实体、NULL 谓词、两连接各自谓词、范围变化后的 full→delta 链）。先以 `break_world_session_publish_filtered` 未定义引用链接失败为 RED。四项变异判红：忽略过滤、非 NULL 谓词走未过滤发布、NULL 谓词返回 INVALID、过滤发布强制 full。
 - **验证**：`test_world_session_recovery` 27/27、`test_world_session` 15/15、`test_world_snapshot_filter` 5/5（normal/ASan+UBSan 含 leak 检测）；`test_world_session_recovery`、`test_world_session` 在 TSan 下 27/27、15/15；`ctest -L "ecs|replication|session|runtime_core"` 34/34。Snowflake 树固定在 pin `4ab761fc`（本机以 `git worktree` 重建）。完整 Vulkan/OpenGL 全量未重跑。
 - **边界**：Publication 共享 fan-out、Runtime adapter 与 core_app `--world-replication` 尚未使用该函数，生产路径仍向每个连接发送完整 World；AOI scope 到谓词的生成、`BreakNetEntityId` 与 Entity 的对应不在本切片。本收据提交自身的远端工作流结果不在此预写。
+
+## AOI scope 到过滤谓词的适配器（2026-11-26）
+
+- **实现**：`break_net_entity_scope_keep` 与 `BreakNetEntityScope`（`engine/src/ecs/net_entity_map.{h,c}`）：把连接的可见 `BreakNetEntityId` 集合变成 `BreakWorldSnapshotEntityFilter`，经 `break_net_entity_map_id` 将 snapshot Entity 解析为稳定 id 再判成员，可直接传给 `break_world_snapshot_filter`/`break_world_session_publish_filtered`。设计见 `docs/design/ecs_snapshot_replication_aoi.md`「AOI scope 到过滤谓词的适配器」。
+- **TDD 与变异**：`test_net_entity_map` 新增 2 例（范围外/未绑定/错误 world_key 裁剪、NULL 参数保留空）。先以未定义引用链接失败为 RED。两项变异判红：成员判定恒真、NULL map 不拒绝；“去掉查找失败早返回”为等价变异（id 恒非零，失败时 id=0 不在集合中）。
+- **验证**：`test_net_entity_map` 10/10、`test_world_snapshot_filter` 5/5、`test_ecs_replication` 35/35（normal）；`test_net_entity_map` 在 ASan+UBSan（leak 检测）与 TSan 下 10/10。非 Snowflake，`build-current-vk` 树即可构建。
+- **边界**：id 的 bind/adopt/rebind 与 `break_aoi_compute`→scope 组装由调用方维护；Publication/Runtime adapter/core_app `--world-replication` 是否启用过滤由后续切片决定。本收据提交自身的远端工作流结果不在此预写。

@@ -1152,3 +1152,9 @@ authority handoff 和默认全局公平调度仍未交付。正常断连顺序�
 `break_world_session_publish_filtered` 让 world session 可按连接的谓词裁剪 snapshot 后再走 full/delta 链，每个连接的 baseline 都是自己的过滤视图。这只关闭库级 session 层的缺口：Publication 共享 fan-out、Runtime adapter 与 core_app `--world-replication` 尚未使用它，生产路径仍向每个连接发送完整 World。
 
 仍未交付：AOI scope 到谓词的接线与 `BreakNetEntityId` 对应、权威 simulation 合并、inbound apply、预测回滚、共享 live World、完整资产链、可靠每 epoch 广播。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变；本节不预写远端结果。
+
+## 第 17 节补充（2026-11-26）：AOI scope→过滤谓词适配器已交付（库级）
+
+`break_net_entity_scope_keep`/`BreakNetEntityScope`（`engine/src/ecs/net_entity_map.{h,c}`）把连接的可见 `BreakNetEntityId` 集合变成 `break_world_snapshot_filter`/`break_world_session_publish_filtered` 的谓词，基于跨 World 稳定身份裁剪。这补上了「AOI scope 到谓词的接线与 `BreakNetEntityId` 对应」中的库级胶水。
+
+仍未交付：`break_aoi_compute` 输出到 `BreakNetEntityScope` 的生产组装、Publication 共享 fan-out 与 Runtime adapter/core_app `--world-replication` 启用过滤、权威 simulation 合并、inbound apply、预测回滚、共享 live World。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变；本节不预写远端结果。

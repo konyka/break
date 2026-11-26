@@ -377,3 +377,13 @@ World 的 `Entity{index, generation}` 只在所属 World 内有效，随 World �
 验证：`test_world_session_recovery` 27/27（原 23 例，新增 4 例；normal/ASan+UBSan 含 leak 检测/TSan 均 27/27），新增用例覆盖：只发送范围内实体且远端重建的 snapshot id 等于过滤视图 id、`keep == NULL` 等同未过滤发布、两个连接使用不同谓词时各自收到不同视图、范围变化后同一连接先收到 full 再收到以自身过滤视图为 base 的 delta 且远端重建结果与目标视图一致。四项变异判红：忽略过滤、非 NULL 谓词也走未过滤发布、NULL 谓词返回 INVALID、过滤发布强制 full。`ctest -L "ecs|replication|session|runtime_core"` 34/34。
 
 边界：只关闭库级 world session 的逐连接过滤发布。`BreakWorldSnapshotPublication` 的共享 target fan-out、Runtime adapter 的 direct notice 路径与 core_app `--world-replication` 仍向每个连接发送完整 World，没有接入该函数；如何从 `break_aoi_compute` 的 scope 生成谓词、`BreakNetEntityId` 与 World Entity 的对应、以及 ACK 与范围变化之间的 baseline 复用，由后续切片接入。权威 simulation 合并、inbound apply、预测回滚、共享 live World 仍未实现。本节不预写远端结果。
+
+## 补充（2026-11-26）：AOI scope 到过滤谓词的适配器
+
+`break_net_entity_scope_keep`（`engine/src/ecs/net_entity_map.{h,c}`）把一条连接的可见 `BreakNetEntityId` 集合变成 `BreakWorldSnapshotEntityFilter`，直接喂给 `break_world_snapshot_filter` 或 `break_world_session_publish_filtered`。`user` 是 `BreakNetEntityScope{map, world_key, ids, count}`：谓词用 `break_net_entity_map_id(map, world_key, entity, &id)` 把 snapshot 的 World Entity 解析成稳定 id，id 在 `ids` 集合中才保留。这样 scope 基于跨 World 稳定身份而非 World 局部 Entity，级别切换或 cell 交接后 World 重建、Entity 变化时，连接的可见集合仍由同一组 id 表达。
+
+语义：没有绑定 id 的实体（`NOT_FOUND`）、id 不在集合中的实体、以及 `world_key` 不匹配的实体都被裁掉；NULL scope、NULL map 或 NULL snapshot 一律保留空（返回 false），不崩溃。查找是 O(count) 线性扫描，与 AOI scope 规模相称，且只在所有者线程发布时调用。典型用法：对每条连接用 `break_aoi_compute` 得到 scope id 集合，填 `BreakNetEntityScope` 后调用 `break_world_session_publish_filtered(session, connection, world, tick, break_net_entity_scope_keep, &scope)`。
+
+验证：`test_net_entity_map` 新增 2 例（共 10 例，normal/ASan+UBSan 含 leak 检测/TSan 均 10/10）：范围外实体被裁、未绑定实体与错误 world_key 被裁、NULL 参数保留空。两项变异判红：成员判定恒真、NULL map 不拒绝。第三项“去掉查找失败的早返回”是等价变异：查找失败时 id 保持 0，而分配的 id 恒为非零，成员循环本就返回 false。`ctest -R "test_net_entity_map|test_world_snapshot_filter|test_ecs_replication"` 3/3。
+
+边界：这是把 scope 接到过滤发布的最后一块库级胶水；`BreakNetEntityId` 与 Entity 的绑定（bind/adopt/rebind）仍由调用方维护，`break_aoi_compute` 输出到 `BreakNetEntityScope` 的组装、以及 Publication/Runtime adapter/core_app `--world-replication` 是否启用过滤，仍由各自后续切片决定。本节不预写远端结果。
