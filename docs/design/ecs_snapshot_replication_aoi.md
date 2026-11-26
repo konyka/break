@@ -430,7 +430,20 @@ TSan 均 31/31）：过滤发布回传视图 id/tick（≠ 共享 target）、NU
    不一致。实际实现第一趟把结果记进 `kept[]` 数组，第二趟只读 `kept[i]` 而不再调用 `keep`，
    所以谓词每个实体恰好被调用一次，不一致的谓词无法让两趟脱钩。这是正确结构。
 
-**确实存在的覆盖缺口**：`engine/src/ecs/world_snapshot.c` 没有分配失败注入钩子（仓库其他
-模块如 `test_editor_doc`、`test_break_lua_value` 有），因此上述清理路径与其余 OOM 分支
-**从未被测试执行过**，只经过人工阅读。要关闭它需要给 snapshot 加注入钩子，属于独立切片，
-本次不做，如实记为未验证而不是声称安全。
+**覆盖缺口与随后发现的真缺陷**：`engine/src/ecs/world_snapshot.c` 原本没有分配失败注入钩子，
+上述清理路径与其余 OOM 分支从未被测试执行过。随后按 `editor_test_hooks.h` 的模式新增了
+`world_snapshot_test_hooks.h`（仅 `BREAK_WORLD_DELTA_TESTING` 构建可见，生产归档经 `nm` 核实
+不含任何 `break_world_snapshot_test_*` 符号），并写了逐个预算扫描所有分配点的用例。
+
+扫描**立刻**在 `break_world_snapshot_build` 里打出一个 NULL 解引用崩溃（ASan：SEGV at
+`snapshot_destroy`）。原因：build 在分配实体数组**之前**就把 `entity_count` 设为 `live_count`；
+实体数组分配失败时走到 `snapshot_destroy`，它循环 `entity_count` 次去读 `entities[i]`，而
+`entities` 为 NULL。这条路径在生产构建中同样可达（只要 calloc 返回 NULL），只是从未被执行。
+
+注意它和上面第 1 点的区别：filter 的清理之所以安全，是因为 view 的实体数组先分配成功、
+calloc 置零后才进入逐条填充；build 的清理则是在**实体数组本身分配失败**时触发，此时连
+被置零的数组都不存在。上一版复查记录只看了 filter 一侧，把「依赖 calloc 所以安全」的结论
+不加区分地写得像是覆盖了整个 OOM 路径，是不准确的，这里更正。
+
+修复：`snapshot_destroy` 在遍历前检查 `entities` 非空。修复后同一扫描在 ASan（含 leak 检测）
+下 6/6 通过，无泄漏。

@@ -4,6 +4,7 @@
 #include "test_framework.h"
 #include <ecs/world_delta.h>
 #include <ecs/world_snapshot.h>
+#include <ecs/world_snapshot_test_hooks.h>
 #include <network/break_aoi.h>
 
 #include <string.h>
@@ -273,10 +274,67 @@ TEST(empty_views_and_bad_arguments) {
     break_schema_registry_destroy(schemas);
 }
 
+
+/* Walks every snapshot-owned allocation failure point in build + filter,
+ * including the filter's mid-loop cleanup, which no test reached before. */
+TEST(filter_and_build_survive_every_allocation_failure) {
+    BreakComponentSchemaRegistry *schemas = make_schemas();
+    World *world = world_create();
+    float limit = 5.0f;
+    BreakWorldSnapshot *full;
+    ASSERT_NOT_NULL(schemas);
+    ASSERT_NOT_NULL(world);
+    world_register_component(world, COMP_POSITION, sizeof(Position));
+    (void)spawn(world, 1.0f);
+    (void)spawn(world, 2.0f);
+    (void)spawn(world, 9.0f);
+    /* Build: each budget below the needed count must fail cleanly, not leak
+     * or crash (ASan/LSan in CI enforce that). */
+    for (u64 budget = 0u; budget < 4u; ++budget) {
+        break_world_snapshot_test_set_alloc_budget(budget);
+        full = break_world_snapshot_build(world, schemas, 7u);
+        break_world_snapshot_test_set_alloc_budget(
+            BREAK_WORLD_SNAPSHOT_TEST_ALLOC_DISABLED);
+        if (full) {
+            break_world_snapshot_release(full);
+        }
+    }
+    break_world_snapshot_test_set_alloc_budget(
+        BREAK_WORLD_SNAPSHOT_TEST_ALLOC_DISABLED);
+    full = break_world_snapshot_build(world, schemas, 7u);
+    ASSERT_NOT_NULL(full);
+    /* Filter: same sweep. Budget 0..5 covers the keep mask, the view struct,
+     * its entity array, its byte block and the per-entity component arrays
+     * (two entities are kept, so the mid-loop failure path is exercised). */
+    for (u64 budget = 0u; budget < 6u; ++budget) {
+        BreakWorldSnapshot *view;
+        break_world_snapshot_test_set_alloc_budget(budget);
+        view = break_world_snapshot_filter(full, keep_x_below, &limit);
+        break_world_snapshot_test_set_alloc_budget(
+            BREAK_WORLD_SNAPSHOT_TEST_ALLOC_DISABLED);
+        if (view) {
+            /* A view that was produced must still be correct. */
+            ASSERT_EQ(break_world_snapshot_entity_count(view), 2u);
+            break_world_snapshot_release(view);
+        }
+    }
+    /* With the hook off everything works as before. */
+    {
+        BreakWorldSnapshot *view = break_world_snapshot_filter(full, keep_x_below, &limit);
+        ASSERT_NOT_NULL(view);
+        ASSERT_EQ(break_world_snapshot_entity_count(view), 2u);
+        break_world_snapshot_release(view);
+    }
+    break_world_snapshot_release(full);
+    world_destroy(world);
+    break_schema_registry_destroy(schemas);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(filter_keeps_only_admitted_entities_and_their_bytes);
     RUN_TEST(filter_hash_matches_a_snapshot_built_from_the_same_entities);
     RUN_TEST(filtered_views_diff_and_apply_like_full_snapshots);
     RUN_TEST(an_aoi_scope_drives_the_filter);
     RUN_TEST(empty_views_and_bad_arguments);
+    RUN_TEST(filter_and_build_survive_every_allocation_failure);
 TEST_MAIN_END()

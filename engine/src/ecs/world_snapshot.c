@@ -1,5 +1,7 @@
 #include <ecs/world_snapshot.h>
 
+#include <ecs/world_snapshot_test_hooks.h>
+
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
@@ -49,9 +51,16 @@ static bool schema_supports_snapshot(const BreakComponentSchema *schema) {
            (schema->flags & BREAK_SCHEMA_FLAG_DETERMINISTIC_POD) != 0u;
 }
 
+#if defined(BREAK_WORLD_DELTA_TESTING)
+_Atomic u64 g_break_world_snapshot_test_alloc_budget =
+    BREAK_WORLD_SNAPSHOT_TEST_ALLOC_DISABLED;
+#endif
+
 static void snapshot_destroy(BreakWorldSnapshot *snapshot) {
     if (!snapshot) return;
-    for (usize i = 0u; i < snapshot->entity_count; ++i) {
+    /* entity_count is set before the entity array is allocated, so a failed
+     * allocation reaches here with entity_count > 0 and entities == NULL. */
+    for (usize i = 0u; snapshot->entities && i < snapshot->entity_count; ++i) {
         free(snapshot->entities[i].components);
     }
     free(snapshot->entities);
@@ -139,14 +148,15 @@ BreakWorldSnapshot *break_world_snapshot_build(
         }
     }
 
-    BreakWorldSnapshot *snapshot = calloc(1u, sizeof(*snapshot));
+    BreakWorldSnapshot *snapshot = break_world_snapshot_test_calloc(1u, sizeof(*snapshot));
     if (!snapshot) return NULL;
     atomic_init(&snapshot->references, 1u);
     snapshot->tick = tick;
     snapshot->entity_count = live_count;
     snapshot->byte_count = byte_count;
-    snapshot->entities = calloc(live_count ? live_count : 1u, sizeof(*snapshot->entities));
-    snapshot->bytes = malloc(byte_count ? byte_count : 1u);
+    snapshot->entities = break_world_snapshot_test_calloc(live_count ? live_count : 1u,
+                                                          sizeof(*snapshot->entities));
+    snapshot->bytes = break_world_snapshot_test_malloc(byte_count ? byte_count : 1u);
     if (!snapshot->entities || !snapshot->bytes) {
         snapshot_destroy(snapshot);
         return NULL;
@@ -187,7 +197,8 @@ BreakWorldSnapshot *break_world_snapshot_filter(const BreakWorldSnapshot *snapsh
                                                 BreakWorldSnapshotEntityFilter keep,
                                                 void *user) {
     if (!snapshot || !keep) return NULL;
-    bool *kept = calloc(snapshot->entity_count ? snapshot->entity_count : 1u, sizeof(*kept));
+    bool *kept = break_world_snapshot_test_calloc(
+        snapshot->entity_count ? snapshot->entity_count : 1u, sizeof(*kept));
     if (!kept) return NULL;
     usize kept_count = 0u;
     usize byte_count = 0u;
@@ -200,7 +211,7 @@ BreakWorldSnapshot *break_world_snapshot_filter(const BreakWorldSnapshot *snapsh
             byte_count += entity->components[j].size; /* bounded by the source total */
     }
 
-    BreakWorldSnapshot *view = calloc(1u, sizeof(*view));
+    BreakWorldSnapshot *view = break_world_snapshot_test_calloc(1u, sizeof(*view));
     if (!view) {
         free(kept);
         return NULL;
@@ -210,8 +221,9 @@ BreakWorldSnapshot *break_world_snapshot_filter(const BreakWorldSnapshot *snapsh
     view->schema_hash = snapshot->schema_hash;
     view->entity_count = kept_count;
     view->byte_count = byte_count;
-    view->entities = calloc(kept_count ? kept_count : 1u, sizeof(*view->entities));
-    view->bytes = malloc(byte_count ? byte_count : 1u);
+    view->entities = break_world_snapshot_test_calloc(kept_count ? kept_count : 1u,
+                                                      sizeof(*view->entities));
+    view->bytes = break_world_snapshot_test_malloc(byte_count ? byte_count : 1u);
     if (!view->entities || !view->bytes) {
         free(kept);
         snapshot_destroy(view);
@@ -226,7 +238,8 @@ BreakWorldSnapshot *break_world_snapshot_filter(const BreakWorldSnapshot *snapsh
         SnapshotEntity *stored = &view->entities[slot++];
         stored->entity = source->entity;
         if (source->component_count == 0u) continue;
-        stored->components = malloc(source->component_count * sizeof(*stored->components));
+        stored->components = break_world_snapshot_test_malloc(
+            source->component_count * sizeof(*stored->components));
         if (!stored->components) {
             free(kept);
             snapshot_destroy(view);

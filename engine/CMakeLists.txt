@@ -6155,6 +6155,7 @@ endif()
 
     add_executable(test_world_snapshot_filter tests/test_world_snapshot_filter.c)
     target_include_directories(test_world_snapshot_filter PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_world_snapshot_filter PRIVATE BREAK_WORLD_DELTA_TESTING=1)
     target_link_libraries(test_world_snapshot_filter PRIVATE break_ecs_replication_test)
     add_test(NAME test_world_snapshot_filter COMMAND test_world_snapshot_filter)
     set_tests_properties(test_world_snapshot_filter PROPERTIES

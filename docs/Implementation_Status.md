@@ -14328,3 +14328,12 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **修复**：调用 `send` 期间置 `draining`，其间 `enqueue`/`release`/嵌套 `drain` 均 `REJECTED`；drain 改用内部 `retry_pop` 与内联 attempt 记账。头文件写明重入约束。设计见 `docs/design/runtime_metrics.md` 第 25 节。
 - **TDD 与变异**：新增 1 例，先 RED（回调内 enqueue 返回 OK 而非 REJECTED），修复后 GREEN；探针重跑不再改写。两项变异判红：去掉 enqueue 的 draining 检查、从不设置 draining。
 - **验证**：`test_runtime_metrics` 43/43（normal/ASan+UBSan 含 leak 检测/TSan 均 43/43）；`build-current-vk` 全量 CTest 463/463、0 失败。本收据提交自身的远端工作流结果不在此预写。
+
+## World snapshot 分配失败注入与 build 清理崩溃修复（2026-11-26）
+
+- **钩子**：新增 `engine/src/ecs/world_snapshot_test_hooks.h`，仿照 `editor_test_hooks.h`：一个共享分配预算覆盖 snapshot 结构、实体数组、字节块、filter 的 keep 掩码与每实体组件数组；仅 `BREAK_WORLD_DELTA_TESTING` 构建启用，生产构建为宏直通。`nm libbreak_ecs_replication.a` 核实生产归档不含任何 `break_world_snapshot_test_*` 符号。
+- **缺陷**：钩子的首个扫描用例即在 `break_world_snapshot_build` 打出 NULL 解引用（ASan SEGV at `snapshot_destroy`）：`entity_count` 先于实体数组分配被赋值，数组分配失败时清理循环解引用 NULL。生产构建同样可达，此前从未被执行。
+- **修复**：`snapshot_destroy` 遍历前检查 `entities` 非空。
+- **TDD**：`test_world_snapshot_filter` 新增 1 例逐预算扫描 build 与 filter 的全部分配点，先崩溃（RED）后通过；`test_world_snapshot_filter` 6/6，ASan 含 leak 检测无泄漏。
+- **文档更正**：前一条复查记录把「依赖 calloc 故安全」写得像覆盖整个 OOM 路径；实际只对 filter 成立，build 的清理正是崩溃点。已在设计文档中更正。
+- 本收据提交自身的远端工作流结果不在此预写。
