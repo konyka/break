@@ -14105,3 +14105,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：`test_runtime_reload.c` 新增 1 用例（3 次 notify 合并 + pump 成 1 request 后导出 18 gauge 对齐 stats()、再导出幂等含值不增、NULL/空/过长 prefix 的 INVALID；teardown 用 set_gates(0,0)+shutdown 再 destroy）。两项变异判红：改 counter+add（幂等值翻倍）、吞掉 set 错误（过长 prefix 的 INVALID）。
 - **验证**：`test_runtime_reload` 35/35（normal/ASan+UBSan/TSan 均 35/35）；`test_runtime_metrics`、`test_runtime_core_target_contract`、`test_runtime_facade`、`test_runtime_bus` 全绿。
 - **边界**：指标协议边界不变——仍无远程传输、历史采样与告警；bus/queue/task/world-session/reload 为前五处子系统绑定。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。本收据提交自身的远端工作流结果不在此预写。
+
+## Queue 计数导出切片的远端收据（2026-11-26）
+
+- 推送 `8cc58f2c..a936aaec`（fast-forward），提交 `feat(runtime): export queue counters into the metrics registry by prefix`。
+- 远端 CI `45796089369` 整体标记 failure，但唯一非成功是两条 macOS job（`macOS Cocoa + MoltenVK`、`macOS + Clang rule engine with native Redis`）被取消：二者运行约 15 分钟、**steps 为空**、同一时刻一起 completed——是等待 macOS runner 容量而被取消的基础设施问题，非测试失败。该改动是 `runtime_core` 纯 C 代码，与 macOS Cocoa/Metal 或 rule-engine/Redis 无关；两条 macOS lane 在相邻的 `45789757885`、`45792669354` 两次 run 均 success。令牌对 Actions 只读，无法 rerun。
+- 其余 **23 success、3 条件 skip**：`Linux arm64 cross-build + QEMU tests (GCC)` success（`test_runtime_facade` 的 queue 导出用例随 QEMU 运行）、`windows-d3d12` success、全部 Linux 与 iOS 构建 success。
+- 本地已记：`test_runtime_facade` 22/22（normal/ASan+UBSan/TSan）。
+- 边界同本切片收据。后续提交（task/world-session/reload 绑定）会触发新 CI run，自然重试 macOS lane。
