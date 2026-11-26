@@ -370,3 +370,20 @@ OK），open 之后初始为 OK；open 本身只以 NULL 报错（无客户端�
 - 上游：manifest/CAS `engine/src/update/break_update.h`；原子写
   `engine/src/platform/platform_fs.h`；威胁模型
   `docs/design/security_threat_model.md` §4（信任链）/§10（NOT-delivered）。
+
+## 不可信 manifest 文本的 fuzz（2026-11-27）
+
+`break_update_manifest_parse` 在任何签名校验之前就处理来自网络的 "break-manifest-v1" 文本。它分两遍：
+pass 1 校验全部行（版本十进制与溢出、64 位 hex 哈希、按字节排序且唯一的 chunk 名、88 字符 base64
+签名必须是最后一行），并据此统计 chunk 数与名字总字节；pass 2 按这些计数分配 `chunks[]` 与名字
+arena 后填充，不再检查。此前只有单元测试，没有变异 fuzz。
+
+新增 `engine/tests/fuzz_update_manifest.c`，以 golden manifest（零签名，可解析但不能通过校验）为种子，
+做字节翻转/插入/删除与就地加长行。没有序列化器可做往返，所以不变量是结构性的：parse 不越界、不改入参；
+被接受的 manifest 上，`chunk_at` 对 `[0, count)` 每个索引都成功且 `out_name` 是可读字符串，对 `count`
+必须失败；channel/platform 可读；`compatible()` 不越界。`UPDATE_MANIFEST_LIBFUZZER=1` 可导出到
+libFuzzer。注册为 `fuzz_update_manifest_smoke`（种子 71），并加入 CI 的三处 fuzz 构建列表。
+
+验证：种子 71×200000、种子 103×100000 在 ASan+UBSan+leak 下全程 clean（约 3.2k–6.3k 次接受）。
+负向对照把 `chunk_at` 的 `index >= chunk_count` 改成 `index > chunk_count` 后，fuzzer 立即报
+`break_update.c:414` 的 heap-buffer-overflow。`test_break_update` 21/21；`build-current-vk` fuzz lane 20/20。

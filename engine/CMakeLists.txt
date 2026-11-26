@@ -8489,6 +8489,26 @@ endif()
         target_link_libraries(fuzz_crash_record PRIVATE break_crash)
     endif()
 
+    # Mutation fuzzer for break_update_manifest_parse, the parser the update
+    # client runs on the untrusted canonical manifest text before any signature
+    # check. No serializer exists to round-trip against, so it asserts the parse
+    # is memory-safe and that every accessor of an accepted manifest stays in
+    # bounds. platform_fs.c satisfies the content store's atomic-writer symbols
+    # in the same library.
+    if(TARGET break_update)
+        add_executable(fuzz_update_manifest EXCLUDE_FROM_ALL tests/fuzz_update_manifest.c
+            src/platform/platform_fs.c)
+        set_property(TARGET fuzz_update_manifest PROPERTY C_STANDARD 11)
+        target_include_directories(fuzz_update_manifest PRIVATE ${TEST_INCLUDE_DIRS})
+        if(ENGINE_PLATFORM STREQUAL "linux")
+            target_compile_definitions(fuzz_update_manifest PRIVATE
+                ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+        elseif(ENGINE_PLATFORM STREQUAL "windows")
+            target_compile_definitions(fuzz_update_manifest PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        endif()
+        target_link_libraries(fuzz_update_manifest PRIVATE break_update)
+    endif()
+
     # Mutation fuzzer for break_crash_cluster_parse, the parser for the
     # persisted "break-crash-stats v1" statistics file. It fills fixed-size
     # buffers then demands the input be exactly canonical; the fuzzer builds its
@@ -8570,6 +8590,10 @@ endif()
         if(TARGET fuzz_crash_cluster)
             add_test(NAME fuzz_crash_cluster_smoke COMMAND fuzz_crash_cluster 2000 67)
             set_tests_properties(fuzz_crash_cluster_smoke PROPERTIES LABELS "fuzz")
+        endif()
+        if(TARGET fuzz_update_manifest)
+            add_test(NAME fuzz_update_manifest_smoke COMMAND fuzz_update_manifest 2000 71)
+            set_tests_properties(fuzz_update_manifest_smoke PROPERTIES LABELS "fuzz")
         endif()
         # Checked-in wire samples, one per file; the name prefix is the expected
         # decode outcome. Regenerate with `fuzz_core_app_network --emit-corpus <dir>`.

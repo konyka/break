@@ -14385,3 +14385,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **实现**：新增 `engine/tests/fuzz_crash_cluster.c`，用公开 cluster API 运行时构造合法种子（含 crypto 派生布局，不手工编码），变异含就地加长行。不变量：不越界、不改入参、被接受输入逐字节等于其 serialize、再解析幂等。注册 `fuzz_crash_cluster_smoke`（种子 67），`CRASH_CLUSTER_LIBFUZZER` 可导出 libFuzzer；仅在 `TARGET break_crash_cluster` 构建。
 - **CI 修正**：`.github/workflows/ci.yml` 的 ASan/UBSan fuzz-smoke 步骤在 `fuzz_world_delta_wire` 行尾漏续行反斜杠，使 `fuzz_runtime_metrics_decode` 从未被该步构建（smoke 实为 Not Run）。补回续行，并把 symbols/record/cluster 三个崩溃 fuzz 目标加入三处 CI 构建列表。
 - **验证**：种子 67×200000、种子 103×100000 在 ASan+UBSan+leak 全程 clean；负向对照（去掉解析末尾规范形校验）在第 103 次迭代即以「not canonical」失败，证明目标可检出宽松接受。`test_break_crash_cluster` 26/26；`build-current-vk` fuzz lane 19/19。两项 `test_core_app_*contract` 若在提交前运行会因新源未入 `git archive HEAD` 失败，提交后消失，非回归。本收据提交自身的远端工作流结果不在此预写。
+
+## 更新 manifest 解析器的 fuzz 目标（2026-11-27）
+
+- **缺口**：`break_update_manifest_parse`（更新客户端在验签前解析不可信 manifest 文本）只有单元测试，没有变异 fuzz。它按 pass 1 的计数分配 chunk 数组和名字 arena，再由 pass 2 不加检查地填充。
+- **实现**：新增 `engine/tests/fuzz_update_manifest.c`，以零签名 golden manifest 为种子。不变量：不越界、不改入参；被接受的 manifest 中所有访问器都在边界内（`chunk_at` 在 count 以下成功、在 count 处失败，名字与 channel/platform 可读）。注册 `fuzz_update_manifest_smoke`（种子 71），加入 CI 的三处 fuzz 构建列表；仅在 `TARGET break_update` 时构建。
+- **验证**：种子 71×200000、种子 103×100000 在 ASan+UBSan+leak 下 clean；负向对照（`chunk_at` 边界差一）触发 `break_update.c:414` 的 heap-buffer-overflow。`test_break_update` 21/21；fuzz lane 20/20。本提交自身的远端工作流结果不在此预写。
