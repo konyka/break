@@ -14240,3 +14240,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：`test_net_entity_map` 新增 2 例（范围外/未绑定/错误 world_key 裁剪、NULL 参数保留空）。先以未定义引用链接失败为 RED。两项变异判红：成员判定恒真、NULL map 不拒绝；“去掉查找失败早返回”为等价变异（id 恒非零，失败时 id=0 不在集合中）。
 - **验证**：`test_net_entity_map` 10/10、`test_world_snapshot_filter` 5/5、`test_ecs_replication` 35/35（normal）；`test_net_entity_map` 在 ASan+UBSan（leak 检测）与 TSan 下 10/10。非 Snowflake，`build-current-vk` 树即可构建。
 - **边界**：id 的 bind/adopt/rebind 与 `break_aoi_compute`→scope 组装由调用方维护；Publication/Runtime adapter/core_app `--world-replication` 是否启用过滤由后续切片决定。本收据提交自身的远端工作流结果不在此预写。
+
+## AOI 过滤发布/适配器切片的远端收据（2026-11-26）
+
+- 推送 `a7b1ae43..f75d479e`（AOI 过滤发布）与 `f75d479e..6a16139e`（AOI scope→谓词适配器），fast-forward 到 `master`。
+- `f75d479e` 远端 CI `45827056626` 结论为 failure，但唯一非成功项是 `macOS + Clang (rule engine with native Redis provider)` 被 **cancelled**（startedAt 到 completedAt 约 15 分钟、**steps 为 0**、从未进入执行）——等待 macOS runner 容量而取消的基础设施问题，非测试失败；其余 **24 success、3 条件 skip、0 failed**，含 `windows-d3d12`（独立 run `45827056624` 亦 success）与 `Linux arm64 cross-build + QEMU tests (GCC)`。改动是 `engine/src/ecs` 纯 C 代码，与 macOS Cocoa/Metal 或 rule-engine/Redis 无关。令牌对 Actions 只读，无法 rerun；后续 `6a16139e` 会触发新的 macOS lane 自然重试。
+- `6a16139e` 的 CI（`45829350618`）与 windows-d3d12（`45829350314`）结论待后续记录。
