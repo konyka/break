@@ -241,6 +241,72 @@ TEST(plain_http_off_loopback_and_https_without_a_ca_are_failed) {
     break_runtime_metrics_destroy(m);
 }
 
+static const BreakRuntimeMetricAlertRule kRules[] = {
+    {"q.depth", BREAK_RUNTIME_METRIC_ALERT_ABOVE, 5u},
+    {"pool.free", BREAK_RUNTIME_METRIC_ALERT_BELOW, 2u},
+};
+
+TEST(alert_edges_are_posted_to_the_alerts_endpoint) {
+    static Fake f;
+    BreakRuntimeMetricsPushHttp c;
+    const BreakRuntimeMetricAlertEdge edges[] = {BREAK_RUNTIME_METRIC_ALERT_STEADY,
+                                                 BREAK_RUNTIME_METRIC_ALERT_CLEARED};
+    int port = 0;
+    ASSERT_TRUE(fake_start(&f, OK200, &port));
+    ctx_for(&c, port);
+    ASSERT_EQ(break_runtime_metrics_push_alerts_http(&c, kRules, edges, 2u), BREAK_RUNTIME_OK);
+    fake_stop(&f);
+    ASSERT_NOT_NULL(strstr(f.got, "POST /alerts HTTP/1.1\r\n"));
+    ASSERT_NOT_NULL(strstr(f.got, "Content-Type: text/x-break-alerts\r\n"));
+    ASSERT_NOT_NULL(strstr(f.got, "\r\n\r\nBRKA1 cleared pool.free below 2\n"));
+    ASSERT_EQ(f.got_len, strlen(f.got));
+}
+
+TEST(all_steady_edges_send_nothing_and_succeed) {
+    static Fake f;
+    BreakRuntimeMetricsPushHttp c;
+    const BreakRuntimeMetricAlertEdge edges[] = {BREAK_RUNTIME_METRIC_ALERT_STEADY,
+                                                 BREAK_RUNTIME_METRIC_ALERT_STEADY};
+    int port = 0;
+    ASSERT_TRUE(fake_start(&f, OK200, &port));
+    ctx_for(&c, port);
+    ASSERT_EQ(break_runtime_metrics_push_alerts_http(&c, kRules, edges, 2u), BREAK_RUNTIME_OK);
+    fake_stop(&f);
+    ASSERT_EQ(f.got_len, 0u); /* no transition: no request */
+}
+
+TEST(alert_delivery_failures_and_local_refusals) {
+    static Fake f;
+    BreakRuntimeMetricsPushHttp c;
+    const BreakRuntimeMetricAlertEdge raised[] = {BREAK_RUNTIME_METRIC_ALERT_RAISED,
+                                                  BREAK_RUNTIME_METRIC_ALERT_STEADY};
+    const BreakRuntimeMetricAlertEdge bogus[] = {(BreakRuntimeMetricAlertEdge)7,
+                                                 BREAK_RUNTIME_METRIC_ALERT_STEADY};
+    int port = 0;
+    ASSERT_TRUE(fake_start(&f, "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
+                           &port));
+    ctx_for(&c, port);
+    ASSERT_EQ(break_runtime_metrics_push_alerts_http(&c, kRules, raised, 2u),
+              BREAK_RUNTIME_FAILED);
+    fake_stop(&f);
+    ASSERT_TRUE(fake_start(&f, OK200, &port));
+    ctx_for(&c, port);
+    ASSERT_EQ(break_runtime_metrics_push_alerts_http(&c, kRules, bogus, 2u),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_push_alerts_http(NULL, kRules, raised, 2u),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_push_alerts_http(&c, NULL, raised, 2u),
+              BREAK_RUNTIME_INVALID);
+    {
+        size_t used = strlen(c.base_url);
+        snprintf(c.base_url + used, sizeof(c.base_url) - used, "/");
+    }
+    ASSERT_EQ(break_runtime_metrics_push_alerts_http(&c, kRules, raised, 2u),
+              BREAK_RUNTIME_INVALID);
+    fake_stop(&f);
+    ASSERT_EQ(f.got_len, 0u);
+}
+
 TEST_MAIN_BEGIN()
     signal(SIGPIPE, SIG_IGN);
     RUN_TEST(a_200_answer_is_ok_and_the_body_decodes_to_the_snapshot);
@@ -249,4 +315,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(bad_arguments_are_refused_before_any_connection);
     RUN_TEST(a_registry_too_large_to_send_is_overload_and_never_sent);
     RUN_TEST(plain_http_off_loopback_and_https_without_a_ca_are_failed);
+    RUN_TEST(alert_edges_are_posted_to_the_alerts_endpoint);
+    RUN_TEST(all_steady_edges_send_nothing_and_succeed);
+    RUN_TEST(alert_delivery_failures_and_local_refusals);
 TEST_MAIN_END()

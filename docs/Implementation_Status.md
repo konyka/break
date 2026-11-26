@@ -14191,3 +14191,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：新增 `test_runtime_metrics_push_http`（6 用例，回环一次性假采集器）：200 时请求行/Content-Type 正确且 body 经 `break_runtime_metrics_decode` 还原为快照；500/204/302/缺 Content-Length/无回答为 FAILED；空注册表推送空 body；尾斜杠与 NULL 在连接前拒绝且假采集器未收到字节；非拥有线程 REJECTED；1024 个满长名 + UINT64_MAX 的注册表 OVERLOAD 且不发送；非回环明文 http 与无 CA 的 https 为 FAILED。先以缺失头文件编译失败为 RED。三项变异判红：参数校验短路为 FAILED、忽略 status 只看传输成功、去掉 64 KiB 上限。
 - **验证**：`test_runtime_metrics_push_http` 6/6（normal/ASan+UBSan/TSan 均 6/6）；`ctest -L runtime_core` 12/12；`test_core_app_contract_compat` 与 `test_core_app_ctest_config_contract`（按 git HEAD 归档重新配置）提交后通过。arm64 QEMU lane 的构建目标与运行白名单已加入该测试。
 - **边界**：仅 POSIX（同 `break_http`），无 Windows 实现；不做重试调度、批量或压缩；告警投递仍未实现。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。本收据提交自身的远端工作流结果不在此预写。
+
+## 指标告警边沿编码与 HTTP 投递（指标协议：告警投递）（2026-11-26）
+
+- **实现**：`runtime_metrics` 新增 `break_runtime_metrics_encode_alert_edges(...)`：非 STEADY 边沿逐行编码为 `BRKA1 <raised|cleared> <name> <above|below> <threshold>`，全 STEADY 为空串，先校验（name 按注册表规则、op、边沿值）后写出。`runtime_metrics_push_http` 新增 `break_runtime_metrics_push_alerts_http(...)`：编码后 POST 到 `<base_url>/alerts`（`text/x-break-alerts`），无转变不发请求返回 OK，只有 HTTP 200 为 OK；与快照推送共用 URL 拼接与 POST。设计见 `docs/design/runtime_metrics.md` 第 21 节。
+- **TDD 与变异**：`test_runtime_metrics.c` 新增 2 用例（只列转变且按规则顺序含 UINT64_MAX 阈值、所需长度与 NUL 余量、非法 name/op/边沿/NULL）；`test_runtime_metrics_push_http.c` 新增 3 用例（POST /alerts 的请求行、Content-Type 与 body；全 STEADY 不连接；503 为 FAILED、非法边沿/NULL/尾斜杠在连接前 INVALID）。均先以未声明函数编译失败为 RED。六项变异判红：编码不跳过 STEADY、去掉 name 校验、缓冲判定丢掉 NUL 余量；投递不跳过空编码、投到 /metrics、吞掉编码器 INVALID。
+- **验证**：`test_runtime_metrics` 30/30、`test_runtime_metrics_push_http` 9/9（normal/ASan+UBSan/TSan 均通过）。
+- **边界**：指标协议的远程传输与告警投递均已具备基本通路；不做重试队列、去重、批量、压缩与多渠道路由；HTTP 推送仅 POSIX。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。本收据提交自身的远端工作流结果不在此预写。

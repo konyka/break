@@ -6,8 +6,9 @@
  * network dependency; the transport is opted into by linking this separate
  * library, exactly like break_crash_upload_http.
  *
- * One call = one POST of the current snapshot to <base_url>/metrics with
- * Content-Type text/x-break-metrics. The transport rules of break_http apply
+ * One call = one POST: the current snapshot to <base_url>/metrics
+ * (text/x-break-metrics), or alert transitions to <base_url>/alerts
+ * (text/x-break-alerts). The transport rules of break_http apply
  * unchanged: https needs a CA file, plain http only to a loopback address, no
  * redirects. POSIX only, like break_http. */
 
@@ -20,6 +21,7 @@ extern "C" {
 #endif
 
 #define BREAK_RUNTIME_METRICS_PUSH_HTTP_CONTENT_TYPE "text/x-break-metrics"
+#define BREAK_RUNTIME_METRICS_PUSH_HTTP_ALERTS_CONTENT_TYPE "text/x-break-alerts"
 #define BREAK_RUNTIME_METRICS_PUSH_HTTP_MAX_BYTES 65536u
 
 typedef struct BreakRuntimeMetricsPushHttp {
@@ -42,6 +44,24 @@ typedef struct BreakRuntimeMetricsPushHttp {
  *              malformed answer). The caller may retry on its own schedule. */
 BreakRuntimeError break_runtime_metrics_push_http(const BreakRuntimeMetricsPushHttp *ctx,
                                                   BreakRuntimeMetrics *metrics);
+
+/* Delivers alert transitions: encodes `edges` with
+ * break_runtime_metrics_encode_alert_edges and POSTs the result to
+ * <base_url>/alerts with Content-Type text/x-break-alerts. When every edge is
+ * STEADY nothing is sent and the call returns OK. Any thread (no registry is
+ * touched); blocks like break_runtime_metrics_push_http.
+ *   OK       — no transition, or the collector answered HTTP 200.
+ *   INVALID  — NULL ctx, a bad base URL, or input the encoder rejects
+ *              (bad rule name or op, unknown edge, NULL arrays); nothing is
+ *              sent.
+ *   OVERLOAD — the encoding exceeds BREAK_RUNTIME_METRICS_PUSH_HTTP_MAX_BYTES;
+ *              nothing is sent.
+ *   OOM      — the encode buffer could not be allocated; nothing is sent.
+ *   FAILED   — any transport outcome other than a complete 200 answer. */
+BreakRuntimeError break_runtime_metrics_push_alerts_http(const BreakRuntimeMetricsPushHttp *ctx,
+                                                         const BreakRuntimeMetricAlertRule *rules,
+                                                         const BreakRuntimeMetricAlertEdge *edges,
+                                                         u32 count);
 
 #ifdef __cplusplus
 } /* extern "C" */

@@ -105,7 +105,7 @@
 
 - `fired` 不足 → `OVERLOAD`，`*out_count` 为所需数量，`fired` 不写。
 - `INVALID`（`*out_count = 0`）：`out_count` 为 NULL；计数非零而 samples/rules/fired 为 NULL；规则 name 为 NULL 或 op 未知；样本数或规则数超过 `BREAK_RUNTIME_METRICS_MAX_CAPACITY`。所有规则先校验后求值，不会部分写出。
-- 不保留状态：不做告警投递；持续时长去抖见第 16 节，触发/恢复边沿见第 17 节。
+- 不保留状态：持续时长去抖见第 16 节，触发/恢复边沿见第 17 节，投递见第 21 节。
 
 ## 15. 有界历史采样
 
@@ -125,7 +125,7 @@
 `break_runtime_metrics_history_alert_edges(history, rules, rule_count, sustain, edges, edge_capacity)` 比较两个持续窗口：以最新帧结尾的窗口与早一帧结尾的窗口（各 `sustain` 帧，语义同第 16 节）。每条规则输出一个 `BreakRuntimeMetricAlertEdge`：`STEADY`（未变）、`RAISED`（在最新帧开始触发）、`CLEARED`（在最新帧恢复）。帧数不足的窗口视为不触发，因此第一次被证实的窗口报 `RAISED`。
 
 - `sustain` 必须小于历史深度（`INVALID` 否则），保证环满后上一窗口仍可证实；其余校验同第 16 节。`edge_capacity < rule_count` → `OVERLOAD`。任何错误都不写 `edges`。
-- 无状态：调用方每记录一帧调用一次，即可对每次转变恰好得到一次边沿；漏调会漏掉中间转变。告警投递（把边沿推给通知渠道）仍未实现。
+- 无状态：调用方每记录一帧调用一次，即可对每次转变恰好得到一次边沿；漏调会漏掉中间转变。边沿的文本编码与投递见第 21 节。
 
 ## 18. 计数器窗口增量（速率）
 
@@ -152,4 +152,18 @@
 - 只有完整的 HTTP 200 回答算 `OK`；连接/TLS 失败、超时、URL 被拒、非 200、畸形回答一律 `FAILED`，重试由调用方安排。
 - 本地拒绝且不发起连接：ctx/metrics 为 NULL、base URL 为空/无 NUL/以 `/` 结尾/拼接后超长 → `INVALID`；非注册表拥有线程 → `REJECTED`；编码超过 `BREAK_RUNTIME_METRICS_PUSH_HTTP_MAX_BYTES`（64 KiB）→ `OVERLOAD`；编码缓冲分配失败 → `OOM`。
 - 先以零容量 encode 取所需长度，再按长度一次分配并编码；空注册表推送空 body。
-- 调用阻塞至多 `break_http` 的时间预算，应放在诊断线程步进中，不能在热路径调用。仅 POSIX（同 `break_http`）；无 Windows 实现。告警投递仍未实现。
+- 调用阻塞至多 `break_http` 的时间预算，应放在诊断线程步进中，不能在热路径调用。仅 POSIX（同 `break_http`）；无 Windows 实现。告警投递见第 21 节。
+
+## 21. 告警边沿编码与投递
+
+`break_runtime_metrics_encode_alert_edges(rules, edges, count, buf, capacity, out_len)`（`runtime_metrics.h`，纯函数，任意线程）把第 17 节的边沿编码为稳定文本，每个**非 STEADY** 边沿一行，按规则顺序：
+
+```
+BRKA1 <raised|cleared> <name> <above|below> <threshold>\n
+```
+
+STEADY 不产生输出，全 STEADY 编码为空串。缓冲不足 → `OVERLOAD` 并报所需长度、`buf` 置空；规则 name 不符合注册表规则（以保证行可按空格切分）、op 或边沿值未知、NULL 数组、数量超上限 → `INVALID`，先校验后写出。
+
+`break_runtime_metrics_push_alerts_http(ctx, rules, edges, count)`（`runtime_metrics_push_http.h`）把编码 POST 到 `<base_url>/alerts`，`Content-Type: text/x-break-alerts`，传输规则与第 20 节相同。没有转变时不发请求并返回 `OK`；只有 HTTP 200 为 `OK`，其余传输结果 `FAILED`；输入被编码器拒绝、base URL 非法 → `INVALID`；超过 64 KiB → `OVERLOAD`，均不发起连接。不触碰注册表，任意线程可调，但会阻塞，应放在诊断线程步进中。
+
+典型接线：每次 `history_record` 之后调用 `history_alert_edges`，再把结果交给 `push_alerts_http`；投递失败时由调用方决定是否重发同一批边沿。不做重试队列、去重或多渠道路由。

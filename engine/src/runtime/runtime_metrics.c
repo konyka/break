@@ -632,3 +632,51 @@ BreakRuntimeError break_runtime_metrics_decode(
     *out_count = count;
     return BREAK_RUNTIME_OK;
 }
+
+BreakRuntimeError break_runtime_metrics_encode_alert_edges(
+    const BreakRuntimeMetricAlertRule *rules,
+    const BreakRuntimeMetricAlertEdge *edges,
+    u32 count,
+    char *buf,
+    usize capacity,
+    usize *out_len) {
+    usize needed = 0u;
+    usize written = 0u;
+    if (!out_len) return BREAK_RUNTIME_INVALID;
+    *out_len = 0u;
+    if (((!rules || !edges) && count != 0u) || (!buf && capacity != 0u) ||
+        count > BREAK_RUNTIME_METRICS_MAX_CAPACITY)
+        return BREAK_RUNTIME_INVALID;
+    for (u32 i = 0u; i < count; ++i) {
+        if (!metrics_name_valid(rules[i].name, NULL) ||
+            (rules[i].op != BREAK_RUNTIME_METRIC_ALERT_ABOVE &&
+             rules[i].op != BREAK_RUNTIME_METRIC_ALERT_BELOW) ||
+            (edges[i] != BREAK_RUNTIME_METRIC_ALERT_STEADY &&
+             edges[i] != BREAK_RUNTIME_METRIC_ALERT_RAISED &&
+             edges[i] != BREAK_RUNTIME_METRIC_ALERT_CLEARED))
+            return BREAK_RUNTIME_INVALID;
+    }
+    for (u32 i = 0u; i < count; ++i) {
+        char line[BREAK_RUNTIME_METRICS_NAME_CAPACITY + 64u];
+        int n;
+        if (edges[i] == BREAK_RUNTIME_METRIC_ALERT_STEADY) continue;
+        n = snprintf(line, sizeof(line), "BRKA1 %s %s %s %llu\n",
+                     edges[i] == BREAK_RUNTIME_METRIC_ALERT_RAISED ? "raised" : "cleared",
+                     rules[i].name,
+                     rules[i].op == BREAK_RUNTIME_METRIC_ALERT_ABOVE ? "above" : "below",
+                     (unsigned long long)rules[i].threshold);
+        if (n < 0 || (usize)n >= sizeof(line)) return BREAK_RUNTIME_FAILED;
+        if (needed + (usize)n + 1u <= capacity) {
+            memcpy(buf + written, line, (usize)n);
+            written += (usize)n;
+        }
+        needed += (usize)n;
+    }
+    *out_len = needed;
+    if (needed + 1u > capacity) {
+        if (buf && capacity != 0u) buf[0] = '\0';
+        return BREAK_RUNTIME_OVERLOAD;
+    }
+    buf[written] = '\0';
+    return BREAK_RUNTIME_OK;
+}

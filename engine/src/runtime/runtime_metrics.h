@@ -289,3 +289,22 @@ BreakRuntimeError break_runtime_metrics_decode(
     BreakRuntimeMetricSample *out,
     u32 capacity,
     u32 *out_count);
+
+/* Stable text for alert delivery: one line per NON-STEADY edge, in rule
+ * order,
+ *   BRKA1 <raised|cleared> <name> <above|below> <threshold>\n
+ * into `buf` (NUL-terminated); STEADY edges produce nothing, so an all-steady
+ * input encodes to "". *out_len receives the byte length (excluding NUL).
+ * `buf` too small (or NULL with capacity 0) -> OVERLOAD with *out_len =
+ * required length and an empty `buf` when capacity > 0. INVALID on NULL
+ * out_len, NULL rules/edges with a non-zero count, NULL buf with non-zero
+ * capacity, a rule name the registry would reject, an unknown op or edge, or
+ * a count above BREAK_RUNTIME_METRICS_MAX_CAPACITY; validation runs before
+ * anything is written. Pure; any thread. */
+BreakRuntimeError break_runtime_metrics_encode_alert_edges(
+    const BreakRuntimeMetricAlertRule *rules,
+    const BreakRuntimeMetricAlertEdge *edges,
+    u32 count,
+    char *buf,
+    usize capacity,
+    usize *out_len);

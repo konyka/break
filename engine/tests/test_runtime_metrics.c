@@ -730,6 +730,69 @@ TEST(decode_accepts_boundary_values_and_reports_required_count) {
     ASSERT_EQ(break_runtime_metrics_decode("", 0u, NULL, 2u, &n), BREAK_RUNTIME_INVALID);
 }
 
+TEST(alert_edge_encoding_lists_only_transitions_in_rule_order) {
+    const BreakRuntimeMetricAlertRule rules[] = {
+        {"q.depth", BREAK_RUNTIME_METRIC_ALERT_ABOVE, 5u},
+        {"pool.free", BREAK_RUNTIME_METRIC_ALERT_BELOW, 2u},
+        {"net.sent", BREAK_RUNTIME_METRIC_ALERT_ABOVE, 18446744073709551615u},
+    };
+    const BreakRuntimeMetricAlertEdge edges[] = {BREAK_RUNTIME_METRIC_ALERT_RAISED,
+                                                 BREAK_RUNTIME_METRIC_ALERT_STEADY,
+                                                 BREAK_RUNTIME_METRIC_ALERT_CLEARED};
+    const BreakRuntimeMetricAlertEdge steady[] = {BREAK_RUNTIME_METRIC_ALERT_STEADY,
+                                                  BREAK_RUNTIME_METRIC_ALERT_STEADY,
+                                                  BREAK_RUNTIME_METRIC_ALERT_STEADY};
+    char buf[160];
+    usize len = 0u;
+    ASSERT_EQ(break_runtime_metrics_encode_alert_edges(rules, edges, 3u, buf, sizeof buf, &len),
+              BREAK_RUNTIME_OK);
+    ASSERT_STR_EQ(buf, "BRKA1 raised q.depth above 5\n"
+                       "BRKA1 cleared net.sent above 18446744073709551615\n");
+    ASSERT_EQ(len, strlen(buf));
+    ASSERT_EQ(break_runtime_metrics_encode_alert_edges(rules, steady, 3u, buf, sizeof buf, &len),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(len, 0u);
+    ASSERT_STR_EQ(buf, "");
+}
+
+TEST(alert_edge_encoding_reports_required_length_and_validates) {
+    const BreakRuntimeMetricAlertRule rules[] = {
+        {"pool.free", BREAK_RUNTIME_METRIC_ALERT_BELOW, 2u}};
+    const BreakRuntimeMetricAlertRule bad_name[] = {
+        {"has space", BREAK_RUNTIME_METRIC_ALERT_BELOW, 2u}};
+    const BreakRuntimeMetricAlertRule bad_op[] = {
+        {"pool.free", (BreakRuntimeMetricAlertOp)5, 2u}};
+    const BreakRuntimeMetricAlertEdge raised[] = {BREAK_RUNTIME_METRIC_ALERT_RAISED};
+    const BreakRuntimeMetricAlertEdge bogus[] = {(BreakRuntimeMetricAlertEdge)9};
+    const char want[] = "BRKA1 raised pool.free below 2\n";
+    char buf[64];
+    usize len = 0u;
+    ASSERT_EQ(break_runtime_metrics_encode_alert_edges(rules, raised, 1u, buf, sizeof want - 1u,
+                                                       &len),
+              BREAK_RUNTIME_OVERLOAD); /* no room for the NUL */
+    ASSERT_EQ(len, sizeof want - 1u);
+    ASSERT_STR_EQ(buf, "");
+    ASSERT_EQ(break_runtime_metrics_encode_alert_edges(rules, raised, 1u, NULL, 0u, &len),
+              BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(len, sizeof want - 1u);
+    ASSERT_EQ(break_runtime_metrics_encode_alert_edges(rules, raised, 1u, buf, sizeof want, &len),
+              BREAK_RUNTIME_OK);
+    ASSERT_STR_EQ(buf, want);
+    ASSERT_EQ(break_runtime_metrics_encode_alert_edges(bad_name, raised, 1u, buf, sizeof buf,
+                                                       &len),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_encode_alert_edges(bad_op, raised, 1u, buf, sizeof buf, &len),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_encode_alert_edges(rules, bogus, 1u, buf, sizeof buf, &len),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_encode_alert_edges(rules, raised, 1u, buf, sizeof buf, NULL),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_encode_alert_edges(NULL, raised, 1u, buf, sizeof buf, &len),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_encode_alert_edges(rules, raised, 1u, NULL, 4u, &len),
+              BREAK_RUNTIME_INVALID);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(create_validates_config_and_defaults);
     RUN_TEST(counter_adds_accumulate_and_saturate);
@@ -759,4 +822,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(decode_round_trips_the_encoding);
     RUN_TEST(decode_rejects_malformed_input_as_a_whole);
     RUN_TEST(decode_accepts_boundary_values_and_reports_required_count);
+    RUN_TEST(alert_edge_encoding_lists_only_transitions_in_rule_order);
+    RUN_TEST(alert_edge_encoding_reports_required_length_and_validates);
 TEST_MAIN_END()
