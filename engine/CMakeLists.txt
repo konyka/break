@@ -9213,6 +9213,15 @@ endif()
     add_test(NAME test_break_prediction_wire COMMAND test_break_prediction_wire)
     set_tests_properties(test_break_prediction_wire PROPERTIES LABELS "headless;network")
 
+    # test_break_prediction_world: prediction bound to one entity component in
+    # an ECS World, plus the server's authoritative step
+    # (docs/design/client_prediction.md section 9).
+    add_executable(test_break_prediction_world tests/test_break_prediction_world.c
+        src/network/break_prediction.c src/network/break_prediction_world.c src/ecs/ecs.c src/core/log.c)
+    target_include_directories(test_break_prediction_world PRIVATE ${TEST_INCLUDE_DIRS})
+    add_test(NAME test_break_prediction_world COMMAND test_break_prediction_world)
+    set_tests_properties(test_break_prediction_world PROPERTIES LABELS "headless;network;ecs")
+
     # test_break_lag_compensation: server-side rewind of entity boxes for hit
     # checks at the tick a client saw (docs/design/lag_compensation.md).
     add_executable(test_break_lag_compensation tests/test_break_lag_compensation.c

@@ -43,7 +43,7 @@
 ## 4. 未交付
 
 - 发送通道：已交付。两种报文登记为 `break_net` 消息（第 7 节），服务端的会话层收发由 `break_prediction_session` 完成（第 8 节）。
-- 接入 World/ECS：预测器只处理字节块，没有接到 `break_ecs_replication` 或 `core_app`。
+- 接入 World/ECS：已交付到组件这一层。预测器可以绑定到 ECS World 中一个实体的一个组件，服务端也可以用同一个 step 推进权威组件（第 9 节）。还没有接到 `break_ecs_replication` 的快照/增量流和 `core_app`。
 - 插值与平滑：其他实体的快照插值已由 `break_snapshot_interp` 交付（第 6 节）；本地实体在校正后的状态跳变仍立即生效，平滑留给表现层。
 - 服务端的延迟补偿（回溯命中判定）：已由 `break_lag_compensation` 交付，见 `docs/design/lag_compensation.md`。
 
@@ -164,6 +164,40 @@
 - `build-current-vk` 非 fuzz 全量 464/464，fuzz 24/24。
 - Windows 实机 MSVC 全量构建通过，相关测试 24/24。Windows 构建没有开 Snowflake，所以本模块不在其中编译。
 
-仍未交付：把预测接入 World/ECS（`break_ecs_replication`、`core_app`）。
+仍未交付：把预测接入 World/ECS。组件层的绑定见第 9 节。
+
+本提交自身的远端工作流结果不在此预写。
+
+## 9. 绑定到 ECS World 的组件（`break_prediction_world`）
+
+`engine/src/network/break_prediction_world.{h,c}` 把预测器的状态绑定到 ECS World 里一个实体的一个组件上。状态就是这个组件的字节，`state_size` 取组件注册时的大小。这个模块不依赖 Snowflake。
+
+- **客户端**：`break_prediction_world_create` 读取实体当前的组件值作为已确认状态，并创建一个预测器。每次 `apply_input` 或 `reconcile` 成功后，都把预测状态写回组件，读 World 的系统看到的就是预测结果。预测器是唯一的事实来源：在它之外对组件的修改，会被下一次成功调用覆盖。失败的调用不写组件，所以这种修改在失败调用之后仍然保留。
+- **服务端**：`break_prediction_world_step_authoritative(world, entity, component, step, user, input)` 用同一个 step 函数推进权威 World 里的组件，可以直接放在 `break_prediction_session` 的 apply 回调中。两边运行同一个确定性 step，快照才能对上。step 返回 false 时组件不变，结果为 FAILED。
+- **实体或组件消失**：实体被销毁、组件被移除时，调用返回 INVALID，不运行 step，预测器也不前进。`reconcile` 在任何非 OK 结果下都会把 report 清零。
+- **校验**：组件 id 越界、实体不存在、实体没有该组件，都由 `world_get_component` 返回 NULL 判定，组件大小只在它成功后才读取。ECS 允许实体挂一个从未注册过的组件 id，此时大小为 0。客户端靠 `break_prediction_create` 的 state_size 检查拒绝这种情况，服务端单独检查。组件大于 `BREAK_PREDICTION_MAX_STATE_BYTES` 时两边都拒绝；恰好等于上限时可以使用。
+- World 是借用的，必须比绑定活得久。所有调用都在拥有者线程上进行，本模块不加线程、锁或原子操作。
+
+**测试**：`test_break_prediction_world` 9 例，先以链接失败为 RED。覆盖：
+- 组件跟随预测。
+- 校正后组件改写为重放结果。
+- 外部修改被覆盖，失败调用不写组件。
+- 失败时预测器和组件都不变。
+- 实体销毁、组件移除时拒绝且不前进。
+- 创建参数校验，包括未注册、大小为 0 和超过上限的组件。
+- 最大状态大小在两端都可用。
+- 服务端权威 step。
+- 客户端和服务端两个 World 用相同输入运行 60 tick：服务端在 tick 30 自行移动实体，客户端随机收到晚 3 tick 的快照。期间确实出现分歧和校正，最后一次快照后客户端组件与服务端当前值相等。
+
+**变异**：27 项，26 项判红。存活的是去掉 `create` 中 `!initial` 检查。有这个检查，实体没有组件时返回 INVALID；去掉后读取越界的组件大小，再由 `break_prediction_create` 因 `initial_state` 为 NULL 返回 INVALID，结果相同。所以这是等价变异，但检查必须保留：它挡住了越界读取 `component_sizes`。初版另有几项存活：重复的 `world_entity_exists` 检查和独立的组件 id 边界检查，前者与 `world_get_component` 的校验重复，已删除；把读取大小移到 `world_get_component` 成功之后，后者也随之删除。另外补了输入大小断言，以及最大状态大小一例。
+
+**验证**：
+- normal、ASan+UBSan、TSan 下 9/9。
+- `build-current-vk` 非 fuzz 全量 465/465，fuzz 24/24。
+- Windows 实机 MSVC 全量构建通过，本测试 9/9，相关测试 25/25。
+
+仍未交付：
+- 接到 `break_ecs_replication` 的快照/增量流，由它产生预测快照。
+- 在 `core_app` 中启用。
 
 本提交自身的远端工作流结果不在此预写。

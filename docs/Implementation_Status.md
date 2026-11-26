@@ -14486,3 +14486,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **实现**：新增 `engine/src/network/break_prediction_session.{h,c}`，编入 `break_net`。每个连接一个输入收件箱，`0x400c` 的 handler 解码批次并按序交给调用方的 `apply`；快照经 reactor 以 `0x400d` 发送。坏批次和未打开连接的批次计入 `rejected()`，断开策略由调用方决定。设计见 `docs/design/client_prediction.md` 第 8 节。
 - **TDD 与变异**：`test_break_prediction_session` 8 例，先以链接失败为 RED。25 项变异中一项靠补断言判红，一项为等价变异（理由见设计文档），其余判红。
 - **验证**：Snowflake ASan+UBSan 8/8，相关标签 59/59；TSan 8/8，标签内唯一失败为已记录的 Lua longjmp 环境问题；`build-current-vk` 非 fuzz 464/464，fuzz 24/24；Windows 实机 MSVC 全量构建通过，相关测试 24/24。本提交自身的远端工作流结果不在此预写。
+
+## 预测绑定到 ECS World 组件（2026-11-27）
+
+- **缺口**：`client_prediction.md` 第 4 节把「接入 World/ECS」列为未交付。
+- **实现**：新增 `engine/src/network/break_prediction_world.{h,c}`。客户端把预测器绑定到一个实体的一个组件，每次成功的输入或校正都把预测状态写回组件；服务端用同一个 step 推进权威组件。实体销毁或组件移除时返回 INVALID 且不前进。设计见 `docs/design/client_prediction.md` 第 9 节。
+- **TDD 与变异**：`test_break_prediction_world` 9 例，先以链接失败为 RED，含客户端、服务端两个 World 在丢失和迟到快照下收敛的测试。27 项变异中 26 项判红，1 项为等价变异（理由见设计文档）。
+- **验证**：normal/ASan+UBSan/TSan 9/9；`build-current-vk` 非 fuzz 465/465，fuzz 24/24；Windows 实机 MSVC 全量构建通过，相关测试 25/25。
+- **仍未交付**：接入 `break_ecs_replication` 的快照流，以及在 `core_app` 中启用。本提交自身的远端工作流结果不在此预写。
