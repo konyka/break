@@ -14121,3 +14121,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：`test_runtime_io.c` 新增 1 用例（init + 一次真实 submit/wait 完成读使计数非零，导出 13 gauge 对齐 stats()、再导出幂等含值不增、NULL/空/过长 prefix 的 INVALID；排在 `io_submit_validation` 之后以不破坏其 pristine-singleton 前置）。两项变异判红：改 counter+add（幂等值翻倍，4 用例红）、吞掉 set 错误（过长 prefix 的 INVALID）。
 - **验证**：`test_runtime_io` 22/22（normal/ASan+UBSan/TSan 均 22/22）；`test_runtime_metrics`、`test_runtime_core_target_contract`、`test_runtime_facade`、`test_runtime_bus`、`test_runtime_reload`、`test_runtime_world_session` 全绿。
 - **边界**：指标协议边界不变——仍无远程传输、历史采样与告警；子系统 name 绑定现已覆盖 runtime_core 全部带 stats 子系统。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。本收据提交自身的远端工作流结果不在此预写。
+
+## Task/World Session/Reload 计数导出切片的远端收据（2026-11-26）
+
+- 推送 `8cc58f2c..142aef23`（fast-forward），含 `53c5cd05`（task）、`247ae018`（world session）、`cb6065d0`（reload）与 queue 收据提交 `142aef23`。
+- 远端 CI `45799292153` 结论 **success**：25 success、3 条件 skip（Steam Deck、Proton、`lane-gpu-runtime-windows-d3d12`），0 失败。上次被取消的两条 macOS lane 本次均 success；`Linux arm64 cross-build + QEMU tests (GCC)` success；Windows MinGW headless success。
+- 独立的 windows-d3d12 工作流 `45799292223` success。
+- 边界同各切片收据。
