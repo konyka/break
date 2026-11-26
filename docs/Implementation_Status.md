@@ -14458,3 +14458,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：`test_break_prediction_wire` 9 例，先以链接失败为 RED，含 600 tick 丢包、延迟、重复、乱序信道上的端到端收敛用例。31 项变异中 30 项判红，1 项等价。
 - **fuzz**：新增 `fuzz_prediction_wire`（种子 89，进 CI 三处 fuzz 构建列表），种子 89 与 113 各 200000 次干净，4 项负向对照均判红。
 - **验证**：normal/ASan+UBSan/TSan 下 14/14 与 9/9；Windows 实机 MSVC 14/14、9/9，fuzz 干净（修复了一处 C4310）；`build-current-vk` 非 fuzz 462/462，fuzz 24/24。本提交自身的远端工作流结果不在此预写。
+
+## 服务端延迟补偿（2026-11-27）
+
+- **缺口**：`client_prediction.md` 第 4 节把「服务端的延迟补偿（回溯命中判定）」列为未交付。
+- **实现**：新增 `engine/src/network/break_lag_compensation.{h,c}`。服务端每个 tick 记录实体包围盒，保留有限的历史；`raycast` 在客户端报告的视图 tick 上做射线命中判定，返回最近的命中（距离相同取较小 id，可跳过开枪者）。视图 tick 超前或早于 `max_rewind_ticks` 时返回 REJECTED，视图 tick 时不存在的实体打不中；翻转或非有限的包围盒、非有限的射线参数都被拒绝。设计见 `docs/design/lag_compensation.md`。
+- **TDD 与变异**：`test_break_lag_compensation` 10 例，先以链接失败为 RED，含与暴力参考实现比较的随机性质测试。32 项变异中 29 项判红，3 项等价（理由见设计文档）。
+- **验证**：normal/ASan+UBSan/TSan 10/10；Windows 实机 MSVC 10/10；`build-current-vk` 非 fuzz 463/463，fuzz 24/24。本提交自身的远端工作流结果不在此预写。

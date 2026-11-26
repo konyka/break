@@ -45,7 +45,7 @@
 - 发送通道：wire 格式与服务端输入收件箱见第 5 节，但报文经哪条连接、哪个 message id 发送，仍由调用方决定，没有接入 `break_net` 的消息注册表。
 - 接入 World/ECS：预测器只处理字节块，没有接到 `break_ecs_replication` 或 `core_app`。
 - 插值与平滑：校正后的预测状态立即生效，画面上的平滑过渡留给表现层。
-- 服务端的延迟补偿（回溯命中判定）。
+- 服务端的延迟补偿（回溯命中判定）：已由 `break_lag_compensation` 交付，见 `docs/design/lag_compensation.md`。
 
 ## 5. Wire 格式与服务端输入收件箱（`break_prediction_wire`）
 

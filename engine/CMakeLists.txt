@@ -9202,6 +9202,17 @@ endif()
     add_test(NAME test_break_prediction_wire COMMAND test_break_prediction_wire)
     set_tests_properties(test_break_prediction_wire PROPERTIES LABELS "headless;network")
 
+    # test_break_lag_compensation: server-side rewind of entity boxes for hit
+    # checks at the tick a client saw (docs/design/lag_compensation.md).
+    add_executable(test_break_lag_compensation tests/test_break_lag_compensation.c
+        src/network/break_lag_compensation.c)
+    target_include_directories(test_break_lag_compensation PRIVATE ${TEST_INCLUDE_DIRS})
+    if(UNIX)
+        target_link_libraries(test_break_lag_compensation PRIVATE m)
+    endif()
+    add_test(NAME test_break_lag_compensation COMMAND test_break_lag_compensation)
+    set_tests_properties(test_break_lag_compensation PROPERTIES LABELS "headless;network")
+
     # test_filewatch_backend: platform-agnostic backend selection policy.
     add_executable(test_filewatch_backend tests/test_filewatch_backend.c
         src/platform/filewatch_backend.c)
