@@ -14450,3 +14450,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：`test_break_prediction` 14 例，先以链接失败为 RED，含 400 tick 的随机乱序快照性质测试。32 项变异判红；首轮 3 项存活，补两例后判红。
 - **验证**：normal/ASan+UBSan/TSan 14/14；Windows 实机 MSVC 14/14；`build-current-vk` 非 fuzz 461/461，fuzz 23/23。
 - **未交付**：传输与确认协议、接入 World/ECS、插值平滑、服务端延迟补偿。本提交自身的远端工作流结果不在此预写。
+
+## 预测的 wire 格式与服务端输入收件箱（2026-11-27）
+
+- **缺口**：`break_prediction` 只有算法，没有输入批次和快照的报文格式，服务端也没有按序、去重地应用输入的组件。
+- **实现**：新增 `engine/src/network/break_prediction_wire.{h,c}`。输入批次 `"BRPI"` 携带最旧的至多 32 个待确认输入，快照 `"BRPS"` 携带 tick 与状态；两个解码器都只接受唯一一种编码。`BreakPredictionInbox` 让乱序、重复、重叠的批次中的每个输入恰好按顺序应用一次，遇到缺口时等待。`break_prediction` 增加 `input_size`/`state_size` 访问函数。设计见 `docs/design/client_prediction.md` 第 5 节。
+- **TDD 与变异**：`test_break_prediction_wire` 9 例，先以链接失败为 RED，含 600 tick 丢包、延迟、重复、乱序信道上的端到端收敛用例。31 项变异中 30 项判红，1 项等价。
+- **fuzz**：新增 `fuzz_prediction_wire`（种子 89，进 CI 三处 fuzz 构建列表），种子 89 与 113 各 200000 次干净，4 项负向对照均判红。
+- **验证**：normal/ASan+UBSan/TSan 下 14/14 与 9/9；Windows 实机 MSVC 14/14、9/9，fuzz 干净（修复了一处 C4310）；`build-current-vk` 非 fuzz 462/462，fuzz 24/24。本提交自身的远端工作流结果不在此预写。

@@ -8470,6 +8470,12 @@ endif()
     target_include_directories(fuzz_runtime_metrics_decompress PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(fuzz_runtime_metrics_decompress PRIVATE runtime_core)
 
+    # Mutation fuzzer for the break_prediction wire decoders (client input
+    # batches and server snapshots, both untrusted on receipt).
+    add_executable(fuzz_prediction_wire EXCLUDE_FROM_ALL tests/fuzz_prediction_wire.c
+        src/network/break_prediction.c src/network/break_prediction_wire.c)
+    target_include_directories(fuzz_prediction_wire PRIVATE ${TEST_INCLUDE_DIRS})
+
     # Mutation fuzzer for break_crash_symbols_open, the untrusted ELF/Mach-O
     # (thin or universal) symbol-file parser the server-side crash symbol store
     # runs on files it is handed. Seeds from a real binary and checks open and
@@ -8617,6 +8623,8 @@ endif()
         add_test(NAME fuzz_runtime_metrics_decompress_smoke
                  COMMAND fuzz_runtime_metrics_decompress 2000 83)
         set_tests_properties(fuzz_runtime_metrics_decompress_smoke PROPERTIES LABELS "fuzz")
+        add_test(NAME fuzz_prediction_wire_smoke COMMAND fuzz_prediction_wire 2000 89)
+        set_tests_properties(fuzz_prediction_wire_smoke PROPERTIES LABELS "fuzz")
         add_test(NAME fuzz_break_online_voice_smoke COMMAND fuzz_break_online_voice 2000 43)
         if(TARGET fuzz_crash_symbols)
             add_test(NAME fuzz_crash_symbols_smoke COMMAND fuzz_crash_symbols 2000 59)
@@ -9187,6 +9195,12 @@ endif()
     target_include_directories(test_break_prediction PRIVATE ${TEST_INCLUDE_DIRS})
     add_test(NAME test_break_prediction COMMAND test_break_prediction)
     set_tests_properties(test_break_prediction PROPERTIES LABELS "headless;network")
+
+    add_executable(test_break_prediction_wire tests/test_break_prediction_wire.c
+        src/network/break_prediction.c src/network/break_prediction_wire.c)
+    target_include_directories(test_break_prediction_wire PRIVATE ${TEST_INCLUDE_DIRS})
+    add_test(NAME test_break_prediction_wire COMMAND test_break_prediction_wire)
+    set_tests_properties(test_break_prediction_wire PROPERTIES LABELS "headless;network")
 
     # test_filewatch_backend: platform-agnostic backend selection policy.
     add_executable(test_filewatch_backend tests/test_filewatch_backend.c

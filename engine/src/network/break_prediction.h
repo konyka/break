@@ -106,6 +106,8 @@ const void *break_prediction_confirmed_state(const BreakPrediction *p);
 u64 break_prediction_predicted_tick(const BreakPrediction *p);
 u64 break_prediction_confirmed_tick(const BreakPrediction *p);
 u32 break_prediction_pending_count(const BreakPrediction *p);
+u32 break_prediction_input_size(const BreakPrediction *p);
+u32 break_prediction_state_size(const BreakPrediction *p);
 void break_prediction_stats(const BreakPrediction *p, BreakPredictionStats *out);
 
 #ifdef __cplusplus

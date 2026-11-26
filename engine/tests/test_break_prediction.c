@@ -461,6 +461,10 @@ TEST(create_and_reconcile_validate_their_arguments) {
     /* the initial state is copied */
     cfg = body_config(&ctx, &start, 4u);
     ASSERT_EQ(break_prediction_create(&cfg, &p), BREAK_PREDICTION_OK);
+    ASSERT_EQ(break_prediction_state_size(p), (u32)sizeof(Body));
+    ASSERT_EQ(break_prediction_input_size(p), (u32)sizeof(Push));
+    ASSERT_EQ(break_prediction_state_size(NULL), 0u);
+    ASSERT_EQ(break_prediction_input_size(NULL), 0u);
     start.pos = 99;
     ASSERT_EQ(body_of(break_prediction_predicted_state(p)).pos, 0);
     ASSERT_EQ(break_prediction_reconcile(p, 11u, NULL, NULL), BREAK_PREDICTION_INVALID);

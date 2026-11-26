@@ -183,6 +183,10 @@ u64 break_prediction_confirmed_tick(const BreakPrediction *p) {
 
 u32 break_prediction_pending_count(const BreakPrediction *p) { return p ? p->count : 0u; }
 
+u32 break_prediction_input_size(const BreakPrediction *p) { return p ? p->input_size : 0u; }
+
+u32 break_prediction_state_size(const BreakPrediction *p) { return p ? p->state_size : 0u; }
+
 void break_prediction_stats(const BreakPrediction *p, BreakPredictionStats *out) {
     if (!out) return;
     if (!p) {
