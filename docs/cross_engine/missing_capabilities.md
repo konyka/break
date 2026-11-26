@@ -1138,3 +1138,11 @@ authority handoff 和默认全局公平调度仍未交付。正常断连顺序�
 因此「自动换级」在 core_app 发布路径上关闭：历次收据中「`world_level_generation` 首 tick 锁定，自动换级接入时须同步更新否则发布持续被拒」的告警不再适用于 core_app transport。
 
 仍未交付：权威 simulation 合并、inbound apply 到权威 World、预测/回滚、共享 live World、跨 World 持久身份、AOI 裁剪、完整资产链、可靠每 epoch 广播、指标协议与远程采集、告警。rebaseline 的触发仍由核心 tick 汇报的 `level_generation` 驱动，资产选择/加载与混合 level 不在本切片。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。
+
+## 第 17 节补充（2026-11-26）：Runtime 指标注册表（指标协议第一块）已交付
+
+此前「指标协议与远程采集、告警」整体列为未交付。本切片交付其中的进程内基座：`runtime_core` 新增 `runtime_metrics`（`engine/src/runtime/runtime_metrics.{h,c}`，设计见 [`docs/design/runtime_metrics.md`](../design/runtime_metrics.md)）——一个线程安全、非阻塞的命名 counter/gauge 注册表，加上稳定文本编码 `BRKM1 <name> <counter|gauge> <value>\n`，供远程采集器逐行解析。
+
+契约与 `runtime_profiler` 同构：`add`/`set` 可任意线程调用、短互斥 leaf 锁、不分配不回调；counter 溢出饱和到 `UINT64_MAX`（计数，不回绕）；槽满 → `OVERLOAD`（计数，不扰动既有槽）；kind 不符 → `INVALID`；关闭后 → `CLOSED` 但快照仍可读；`snapshot`/`encode` 仅拥有线程（非拥有线程 `REJECTED`）。TDD 10 个用例（含饱和、kind 不符、name 校验、槽满、缓冲不足回报所需长度、关闭语义、跨线程 REJECTED），两项变异（去掉饱和、owner 检查恒真）实际判红；normal/ASan+UBSan/TSan 各 10/10，`runtime_core` 目标契约与 facade/bus/io/reload/mainloop 套件全绿。
+
+仍未交付：远程传输（把编码推给采集端）、历史采样/时间序列、聚合窗口与告警规则，以及各子系统把自身计数接线到该注册表的具体 name 绑定。权威 simulation 合并、inbound apply、预测/回滚、共享 live World、跨 World 持久身份、AOI、完整资产链、可靠每 epoch 广播仍未交付。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。

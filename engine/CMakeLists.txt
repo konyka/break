@@ -949,6 +949,7 @@ add_library(runtime_core STATIC
     src/runtime/runtime_io.c
     src/runtime/runtime_reload.c
     src/runtime/runtime_profiler.c
+    src/runtime/runtime_metrics.c
     src/runtime/runtime_mainloop.c)
 set_property(TARGET runtime_core PROPERTY C_STANDARD 11)
 target_include_directories(runtime_core PUBLIC
@@ -6700,6 +6701,7 @@ endif()
         src/runtime/runtime_io.c
         src/runtime/runtime_reload.c
         src/runtime/runtime_profiler.c
+        src/runtime/runtime_metrics.c
         src/runtime/runtime_mainloop.c)
     set_property(TARGET runtime_core_test PROPERTY C_STANDARD 11)
     target_include_directories(runtime_core_test PUBLIC
@@ -6756,6 +6758,24 @@ endif()
     target_link_libraries(test_runtime_bus PRIVATE runtime_core_test)
     add_test(NAME test_runtime_bus COMMAND test_runtime_bus)
     set_tests_properties(test_runtime_bus PROPERTIES
+        LABELS "headless;runtime_core")
+
+    add_executable(test_runtime_metrics tests/test_runtime_metrics.c
+        src/core/log.c src/core/profiler.c src/platform/time.c)
+    target_include_directories(test_runtime_metrics PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_runtime_metrics PRIVATE BREAK_RUNTIME_TESTING=1)
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_runtime_metrics PRIVATE
+            ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_runtime_metrics PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_runtime_metrics PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_runtime_metrics PRIVATE kernel32)
+    endif()
+    target_link_libraries(test_runtime_metrics PRIVATE runtime_core_test)
+    add_test(NAME test_runtime_metrics COMMAND test_runtime_metrics)
+    set_tests_properties(test_runtime_metrics PROPERTIES
         LABELS "headless;runtime_core")
 
     add_executable(test_runtime_mainloop tests/test_runtime_mainloop.c

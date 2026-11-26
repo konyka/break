@@ -14043,3 +14043,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - `windows-d3d12` run `45783193652` **success**（Windows + D3D12 Debug layer, WARP floor）。
 - 本地已记：`test_core_app_net_transport` 47/47（normal/ASan+UBSan/TSan），真实进程 `test_core_app_network_world`/`_single_session` 通过，相关 runtime/session/replication 套件全绿。
 - 边界同本切片收据：权威 simulation 合并、inbound apply（有意的安全防火墙，不接入权威 World）、预测/回滚、共享 live World、跨 World 持久身份、AOI、完整资产链、可靠每 epoch 广播、指标协议与告警仍未交付。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。
+
+## Runtime 指标注册表（runtime_metrics，指标协议第一块）（2026-11-26）
+
+- **缺口**：历次收据把「指标协议与远程采集、告警」整体列为未交付；Runtime 只有 profiler 的事件流，没有可查询的数值聚合与可供远程采集的稳定导出格式。
+- **实现**：`runtime_core` 新增 `runtime_metrics`（`engine/src/runtime/runtime_metrics.{h,c}`，设计 `docs/design/runtime_metrics.md`）。命名 counter/gauge 注册表：`break_runtime_metrics_add`（counter 累加、饱和到 `UINT64_MAX`）、`_set`（gauge 覆盖）为非阻塞热路径（短互斥 leaf 锁、不分配不回调）；`_snapshot`/`_encode` 仅拥有线程；`_encode` 产出 `BRKM1 <name> <counter|gauge> <value>\n` 稳定文本。槽有界（默认 64、上限 1024），槽满 `OVERLOAD` 不扰动既有槽，kind 不符 `INVALID`，关闭后 `CLOSED` 但快照可读，name 校验禁空/超长/空白/控制字节。契约与 `runtime_profiler` 同构。CMake 把源文件加入 `runtime_core` 与 `runtime_core_test`，新增 `test_runtime_metrics` 目标；`test_runtime_core_target_contract` 的源清单同步补入。
+- **TDD 与变异**：先写 `tests/test_runtime_metrics.c` 10 个用例（create 校验、counter 累加+饱和、gauge 覆盖+kind 不符、name 校验、槽满、snapshot 容量不足回报所需条数、encode 稳定行序、encode 容量不足回报所需字节、关闭语义、跨线程 REJECTED）。两项变异实际判红：去掉 counter 饱和（用例 2）、owner 检查恒真（用例 10）。
+- **验证**：`test_runtime_metrics` normal/ASan+UBSan/TSan 各 **10/10** 干净；`test_runtime_core_target_contract`、`test_runtime_facade`、`test_runtime_bus`、`test_framework_runtime_bus`、`test_runtime_io`、`test_runtime_reload`、`test_runtime_mainloop` 全绿；naming 合同 2/2。
+- **边界**：只交付进程内注册表与文本编码。远程传输、历史采样/时间序列、聚合与告警规则，以及各子系统 name 绑定仍未交付；本库不预置任何业务 name。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。本收据提交自身的远端工作流结果不在此预写。

@@ -1,0 +1,265 @@
+#include <runtime/runtime_metrics.h>
+
+#include <core/platform_thread.h>
+
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* Process-local metrics registry (design: docs/design/runtime_metrics.md).
+ * One mutex guards the slot table; add()/set() never allocate and never wait,
+ * so a hot path recording a counter cannot block. The mutex is a leaf: the
+ * registry calls into no runtime subsystem while holding it. Slots are never
+ * removed, so a name's index is stable once created. */
+
+typedef struct RuntimeMetricSlot {
+    char name[BREAK_RUNTIME_METRICS_NAME_CAPACITY];
+    BreakRuntimeMetricKind kind;
+    u64 value;
+} RuntimeMetricSlot;
+
+struct BreakRuntimeMetrics {
+    PlatformMutex mutex;
+    RuntimeMetricSlot *slots; /* bounded table, creation order */
+    u32 capacity;
+    u32 count;
+    PlatformThreadId owner; /* snapshot/encode caller (create caller) */
+    bool closed;
+    /* stats (all under mutex) */
+    u64 updates;
+    u64 overflow_drops;
+    u64 saturations;
+    u64 closed_rejects;
+};
+
+static bool metrics_name_valid(const char *name, usize *out_len) {
+    usize i;
+    if (!name || name[0] == '\0') return false;
+    for (i = 0u; name[i] != '\0'; ++i) {
+        unsigned char c = (unsigned char)name[i];
+        if (i + 1u >= BREAK_RUNTIME_METRICS_NAME_CAPACITY) return false;
+        /* No whitespace or low control bytes: the text encoding is
+         * space-delimited and one metric per line, so the name must not
+         * contain a space, a newline, or any byte at or below 0x20. */
+        if (c <= ' ') return false;
+    }
+    if (out_len) *out_len = i;
+    return true;
+}
+
+BreakRuntimeError break_runtime_metrics_create(
+    const BreakRuntimeMetricsConfig *config,
+    BreakRuntimeMetrics **out) {
+    BreakRuntimeMetrics *metrics;
+    u32 capacity;
+    if (!out) return BREAK_RUNTIME_INVALID;
+    *out = NULL;
+    capacity = config && config->capacity != 0u ? config->capacity
+                                                 : BREAK_RUNTIME_METRICS_DEFAULT_CAPACITY;
+    if (capacity > BREAK_RUNTIME_METRICS_MAX_CAPACITY) return BREAK_RUNTIME_INVALID;
+    metrics = (BreakRuntimeMetrics *)calloc(1u, sizeof(*metrics));
+    if (!metrics) return BREAK_RUNTIME_OOM;
+    metrics->slots = (RuntimeMetricSlot *)calloc(capacity, sizeof(*metrics->slots));
+    if (!metrics->slots) {
+        free(metrics);
+        return BREAK_RUNTIME_OOM;
+    }
+    platform_mutex_init(&metrics->mutex);
+    metrics->capacity = capacity;
+    metrics->count = 0u;
+    metrics->owner = platform_thread_current_id();
+    metrics->closed = false;
+    *out = metrics;
+    return BREAK_RUNTIME_OK;
+}
+
+void break_runtime_metrics_close(BreakRuntimeMetrics *metrics) {
+    if (!metrics) return;
+    platform_mutex_lock(&metrics->mutex);
+    metrics->closed = true;
+    platform_mutex_unlock(&metrics->mutex);
+}
+
+void break_runtime_metrics_destroy(BreakRuntimeMetrics *metrics) {
+    if (!metrics) return;
+    platform_mutex_destroy(&metrics->mutex);
+    free(metrics->slots);
+    free(metrics);
+}
+
+/* Locates the slot for `name`, creating it when absent. Returns NULL and sets
+ * *out_err when the kind disagrees, the name is invalid, or the table is full.
+ * Caller holds the mutex. */
+static RuntimeMetricSlot *metrics_slot_for(BreakRuntimeMetrics *metrics, const char *name,
+                                           BreakRuntimeMetricKind kind,
+                                           BreakRuntimeError *out_err) {
+    usize len = 0u;
+    u32 i;
+    if (!metrics_name_valid(name, &len)) {
+        *out_err = BREAK_RUNTIME_INVALID;
+        return NULL;
+    }
+    for (i = 0u; i < metrics->count; ++i) {
+        if (strcmp(metrics->slots[i].name, name) == 0) {
+            if (metrics->slots[i].kind != kind) {
+                *out_err = BREAK_RUNTIME_INVALID;
+                return NULL;
+            }
+            return &metrics->slots[i];
+        }
+    }
+    if (metrics->count == metrics->capacity) {
+        metrics->overflow_drops++;
+        *out_err = BREAK_RUNTIME_OVERLOAD;
+        return NULL;
+    }
+    {
+        RuntimeMetricSlot *slot = &metrics->slots[metrics->count++];
+        memcpy(slot->name, name, len + 1u);
+        slot->kind = kind;
+        slot->value = 0u;
+        return slot;
+    }
+}
+
+BreakRuntimeError break_runtime_metrics_add(
+    BreakRuntimeMetrics *metrics,
+    const char *name,
+    BreakRuntimeMetricKind kind,
+    u64 delta) {
+    BreakRuntimeError err = BREAK_RUNTIME_OK;
+    RuntimeMetricSlot *slot;
+    if (!metrics || kind != BREAK_RUNTIME_METRIC_COUNTER) return BREAK_RUNTIME_INVALID;
+    platform_mutex_lock(&metrics->mutex);
+    if (metrics->closed) {
+        metrics->closed_rejects++;
+        platform_mutex_unlock(&metrics->mutex);
+        return BREAK_RUNTIME_CLOSED;
+    }
+    slot = metrics_slot_for(metrics, name, kind, &err);
+    if (!slot) {
+        platform_mutex_unlock(&metrics->mutex);
+        return err;
+    }
+    if (slot->value > UINT64_MAX - delta) {
+        slot->value = UINT64_MAX;
+        metrics->saturations++;
+    } else {
+        slot->value += delta;
+    }
+    metrics->updates++;
+    platform_mutex_unlock(&metrics->mutex);
+    return BREAK_RUNTIME_OK;
+}
+
+BreakRuntimeError break_runtime_metrics_set(
+    BreakRuntimeMetrics *metrics,
+    const char *name,
+    BreakRuntimeMetricKind kind,
+    u64 value) {
+    BreakRuntimeError err = BREAK_RUNTIME_OK;
+    RuntimeMetricSlot *slot;
+    if (!metrics || kind != BREAK_RUNTIME_METRIC_GAUGE) return BREAK_RUNTIME_INVALID;
+    platform_mutex_lock(&metrics->mutex);
+    if (metrics->closed) {
+        metrics->closed_rejects++;
+        platform_mutex_unlock(&metrics->mutex);
+        return BREAK_RUNTIME_CLOSED;
+    }
+    slot = metrics_slot_for(metrics, name, kind, &err);
+    if (!slot) {
+        platform_mutex_unlock(&metrics->mutex);
+        return err;
+    }
+    slot->value = value;
+    metrics->updates++;
+    platform_mutex_unlock(&metrics->mutex);
+    return BREAK_RUNTIME_OK;
+}
+
+static bool metrics_is_owner(const BreakRuntimeMetrics *metrics) {
+    /* owner is written once in create() before the registry is published, so
+     * this read needs no lock. */
+    return platform_thread_id_equal(platform_thread_current_id(), metrics->owner);
+}
+
+BreakRuntimeError break_runtime_metrics_snapshot(
+    BreakRuntimeMetrics *metrics,
+    BreakRuntimeMetricSample *out,
+    u32 capacity,
+    u32 *out_count) {
+    u32 i;
+    if (!metrics || !out_count) return BREAK_RUNTIME_INVALID;
+    if (!metrics_is_owner(metrics)) return BREAK_RUNTIME_REJECTED;
+    if (capacity != 0u && !out) return BREAK_RUNTIME_INVALID;
+    platform_mutex_lock(&metrics->mutex);
+    *out_count = metrics->count;
+    if (metrics->count > capacity) {
+        platform_mutex_unlock(&metrics->mutex);
+        return BREAK_RUNTIME_OVERLOAD;
+    }
+    for (i = 0u; i < metrics->count; ++i) {
+        memcpy(out[i].name, metrics->slots[i].name, sizeof(out[i].name));
+        out[i].kind = metrics->slots[i].kind;
+        out[i].value = metrics->slots[i].value;
+    }
+    platform_mutex_unlock(&metrics->mutex);
+    return BREAK_RUNTIME_OK;
+}
+
+BreakRuntimeError break_runtime_metrics_encode(
+    BreakRuntimeMetrics *metrics,
+    char *buf,
+    usize capacity,
+    usize *out_len) {
+    usize needed = 0u;
+    usize written = 0u;
+    u32 i;
+    bool overflow = false;
+    if (!metrics || !out_len) return BREAK_RUNTIME_INVALID;
+    if (!buf && capacity != 0u) return BREAK_RUNTIME_INVALID;
+    if (!metrics_is_owner(metrics)) return BREAK_RUNTIME_REJECTED;
+    platform_mutex_lock(&metrics->mutex);
+    for (i = 0u; i < metrics->count; ++i) {
+        const RuntimeMetricSlot *slot = &metrics->slots[i];
+        char line[BREAK_RUNTIME_METRICS_NAME_CAPACITY + 48u];
+        int n = snprintf(line, sizeof(line), "BRKM1 %s %s %llu\n", slot->name,
+                         slot->kind == BREAK_RUNTIME_METRIC_COUNTER ? "counter" : "gauge",
+                         (unsigned long long)slot->value);
+        if (n < 0) {
+            platform_mutex_unlock(&metrics->mutex);
+            return BREAK_RUNTIME_FAILED;
+        }
+        needed += (usize)n;
+        if (!overflow && written + (usize)n + 1u <= capacity) {
+            memcpy(buf + written, line, (usize)n);
+            written += (usize)n;
+        } else {
+            overflow = true;
+        }
+    }
+    *out_len = needed;
+    if (overflow || needed + 1u > capacity) {
+        if (buf && capacity != 0u) buf[0] = '\0';
+        platform_mutex_unlock(&metrics->mutex);
+        return BREAK_RUNTIME_OVERLOAD;
+    }
+    buf[written] = '\0';
+    platform_mutex_unlock(&metrics->mutex);
+    return BREAK_RUNTIME_OK;
+}
+
+BreakRuntimeError break_runtime_metrics_stats(
+    BreakRuntimeMetrics *metrics,
+    BreakRuntimeMetricsStats *out_stats) {
+    if (!metrics || !out_stats) return BREAK_RUNTIME_INVALID;
+    platform_mutex_lock(&metrics->mutex);
+    out_stats->updates = metrics->updates;
+    out_stats->overflow_drops = metrics->overflow_drops;
+    out_stats->saturations = metrics->saturations;
+    out_stats->closed_rejects = metrics->closed_rejects;
+    out_stats->tracked = metrics->count;
+    platform_mutex_unlock(&metrics->mutex);
+    return BREAK_RUNTIME_OK;
+}

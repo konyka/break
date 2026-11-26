@@ -30,6 +30,7 @@ foreach(runtime_src
         src/runtime/runtime_io.c
         src/runtime/runtime_reload.c
         src/runtime/runtime_profiler.c
+        src/runtime/runtime_metrics.c
         src/runtime/runtime_mainloop.c)
     string(FIND "${cmake_text}" "${runtime_src}" runtime_src_pos)
     if(runtime_src_pos LESS runtime_core_pos OR runtime_src_pos GREATER engine_target_pos)
