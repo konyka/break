@@ -1,6 +1,7 @@
 #include <runtime/runtime_bus.h>
 
 #include <core/platform_thread.h>
+#include <runtime/runtime_metrics.h>
 #include <runtime/runtime_test_hooks.h>
 
 #include <stdarg.h>
@@ -533,5 +534,64 @@ BreakRuntimeError break_runtime_bus_export_topology(BreakRuntimeBus *bus, char *
         return BREAK_RUNTIME_OVERLOAD;
     }
     buf[w.len] = '\0';
+    return BREAK_RUNTIME_OK;
+}
+
+BreakRuntimeError break_runtime_bus_export_metrics(BreakRuntimeBus *bus,
+                                                    struct BreakRuntimeMetrics *metrics)
+{
+    struct {
+        const char *name;
+        u64 value;
+    } gauges[9];
+    u64 published = 0u, delivered = 0u, dropped = 0u;
+    u64 version_rejects = 0u, size_rejects = 0u, quota_rejects = 0u;
+    u64 unknown_kind_rejects;
+    u32 kinds = 0u, subscribers = 0u;
+    u32 i;
+    if (!bus || !metrics) {
+        return BREAK_RUNTIME_INVALID;
+    }
+    /* Sum the aggregates under the bus lock, then release it before touching
+     * the metrics registry: the registry has its own leaf lock and must never
+     * be entered while holding the bus lock. */
+    platform_mutex_lock(&bus->mutex);
+    unknown_kind_rejects = bus->stats.unknown_kind_rejects;
+    for (i = 0; i < BREAK_RUNTIME_BUS_MAX_KINDS; i++) {
+        const RuntimeBusKindSlot *s = &bus->kinds[i];
+        if (!s->used) {
+            continue;
+        }
+        kinds++;
+        published += s->stats.published;
+        delivered += s->stats.delivered;
+        dropped += s->stats.dropped;
+        version_rejects += s->stats.version_rejects;
+        size_rejects += s->stats.size_rejects;
+        quota_rejects += s->stats.quota_rejects;
+    }
+    for (i = 0; i < BREAK_RUNTIME_BUS_MAX_SUBSCRIBERS; i++) {
+        if (bus->subscribers[i].id != 0u) {
+            subscribers++;
+        }
+    }
+    platform_mutex_unlock(&bus->mutex);
+
+    gauges[0].name = "bus.published";            gauges[0].value = published;
+    gauges[1].name = "bus.delivered";            gauges[1].value = delivered;
+    gauges[2].name = "bus.dropped";              gauges[2].value = dropped;
+    gauges[3].name = "bus.version_rejects";      gauges[3].value = version_rejects;
+    gauges[4].name = "bus.size_rejects";         gauges[4].value = size_rejects;
+    gauges[5].name = "bus.quota_rejects";        gauges[5].value = quota_rejects;
+    gauges[6].name = "bus.unknown_kind_rejects"; gauges[6].value = unknown_kind_rejects;
+    gauges[7].name = "bus.kinds";                gauges[7].value = kinds;
+    gauges[8].name = "bus.subscribers";          gauges[8].value = subscribers;
+    for (i = 0; i < 9u; i++) {
+        BreakRuntimeError result = break_runtime_metrics_set(
+            metrics, gauges[i].name, BREAK_RUNTIME_METRIC_GAUGE, gauges[i].value);
+        if (result != BREAK_RUNTIME_OK) {
+            return result;
+        }
+    }
     return BREAK_RUNTIME_OK;
 }

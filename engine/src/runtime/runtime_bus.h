@@ -62,6 +62,7 @@
 #define BREAK_RUNTIME_BUS_MAX_NAME 31u
 
 typedef struct BreakRuntimeBus BreakRuntimeBus; /* opaque, owned by caller */
+struct BreakRuntimeMetrics;                     /* runtime_metrics.h */
 
 typedef struct BreakRuntimeBusKind {
     u16 kind;
@@ -151,3 +152,17 @@ BreakRuntimeError break_runtime_bus_subscriber_stats(BreakRuntimeBus *bus, u32 i
  * buffer is too small; *out_len always receives the length without the NUL. */
 BreakRuntimeError break_runtime_bus_export_topology(BreakRuntimeBus *bus, char *buf,
                                                     usize capacity, usize *out_len);
+
+/* Mirrors the bus's current aggregate counters into `metrics` as GAUGES,
+ * summed across every registered kind. Gauges (not counters) so re-exporting
+ * the same cumulative totals is idempotent and never double-counts. The names
+ * are:
+ *   bus.published, bus.delivered, bus.dropped, bus.version_rejects,
+ *   bus.size_rejects, bus.quota_rejects (summed over kinds),
+ *   bus.unknown_kind_rejects (bus-wide), bus.kinds, bus.subscribers (counts).
+ * Any error from a metrics set (table full, closed, kind mismatch) is returned
+ * and stops the export; a partial set may already have landed. INVALID on a
+ * NULL argument. Takes the bus lock briefly; `metrics` may be any registry the
+ * caller owns on this (the metrics' owner) thread. */
+BreakRuntimeError break_runtime_bus_export_metrics(BreakRuntimeBus *bus,
+                                                    struct BreakRuntimeMetrics *metrics);

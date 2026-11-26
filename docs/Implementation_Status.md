@@ -14051,3 +14051,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：先写 `tests/test_runtime_metrics.c` 10 个用例（create 校验、counter 累加+饱和、gauge 覆盖+kind 不符、name 校验、槽满、snapshot 容量不足回报所需条数、encode 稳定行序、encode 容量不足回报所需字节、关闭语义、跨线程 REJECTED）。两项变异实际判红：去掉 counter 饱和（用例 2）、owner 检查恒真（用例 10）。
 - **验证**：`test_runtime_metrics` normal/ASan+UBSan/TSan 各 **10/10** 干净；`test_runtime_core_target_contract`、`test_runtime_facade`、`test_runtime_bus`、`test_framework_runtime_bus`、`test_runtime_io`、`test_runtime_reload`、`test_runtime_mainloop` 全绿；naming 合同 2/2。
 - **边界**：只交付进程内注册表与文本编码。远程传输、历史采样/时间序列、聚合与告警规则，以及各子系统 name 绑定仍未交付；本库不预置任何业务 name。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。本收据提交自身的远端工作流结果不在此预写。
+
+## Bus 聚合计数导出到指标注册表（指标协议第二块：首处 name 绑定）（2026-11-26）
+
+- **缺口**：`runtime_metrics` 注册表已交付但无任何子系统接线，「各子系统把自身计数接到注册表」整体未做。
+- **实现**：`runtime_bus` 新增 `break_runtime_bus_export_metrics(bus, metrics)`（`engine/src/runtime/runtime_bus.{c,h}`），把总线累计计数汇总为 9 个 GAUGE 写入注册表：`bus.published`/`delivered`/`dropped`/`version_rejects`/`size_rejects`/`quota_rejects`（按 kind 求和）、`bus.unknown_kind_rejects`、`bus.kinds`、`bus.subscribers`。用 gauge（`set`）而非 counter，使重复导出同一累计值幂等；锁序为先在总线锁下求和、释放后再进注册表 leaf 锁。任一 set 失败立即返回并停止。设计见 `docs/design/runtime_metrics.md` 第 8 节。
+- **TDD 与变异**：`test_runtime_bus.c` 新增 2 用例（幂等 gauge 导出含 size/unknown reject 与 kinds/subscribers 计数、再导出不增长、总线前进后 gauge 抬升；以及两槽注册表导出 9 gauge 返回 OVERLOAD）。两项变异判红：改用 counter+add（重复导出二次累加，幂等断言红）、吞掉 set 错误（full-table 断言红）。NULL 参数返回 INVALID。
+- **验证**：`test_runtime_bus` 17/17（normal/ASan+UBSan/TSan 均 17/17，含既有并发 publisher 用例）；`test_runtime_metrics`、`test_runtime_core_target_contract`、facade/io/reload/mainloop/framework 全绿。
+- **边界**：不改变指标协议边界——仍无远程传输、历史采样与告警；仅接入 bus 一个子系统，其它子系统后续各自接线。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。本收据提交自身的远端工作流结果不在此预写。

@@ -5,6 +5,7 @@
 #include "test_framework.h"
 #include <core/platform_thread.h>
 #include <runtime/runtime_bus.h>
+#include <runtime/runtime_metrics.h>
 #include <runtime/runtime_profiler.h>
 #include <runtime/runtime_queue.h>
 #include <runtime/runtime_test_hooks.h>
@@ -714,6 +715,81 @@ TEST(quota_rejections_are_recorded_and_a_full_profiler_never_blocks) {
     break_runtime_profiler_destroy(prof);
 }
 
+static u64 metric_of(BreakRuntimeMetrics *m, const char *name) {
+    BreakRuntimeMetricSample out[32];
+    u32 n = 0u, i;
+    if (break_runtime_metrics_snapshot(m, out, 32u, &n) != BREAK_RUNTIME_OK) return UINT64_MAX;
+    for (i = 0u; i < n; i++)
+        if (strcmp(out[i].name, name) == 0) return out[i].value;
+    return UINT64_MAX;
+}
+
+TEST(bus_aggregate_counters_export_to_metrics_as_idempotent_gauges) {
+    BreakRuntimeBus *bus = make_bus();
+    BreakRuntimeMetrics *m = NULL;
+    BreakRuntimeQueue *q = make_queue(4u);
+    BreakRuntimeMetricSample out[32];
+    const u16 kinds[] = {1u};
+    u8 payload[4] = {1, 2, 3, 4};
+    u32 id = 0u, n = 0u;
+    ASSERT_NOT_NULL(bus);
+    ASSERT_NOT_NULL(q);
+    ASSERT_EQ(break_runtime_metrics_create(NULL, &m), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_bus_subscribe(bus, "sub", q, kinds, 1u, &id), BREAK_RUNTIME_OK);
+
+    BreakRuntimeMessageView v = view_of(1u, 1u, payload, sizeof payload);
+    u32 delivered = 0u;
+    ASSERT_EQ(break_runtime_bus_publish(bus, &v, &delivered), BREAK_RUNTIME_OK);
+    /* one oversize publish -> a size reject on the kind */
+    static u8 big[65];
+    BreakRuntimeMessageView oversize = view_of(1u, 1u, big, sizeof big);
+    ASSERT_EQ(break_runtime_bus_publish(bus, &oversize, NULL), BREAK_RUNTIME_OVERLOAD);
+    /* one unknown-kind publish -> a bus-wide unknown reject */
+    BreakRuntimeMessageView unknown = view_of(99u, 1u, payload, sizeof payload);
+    ASSERT_EQ(break_runtime_bus_publish(bus, &unknown, NULL), BREAK_RUNTIME_REJECTED);
+
+    ASSERT_EQ(break_runtime_bus_export_metrics(NULL, m), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_bus_export_metrics(bus, NULL), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_bus_export_metrics(bus, m), BREAK_RUNTIME_OK);
+    ASSERT_EQ(metric_of(m, "bus.published"), 1u);
+    ASSERT_EQ(metric_of(m, "bus.delivered"), 1u);
+    ASSERT_EQ(metric_of(m, "bus.size_rejects"), 1u);
+    ASSERT_EQ(metric_of(m, "bus.unknown_kind_rejects"), 1u);
+    ASSERT_EQ(metric_of(m, "bus.kinds"), 2u);
+    ASSERT_EQ(metric_of(m, "bus.subscribers"), 1u);
+    ASSERT_EQ(break_runtime_metrics_snapshot(m, out, 32u, &n), BREAK_RUNTIME_OK);
+    ASSERT_EQ(n, 9u); /* nine gauges, created once */
+
+    /* re-exporting the same cumulative totals is idempotent (gauges, no growth) */
+    ASSERT_EQ(break_runtime_bus_export_metrics(bus, m), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_snapshot(m, out, 32u, &n), BREAK_RUNTIME_OK);
+    ASSERT_EQ(n, 9u);
+    ASSERT_EQ(metric_of(m, "bus.published"), 1u);
+
+    /* another accepted publish moves the gauge up on the next export */
+    ASSERT_EQ(break_runtime_bus_publish(bus, &v, &delivered), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_bus_export_metrics(bus, m), BREAK_RUNTIME_OK);
+    ASSERT_EQ(metric_of(m, "bus.published"), 2u);
+    ASSERT_EQ(metric_of(m, "bus.delivered"), 2u);
+
+    ASSERT_EQ(break_runtime_bus_unsubscribe(bus, id), BREAK_RUNTIME_OK);
+    break_runtime_queue_destroy(q);
+    break_runtime_bus_destroy(bus);
+    break_runtime_metrics_destroy(m);
+}
+
+TEST(bus_export_metrics_reports_a_full_table) {
+    BreakRuntimeBus *bus = make_bus();
+    BreakRuntimeMetrics *m = NULL;
+    BreakRuntimeMetricsConfig small = {2u};
+    ASSERT_NOT_NULL(bus);
+    ASSERT_EQ(break_runtime_metrics_create(&small, &m), BREAK_RUNTIME_OK);
+    /* nine gauges do not fit a two-slot table: the export stops at OVERLOAD */
+    ASSERT_EQ(break_runtime_bus_export_metrics(bus, m), BREAK_RUNTIME_OVERLOAD);
+    break_runtime_bus_destroy(bus);
+    break_runtime_metrics_destroy(m);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(kind_registration_is_validated);
     RUN_TEST(publish_fans_out_to_subscribers_of_the_kind);
@@ -730,4 +806,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(acceptance_of_a_kind_version_and_size_can_be_queried);
     RUN_TEST(drops_and_rejections_are_recorded_on_the_profiler);
     RUN_TEST(quota_rejections_are_recorded_and_a_full_profiler_never_blocks);
+    RUN_TEST(bus_aggregate_counters_export_to_metrics_as_idempotent_gauges);
+    RUN_TEST(bus_export_metrics_reports_a_full_table);
 TEST_MAIN_END()
