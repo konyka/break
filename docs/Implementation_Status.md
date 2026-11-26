@@ -14358,3 +14358,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **实现**：新增 `BreakRuntimeMetricAggregateStat`（MIN/MAX/MEAN）与 `break_runtime_metrics_history_evaluate_aggregate_alerts`，对每条规则取窗口聚合的所选统计量做严格阈值比较；超窗或窗口内无该指标时不触发；输出/OVERLOAD/规则校验与 `evaluate_alerts` 一致，另对 NULL history、`window` 越界、未知 stat 返回 INVALID。设计见 `docs/design/runtime_metrics.md` 第 29 节。
 - **TDD 与变异**：`test_runtime_metrics` 新增 3 例，先以未定义引用链接失败为 RED。8 项变异判红：MIN/MAX/MEAN 各自选错统计量、`>`→`>=`、`<`→`<=`、去掉 stat 校验、不统计 required、窗口上限差一。首轮测试漏掉「MAX 换成 MEAN」，补一条仅 MAX 越过的阈值 10 规则后判红。
 - **验证**：`test_runtime_metrics` 50/50（normal/ASan+UBSan 含 leak 检测/TSan）；`runtime_core` 标签 12/12（ASan）；`build-current-vk` 非 fuzz 全量 CTest 462/462。本收据提交自身的远端工作流结果不在此预写。
+
+## 指标窗口聚合告警的边沿（2026-11-26）
+
+- **缺口**：第 29 节的聚合告警只给当前触发集，没有 RAISED/CLEARED 边沿；逐帧 sustain 告警早有 `history_alert_edges`，聚合告警没有对应物，调用方无法「每个转变恰好处理一次」。
+- **实现**：把第 28 节的聚合逻辑重构为内部 `metrics_history_aggregate_at(..., offset, ...)`（公开 `history_aggregate` 变为其 offset 0 包装），新增 `break_runtime_metrics_history_aggregate_alert_edges` 比较最新窗口与前移一帧窗口的触发状态，输出 STEADY/RAISED/CLEARED。`window` 须小于 history 深度，证据不足记未触发故首个可证触发报 RAISED；校验/OVERLOAD 同 `history_alert_edges`，另加未知 stat 的 INVALID，错误不写 edges。设计见 `docs/design/runtime_metrics.md` 第 30 节。
+- **TDD 与变异**：`test_runtime_metrics` 新增 2 例，先以未定义引用链接失败为 RED。8 项变异判红：before 用 offset 0、RAISED/CLEARED 对调、`>=`depth 改 `>`、去掉 stat 校验、去掉 OVERLOAD、helper 忽略 offset 下界、helper 从 age 0 起、跳过规则校验。首轮漏掉「首帧即触发」场景使 E6 存活，补一条「单帧 STEADY→满窗 RAISED」断言后判红。
+- **验证**：`test_runtime_metrics` 52/52（normal/ASan+UBSan 含 leak 检测/TSan）；`runtime_core` 12/12（ASan）；`build-current-vk` 非 fuzz 全量 462/462。本收据提交自身的远端工作流结果不在此预写。

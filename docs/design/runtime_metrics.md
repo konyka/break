@@ -323,3 +323,22 @@ rule_count, window, stat, fired, fired_capacity, out_count)` 对每条规则调�
 换错、`>` 改 `>=`、`<` 改 `<=`、去掉 stat 校验、不计数 required（OVERLOAD 失效）、窗口上限差一。
 normal/ASan+UBSan/TSan 下 50/50；`runtime_core` 标签 12/12（ASan）；`build-current-vk` 非 fuzz
 全量 462/462。
+
+## 30. 窗口聚合告警的边沿
+
+第 18 节的 `history_alert_edges` 只服务逐帧 sustain 告警。`break_runtime_metrics_history_aggregate_alert_edges(history,
+rules, rule_count, window, stat, edges, edge_capacity)` 为第 29 节的聚合告警做同样的事：对每条规则
+比较「以最新帧结尾的窗口」与「向前挪一帧的窗口」的触发状态，输出 STEADY/RAISED/CLEARED。
+
+- 与 sustain 边沿同构：`window` 必须小于 history 深度（环满后上一窗口仍须可证），证据不足的窗口
+  记为未触发，因此首个可证的触发窗口报 RAISED。offset 1 的窗口通过第 29 节重构出的内部
+  `metrics_history_aggregate_at(..., offset, ...)` 读取（公开的 `history_aggregate` 是其 offset 0 包装）。
+- 校验与 OVERLOAD 跟 `history_alert_edges` 一致，另加未知 `stat` 的 INVALID；任何错误都不写 `edges`。
+- 无状态：要让每个 transition 恰好出现一次，调用方每记录一帧调用一次。纯读、同线程、无锁。
+
+测试（`test_runtime_metrics.c`，新增 2 例）：MEAN 规则走 unproven→RAISED→STEADY→CLEARED→STEADY
+全序列，并单独验证「首帧即触发时上一窗口 unproven 仍报 RAISED」；MIN 与 MEAN 在同组帧上给出
+不同边沿以锁定 stat 选择；OVERLOAD、全部 INVALID 分支、错误不写 edges、超窗 unproven 记 STEADY、
+零规则合法。8/8 变异判红：before 用 offset 0、RAISED/CLEARED 对调、`>=`depth 改 `>`、去掉 stat 校验、
+去掉 OVERLOAD、helper 忽略 offset 下界、helper 从 age 0 起、跳过规则校验（NULL name 经 ASan SEGV 判红）。
+normal/ASan+UBSan/TSan 52/52；`runtime_core` 12/12；`build-current-vk` 非 fuzz 462/462。

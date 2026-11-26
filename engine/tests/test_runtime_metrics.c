@@ -1402,6 +1402,109 @@ TEST(aggregate_alerts_overload_and_validation) {
     break_runtime_metrics_destroy(m);
 }
 
+static BreakRuntimeMetricAlertEdge aggregate_edge_after(BreakRuntimeMetrics *m,
+                                                        BreakRuntimeMetricsHistory *h,
+                                                        const BreakRuntimeMetricAlertRule *rule,
+                                                        BreakRuntimeMetricAggregateStat stat,
+                                                        u64 value, u64 tick) {
+    BreakRuntimeMetricAlertEdge edge = (BreakRuntimeMetricAlertEdge)99;
+    if (break_runtime_metrics_set(m, "lat", BREAK_RUNTIME_METRIC_GAUGE, value) !=
+            BREAK_RUNTIME_OK ||
+        break_runtime_metrics_history_record(h, m, tick) != BREAK_RUNTIME_OK ||
+        break_runtime_metrics_history_aggregate_alert_edges(h, rule, 1u, 2u, stat, &edge, 1u) !=
+            BREAK_RUNTIME_OK)
+        return (BreakRuntimeMetricAlertEdge)98;
+    return edge;
+}
+
+TEST(aggregate_alert_edges_report_each_transition_once) {
+    BreakRuntimeMetrics *m = make_metrics(8u);
+    BreakRuntimeMetricsHistory *h = make_history(4u, 4u);
+    const BreakRuntimeMetricAlertRule rule = {"lat", BREAK_RUNTIME_METRIC_ALERT_ABOVE, 10u};
+    const BreakRuntimeMetricAggregateStat mean = BREAK_RUNTIME_METRIC_AGGREGATE_MEAN;
+    BreakRuntimeMetricAlertEdge edge = (BreakRuntimeMetricAlertEdge)99;
+    ASSERT_NOT_NULL(m);
+    ASSERT_NOT_NULL(h);
+    /* Window 2 of the mean, rule ABOVE 10. One frame: unproven -> STEADY. */
+    ASSERT_EQ(aggregate_edge_after(m, h, &rule, mean, 4u, 10u), BREAK_RUNTIME_METRIC_ALERT_STEADY);
+    /* (4,30) mean 17 fires; the previous window is unproven -> RAISED. */
+    ASSERT_EQ(aggregate_edge_after(m, h, &rule, mean, 30u, 20u), BREAK_RUNTIME_METRIC_ALERT_RAISED);
+    /* The stat matters: the min of (4,30) is 4, which does not fire. */
+    ASSERT_EQ(break_runtime_metrics_history_aggregate_alert_edges(
+                  h, &rule, 1u, 2u, BREAK_RUNTIME_METRIC_AGGREGATE_MIN, &edge, 1u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(edge, BREAK_RUNTIME_METRIC_ALERT_STEADY);
+    /* (30,30) and (30,0) mean 15 keep firing -> STEADY. */
+    ASSERT_EQ(aggregate_edge_after(m, h, &rule, mean, 30u, 30u), BREAK_RUNTIME_METRIC_ALERT_STEADY);
+    ASSERT_EQ(aggregate_edge_after(m, h, &rule, mean, 0u, 40u), BREAK_RUNTIME_METRIC_ALERT_STEADY);
+    /* (0,0) after a firing (30,0): CLEARED, then STEADY while quiet. The ring
+     * is full here, so the previous window is read from retained frames. */
+    ASSERT_EQ(aggregate_edge_after(m, h, &rule, mean, 0u, 50u), BREAK_RUNTIME_METRIC_ALERT_CLEARED);
+    ASSERT_EQ(aggregate_edge_after(m, h, &rule, mean, 0u, 60u), BREAK_RUNTIME_METRIC_ALERT_STEADY);
+    break_runtime_metrics_history_destroy(h);
+    /* A firing first frame: the previous window (one retained frame for a
+     * window of 2) is unproven, so it must not count as firing and the
+     * newest full window reports RAISED rather than STEADY. */
+    h = make_history(4u, 4u);
+    ASSERT_NOT_NULL(h);
+    ASSERT_EQ(aggregate_edge_after(m, h, &rule, mean, 30u, 10u), BREAK_RUNTIME_METRIC_ALERT_STEADY);
+    ASSERT_EQ(aggregate_edge_after(m, h, &rule, mean, 30u, 20u), BREAK_RUNTIME_METRIC_ALERT_RAISED);
+    break_runtime_metrics_history_destroy(h);
+    break_runtime_metrics_destroy(m);
+}
+
+TEST(aggregate_alert_edges_validation_leaves_edges_untouched) {
+    BreakRuntimeMetrics *m = make_metrics(8u);
+    BreakRuntimeMetricsHistory *h = make_history(4u, 4u);
+    static const u64 values[] = {50u, 50u};
+    BreakRuntimeMetricAlertRule rules[2] = {
+        {"lat", BREAK_RUNTIME_METRIC_ALERT_ABOVE, 1u},
+        {"ghost", BREAK_RUNTIME_METRIC_ALERT_BELOW, 100u},
+    };
+    BreakRuntimeMetricAlertRule bad_name = {NULL, BREAK_RUNTIME_METRIC_ALERT_ABOVE, 1u};
+    BreakRuntimeMetricAlertRule bad_op = {"lat", (BreakRuntimeMetricAlertOp)7, 1u};
+    BreakRuntimeMetricAlertEdge edges[2] = {(BreakRuntimeMetricAlertEdge)77,
+                                            (BreakRuntimeMetricAlertEdge)77};
+    const BreakRuntimeMetricAggregateStat max = BREAK_RUNTIME_METRIC_AGGREGATE_MAX;
+    ASSERT_NOT_NULL(m);
+    ASSERT_NOT_NULL(h);
+    record_gauge_frames(m, h, "lat", values, 2u);
+    ASSERT_EQ(break_runtime_metrics_history_aggregate_alert_edges(h, rules, 2u, 1u, max, edges, 1u),
+              BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(break_runtime_metrics_history_aggregate_alert_edges(NULL, rules, 2u, 1u, max, edges,
+                                                                   2u),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_history_aggregate_alert_edges(h, rules, 2u, 0u, max, edges, 2u),
+              BREAK_RUNTIME_INVALID);
+    /* window must stay below the depth (4) so the previous window is provable. */
+    ASSERT_EQ(break_runtime_metrics_history_aggregate_alert_edges(h, rules, 2u, 4u, max, edges, 2u),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_history_aggregate_alert_edges(
+                  h, rules, 2u, 1u, (BreakRuntimeMetricAggregateStat)9, edges, 2u),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_history_aggregate_alert_edges(h, &bad_name, 1u, 1u, max,
+                                                                   edges, 2u),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_history_aggregate_alert_edges(h, &bad_op, 1u, 1u, max, edges,
+                                                                   2u),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_history_aggregate_alert_edges(h, rules, 2u, 1u, max, NULL, 2u),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(edges[0], (BreakRuntimeMetricAlertEdge)77);
+    ASSERT_EQ(edges[1], (BreakRuntimeMetricAlertEdge)77);
+    /* Valid: window 3 exceeds the 2 retained frames -> unproven, STEADY; the
+     * absent name is STEADY too. */
+    ASSERT_EQ(break_runtime_metrics_history_aggregate_alert_edges(h, rules, 2u, 3u, max, edges, 2u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(edges[0], BREAK_RUNTIME_METRIC_ALERT_STEADY);
+    ASSERT_EQ(edges[1], BREAK_RUNTIME_METRIC_ALERT_STEADY);
+    /* Zero rules is valid and writes nothing. */
+    ASSERT_EQ(break_runtime_metrics_history_aggregate_alert_edges(h, NULL, 0u, 1u, max, NULL, 0u),
+              BREAK_RUNTIME_OK);
+    break_runtime_metrics_history_destroy(h);
+    break_runtime_metrics_destroy(m);
+}
+
 TEST(history_aggregate_validates_arguments) {
     BreakRuntimeMetrics *m = make_metrics(8u);
     BreakRuntimeMetricsHistory *h = make_history(4u, 4u);
@@ -1458,6 +1561,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(aggregate_alerts_pick_the_requested_stat);
     RUN_TEST(aggregate_alerts_threshold_is_strict_and_unproven_never_fires);
     RUN_TEST(aggregate_alerts_overload_and_validation);
+    RUN_TEST(aggregate_alert_edges_report_each_transition_once);
+    RUN_TEST(aggregate_alert_edges_validation_leaves_edges_untouched);
     RUN_TEST(history_delta_rejects_gauges_and_bad_arguments);
     RUN_TEST(decode_round_trips_the_encoding);
     RUN_TEST(decode_rejects_malformed_input_as_a_whole);

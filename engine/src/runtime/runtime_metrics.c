@@ -513,16 +513,21 @@ static const BreakRuntimeMetricSample *metrics_history_find(
     return NULL;
 }
 
-BreakRuntimeError break_runtime_metrics_history_aggregate(
-    const BreakRuntimeMetricsHistory *history, const char *name, u32 window,
-    u64 *out_min, u64 *out_max, u64 *out_mean, u32 *out_counted) {
+/* Aggregate over `window` frames starting `offset` steps back from the
+ * newest. Returns false (outputs untouched) when the window is not fully
+ * retained or `name` is absent from all of its frames. */
+static bool metrics_history_aggregate_at(const BreakRuntimeMetricsHistory *history,
+                                         const char *name, u32 window, u32 offset,
+                                         u64 *out_min, u64 *out_max, u64 *out_mean,
+                                         u32 *out_counted) {
     u64 lo = 0u;
     u64 hi = 0u;
     u64 sum = 0u;
     u32 counted = 0u;
-    if (!history || !name || window == 0u) return BREAK_RUNTIME_INVALID;
-    if (history->frames == 0u || window > history->frames) return BREAK_RUNTIME_STALE;
-    for (u32 age = 0u; age < window; ++age) {
+    if (history->frames == 0u || window > history->frames ||
+        history->frames - window < offset)
+        return false;
+    for (u32 age = offset; age < offset + window; ++age) {
         const BreakRuntimeMetricSample *s = metrics_history_find(history, age, name);
         if (!s) continue;
         if (counted == 0u) {
@@ -540,29 +545,53 @@ BreakRuntimeError break_runtime_metrics_history_aggregate(
         }
         ++counted;
     }
-    if (counted == 0u) return BREAK_RUNTIME_STALE;
+    if (counted == 0u) return false;
     if (out_min) *out_min = lo;
     if (out_max) *out_max = hi;
     if (out_mean) *out_mean = sum / counted;
     if (out_counted) *out_counted = counted;
-    return BREAK_RUNTIME_OK;
+    return true;
+}
+
+BreakRuntimeError break_runtime_metrics_history_aggregate(
+    const BreakRuntimeMetricsHistory *history, const char *name, u32 window,
+    u64 *out_min, u64 *out_max, u64 *out_mean, u32 *out_counted) {
+    if (!history || !name || window == 0u) return BREAK_RUNTIME_INVALID;
+    return metrics_history_aggregate_at(history, name, window, 0u, out_min, out_max, out_mean,
+                                        out_counted)
+               ? BREAK_RUNTIME_OK
+               : BREAK_RUNTIME_STALE;
+}
+
+static bool metrics_aggregate_stat_valid(BreakRuntimeMetricAggregateStat stat) {
+    return stat == BREAK_RUNTIME_METRIC_AGGREGATE_MIN ||
+           stat == BREAK_RUNTIME_METRIC_AGGREGATE_MAX ||
+           stat == BREAK_RUNTIME_METRIC_AGGREGATE_MEAN;
 }
 
 static bool metrics_aggregate_alert_fires(const BreakRuntimeMetricsHistory *history,
                                           const BreakRuntimeMetricAlertRule *rule, u32 window,
-                                          BreakRuntimeMetricAggregateStat stat) {
+                                          u32 offset, BreakRuntimeMetricAggregateStat stat) {
     u64 lo = 0u;
     u64 hi = 0u;
     u64 mean = 0u;
     u64 value;
-    if (break_runtime_metrics_history_aggregate(history, rule->name, window, &lo, &hi, &mean,
-                                                NULL) != BREAK_RUNTIME_OK)
+    if (!metrics_history_aggregate_at(history, rule->name, window, offset, &lo, &hi, &mean, NULL))
         return false;
     value = stat == BREAK_RUNTIME_METRIC_AGGREGATE_MIN   ? lo
             : stat == BREAK_RUNTIME_METRIC_AGGREGATE_MAX ? hi
                                                          : mean;
     return rule->op == BREAK_RUNTIME_METRIC_ALERT_ABOVE ? value > rule->threshold
                                                         : value < rule->threshold;
+}
+
+static bool metrics_alert_rules_valid(const BreakRuntimeMetricAlertRule *rules, u32 rule_count) {
+    for (u32 r = 0u; r < rule_count; ++r) {
+        if (!rules[r].name || (rules[r].op != BREAK_RUNTIME_METRIC_ALERT_ABOVE &&
+                               rules[r].op != BREAK_RUNTIME_METRIC_ALERT_BELOW))
+            return false;
+    }
+    return true;
 }
 
 BreakRuntimeError break_runtime_metrics_history_evaluate_aggregate_alerts(
@@ -579,26 +608,45 @@ BreakRuntimeError break_runtime_metrics_history_evaluate_aggregate_alerts(
     if (!out_count) return BREAK_RUNTIME_INVALID;
     *out_count = 0u;
     if (!history || window == 0u || window > BREAK_RUNTIME_METRICS_HISTORY_MAX_DEPTH ||
-        (stat != BREAK_RUNTIME_METRIC_AGGREGATE_MIN &&
-         stat != BREAK_RUNTIME_METRIC_AGGREGATE_MAX &&
-         stat != BREAK_RUNTIME_METRIC_AGGREGATE_MEAN) ||
+        !metrics_aggregate_stat_valid(stat) ||
         (!rules && rule_count != 0u) || (!fired && fired_capacity != 0u) ||
         rule_count > BREAK_RUNTIME_METRICS_MAX_CAPACITY)
         return BREAK_RUNTIME_INVALID;
-    for (u32 r = 0u; r < rule_count; ++r) {
-        if (!rules[r].name || (rules[r].op != BREAK_RUNTIME_METRIC_ALERT_ABOVE &&
-                               rules[r].op != BREAK_RUNTIME_METRIC_ALERT_BELOW))
-            return BREAK_RUNTIME_INVALID;
-    }
+    if (!metrics_alert_rules_valid(rules, rule_count)) return BREAK_RUNTIME_INVALID;
     for (u32 r = 0u; r < rule_count; ++r)
-        if (metrics_aggregate_alert_fires(history, &rules[r], window, stat)) required++;
+        if (metrics_aggregate_alert_fires(history, &rules[r], window, 0u, stat)) required++;
     if (required > fired_capacity) {
         *out_count = required;
         return BREAK_RUNTIME_OVERLOAD;
     }
     for (u32 r = 0u; r < rule_count; ++r)
-        if (metrics_aggregate_alert_fires(history, &rules[r], window, stat)) fired[written++] = r;
+        if (metrics_aggregate_alert_fires(history, &rules[r], window, 0u, stat))
+            fired[written++] = r;
     *out_count = written;
+    return BREAK_RUNTIME_OK;
+}
+
+BreakRuntimeError break_runtime_metrics_history_aggregate_alert_edges(
+    const BreakRuntimeMetricsHistory *history,
+    const BreakRuntimeMetricAlertRule *rules,
+    u32 rule_count,
+    u32 window,
+    BreakRuntimeMetricAggregateStat stat,
+    BreakRuntimeMetricAlertEdge *edges,
+    u32 edge_capacity) {
+    if (!history || window == 0u || window >= history->depth ||
+        !metrics_aggregate_stat_valid(stat) || (!rules && rule_count != 0u) ||
+        (!edges && rule_count != 0u) || rule_count > BREAK_RUNTIME_METRICS_MAX_CAPACITY)
+        return BREAK_RUNTIME_INVALID;
+    if (!metrics_alert_rules_valid(rules, rule_count)) return BREAK_RUNTIME_INVALID;
+    if (edge_capacity < rule_count) return BREAK_RUNTIME_OVERLOAD;
+    for (u32 r = 0u; r < rule_count; ++r) {
+        bool now = metrics_aggregate_alert_fires(history, &rules[r], window, 0u, stat);
+        bool before = metrics_aggregate_alert_fires(history, &rules[r], window, 1u, stat);
+        edges[r] = now == before ? BREAK_RUNTIME_METRIC_ALERT_STEADY
+                   : now         ? BREAK_RUNTIME_METRIC_ALERT_RAISED
+                                 : BREAK_RUNTIME_METRIC_ALERT_CLEARED;
+    }
     return BREAK_RUNTIME_OK;
 }
 

@@ -317,6 +317,26 @@ BreakRuntimeError break_runtime_metrics_history_evaluate_aggregate_alerts(
     u32 fired_capacity,
     u32 *out_count);
 
+/* Per-rule transition of the aggregate alert between the window ending at the
+ * newest frame and the one ending a frame earlier, as
+ * break_runtime_metrics_history_alert_edges does for sustained alerts. An
+ * unproven window counts as not firing, so the first proven firing window
+ * reports RAISED. INVALID on NULL history, `window` of 0 or not below the
+ * history depth (the previous window must stay provable once the ring is
+ * full), an unknown `stat`, NULL rules/edges with a non-zero count, a rule
+ * with a NULL name or unknown op, or a rule count above
+ * BREAK_RUNTIME_METRICS_MAX_CAPACITY. `edge_capacity` below `rule_count` ->
+ * OVERLOAD. `edges` is untouched on any error. Same thread as the history;
+ * call once per recorded frame to see each transition exactly once. */
+BreakRuntimeError break_runtime_metrics_history_aggregate_alert_edges(
+    const BreakRuntimeMetricsHistory *history,
+    const BreakRuntimeMetricAlertRule *rules,
+    u32 rule_count,
+    u32 window,
+    BreakRuntimeMetricAggregateStat stat,
+    BreakRuntimeMetricAlertEdge *edges,
+    u32 edge_capacity);
+
 /* Strict decoder for the break_runtime_metrics_encode() text, for a remote
  * collector reading untrusted bytes. `text` is `len` bytes (no NUL needed).
  * Every line must be exactly `BRKM1 <name> <counter|gauge> <value>\n`: name
