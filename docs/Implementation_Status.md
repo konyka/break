@@ -14344,3 +14344,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **实现**：新增 `engine/tests/fuzz_runtime_metrics_decode.c`，仿照 `fuzz_world_delta_wire.c` 的自驱 harness（也可用 `RUNTIME_METRICS_DECODE_LIBFUZZER` 导出到 libFuzzer）。不变量：解码不越界不越写（ASan/UBSan）；被拒输入 `out_count=0` 且不接受部分输出；被接受的文档必须**逐字节**重新编码回它自己的输入（严格解码意味着接受的即规范形式）。注册为 `fuzz_runtime_metrics_decode_smoke`（种子 53），并加入 CI 的三处 fuzz 构建/冒烟列表。
 - **负向对照**：去掉解码器的前导零拒绝后，fuzzer 在第 ~11487 次迭代以「accepted input is not canonical」失败（exit 1），证明该不变量确实可检出放宽；恢复后 200000 次迭代在 ASan+UBSan+leak 下干净（约 11k 接受 / 189k 拒绝）。
 - **边界**：这是测试覆盖补强，不改产品代码；`runtime_core` 归档不受影响。本收据提交自身的远端工作流结果不在此预写。
+
+## 指标历史窗口聚合 min/max/mean（2026-11-26）
+
+- **缺口**：`break_runtime_metrics_history_delta` 只比较两端点帧，无法回答「最近 N 帧的波动区间与均值」。
+- **实现**：新增 `break_runtime_metrics_history_aggregate(history, name, window, out_min, out_max, out_mean, out_counted)`，在最新 `window` 帧上求 min/max 与整型 mean。`sum` 饱和加法防 COUNTER 回绕；只统计含 `name` 的帧并以实际帧数为均值分母；全缺帧/空历史/超窗 → `STALE` 且不写 out；NULL/`window==0` → `INVALID`。纯读、与历史同线程、无锁。设计见 `docs/design/runtime_metrics.md` 第 28 节。
+- **TDD 与变异**：`test_runtime_metrics` 新增 4 例（窗口 min/max/mean + NULL out；仅在场帧 + 全缺帧 STALE；饱和不回绕；参数校验），先以未定义引用链接失败为 RED。五项变异判红：min 比较翻转、max 比较翻转、关闭饱和（帧 0=UINT64_MAX、帧 1=2 使钳制值与回绕值可区分）、mean 除以 window、把缺帧计入 counted。
+- **验证**：`test_runtime_metrics` 47/47（normal/ASan+UBSan 含 leak 检测/TSan 均 47/47）；`runtime_core` 标签 12/12（ASan）。`build-myui-tests` 该树未注册此目标故不计入；其 4 项失败（manifest_tool/keygen/rhi_backend_selection/evidence_receipt_schema）经 stash 复核在净 HEAD 同样失败，属既有树问题，与本改动无关。本收据提交自身的远端工作流结果不在此预写。

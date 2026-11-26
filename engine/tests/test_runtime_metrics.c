@@ -1174,6 +1174,129 @@ TEST(retry_rejects_enqueue_reentered_from_a_send_callback) {
     break_runtime_metrics_retry_destroy(q);
 }
 
+
+TEST(history_aggregate_reports_window_min_max_mean) {
+    BreakRuntimeMetrics *m = make_metrics(8u);
+    BreakRuntimeMetricsHistory *h = make_history(4u, 4u);
+    u64 lo = 0u, hi = 0u, mean = 0u;
+    u32 counted = 0u;
+    ASSERT_NOT_NULL(m);
+    ASSERT_NOT_NULL(h);
+    /* A gauge that moves 4 -> 10 -> 7 over three frames. */
+    ASSERT_EQ(break_runtime_metrics_set(m, "q.depth", BREAK_RUNTIME_METRIC_GAUGE, 4u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_history_record(h, m, 10u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_set(m, "q.depth", BREAK_RUNTIME_METRIC_GAUGE, 10u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_history_record(h, m, 20u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_set(m, "q.depth", BREAK_RUNTIME_METRIC_GAUGE, 7u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_history_record(h, m, 30u), BREAK_RUNTIME_OK);
+    /* Window of 3: min 4, max 10, mean (4+10+7)/3 = 7 (truncated). */
+    ASSERT_EQ(break_runtime_metrics_history_aggregate(h, "q.depth", 3u, &lo, &hi, &mean, &counted),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(lo, 4u);
+    ASSERT_EQ(hi, 10u);
+    ASSERT_EQ(mean, 7u);
+    ASSERT_EQ(counted, 3u);
+    /* Window of 2 (newest two: 10, 7): min 7, max 10, mean 8 (truncated). */
+    ASSERT_EQ(break_runtime_metrics_history_aggregate(h, "q.depth", 2u, &lo, &hi, &mean, &counted),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(lo, 7u);
+    ASSERT_EQ(hi, 10u);
+    ASSERT_EQ(mean, 8u);
+    ASSERT_EQ(counted, 2u);
+    /* NULL outs are allowed. */
+    ASSERT_EQ(break_runtime_metrics_history_aggregate(h, "q.depth", 1u, NULL, NULL, NULL, NULL),
+              BREAK_RUNTIME_OK);
+    break_runtime_metrics_history_destroy(h);
+    break_runtime_metrics_destroy(m);
+}
+
+TEST(history_aggregate_counts_only_present_frames) {
+    BreakRuntimeMetrics *m = make_metrics(8u);
+    BreakRuntimeMetricsHistory *h = make_history(4u, 4u);
+    u64 lo = 9u, hi = 9u, mean = 9u;
+    u32 counted = 9u;
+    ASSERT_NOT_NULL(m);
+    ASSERT_NOT_NULL(h);
+    /* Frame 0: only "other". Frame 1 & 2: "late" appears at 5 then 15. */
+    ASSERT_EQ(break_runtime_metrics_set(m, "other", BREAK_RUNTIME_METRIC_GAUGE, 1u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_history_record(h, m, 10u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_set(m, "late", BREAK_RUNTIME_METRIC_GAUGE, 5u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_history_record(h, m, 20u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_set(m, "late", BREAK_RUNTIME_METRIC_GAUGE, 15u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_history_record(h, m, 30u), BREAK_RUNTIME_OK);
+    /* Window of 3 but "late" is only in the newest two frames. */
+    ASSERT_EQ(break_runtime_metrics_history_aggregate(h, "late", 3u, &lo, &hi, &mean, &counted),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(lo, 5u);
+    ASSERT_EQ(hi, 15u);
+    ASSERT_EQ(mean, 10u);
+    ASSERT_EQ(counted, 2u);
+    /* Absent from every frame in the window -> STALE, outputs untouched. */
+    lo = hi = mean = 123u; counted = 123u;
+    ASSERT_EQ(break_runtime_metrics_history_aggregate(h, "ghost", 3u, &lo, &hi, &mean, &counted),
+              BREAK_RUNTIME_STALE);
+    ASSERT_EQ(lo, 123u);
+    ASSERT_EQ(counted, 123u);
+    break_runtime_metrics_history_destroy(h);
+    break_runtime_metrics_destroy(m);
+}
+
+TEST(history_aggregate_sum_saturates_without_overflow) {
+    BreakRuntimeMetrics *m = make_metrics(8u);
+    BreakRuntimeMetricsHistory *h = make_history(4u, 4u);
+    u64 lo = 0u, hi = 0u, mean = 0u;
+    u32 counted = 0u;
+    ASSERT_NOT_NULL(m);
+    ASSERT_NOT_NULL(h);
+    /* Frame 0 = UINT64_MAX, frame 1 = 2. A plain running sum would wrap to 1
+     * (mean 0); saturation clamps the sum to UINT64_MAX (mean UINT64_MAX/2).
+     * The two outcomes differ, so this pins the saturation branch. */
+    ASSERT_EQ(break_runtime_metrics_set(m, "big", BREAK_RUNTIME_METRIC_GAUGE, UINT64_MAX),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_history_record(h, m, 10u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_set(m, "big", BREAK_RUNTIME_METRIC_GAUGE, 2u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_history_record(h, m, 20u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_history_aggregate(h, "big", 2u, &lo, &hi, &mean, &counted),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(lo, 2u);
+    ASSERT_EQ(hi, UINT64_MAX);
+    ASSERT_EQ(mean, UINT64_MAX / 2u);
+    ASSERT_EQ(counted, 2u);
+    break_runtime_metrics_history_destroy(h);
+    break_runtime_metrics_destroy(m);
+}
+
+TEST(history_aggregate_validates_arguments) {
+    BreakRuntimeMetrics *m = make_metrics(8u);
+    BreakRuntimeMetricsHistory *h = make_history(4u, 4u);
+    u64 lo = 0u;
+    ASSERT_NOT_NULL(m);
+    ASSERT_NOT_NULL(h);
+    /* Empty history -> STALE. */
+    ASSERT_EQ(break_runtime_metrics_history_aggregate(h, "x", 1u, &lo, NULL, NULL, NULL),
+              BREAK_RUNTIME_STALE);
+    ASSERT_EQ(break_runtime_metrics_set(m, "x", BREAK_RUNTIME_METRIC_GAUGE, 2u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_history_record(h, m, 10u), BREAK_RUNTIME_OK);
+    /* window beyond retained frames -> STALE. */
+    ASSERT_EQ(break_runtime_metrics_history_aggregate(h, "x", 2u, &lo, NULL, NULL, NULL),
+              BREAK_RUNTIME_STALE);
+    ASSERT_EQ(break_runtime_metrics_history_aggregate(NULL, "x", 1u, &lo, NULL, NULL, NULL),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_history_aggregate(h, NULL, 1u, &lo, NULL, NULL, NULL),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_history_aggregate(h, "x", 0u, &lo, NULL, NULL, NULL),
+              BREAK_RUNTIME_INVALID);
+    break_runtime_metrics_history_destroy(h);
+    break_runtime_metrics_destroy(m);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(create_validates_config_and_defaults);
     RUN_TEST(counter_adds_accumulate_and_saturate);
@@ -1199,6 +1322,10 @@ TEST_MAIN_BEGIN()
     RUN_TEST(alert_edges_report_raise_and_clear_between_consecutive_windows);
     RUN_TEST(alert_edges_validate_arguments);
     RUN_TEST(history_delta_measures_counter_growth_over_a_window);
+    RUN_TEST(history_aggregate_reports_window_min_max_mean);
+    RUN_TEST(history_aggregate_counts_only_present_frames);
+    RUN_TEST(history_aggregate_sum_saturates_without_overflow);
+    RUN_TEST(history_aggregate_validates_arguments);
     RUN_TEST(history_delta_rejects_gauges_and_bad_arguments);
     RUN_TEST(decode_round_trips_the_encoding);
     RUN_TEST(decode_rejects_malformed_input_as_a_whole);

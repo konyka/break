@@ -277,3 +277,27 @@ Winsock（`WSAStartup`、`SOCKET`、`WSAPoll`、错误码映射、TLS 的平台�
 断言覆盖：失败后 `queued==1`；排空后 `delivered==1`、`failed==0`、`queued==0`、`released==1`，
 且第二个采集端确实收到 `POST /metrics`。normal/ASan+UBSan（含 leak 检测）/TSan 均 10/10
 （回环 socket + 线程，TSan 有意义）。这是集成证据，不改产品代码。
+
+## 28. 历史窗口聚合（min/max/mean）
+
+第 19 节的 `history_delta` 只看「最新帧 vs 第 span 旧帧」两端点，无法回答「最近 N 帧里
+队列深度的波动区间与均值」这类问题。`break_runtime_metrics_history_aggregate(history, name,
+window, out_min, out_max, out_mean, out_counted)` 在最新 `window` 帧（age 0 .. window-1）上
+对 `name` 的每帧值求 min、max 与整型 mean（`sum / counted`，截断），并用 `out_counted` 报告
+`window` 帧里有多少帧实际含该指标。COUNTER 与 GAUGE 通用（kind 由调用方自知）。任一 out 指针
+可为 NULL。
+
+边界与安全：
+
+- `sum` 以饱和加法累计（`sum > UINT64_MAX - value` 时钳到 `UINT64_MAX`），因此长窗口的
+  COUNTER 聚合不会静默回绕；mean 退化为 `UINT64_MAX / counted`，而非回绕后的小值。
+- 只统计含 `name` 的帧：窗口内某帧缺该指标时跳过且不计入 `counted`，均值分母用实际帧数而非
+  `window`，避免被缺帧稀释。
+- 窗口内全部帧都无该指标 → `STALE`，不写任何 out（调用方的旧值不被污染）。
+- 历史为空或 `window` 超过已保留帧数 → `STALE`。NULL history/name 或 `window==0` → `INVALID`。
+- 与历史同线程调用，纯读，无锁。
+
+测试（`test_runtime_metrics.c`）：窗口 min/max/mean 与 NULL out；仅统计在场帧 + 全缺帧 STALE；
+饱和不回绕（帧 0=UINT64_MAX、帧 1=2，证明钳制值与回绕值不同）；参数校验（空历史、超窗、
+NULL、window 0）。5/5 变异全部被捕获（min/max 比较翻转、关闭饱和、mean 除以 window、把缺帧
+计入 counted）。normal/ASan+UBSan/TSan 下 47/47，runtime_core 标签 12/12（ASan）。

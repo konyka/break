@@ -272,6 +272,25 @@ BreakRuntimeError break_runtime_metrics_history_delta(
     u64 *out_delta,
     u64 *out_ticks);
 
+/* Windowed aggregate of `name` over the newest `window` frames (age 0 ..
+ * window-1): min, max and mean of the per-frame values. Works for COUNTER or
+ * GAUGE (the caller knows the kind); the mean is integer (sum / counted),
+ * truncated, and `sum` saturates at UINT64_MAX so a counter window cannot
+ * overflow silently. Only frames in which `name` is present are counted;
+ * `out_counted` reports how many of the `window` frames contributed. Any out
+ * pointer may be NULL. STALE when the history is empty, `window` exceeds the
+ * retained frames, or `name` is absent from every frame in the window (no
+ * outputs written). INVALID on NULL history/name or `window` of 0. Same
+ * thread as the history. */
+BreakRuntimeError break_runtime_metrics_history_aggregate(
+    const BreakRuntimeMetricsHistory *history,
+    const char *name,
+    u32 window,
+    u64 *out_min,
+    u64 *out_max,
+    u64 *out_mean,
+    u32 *out_counted);
+
 /* Strict decoder for the break_runtime_metrics_encode() text, for a remote
  * collector reading untrusted bytes. `text` is `len` bytes (no NUL needed).
  * Every line must be exactly `BRKM1 <name> <counter|gauge> <value>\n`: name

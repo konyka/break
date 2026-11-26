@@ -513,6 +513,41 @@ static const BreakRuntimeMetricSample *metrics_history_find(
     return NULL;
 }
 
+BreakRuntimeError break_runtime_metrics_history_aggregate(
+    const BreakRuntimeMetricsHistory *history, const char *name, u32 window,
+    u64 *out_min, u64 *out_max, u64 *out_mean, u32 *out_counted) {
+    u64 lo = 0u;
+    u64 hi = 0u;
+    u64 sum = 0u;
+    u32 counted = 0u;
+    if (!history || !name || window == 0u) return BREAK_RUNTIME_INVALID;
+    if (history->frames == 0u || window > history->frames) return BREAK_RUNTIME_STALE;
+    for (u32 age = 0u; age < window; ++age) {
+        const BreakRuntimeMetricSample *s = metrics_history_find(history, age, name);
+        if (!s) continue;
+        if (counted == 0u) {
+            lo = s->value;
+            hi = s->value;
+        } else {
+            if (s->value < lo) lo = s->value;
+            if (s->value > hi) hi = s->value;
+        }
+        /* Saturating sum so a counter window cannot overflow silently. */
+        if (sum > UINT64_MAX - s->value) {
+            sum = UINT64_MAX;
+        } else {
+            sum += s->value;
+        }
+        ++counted;
+    }
+    if (counted == 0u) return BREAK_RUNTIME_STALE;
+    if (out_min) *out_min = lo;
+    if (out_max) *out_max = hi;
+    if (out_mean) *out_mean = sum / counted;
+    if (out_counted) *out_counted = counted;
+    return BREAK_RUNTIME_OK;
+}
+
 BreakRuntimeError break_runtime_metrics_history_delta(
     const BreakRuntimeMetricsHistory *history,
     const char *name,
