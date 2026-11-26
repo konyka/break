@@ -14546,3 +14546,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
   - 变异检查中，初轮存活项已补测试；等价项理由见设计文档。
 - **验证**：联网构建 `-R test_core_app` 56/56；`build-current-vk` 非 fuzz 466/466，fuzz 24/24；ASan/TSan 下相关测试 8/8；Windows 实机 MSVC 全量构建通过，相关测试 63/63。本提交自身的远端工作流结果不在此预写。
 
+## 权威合并原语 `BreakWorldMerge`（2026-11-27）
+
+- **缺口**：入站 World 状态从不进入权威 World。
+- **实现**：新增 `engine/src/ecs/world_merge.{h,c}`，编入 `break_ecs_replication`。用持久 id 匹配实体，权威方按 id 授予连接写权限，只合并登记过的组件。每个值都经过校验回调，回调可以接受（含夹紧）、保持或拒绝；任一拒绝都让整批不生效。对端不能改变实体和组件的结构。设计见 `docs/design/ecs_snapshot_replication_aoi.md` 2026-11-27「权威合并」。
+- **TDD 与变异**：`test_world_merge` 10 例，先以链接失败为 RED。44 项变异全部判红，其中 4 项靠补测试判红。
+- **验证**：ASan+UBSan/TSan 10/10；`build-current-vk` 非 fuzz 467/467，fuzz 24/24；Windows 实机 MSVC 全量构建通过，相关测试 23/23。
+- **仍未完成**：core_app 接入。本提交自身的远端工作流结果不在此预写。
+
