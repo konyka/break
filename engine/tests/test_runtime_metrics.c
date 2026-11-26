@@ -1137,6 +1137,43 @@ TEST(retry_without_coalescing_keeps_every_repeat) {
     break_runtime_metrics_retry_destroy(q);
 }
 
+
+static BreakRuntimeMetricsRetryQueue *g_reentry_queue;
+static BreakRuntimeError g_reentry_result;
+
+static BreakRuntimeError reentrant_send(void *user, const void *bytes, usize len) {
+    (void)user;
+    (void)bytes;
+    (void)len;
+    /* A send callback must not mutate the queue it is draining: the payload it
+     * was handed lives in the ring and an enqueue can overwrite that slot. */
+    g_reentry_result = break_runtime_metrics_retry_enqueue(g_reentry_queue, "zz", 2u);
+    return BREAK_RUNTIME_OK;
+}
+
+TEST(retry_rejects_enqueue_reentered_from_a_send_callback) {
+    BreakRuntimeMetricsRetryQueue *q = make_retry(2u, 8u);
+    BreakRuntimeMetricsRetryDrainResult r;
+    BreakRuntimeMetricsRetryStats stats;
+    ASSERT_NOT_NULL(q);
+    g_reentry_queue = q;
+    g_reentry_result = BREAK_RUNTIME_OK;
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "aa", 2u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_drain(q, reentrant_send, NULL, 4u, 0u, &r),
+              BREAK_RUNTIME_OK);
+    /* The reentrant enqueue is refused, so the borrowed payload cannot be
+     * overwritten mid-send; the delivery itself still succeeds. */
+    ASSERT_EQ(g_reentry_result, BREAK_RUNTIME_REJECTED);
+    ASSERT_EQ(r.delivered, 1u);
+    ASSERT_EQ(break_runtime_metrics_retry_stats(q, &stats), BREAK_RUNTIME_OK);
+    ASSERT_EQ(stats.queued, 0u);
+    ASSERT_EQ(stats.enqueued, 1u);
+    /* After the drain returns, enqueue works again. */
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "bb", 2u), BREAK_RUNTIME_OK);
+    g_reentry_queue = NULL;
+    break_runtime_metrics_retry_destroy(q);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(create_validates_config_and_defaults);
     RUN_TEST(counter_adds_accumulate_and_saturate);
@@ -1180,4 +1217,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(retry_coalesces_repeats_of_the_newest_payload);
     RUN_TEST(retry_coalescing_compares_only_the_newest_entry);
     RUN_TEST(retry_without_coalescing_keeps_every_repeat);
+    RUN_TEST(retry_rejects_enqueue_reentered_from_a_send_callback);
 TEST_MAIN_END()

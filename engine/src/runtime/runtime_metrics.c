@@ -695,6 +695,7 @@ struct BreakRuntimeMetricsRetryQueue {
     u32 capacity;
     usize max_payload_bytes;
     bool coalesce_repeats;
+    bool draining; /* inside retry_drain: the send callback holds a borrowed slot */
     u32 head;  /* oldest entry */
     u32 count;
     RetryEntry *entries;
@@ -756,6 +757,7 @@ BreakRuntimeError break_runtime_metrics_retry_enqueue(
     if (!queue || !bytes || len == 0u) return BREAK_RUNTIME_INVALID;
     if (len > queue->max_payload_bytes) return BREAK_RUNTIME_INVALID;
     if (!retry_is_owner(queue)) return BREAK_RUNTIME_REJECTED;
+    if (queue->draining) return BREAK_RUNTIME_REJECTED;
     if (queue->coalesce_repeats && queue->count != 0u) {
         u32 newest = (queue->head + queue->count - 1u) % queue->capacity;
         if (queue->entries[newest].len == len &&
@@ -805,15 +807,20 @@ BreakRuntimeError break_runtime_metrics_retry_record_attempt(
     return BREAK_RUNTIME_OK;
 }
 
-BreakRuntimeError break_runtime_metrics_retry_release(
-    BreakRuntimeMetricsRetryQueue *queue) {
-    if (!queue) return BREAK_RUNTIME_INVALID;
-    if (!retry_is_owner(queue)) return BREAK_RUNTIME_REJECTED;
-    if (queue->count == 0u) return BREAK_RUNTIME_STALE;
+static void retry_pop(BreakRuntimeMetricsRetryQueue *queue) {
     queue->head = (queue->head + 1u) % queue->capacity;
     queue->count--;
     queue->stats.released++;
     queue->stats.queued = queue->count;
+}
+
+BreakRuntimeError break_runtime_metrics_retry_release(
+    BreakRuntimeMetricsRetryQueue *queue) {
+    if (!queue) return BREAK_RUNTIME_INVALID;
+    if (!retry_is_owner(queue)) return BREAK_RUNTIME_REJECTED;
+    if (queue->draining) return BREAK_RUNTIME_REJECTED;
+    if (queue->count == 0u) return BREAK_RUNTIME_STALE;
+    retry_pop(queue);
     return BREAK_RUNTIME_OK;
 }
 
@@ -833,20 +840,27 @@ BreakRuntimeError break_runtime_metrics_retry_drain(
     u32 sends = 0u;
     if (!queue || !send || !out_result || max_sends == 0u) return BREAK_RUNTIME_INVALID;
     if (!retry_is_owner(queue)) return BREAK_RUNTIME_REJECTED;
+    if (queue->draining) return BREAK_RUNTIME_REJECTED;
     memset(out_result, 0, sizeof(*out_result));
     while (queue->count != 0u && sends < max_sends) {
         RetryEntry *entry = &queue->entries[queue->head];
-        BreakRuntimeError sent = send(user, retry_slot_bytes(queue, queue->head), entry->len);
+        BreakRuntimeError sent;
+        /* The callback gets a pointer into the ring, so queue mutation is
+         * refused until it returns (enqueue/release/nested drain -> REJECTED). */
+        queue->draining = true;
+        sent = send(user, retry_slot_bytes(queue, queue->head), entry->len);
+        queue->draining = false;
         sends++;
         if (sent == BREAK_RUNTIME_OK) {
-            (void)break_runtime_metrics_retry_release(queue);
+            retry_pop(queue);
             out_result->delivered++;
             continue;
         }
-        (void)break_runtime_metrics_retry_record_attempt(queue, NULL);
+        if (entry->attempts != UINT32_MAX) entry->attempts++;
+        queue->stats.attempts++;
         out_result->failed++;
         if (max_attempts != 0u && entry->attempts >= max_attempts) {
-            (void)break_runtime_metrics_retry_release(queue);
+            retry_pop(queue);
             out_result->abandoned++;
             continue;
         }

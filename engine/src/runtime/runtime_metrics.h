@@ -412,7 +412,13 @@ typedef struct BreakRuntimeMetricsRetryDrainResult {
  * abandoned and draining continues, otherwise draining stops so the caller
  * backs off until its next step. Owner thread only; performs no I/O itself.
  * INVALID on NULL queue/send/out_result or max_sends == 0; REJECTED off the
- * owner thread. An empty queue is OK with all counts zero. */
+ * owner thread. An empty queue is OK with all counts zero.
+ *
+ * Reentrancy: `send` receives a pointer into the queue's own storage, so while
+ * it runs the queue refuses enqueue, release and a nested drain with REJECTED.
+ * Without this, an enqueue that wrapped the ring could overwrite the very bytes
+ * being transmitted. Enqueue work discovered inside `send` must be deferred
+ * until drain returns. */
 BreakRuntimeError break_runtime_metrics_retry_drain(
     BreakRuntimeMetricsRetryQueue *queue,
     BreakRuntimeMetricsRetrySendFn send,

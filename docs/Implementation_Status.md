@@ -14321,3 +14321,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
   循环）、`bcdd95f0`（重复折叠）的主 CI 仍在 runner 队列中排队未启动，windows-d3d12 部分
   in_progress。这四项的本地证据为各自条目所载的 TDD/变异/ASan+UBSan/TSan 与全量 CTest，
   **不以本地结果替代远端结论**。
+
+## 重试队列排空的重入缺陷修复（2026-11-26）
+
+- **缺陷**：`break_runtime_metrics_retry_drain`（`de40ff8f`）把指向环内存储的指针交给 `send` 回调；回调重入 `enqueue` 时会在小环上环绕覆盖正在发送的槽位。2 槽环探针复现：发送中 payload 首字节 `a`→`X`。无越界（ASan 无报告），属静默数据完整性缺陷。对已推送代码复查时发现，原测试只覆盖正常回调。
+- **修复**：调用 `send` 期间置 `draining`，其间 `enqueue`/`release`/嵌套 `drain` 均 `REJECTED`；drain 改用内部 `retry_pop` 与内联 attempt 记账。头文件写明重入约束。设计见 `docs/design/runtime_metrics.md` 第 25 节。
+- **TDD 与变异**：新增 1 例，先 RED（回调内 enqueue 返回 OK 而非 REJECTED），修复后 GREEN；探针重跑不再改写。两项变异判红：去掉 enqueue 的 draining 检查、从不设置 draining。
+- **验证**：`test_runtime_metrics` 43/43（normal/ASan+UBSan 含 leak 检测/TSan 均 43/43）；`build-current-vk` 全量 CTest 463/463、0 失败。本收据提交自身的远端工作流结果不在此预写。
