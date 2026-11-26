@@ -665,6 +665,43 @@ TEST(world_session_ack_trims_history_and_need_full_publishes_fresh_full)
     fixture_dispose(&fixture);
 }
 
+TEST(world_session_sender_state_reports_force_full_until_full_is_sent)
+{
+    Fixture fixture;
+    AttemptWire first;
+    AttemptWire recovered;
+    BreakWorldSessionSenderState state;
+    BreakWorldSessionControl recovery;
+
+    ASSERT_TRUE(fixture_init(&fixture));
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, 11u, &state));
+    ASSERT_FALSE(state.force_full);
+    ASSERT_TRUE(publish_attempt(&fixture, 10u, 10u, &first));
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, 11u, &state));
+    ASSERT_FALSE(state.force_full);
+
+    memset(&recovery, 0, sizeof(recovery));
+    recovery.kind = BREAK_WORLD_SESSION_CONTROL_NEED_FULL;
+    recovery.target_snapshot_id = first.target_snapshot_id;
+    recovery.target_tick = first.target_tick;
+    ASSERT_TRUE(send_control_to_session(&fixture, &recovery));
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, 11u, &state));
+    ASSERT_TRUE(state.force_full);
+    ASSERT_EQ(state.history_count, 1u);
+
+    ASSERT_TRUE(publish_attempt(&fixture, 11u, 20u, &recovered));
+    ASSERT_EQ(recovered.kind, BREAK_WORLD_DELTA_WIRE_FULL);
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, 11u, &state));
+    ASSERT_FALSE(state.force_full);
+
+    ASSERT_TRUE(break_world_session_rebaseline(fixture.session, TEST_LEVEL + 1u));
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, 11u, &state));
+    ASSERT_TRUE(state.force_full);
+    clear_attempt(&recovered);
+    clear_attempt(&first);
+    fixture_dispose(&fixture);
+}
+
 TEST(world_session_ack_after_need_full_does_not_reuse_unconfirmed_baseline)
 {
     Fixture fixture;
@@ -1755,6 +1792,8 @@ TEST(world_session_legacy_need_full_can_refresh_same_tick)
     ASSERT_EQ(state.next_delta_id, 3u);
 
     ASSERT_TRUE(send_control_to_session(&fixture, &control));
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, 11u, &state));
+    ASSERT_TRUE(state.force_full);
     break_world_session_stats(fixture.session, &stats);
     ASSERT_TRUE(set_value(fixture.authoritative, 22u));
     strict = break_world_snapshot_build(fixture.authoritative, fixture.schemas, 20u);
@@ -1979,6 +2018,7 @@ TEST(world_session_snapshot_rebaseline_rejects_old_lease_and_refills_both)
 TEST_MAIN_BEGIN()
     RUN_TEST(world_session_need_full_is_rate_limited_and_control_wire_has_last_good);
     RUN_TEST(world_session_ack_trims_history_and_need_full_publishes_fresh_full);
+    RUN_TEST(world_session_sender_state_reports_force_full_until_full_is_sent);
     RUN_TEST(world_session_ack_after_need_full_does_not_reuse_unconfirmed_baseline);
     RUN_TEST(world_session_history_count_and_byte_limits_fall_back_to_full);
     RUN_TEST(world_session_packet_limit_rejects_without_allocating_history);

@@ -900,6 +900,7 @@ bool break_world_session_sender_state(const BreakWorldSession *session,
         ? break_world_snapshot_id(state->attempt.target) : 0u;
     out_state->attempt_target_tick = state->attempt.active
         ? break_world_snapshot_tick(state->attempt.target) : 0u;
+    out_state->force_full = state->force_full;
     return true;
 }
 

@@ -50,6 +50,7 @@ typedef struct {
     bool attempt_pending;
     u64 attempt_target_snapshot_id;
     u64 attempt_target_tick;
+    bool force_full; /* the next new attempt must be full (NEED_FULL or rebaseline) */
 } BreakWorldSessionSenderState;
 
 typedef struct {
