@@ -59,6 +59,17 @@ typedef struct {
      * and no force_full is held for the current epoch instead of sent. */
     bool publish_requires_ready;
     bool publish_waits_for_ack;
+    /* Optional per-connection AOI cull of the shared published snapshot. When
+     * publish_keep is NULL (default) every connection receives the full target,
+     * exactly as before. When set, each fanned-out connection publishes a view
+     * filtered by publish_keep; publish_keep_user_for (if set) returns the
+     * BreakWorldSnapshotEntityFilter user for a connection key (e.g. its AOI
+     * scope), else publish_keep_ctx is used for every connection. Requires a
+     * publication. The adapter tracks each connection's filtered-view identity,
+     * so delta/epoch accounting stays correct per connection. */
+    BreakWorldSnapshotEntityFilter publish_keep;
+    void *(*publish_keep_user_for)(void *ctx, u64 connection_key);
+    void *publish_keep_ctx;
 } BreakRuntimeWorldSessionConfig;
 
 typedef struct {

@@ -172,6 +172,52 @@ static bool fixture_attach(Fixture *fixture, u32 queue_capacity, u32 max_connect
     return fixture_attach_publication(fixture, queue_capacity, max_connections, NULL, 0u);
 }
 
+/* Per-connection AOI cull: KEY_A sees values below the cut, every other
+ * connection sees values at or above it. */
+typedef struct {
+    u32 cut;
+    bool below;
+} ScopeCut;
+
+static bool scope_keep_cut(void *user, const BreakWorldSnapshot *snapshot, Entity entity)
+{
+    const ScopeCut *cut = (const ScopeCut *)user;
+    const void *bytes = NULL;
+    usize size = 0u;
+    if (!cut) return false;
+    if (!break_world_snapshot_component_bytes(snapshot, entity, TEST_COMPONENT, &bytes, &size)) {
+        return false;
+    }
+    return cut->below ? ((const Value *)bytes)->value < cut->cut
+                      : ((const Value *)bytes)->value >= cut->cut;
+}
+
+static ScopeCut g_scope_below = {100u, true};
+static ScopeCut g_scope_above = {100u, false};
+
+static void *scope_user_for_key(void *ctx, u64 connection_key)
+{
+    (void)ctx;
+    return connection_key == KEY_A ? (void *)&g_scope_below : (void *)&g_scope_above;
+}
+
+static bool fixture_attach_publication_keep(Fixture *fixture, u32 max_connections,
+                                            BreakWorldSnapshotPublication *publication,
+                                            BreakWorldSnapshotEntityFilter keep,
+                                            void *(*user_for)(void *, u64))
+{
+    BreakRuntimeWorldSessionConfig config;
+    memset(&config, 0, sizeof(config));
+    config.session = fixture->session;
+    config.bus = fixture->bus;
+    config.max_connections = max_connections;
+    config.publication = publication;
+    config.publish_keep = keep;
+    config.publish_keep_user_for = user_for;
+    fixture->adapter = break_runtime_world_session_create(&config);
+    return fixture->adapter != NULL;
+}
+
 static bool fixture_init(Fixture *fixture, u64 level, u32 max_connections)
 {
     return fixture_init_without_adapter(fixture, level) &&
@@ -4856,6 +4902,221 @@ TEST(export_metrics_mirrors_adapter_counters_as_idempotent_gauges)
     fixture_dispose(&fixture);
 }
 
+TEST(publish_keep_requires_a_publication_and_a_filter)
+{
+    Fixture fixture;
+    BreakRuntimeWorldSessionConfig config;
+
+    ASSERT_TRUE(fixture_init_without_adapter(&fixture, 7u));
+    /* A filter without a publication is rejected. */
+    memset(&config, 0, sizeof(config));
+    config.session = fixture.session;
+    config.bus = fixture.bus;
+    config.publication = NULL;
+    config.publish_keep = scope_keep_cut;
+    ASSERT_TRUE(break_runtime_world_session_create(&config) == NULL);
+    /* A per-connection user resolver without a filter is rejected. */
+    memset(&config, 0, sizeof(config));
+    config.session = fixture.session;
+    config.bus = fixture.bus;
+    config.publish_keep_user_for = scope_user_for_key;
+    ASSERT_TRUE(break_runtime_world_session_create(&config) == NULL);
+    fixture_dispose(&fixture);
+}
+
+TEST(publish_keep_fans_one_target_into_per_connection_views)
+{
+    Fixture fixture;
+    BreakWorldSnapshotPublicationConfig publication_config;
+    BreakWorldSnapshot *target;
+    BreakWorldSnapshot *low_view;
+    BreakWorldSnapshot *high_view;
+    BreakWorldSessionSenderState a_state;
+    BreakWorldSessionSenderState b_state;
+    Entity low;
+    Entity high;
+    Value *component;
+    u64 a_epoch = 0u;
+    u64 b_epoch = 0u;
+    usize drained = 0u;
+
+    ASSERT_TRUE(fixture_init_without_adapter(&fixture, 7u));
+    memset(&publication_config, 0, sizeof(publication_config));
+    publication_config.schema_hash = break_schema_hash(fixture.schemas);
+    publication_config.level_generation = 7u;
+    fixture.publication = break_world_snapshot_publication_create(&publication_config);
+    ASSERT_NOT_NULL(fixture.publication);
+    ASSERT_TRUE(fixture_attach_publication_keep(&fixture, 2u, fixture.publication,
+                                                scope_keep_cut, scope_user_for_key));
+
+    /* Two entities straddling the cut, so each scope keeps exactly one. */
+    low = world_create_entity(fixture.world);
+    component = (Value *)world_add_component(fixture.world, low, TEST_COMPONENT);
+    ASSERT_NOT_NULL(component);
+    component->value = 10u;
+    high = world_create_entity(fixture.world);
+    component = (Value *)world_add_component(fixture.world, high, TEST_COMPONENT);
+    ASSERT_NOT_NULL(component);
+    component->value = 200u;
+
+    target = break_world_snapshot_build(fixture.world, fixture.schemas, 10u);
+    ASSERT_NOT_NULL(target);
+    low_view = break_world_snapshot_filter(target, scope_keep_cut, &g_scope_below);
+    high_view = break_world_snapshot_filter(target, scope_keep_cut, &g_scope_above);
+    ASSERT_NOT_NULL(low_view);
+    ASSERT_NOT_NULL(high_view);
+    ASSERT_EQ(break_world_snapshot_entity_count(low_view), 1u);
+    ASSERT_EQ(break_world_snapshot_entity_count(high_view), 1u);
+    ASSERT_NEQ(break_world_snapshot_id(low_view), break_world_snapshot_id(high_view));
+
+    ASSERT_TRUE(open_connection(&fixture, KEY_A, 7u, &a_epoch));
+    ASSERT_TRUE(open_connection(&fixture, KEY_B, 7u, &b_epoch));
+    ASSERT_TRUE(break_world_snapshot_publication_publish(fixture.publication, target, 7u));
+    ASSERT_EQ(submit_current(&fixture, 7u, 0u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 1u, &drained),
+              BREAK_RUNTIME_OK);
+
+    /* One shared published target, but each connection's history holds its own
+     * filtered view, not the full target. */
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, KEY_A, &a_state));
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, KEY_B, &b_state));
+    ASSERT_EQ(a_state.history_count, 1u);
+    ASSERT_EQ(b_state.history_count, 1u);
+    ASSERT_TRUE(!a_state.attempt_pending);
+    ASSERT_TRUE(!b_state.attempt_pending);
+
+    /* Proof of per-connection culling: each connection is ACKed with its own
+     * filtered view's id/tick. An ACK only establishes a baseline when it
+     * exactly matches that connection's history entry, so the confirmed ids
+     * below can only advance if A was really sent low_view and B high_view.
+     * Publishing the unfiltered target to both would leave these unconfirmed. */
+    ASSERT_TRUE(control_via_adapter(&fixture, BREAK_RUNTIME_WORLD_COMMAND_ACK, KEY_A, a_epoch,
+                                    7u, a_state.next_delta_id - 1u, low_view, 0u));
+    ASSERT_TRUE(control_via_adapter(&fixture, BREAK_RUNTIME_WORLD_COMMAND_ACK, KEY_B, b_epoch,
+                                    7u, b_state.next_delta_id - 1u, high_view, 0u));
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, KEY_A, &a_state));
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, KEY_B, &b_state));
+    ASSERT_EQ(a_state.confirmed_snapshot_id, break_world_snapshot_id(low_view));
+    ASSERT_EQ(b_state.confirmed_snapshot_id, break_world_snapshot_id(high_view));
+    ASSERT_NEQ(a_state.confirmed_snapshot_id, break_world_snapshot_id(target));
+    ASSERT_NEQ(b_state.confirmed_snapshot_id, break_world_snapshot_id(target));
+
+    break_world_snapshot_release(high_view);
+    break_world_snapshot_release(low_view);
+    break_world_snapshot_release(target);
+    fixture_dispose(&fixture);
+}
+
+TEST(publish_keep_overload_resume_tracks_the_filtered_view_identity)
+{
+    /* Filling the shared outbound queue forces OVERLOAD during the filtered
+     * fanout. The adapter must record each connection's pending attempt against
+     * its own filtered view id, not the shared lease id; keying the accounting
+     * off the lease makes the resume below mistake the attempt for a different
+     * target and lose the completion. */
+    Fixture fixture;
+    BreakWorldSnapshotPublicationConfig publication_config;
+    BreakWorldSnapshot *target;
+    BreakWorldSnapshot *low_view;
+    BreakWorldSnapshot *high_view;
+    BreakWorldSessionSenderState a_state;
+    BreakWorldSessionSenderState b_state;
+    BreakRuntimeWorldSessionStats stats;
+    Entity low;
+    Entity high;
+    Value *component;
+    u64 a_epoch = 0u;
+    u64 b_epoch = 0u;
+    usize drained = 0u;
+
+    ASSERT_TRUE(fixture_init_without_adapter(&fixture, 7u));
+    memset(&publication_config, 0, sizeof(publication_config));
+    publication_config.schema_hash = break_schema_hash(fixture.schemas);
+    publication_config.level_generation = 7u;
+    fixture.publication = break_world_snapshot_publication_create(&publication_config);
+    ASSERT_NOT_NULL(fixture.publication);
+    ASSERT_TRUE(fixture_attach_publication_keep(&fixture, 2u, fixture.publication,
+                                                scope_keep_cut, scope_user_for_key));
+    low = world_create_entity(fixture.world);
+    component = (Value *)world_add_component(fixture.world, low, TEST_COMPONENT);
+    ASSERT_NOT_NULL(component);
+    component->value = 10u;
+    high = world_create_entity(fixture.world);
+    component = (Value *)world_add_component(fixture.world, high, TEST_COMPONENT);
+    ASSERT_NOT_NULL(component);
+    component->value = 200u;
+    target = break_world_snapshot_build(fixture.world, fixture.schemas, 10u);
+    ASSERT_NOT_NULL(target);
+    low_view = break_world_snapshot_filter(target, scope_keep_cut, &g_scope_below);
+    high_view = break_world_snapshot_filter(target, scope_keep_cut, &g_scope_above);
+    ASSERT_NOT_NULL(low_view);
+    ASSERT_NOT_NULL(high_view);
+
+    ASSERT_TRUE(open_connection(&fixture, KEY_A, 7u, &a_epoch));
+    ASSERT_TRUE(open_connection(&fixture, KEY_B, 7u, &b_epoch));
+    ASSERT_TRUE(break_world_snapshot_publication_publish(fixture.publication, target, 7u));
+    for (u32 i = 0u; i < BREAK_NET_OUTBOUND_QUEUE_CAPACITY; ++i) {
+        ASSERT_EQ(break_net_reactor_send(fixture.reactor, KEY_A, BREAK_NET_MESSAGE_ID_PING, 1u,
+                                         "x", 1u),
+                  BREAK_NET_SEND_OK);
+    }
+    ASSERT_EQ(submit_current(&fixture, 7u, 0u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 1u, &drained),
+              BREAK_RUNTIME_OVERLOAD);
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, KEY_A, &a_state));
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, KEY_B, &b_state));
+    ASSERT_TRUE(a_state.attempt_pending);
+    ASSERT_TRUE(b_state.attempt_pending);
+    /* The pending attempt per connection is its own filtered view. */
+    ASSERT_EQ(a_state.attempt_target_snapshot_id, break_world_snapshot_id(low_view));
+    ASSERT_EQ(b_state.attempt_target_snapshot_id, break_world_snapshot_id(high_view));
+    break_runtime_world_session_stats(fixture.adapter, &stats);
+    ASSERT_EQ(stats.publish_overloads, 2u);
+    ASSERT_EQ(stats.publish_terminal, 0u);
+    {
+        /* The adapter recognised each new attempt as this lease's target, so the
+         * attempt is attributed to the lease epoch and mirrors the view id.
+         * Comparing against the shared lease id instead would fail to recognise
+         * the attempt and zero the epoch. */
+        BreakRuntimeWorldConnectionSnapshot pending[2];
+        memset(pending, 0, sizeof(pending));
+        ASSERT_EQ(break_runtime_world_session_connection_snapshots(fixture.adapter, pending, 2u),
+                  2u);
+        ASSERT_EQ(pending[0].attempt_target_snapshot_id, break_world_snapshot_id(low_view));
+        ASSERT_EQ(pending[1].attempt_target_snapshot_id, break_world_snapshot_id(high_view));
+        ASSERT_NEQ(pending[0].attempt_publication_epoch, 0u);
+        ASSERT_NEQ(pending[1].attempt_publication_epoch, 0u);
+        ASSERT_TRUE(pending[0].retry_publish);
+        ASSERT_TRUE(pending[1].retry_publish);
+    }
+
+    /* Draining the queue lets the same immutable attempts resume to completion,
+     * and each connection's completion is credited to its own view. */
+    clear_outbound(&fixture);
+    ASSERT_EQ(submit_current(&fixture, 7u, 0u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 1u, &drained),
+              BREAK_RUNTIME_OK);
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, KEY_A, &a_state));
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, KEY_B, &b_state));
+    ASSERT_TRUE(!a_state.attempt_pending);
+    ASSERT_TRUE(!b_state.attempt_pending);
+    break_runtime_world_session_stats(fixture.adapter, &stats);
+    ASSERT_EQ(stats.publish_terminal, 0u);
+    {
+        BreakRuntimeWorldConnectionSnapshot pair[2];
+        memset(pair, 0, sizeof(pair));
+        ASSERT_EQ(break_runtime_world_session_connection_snapshots(fixture.adapter, pair, 2u),
+                  2u);
+        ASSERT_TRUE(!pair[0].publish_dirty);
+        ASSERT_TRUE(!pair[1].publish_dirty);
+    }
+
+    break_world_snapshot_release(high_view);
+    break_world_snapshot_release(low_view);
+    break_world_snapshot_release(target);
+    fixture_dispose(&fixture);
+}
+
 TEST_MAIN_BEGIN()
 RUN_TEST(export_metrics_mirrors_adapter_counters_as_idempotent_gauges);
 RUN_TEST(publish_notice_layout_submit_and_external_bus_contract);
@@ -4914,4 +5175,7 @@ RUN_TEST(coordinator_abandon_created_restores_adapter_ownership);
 RUN_TEST(coordinator_abandon_running_preserves_binding_for_normal_stop);
 RUN_TEST(coordinator_abandon_failed_stop_producers_allows_manual_drain_and_destroy);
 RUN_TEST(coordinator_abandon_failed_join_allows_manual_destroy);
+    RUN_TEST(publish_keep_requires_a_publication_and_a_filter);
+    RUN_TEST(publish_keep_fans_one_target_into_per_connection_views);
+    RUN_TEST(publish_keep_overload_resume_tracks_the_filtered_view_identity);
 TEST_MAIN_END()

@@ -14265,3 +14265,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 
 - `6a16139e`（AOI scope→谓词适配器）远端 CI `45829350618` 结论 failure，但三个非成功项全是 **cancelled 且 steps=0**（`macOS Snowflake replication`、`macOS Cocoa + MoltenVK`、`iOS native Metal build-only`）——等待 macOS/iOS runner 容量而从未进入执行的基础设施取消，非测试失败；其余 **22 success、3 条件 skip、0 failed**，含 windows-d3d12（独立 run `45829350314` success）、proton（`45829592322` success）与 Linux/arm64 全绿。改动是 `engine/src/ecs` 纯 C，与 macOS/iOS 无关。令牌对 Actions 只读，无法 rerun；后续提交触发新 macOS/iOS lane 自然重试。
 - `1cc7f4c6`、`23045a82`、`c51ccac3`、`836bcc2d` 的 CI 在 runner backlog 中排队/被并发组取代；windows-d3d12 与 proton 的已完成项均 success。HEAD 最终 CI 收据待后续记录。
+
+## Runtime World adapter 接入按连接 AOI 过滤（2026-11-26）
+
+- **实现**：`BreakRuntimeWorldSessionConfig` 新增 `publish_keep`/`publish_keep_user_for`/`publish_keep_ctx`（`engine/src/runtime/runtime_world_session.{h,c}`）；`runtime_world_publish_connection` 改用 `break_world_session_publish_snapshot_filtered_id`，attempt 身份对账改用回传的该连接视图 id/tick，publication epoch 仍取自 lease。`publish_keep == NULL` 为默认且行为逐位不变；filter 需要 publication，「只给 user 解析器不给 filter」在 create 时拒绝。设计与实现记录见 `docs/design/runtime_world_aoi_integration.md`。
+- **TDD**：`test_runtime_world_session` 新增 3 例（配置校验、一份共享 target 按 scope fan-out 并以各自视图 id ACK 后 confirmed 才前进、过滤 fanout 的 OVERLOAD 续发按视图身份记账）。
+- **变异**：「永不过滤」判红（初版只断言计数时存活，加强为按各自视图 id ACK 后判红）。「用 lease 身份对账」**未被覆盖**：`attempt_publication_epoch` 在首次发布由 `!had_active` 短路，需要 E1→E2 多代 OVERLOAD 场景才能观测，该用例未写，如实记为缺口而非等价变异。
+- **验证**：`test_runtime_world_session` 60/60（normal/ASan+UBSan 含 leak 检测/TSan 均 60/60）；`test_world_session_loopback` 10/10、`test_world_session_recovery` 31/31 回归不变。
+- **边界**：core_app 尚未设置 `publish_keep`，生产路径仍发送完整 World；AOI scope 的生产组装未接线。本收据提交自身的远端工作流结果不在此预写。

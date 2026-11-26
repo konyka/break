@@ -36,6 +36,9 @@ struct BreakRuntimeWorldSession {
     u32 publish_connection_budget;
     bool publish_requires_ready;
     bool publish_waits_for_ack;
+    BreakWorldSnapshotEntityFilter publish_keep;
+    void *(*publish_keep_user_for)(void *ctx, u64 connection_key);
+    void *publish_keep_ctx;
     bool closed;
     bool unsubscribed;
     bool lifecycle_bound;
@@ -300,6 +303,8 @@ static BreakRuntimeError runtime_world_publish_connection(
     BreakNetSendResult sent;
     u64 lease_id = break_world_snapshot_id(lease->snapshot);
     u64 lease_tick = break_world_snapshot_tick(lease->snapshot);
+    u64 target_id;
+    u64 target_tick;
     bool had_active;
     u64 old_id;
     u64 old_tick;
@@ -326,13 +331,30 @@ static BreakRuntimeError runtime_world_publish_connection(
     had_active = before.attempt_pending;
     old_id = before.attempt_target_snapshot_id;
     old_tick = before.attempt_target_tick;
-    same_current = had_active && old_id == lease_id && old_tick == lease_tick;
     same_saved = had_active && connection->attempt_target_snapshot_id != 0u &&
                  old_id == connection->attempt_target_snapshot_id &&
                  old_tick == connection->attempt_target_tick;
 
-    sent = break_world_session_publish_snapshot(
-        adapter->session, connection->key, lease->snapshot, lease->level_generation);
+    /* Each connection may receive an AOI-filtered view of the shared target, so
+     * its target identity is the filtered view's, reported back here. With no
+     * filter configured target_id/target_tick equal the lease's (unchanged
+     * behavior). */
+    target_id = lease_id;
+    target_tick = lease_tick;
+    if (adapter->publish_keep) {
+        void *keep_user = adapter->publish_keep_user_for
+                              ? adapter->publish_keep_user_for(adapter->publish_keep_ctx,
+                                                               connection->key)
+                              : adapter->publish_keep_ctx;
+        sent = break_world_session_publish_snapshot_filtered_id(
+            adapter->session, connection->key, lease->snapshot, lease->level_generation,
+            adapter->publish_keep, keep_user, &target_id, &target_tick);
+    } else {
+        sent = break_world_session_publish_snapshot_filtered_id(
+            adapter->session, connection->key, lease->snapshot, lease->level_generation,
+            NULL, NULL, &target_id, &target_tick);
+    }
+    same_current = had_active && old_id == target_id && old_tick == target_tick;
     *out_called = true;
 
     if (sent == BREAK_NET_SEND_OVERLOAD) {
@@ -340,8 +362,8 @@ static BreakRuntimeError runtime_world_publish_connection(
         connection->retry_publish = true;
         if (break_world_session_sender_state(adapter->session, connection->key, &after) &&
             after.attempt_pending) {
-            bool after_current = after.attempt_target_snapshot_id == lease_id &&
-                                 after.attempt_target_tick == lease_tick;
+            bool after_current = after.attempt_target_snapshot_id == target_id &&
+                                 after.attempt_target_tick == target_tick;
             connection->attempt_target_snapshot_id = after.attempt_target_snapshot_id;
             connection->attempt_target_tick = after.attempt_target_tick;
             if (!had_active || after_current) {
@@ -507,9 +529,11 @@ BreakRuntimeWorldSession *break_runtime_world_session_create(
     if (!config || !config->session || !config->bus) return NULL;
     if (!config->publication &&
         (config->publish_connection_budget != 0u || config->publish_requires_ready ||
-         config->publish_waits_for_ack)) {
+         config->publish_waits_for_ack || config->publish_keep)) {
         return NULL;
     }
+    /* A per-connection user resolver without a filter is a configuration error. */
+    if (!config->publish_keep && config->publish_keep_user_for) return NULL;
     if (config->publish_connection_budget > 64u) return NULL;
     capacity = config->queue_capacity == 0u
                    ? RUNTIME_WORLD_DEFAULT_QUEUE_CAPACITY
@@ -533,6 +557,9 @@ BreakRuntimeWorldSession *break_runtime_world_session_create(
         ? 8u : config->publish_connection_budget;
     adapter->publish_requires_ready = config->publish_requires_ready;
     adapter->publish_waits_for_ack = config->publish_waits_for_ack;
+    adapter->publish_keep = config->publish_keep;
+    adapter->publish_keep_user_for = config->publish_keep_user_for;
+    adapter->publish_keep_ctx = config->publish_keep_ctx;
     adapter->next_connection_epoch = 1u;
     adapter->next_sequence = 1u;
     platform_mutex_init(&adapter->mutex);

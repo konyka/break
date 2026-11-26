@@ -104,3 +104,53 @@ core_app 级（`test_core_app_net_transport` / loopback）：
 - 本设计不涉及权威 simulation 合并、inbound apply、预测回滚、共享 live World。
 - scope 的来源（`break_aoi_compute` → `BreakNetEntityScope`）的生产组装单列一个 core_app 切片。
 - 默认 `publish_keep == NULL`，不改变现有生产行为；启用过滤是显式 opt-in。
+
+## 实现记录（2026-11-26）：adapter 侧已接入
+
+本文规划的 adapter 接入已实现，采用上文「选项 B」。
+
+- **配置**：`BreakRuntimeWorldSessionConfig` 新增 `publish_keep`、`publish_keep_user_for`、
+  `publish_keep_ctx`。`publish_keep == NULL`（默认）时行为与接入前完全一致；`publish_keep`
+  需要 publication，缺 publication 或「只给 user 解析器不给 filter」都在 create 时返回 NULL。
+- **发布路径**：`runtime_world_publish_connection` 改调
+  `break_world_session_publish_snapshot_filtered_id`，并把 attempt 身份对账的
+  `lease_id/lease_tick` 换成回传的 `target_id/target_tick`（该连接过滤视图的身份）。
+  `publish_keep` 为空时回传即 lease 身份，因此既有记账逐位不变。
+  publication epoch 仍取自 lease，不随过滤改变。
+- **每连接 scope**：`publish_keep_user_for(ctx, connection_key)` 为每条连接返回谓词 user
+  （例如其 `BreakNetEntityScope`）；未提供时所有连接共用 `publish_keep_ctx`。
+
+### 验证
+
+`test_runtime_world_session` 60/60（原 57 例，新增 3 例；normal/ASan+UBSan 含 leak 检测/TSan
+均 60/60）：
+
+1. `publish_keep_requires_a_publication_and_a_filter`：无 publication 的 filter、无 filter 的
+   user 解析器都被 create 拒绝。
+2. `publish_keep_fans_one_target_into_per_connection_views`：一份共享已发布 target，两条连接
+   用不同 scope，各自以**自己过滤视图的 id/tick** 被 ACK 后 `confirmed_snapshot_id` 才前进，
+   且都不等于共享 target 的 id。
+3. `publish_keep_overload_resume_tracks_the_filtered_view_identity`：填满出站队列迫使过滤
+   fanout 进入 OVERLOAD，断言每条连接 pending attempt 的 `attempt_target_snapshot_id` 等于
+   自己的视图 id、`attempt_publication_epoch` 非零、`retry_publish` 为真；排空后同一不可变
+   attempt 续发完成，`publish_terminal` 为 0，两条连接都不再 dirty。
+
+既有回归：`test_world_session_loopback` 10/10、`test_world_session_recovery` 31/31 不变。
+
+### 变异检查
+
+- **「永不过滤」**（filter 分支短路成未过滤发布）：用例 2 判红（ACK 与实际 attempt 不匹配，
+  `confirmed` 无法前进）。注意：初版用例只断言 history 计数与 dirty 标志时该变异存活，
+  补上「按各自视图 id ACK」后才判红，已按此加强。
+- **「用 lease 身份而非视图身份对账」**（`same_current`/`after_current` 换回 lease）：当前三个
+  用例**未能判红**。原因是 `attempt_publication_epoch` 的赋值为 `!had_active || after_current`，
+  首次发布 `had_active == false` 即短路，身份比较不参与；要让分歧可观测，需要「同一过滤连接
+  先有上一代 epoch 的未完成 attempt，再发布新一代」的 E1→E2 场景。该用例尚未编写，故这项
+  差异记为**未被覆盖**（不是等价变异）。实现保留视图身份是正确取向，但缺少回归保护。
+
+## 仍未交付
+
+- 上述 E1→E2 多代 OVERLOAD 场景的过滤回归用例。
+- core_app `net_world_publish_runtime` 尚未设置 `publish_keep`，生产路径仍向每条连接发送完整
+  World；`break_aoi_compute` → `BreakNetEntityScope` 的生产组装也未接线。
+- 权威 simulation 合并、inbound apply、预测回滚、共享 live World 不在本切片。
