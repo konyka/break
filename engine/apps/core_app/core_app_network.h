@@ -188,6 +188,26 @@ CoreAppSnapshotOutcome core_app_voice_mute_decode(const u8 *payload, size_t size
                                                   u64 *out_target_session_id,
                                                   bool *out_muted);
 
+/* Prediction channel (--prediction). Each connection drives one body the
+ * server owns; the peer predicts it with the same step and is corrected by
+ * the server's snapshots (break_prediction, break_prediction_session). The
+ * body is not a level entity, so it never changes the simulation trace.
+ * State, little-endian: [0] i32 position, [4] i32 velocity. Input: [0] i32
+ * acceleration. */
+#define CORE_APP_PREDICTION_STATE_BYTES 8u
+#define CORE_APP_PREDICTION_INPUT_BYTES 4u
+#define CORE_APP_PREDICTION_MAX_ACCEL 8
+#define CORE_APP_PREDICTION_MAX_SPEED 1000
+
+/* One tick, a BreakPredictionStepFn (`user` is unused): velocity += accel,
+ * clamped to +-CORE_APP_PREDICTION_MAX_SPEED, then position += velocity
+ * with u32 wrap-around. An acceleration outside +-CORE_APP_PREDICTION_MAX_ACCEL
+ * or a NULL argument returns false and writes nothing; this is where the
+ * server refuses an input a peer cannot legitimately send. `out_state` may
+ * alias `state`. */
+bool core_app_prediction_step(void *user, const void *state, const void *input,
+                              void *out_state);
+
 /* Inbound authority firewall.
  *
  * A decoded peer snapshot is diagnostic data. Feeding it to this function is

@@ -223,6 +223,11 @@ if(NETWORK_ENABLED AND NETWORK_TRANSPORT)
     if(NOT help_out MATCHES "--world-replication")
         record_error("help does not list --world-replication: ${help_out}")
     endif()
+    expect_exit(prediction_without_network 2 --prediction)
+    expect_last_error(prediction_without_network "network options require --network")
+    if(NOT help_out MATCHES "--prediction")
+        record_error("help does not list --prediction: ${help_out}")
+    endif()
     expect_runtime_failed(world_replication_reaches_runtime
         --network --world-replication --bind 127.0.0.1:0 --tls-cert c.pem
         --tls-key k.pem --psk-env CORE_APP_CONTRACT_PSK --port-file port.txt)

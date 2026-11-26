@@ -212,7 +212,7 @@
 **验证**：normal、ASan+UBSan、TSan 下 12/12；`build-current-vk` 非 fuzz 465/465，fuzz 24/24；Windows 实机 MSVC 全量构建通过，本测试 12/12，相关测试 25/25。
 
 仍未交付：
-- 在 `core_app` 中启用：同时创建镜像 World 与表现 World，把预测输入经 `break_prediction_session` 发送。
+- `core_app` 服务端已启用（`--prediction`，见 `docs/design/core_app_integration.md` 2026-11-27 补充），驱动的是每个连接一个、不属于关卡的物体。客户端侧的镜像 World 与表现 World 接线，以及改用关卡中真实的用户实体，仍未完成。
 - 预测之外，表现 World 中其他远端实体的同步，由调用方结合 `break_snapshot_interp` 完成。
 
 本提交自身的远端工作流结果不在此预写。

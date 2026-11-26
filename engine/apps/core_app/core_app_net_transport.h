@@ -30,6 +30,10 @@ typedef struct CoreAppNetTransportConfig {
     /* World replication publishes through the Runtime adapter by default; true
      * restores the per-slot legacy publish for fallback diagnosis. */
     bool world_use_legacy_publish;
+    /* Each connection drives one server-owned body through prediction input
+     * batches and receives prediction snapshots (core_app_network.h
+     * "Prediction channel"). The body is not a level entity. */
+    bool prediction;
 } CoreAppNetTransportConfig;
 
 /* Validates the configuration shape (every field present, bind parses).

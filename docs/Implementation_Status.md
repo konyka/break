@@ -14502,3 +14502,21 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：`test_break_prediction_world` 增至 12 例，先以链接失败为 RED。新增端到端增量测试、写入镜像的反例和镜像实体校验。8 项变异中 7 项判红，1 项为等价变异。
 - **验证**：normal/ASan+UBSan/TSan 12/12；`build-current-vk` 非 fuzz 465/465，fuzz 24/24；Windows 实机 MSVC 全量构建通过，相关测试 25/25。
 - **仍未交付**：在 `core_app` 中启用。本提交自身的远端工作流结果不在此预写。
+
+## core_app 启用客户端预测通道（2026-11-27）
+
+- **缺口**：上一条把「在 `core_app` 中启用」列为未交付。
+- **实现**：新增 `core_app --network ... --prediction`，默认关闭。每个连接驱动一个服务端拥有的、不属于关卡的物体。客户端和服务端共用的 step 函数 `core_app_prediction_step` 位于 `core_app_network`；`core_app_net_transport` 接入 `break_prediction_session`：收到 `0x400c` 后推进物体，物体前进后发送 `0x400d`。新增 trace `network_prediction_stats`。设计见 `docs/design/core_app_integration.md` 2026-11-27 补充。
+- **发现并修复**：快照状态对客户端不可信，存储速度接近 i32 上限时，step 中的加法会发生有符号溢出。现在先限制再相加。
+- **TDD 与变异**：
+  - `test_core_app_network` 增至 29 例，先以链接失败为 RED。
+  - 新增真实 TLS loopback `test_core_app_network_prediction`：40 个输入、重叠批次、坏批次、越界输入、整批重发，每个快照与客户端预测逐字节相等，联网 trace 与离线 trace 相同。
+  - step 函数 17 项变异中 16 项判红，1 项等价。
+  - 传输层变异：存活项中一项补断言后判红；其余为等价变异，一处检查已删除，两处保留（理由见设计文档）。
+- **验证**：
+  - 联网构建 `-R test_core_app` 55/55。
+  - `build-current-vk` 非 fuzz 465/465，fuzz 24/24。
+  - Snowflake ASan 构建 `-L "network|snowflake|session|core_app"` 69/72。失败的 3 项是 `test_core_app_lifecycle_load_unload`、`test_core_app_gpu_vulkan`、`test_core_app_crash_context`，原因是 ASan 运行时与 preload 的加载顺序（报 `ASan runtime does not come first`）。不带本改动的 HEAD 上同样失败，与本改动无关。
+  - Windows 实机 MSVC 全量构建通过，相关测试 62/62。
+  - 本提交自身的远端工作流结果不在此预写。
+

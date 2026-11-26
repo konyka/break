@@ -56,6 +56,7 @@ static void print_help(void) {
          "  --voice-relay\n"
          "  --aspect-replication\n"
          "  --world-replication\n"
+         "  --prediction\n"
 #endif
          "  --help");
 }
@@ -331,6 +332,9 @@ static int core_app_main(int argc, char **argv) {
             net_option_seen = true;
         } else if (strcmp(argv[i], "--world-replication") == 0) {
             net_config.world_replication = true;
+            net_option_seen = true;
+        } else if (strcmp(argv[i], "--prediction") == 0) {
+            net_config.prediction = true;
             net_option_seen = true;
 #endif
         } else if (strcmp(argv[i], "--trace-timestamps") == 0) {

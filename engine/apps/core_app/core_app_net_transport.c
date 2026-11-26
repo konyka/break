@@ -8,6 +8,7 @@
 #include <network/break_online_aspect_replication.h>
 #include <network/break_online_aspect_session.h>
 #include <network/break_online_voice.h>
+#include <network/break_prediction_session.h>
 #include <network/break_session.h>
 #include <physics/physics_sync.h>
 #include <platform/platform_fs.h>
@@ -175,6 +176,11 @@ typedef struct CoreAppNetAspectStats {
     u64 sent_fragments;
 } CoreAppNetAspectStats;
 
+typedef struct CoreAppNetPredictionStats {
+    u64 opened;
+    u64 closed;
+} CoreAppNetPredictionStats;
+
 typedef struct CoreAppNetWorldStats {
     u64 opened;
     u64 closed;
@@ -296,6 +302,12 @@ struct CoreAppNetTransport {
     bool world_level_initialized;
     u64 world_level_generation;
     CoreAppNetWorldStats world_stats;
+    bool prediction;
+    BreakPredictionSession *prediction_session;
+    bool prediction_open[CORE_APP_NET_MAX_CONNECTIONS];
+    u8 prediction_bodies[CORE_APP_NET_MAX_CONNECTIONS][CORE_APP_PREDICTION_STATE_BYTES];
+    u64 prediction_sent_tick[CORE_APP_NET_MAX_CONNECTIONS];
+    CoreAppNetPredictionStats prediction_stats;
     CoreAppNetStats stats;
 };
 
@@ -827,6 +839,7 @@ static void net_world_finish_transition(CoreAppNetTransport *t, u32 slot) {
 }
 
 static void net_release_slot(CoreAppNetTransport *t, u32 slot, bool close_connection);
+static void net_prediction_close(CoreAppNetTransport *t, u32 slot);
 
 static void net_world_reject_admission(CoreAppNetTransport *t, u32 slot) {
     if (!t->world_admission_pending[slot]) return;
@@ -1012,6 +1025,7 @@ static void net_world_close(CoreAppNetTransport *t, u32 slot) {
 static void net_release_slot(CoreAppNetTransport *t, u32 slot, bool close_connection) {
     net_voice_release(t, slot);
     net_aspect_close(t, slot);
+    net_prediction_close(t, slot);
     net_world_close(t, slot);
     if (close_connection) {
         (void)break_session_manager_close(t->manager, t->keys[slot], 0u);
@@ -1420,6 +1434,7 @@ static void net_close_slot(CoreAppNetTransport *t, u32 i) {
     t->authenticated[i] = false;
     if (t->closing[i]) return;
     net_aspect_close(t, i);
+    net_prediction_close(t, i);
     net_world_close(t, i);
     t->closing[i] = true;
     (void)break_session_manager_close(t->manager, t->keys[i], 0u);
@@ -1453,6 +1468,80 @@ static void net_sync_sessions(CoreAppNetTransport *t, u32 tick) {
     }
 }
 
+/* Prediction channel: one body per connection, advanced only by inputs the
+ * break_prediction_session inbox hands over in tick order. A step that
+ * refuses an input (out of range) stops the batch; the body stays as it was. */
+static bool net_prediction_apply(void *user, BreakConnectionKey connection, u64 tick,
+                                 const void *input) {
+    CoreAppNetTransport *t = (CoreAppNetTransport *)user;
+    int slot = net_slot_find(t, connection);
+    (void)tick;
+    /* the session only applies inputs for connections net_prediction_open
+     * opened, so a known key always has prediction_open set */
+    if (slot < 0) return false;
+    return core_app_prediction_step(NULL, t->prediction_bodies[slot], input,
+                                    t->prediction_bodies[slot]);
+}
+
+static bool net_prediction_create(CoreAppNetTransport *t) {
+    BreakPredictionSessionConfig config;
+    memset(&config, 0, sizeof(config));
+    config.reactor = t->reactor;
+    config.max_connections = CORE_APP_NET_MAX_CONNECTIONS;
+    config.input_size = CORE_APP_PREDICTION_INPUT_BYTES;
+    config.state_size = CORE_APP_PREDICTION_STATE_BYTES;
+    config.apply = net_prediction_apply;
+    config.apply_user = t;
+    t->prediction_session = break_prediction_session_create(&config);
+    return t->prediction_session != NULL &&
+           break_prediction_session_attach(t->prediction_session, t->manager);
+}
+
+static bool net_prediction_open(CoreAppNetTransport *t, u32 slot, BreakConnectionKey key) {
+    if (!t->prediction) return true;
+    if (!break_prediction_session_open(t->prediction_session, key, 1u)) return false;
+    memset(t->prediction_bodies[slot], 0, sizeof(t->prediction_bodies[slot]));
+    t->prediction_sent_tick[slot] = 0u;
+    t->prediction_open[slot] = true;
+    t->prediction_stats.opened++;
+    return true;
+}
+
+static void net_prediction_close(CoreAppNetTransport *t, u32 slot) {
+    if (!t->prediction_open[slot]) return;
+    (void)break_prediction_session_close(t->prediction_session, t->keys[slot]);
+    t->prediction_open[slot] = false;
+    t->prediction_stats.closed++;
+}
+
+static void net_prediction_close_all(CoreAppNetTransport *t) {
+    for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) net_prediction_close(t, i);
+}
+
+static void net_prediction_destroy(CoreAppNetTransport *t) {
+    break_prediction_session_destroy(t->prediction_session);
+    t->prediction_session = NULL;
+}
+
+/* Sends a snapshot when the body advanced since the last one. A refused
+ * send (queue full) is retried on a later tick. */
+static void net_prediction_send(CoreAppNetTransport *t) {
+    if (!t->prediction) return;
+    for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
+        u64 last = 0u;
+        if (!t->prediction_open[i] || !net_slot_sendable(t, i) ||
+            !break_prediction_session_last_tick(t->prediction_session, t->keys[i], &last) ||
+            last == t->prediction_sent_tick[i]) {
+            continue;
+        }
+        if (break_prediction_session_send_snapshot(t->prediction_session, t->keys[i],
+                                                   t->prediction_bodies[i]) ==
+            BREAK_NET_SEND_OK) {
+            t->prediction_sent_tick[i] = last;
+        }
+    }
+}
+
 static void net_pump(CoreAppNetTransport *t, int timeout_ms, u32 *budget, u32 tick) {
     BreakNetEvent event;
     (void)break_net_reactor_step(t->reactor, timeout_ms);
@@ -1474,9 +1563,11 @@ static void net_pump(CoreAppNetTransport *t, int timeout_ms, u32 *budget, u32 ti
                 continue;
             }
             if (!net_aspect_open(t, (u32)slot, event.connection_key) ||
+                !net_prediction_open(t, (u32)slot, event.connection_key) ||
                 (world_result = net_world_open(t, (u32)slot, event.connection_key)) ==
                     NET_WORLD_TRANSITION_REJECTED) {
                 net_world_close(t, (u32)slot);
+                net_prediction_close(t, (u32)slot);
                 net_aspect_close(t, (u32)slot);
                 t->keys[slot] = 0u;
                 t->closing[slot] = false;
@@ -1977,6 +2068,8 @@ static BreakRuntimeError net_start(void *user, FILE *trace) {
     if (t->world_replication && (!net_world_create(t) || !net_world_register_handlers(t))) {
         goto fail;
     }
+    stage = "prediction";
+    if (t->prediction && !net_prediction_create(t)) goto fail;
     stage = "bind";
     if (SnowEndpointCreate(&endpoint) != SNOW_OK) goto fail;
     status = SnowEndpointSetHost(endpoint, t->host);
@@ -2069,6 +2162,7 @@ static void net_tick(void *user, u32 tick, u64 level_generation,
     for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
         net_voice_play(t, i, now_ms, CORE_APP_NET_VOICE_POPS_PER_TICK);
     }
+    net_prediction_send(t);
     net_send_pending(t);
 }
 
@@ -2122,6 +2216,22 @@ static void net_trace_aspect_stats(CoreAppNetTransport *t) {
              aspect.rejected_packets, aspect.drained_packets, t->aspect_stats.sent_fragments,
              aspect.bridge.completion_count, aspect.bridge.dropped_completions,
              aspect.bridge.duplicate_fragments, aspect.bridge.pending_bytes);
+    net_trace(t, line);
+}
+
+static void net_trace_prediction_stats(CoreAppNetTransport *t) {
+    BreakPredictionSessionStats prediction;
+    char line[512];
+    if (!t->prediction || !t->prediction_session) return;
+    break_prediction_session_stats(t->prediction_session, &prediction);
+    snprintf(line, sizeof(line),
+             "COREAPPTRACE version=1 event=network_prediction_stats opened=%" PRIu64
+             " closed=%" PRIu64 " batches=%" PRIu64 " applied=%" PRIu64 " rejected=%" PRIu64
+             " apply_failed=%" PRIu64 " duplicates=%" PRIu64 " gaps=%" PRIu64
+             " snapshots_sent=%" PRIu64 "\n",
+             t->prediction_stats.opened, t->prediction_stats.closed, prediction.batches,
+             prediction.applied, prediction.rejected, prediction.apply_failed,
+             prediction.duplicates, prediction.gaps, prediction.snapshots_sent);
     net_trace(t, line);
 }
 
@@ -2196,6 +2306,7 @@ static void net_trace_stats(CoreAppNetTransport *t) {
     net_trace(t, line);
     net_trace_aspect_stats(t);
     net_trace_world_stats(t);
+    net_trace_prediction_stats(t);
     if (t->bus) {
         snprintf(line, sizeof(line),
                  "COREAPPTRACE version=1 event=network_bus net_events_published=%" PRIu64
@@ -2244,6 +2355,7 @@ static BreakRuntimeError net_destroy(void *user) {
     if (result != BREAK_RUNTIME_OK) return result;
     net_voice_release_all(t);
     net_aspect_close_all(t);
+    net_prediction_close_all(t);
     net_world_close_all(t);
     t->stats.voice_relay_dropped += t->relay_count;
     t->relay_count = 0u;
@@ -2256,6 +2368,7 @@ static BreakRuntimeError net_destroy(void *user) {
     if (t->manager) break_session_manager_destroy(t->manager);
     t->manager = NULL;
     net_aspect_destroy(t);
+    net_prediction_destroy(t);
     net_world_destroy(t);
     if (reactor_stopped) {
         if (t->reactor) break_net_reactor_destroy(t->reactor);
@@ -2313,6 +2426,7 @@ CoreAppNetTransport *core_app_net_transport_create(const CoreAppNetTransportConf
     t->aspect_replication = config->aspect_replication;
     t->world_replication = config->world_replication;
     t->world_use_legacy_publish = config->world_use_legacy_publish;
+    t->prediction = config->prediction;
     return t;
 }
 

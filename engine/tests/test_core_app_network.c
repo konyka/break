@@ -624,6 +624,88 @@ TEST(voice_mute_encode_refuses_invalid_values_without_writing) {
     for (usize i = 0; i < sizeof(wire); ++i) ASSERT_EQ(wire[i], 0x5au);
 }
 
+static void put_le32(u8 *out, u32 v) {
+    for (u32 i = 0u; i < 4u; ++i) out[i] = (u8)(v >> (8u * i));
+}
+
+static i32 get_le32(const u8 *in) {
+    u32 v = 0u;
+    for (u32 i = 0u; i < 4u; ++i) v |= (u32)in[i] << (8u * i);
+    return (i32)v;
+}
+
+TEST(prediction_step_moves_the_body_with_golden_bytes) {
+    static const u8 k_state[CORE_APP_PREDICTION_STATE_BYTES] = {
+        0x0a, 0x00, 0x00, 0x00, 0xfe, 0xff, 0xff, 0xff}; /* position 10, velocity -2 */
+    u8 input[CORE_APP_PREDICTION_INPUT_BYTES];
+    u8 out[CORE_APP_PREDICTION_STATE_BYTES];
+    ASSERT_EQ(CORE_APP_PREDICTION_STATE_BYTES, 8u);
+    ASSERT_EQ(CORE_APP_PREDICTION_INPUT_BYTES, 4u);
+    put_le32(input, 5u);
+    memset(out, 0xa5, sizeof out);
+    ASSERT_TRUE(core_app_prediction_step(NULL, k_state, input, out));
+    ASSERT_EQ(get_le32(out), 13);     /* 10 + (-2 + 5) */
+    ASSERT_EQ(get_le32(out + 4), 3);
+    put_le32(input, (u32)-CORE_APP_PREDICTION_MAX_ACCEL);
+    ASSERT_TRUE(core_app_prediction_step(NULL, out, input, out)); /* in place */
+    ASSERT_EQ(get_le32(out + 4), 3 - CORE_APP_PREDICTION_MAX_ACCEL);
+    ASSERT_EQ(get_le32(out), 13 + 3 - CORE_APP_PREDICTION_MAX_ACCEL);
+}
+
+TEST(prediction_step_refuses_out_of_range_input_without_writing) {
+    u8 state[CORE_APP_PREDICTION_STATE_BYTES] = {0};
+    u8 input[CORE_APP_PREDICTION_INPUT_BYTES];
+    u8 out[CORE_APP_PREDICTION_STATE_BYTES];
+    memset(out, 0x5a, sizeof out);
+    put_le32(input, (u32)(CORE_APP_PREDICTION_MAX_ACCEL + 1));
+    ASSERT_FALSE(core_app_prediction_step(NULL, state, input, out));
+    put_le32(input, (u32)(-CORE_APP_PREDICTION_MAX_ACCEL - 1));
+    ASSERT_FALSE(core_app_prediction_step(NULL, state, input, out));
+    put_le32(input, 0x80000000u); /* INT32_MIN: negating it would overflow */
+    ASSERT_FALSE(core_app_prediction_step(NULL, state, input, out));
+    for (usize i = 0; i < sizeof out; ++i) ASSERT_EQ(out[i], 0x5au);
+    put_le32(input, (u32)CORE_APP_PREDICTION_MAX_ACCEL);
+    ASSERT_TRUE(core_app_prediction_step(NULL, state, input, out));
+    ASSERT_FALSE(core_app_prediction_step(NULL, NULL, input, out));
+    ASSERT_FALSE(core_app_prediction_step(NULL, state, NULL, out));
+    ASSERT_FALSE(core_app_prediction_step(NULL, state, input, NULL));
+}
+
+TEST(prediction_step_clamps_velocity_and_wraps_position) {
+    u8 state[CORE_APP_PREDICTION_STATE_BYTES];
+    u8 input[CORE_APP_PREDICTION_INPUT_BYTES];
+    u8 out[CORE_APP_PREDICTION_STATE_BYTES];
+    put_le32(state, 0x7ffffff0u);
+    put_le32(state + 4, (u32)(CORE_APP_PREDICTION_MAX_SPEED - 1));
+    put_le32(input, (u32)CORE_APP_PREDICTION_MAX_ACCEL);
+    ASSERT_TRUE(core_app_prediction_step(NULL, state, input, out));
+    ASSERT_EQ(get_le32(out + 4), CORE_APP_PREDICTION_MAX_SPEED);
+    /* positions wrap like u32 instead of overflowing a signed int */
+    ASSERT_EQ((u32)get_le32(out), 0x7ffffff0u + (u32)CORE_APP_PREDICTION_MAX_SPEED);
+    put_le32(state + 4, (u32)(-CORE_APP_PREDICTION_MAX_SPEED + 1));
+    put_le32(input, (u32)-CORE_APP_PREDICTION_MAX_ACCEL);
+    ASSERT_TRUE(core_app_prediction_step(NULL, state, input, out));
+    ASSERT_EQ(get_le32(out + 4), -CORE_APP_PREDICTION_MAX_SPEED);
+}
+
+/* On the peer, the state comes from a server snapshot (untrusted): a stored
+ * velocity at the i32 limits must clamp instead of overflowing. */
+TEST(prediction_step_clamps_a_hostile_stored_velocity) {
+    u8 state[CORE_APP_PREDICTION_STATE_BYTES];
+    u8 input[CORE_APP_PREDICTION_INPUT_BYTES];
+    u8 out[CORE_APP_PREDICTION_STATE_BYTES];
+    put_le32(state, 0u);
+    put_le32(state + 4, 0x7fffffffu);
+    put_le32(input, (u32)CORE_APP_PREDICTION_MAX_ACCEL);
+    ASSERT_TRUE(core_app_prediction_step(NULL, state, input, out));
+    ASSERT_EQ(get_le32(out + 4), CORE_APP_PREDICTION_MAX_SPEED);
+    put_le32(state + 4, 0x80000000u);
+    put_le32(input, (u32)-CORE_APP_PREDICTION_MAX_ACCEL);
+    ASSERT_TRUE(core_app_prediction_step(NULL, state, input, out));
+    ASSERT_EQ(get_le32(out + 4), -CORE_APP_PREDICTION_MAX_SPEED);
+    ASSERT_EQ(get_le32(out), -CORE_APP_PREDICTION_MAX_SPEED);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(snapshot_build_rejects_entity_count_over_capacity);
     RUN_TEST(snapshot_roundtrip_preserves_fields);
@@ -650,4 +732,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(voice_mute_round_trips_with_golden_bytes);
     RUN_TEST(voice_mute_decode_rejects_every_malformed_payload);
     RUN_TEST(voice_mute_encode_refuses_invalid_values_without_writing);
+    RUN_TEST(prediction_step_moves_the_body_with_golden_bytes);
+    RUN_TEST(prediction_step_refuses_out_of_range_input_without_writing);
+    RUN_TEST(prediction_step_clamps_velocity_and_wraps_position);
+    RUN_TEST(prediction_step_clamps_a_hostile_stored_velocity);
 TEST_MAIN_END()

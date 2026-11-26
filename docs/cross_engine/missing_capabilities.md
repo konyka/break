@@ -1190,7 +1190,7 @@ authority handoff 和默认全局公平调度仍未交付。正常断连顺序�
 **仍未交付（经本次核对确认）**：
 
 - **权威 simulation 合并 / inbound apply 到权威 World**：入站快照仍只进每连接诊断 World。
-- **预测与回滚**：核心算法已由 `break_prediction` 交付（立即应用输入、快照校正、回滚重放、resync），wire 格式与服务端按序去重的输入收件箱已由 `break_prediction_wire` 交付（见 `docs/design/client_prediction.md` 第 5 节）；服务端延迟补偿已由 `break_lag_compensation` 交付（见 `docs/design/lag_compensation.md`）；远端实体的快照插值已由 `break_snapshot_interp` 交付（`client_prediction.md` 第 6 节）；两种报文已登记为 `break_net` 消息 `0x400c`/`0x400d`（第 7 节）；服务端的会话层收发接线已由 `break_prediction_session` 交付（第 8 节）；预测器绑定到 ECS World 组件、服务端权威 step、从 `break_world_session` 增量所应用的镜像 World 校正，已由 `break_prediction_world` 交付（第 9 节）；在 `core_app` 中启用仍未实现。
+- **预测与回滚**：核心算法已由 `break_prediction` 交付（立即应用输入、快照校正、回滚重放、resync），wire 格式与服务端按序去重的输入收件箱已由 `break_prediction_wire` 交付（见 `docs/design/client_prediction.md` 第 5 节）；服务端延迟补偿已由 `break_lag_compensation` 交付（见 `docs/design/lag_compensation.md`）；远端实体的快照插值已由 `break_snapshot_interp` 交付（`client_prediction.md` 第 6 节）；两种报文已登记为 `break_net` 消息 `0x400c`/`0x400d`（第 7 节）；服务端的会话层收发接线已由 `break_prediction_session` 交付（第 8 节）；预测器绑定到 ECS World 组件、服务端权威 step、从 `break_world_session` 增量所应用的镜像 World 校正，已由 `break_prediction_world` 交付（第 9 节）；`core_app --prediction` 已在服务端启用，经真实 TLS loopback 验证（每连接一个非关卡物体）；改用关卡中的真实用户实体依赖权威 simulation 合并，仍未实现。
 - **共享 live World**：跨连接共享的是 immutable snapshot，不是可变 `World *`。
 - **完整资产链**、跨 World 资产依赖解析：未实现。
 - **可靠的每 epoch 广播**：当前为非可靠，允许中间 epoch coalesce。

@@ -11,10 +11,11 @@
  * "voice-relay" runs the two relay peers; "voice-mute" runs the two mute
  * peers; "voice-flood" runs the two rate-limit peers; "aspect" exchanges
  * BRFG/BRA1 packets with the optional aspect transport; "world" exchanges
- * BRWD/BRWC packets with the optional World transport.
+ * BRWD/BRWC packets with the optional World transport; "prediction" sends
+ * prediction input batches and checks the server's snapshots.
  *
  * Usage: test_core_app_net_client PORT_FILE REPORT_FILE
- *        [late-auth|voice|voice-relay|voice-mute|voice-flood|single|aspect|world]
+ *        [late-auth|voice|voice-relay|voice-mute|voice-flood|single|aspect|world|prediction]
  *        [--trace PATH]
  * The PSK is read from CORE_APP_TEST_PSK (64 hex digits). With --trace the
  * peer writes its own core_app-format trace: one
@@ -32,6 +33,7 @@
 #include <network/break_net_message_registry.h>
 #include <network/break_online_aspect.h>
 #include <network/break_online_voice.h>
+#include <network/break_prediction_wire.h>
 #include <network/break_replication_wire.h>
 #include <physics/physics_sync.h>
 #include <snow/network_buffer.h>
@@ -1694,6 +1696,159 @@ report:
 
 /* A: authenticated peer. Receives snapshots, then sends hostile snapshots
  * that must only change counters and must not close the session. */
+/* Prediction peer (MODE=prediction). Ticks 1..40 carry accelerations from
+ * a fixed pattern; the peer predicts with core_app_prediction_step and sends
+ * every pending input in each batch, so batches overlap. Before the real
+ * batches it sends one that does not decode and one whose only input is out
+ * of range; afterwards it resends an old batch whole. Each server snapshot
+ * (0x400d) must equal the peer's own predicted state for its tick. */
+#define NET_CLIENT_PREDICTION_TICKS 40u
+
+static i32 prediction_accel(u32 tick) {
+    return (i32)(tick % 7u) - 3;
+}
+
+static bool prediction_send_batch(NetClient *c, BreakPrediction *p) {
+    u8 wire[BREAK_PREDICTION_WIRE_INPUT_SIZE(BREAK_PREDICTION_WIRE_MAX_BATCH,
+                                             CORE_APP_PREDICTION_INPUT_BYTES)];
+    usize len = 0u;
+    if (break_prediction_wire_encode_inputs(p, wire, sizeof(wire), &len) != BREAK_PREDICTION_OK)
+        return false;
+    if (len == 0u) return true;
+    return client_send(c, BREAK_NET_MESSAGE_ID_PREDICTION_INPUT, BREAK_PREDICTION_WIRE_VERSION,
+                       wire, len);
+}
+
+/* Reads snapshots until one for `want_tick` arrives; every snapshot read is
+ * reconciled and compared with the peer's own history. */
+static bool prediction_wait_tick(NetClient *c, BreakPrediction *p,
+                                 const u8 history[][CORE_APP_PREDICTION_STATE_BYTES],
+                                 u64 want_tick, u32 *snapshots, u32 *matched,
+                                 u32 *mispredicted, u64 *last_tick, u32 timeout_ms) {
+    u64 deadline = now_ms() + timeout_ms;
+    while (now_ms() < deadline) {
+        BreakNetEnvelope env;
+        BreakPredictionSnapshot snap;
+        BreakPredictionReconcile rep;
+        int got = client_recv(c, &env, (u32)(deadline - now_ms()) + 1u);
+        if (got < 0) return false;
+        if (got == 0) continue;
+        if (env.message_id != BREAK_NET_MESSAGE_ID_PREDICTION_SNAPSHOT) continue;
+        if (env.protocol_version != BREAK_PREDICTION_WIRE_VERSION ||
+            break_prediction_wire_decode_snapshot((const u8 *)env.payload, env.payload_size,
+                                                  CORE_APP_PREDICTION_STATE_BYTES,
+                                                  &snap) != BREAK_PREDICTION_OK ||
+            snap.tick > NET_CLIENT_PREDICTION_TICKS) {
+            return false;
+        }
+        (*snapshots)++;
+        if (memcmp(snap.state, history[snap.tick], CORE_APP_PREDICTION_STATE_BYTES) == 0)
+            (*matched)++;
+        if (snap.tick > *last_tick) *last_tick = snap.tick;
+        if (break_prediction_reconcile(p, snap.tick, snap.state, &rep) == BREAK_PREDICTION_OK &&
+            rep.mispredicted) {
+            (*mispredicted)++;
+        }
+        if (snap.tick >= want_tick) return true;
+    }
+    return false;
+}
+
+static void scenario_prediction(void) {
+    NetClient a;
+    BreakPrediction *p = NULL;
+    BreakPredictionConfig cfg;
+    static const u8 zero[CORE_APP_PREDICTION_STATE_BYTES] = {0};
+    u8 history[NET_CLIENT_PREDICTION_TICKS + 1u][CORE_APP_PREDICTION_STATE_BYTES];
+    u8 resend[BREAK_PREDICTION_WIRE_INPUT_SIZE(BREAK_PREDICTION_WIRE_MAX_BATCH,
+                                               CORE_APP_PREDICTION_INPUT_BYTES)];
+    usize resend_len = 0u;
+    u32 inputs = 0u;
+    u32 snapshots = 0u;
+    u32 matched = 0u;
+    u32 mispredicted = 0u;
+    u64 last_tick = 0u;
+    bool ok;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.state_size = CORE_APP_PREDICTION_STATE_BYTES;
+    cfg.input_size = CORE_APP_PREDICTION_INPUT_BYTES;
+    cfg.capacity = 64u;
+    cfg.step = core_app_prediction_step;
+    cfg.initial_tick = 0u;
+    cfg.initial_state = zero;
+    memcpy(history[0], zero, sizeof(zero));
+    check(break_prediction_create(&cfg, &p) == BREAK_PREDICTION_OK, "prediction_local_predictor");
+    check(client_open(&a), "prediction_tls_challenge");
+    check(client_auth(&a, g_psk), "prediction_auth_sent");
+    ok = p != NULL && g_failures == 0;
+    if (ok) {
+        CoreAppSnapshot snapshot;
+        ok = client_next_snapshot(&a, &snapshot, 15000u) == 1;
+        check(ok, "prediction_authenticated_snapshot");
+    }
+    if (ok) {
+        /* hostile batches first: neither may advance the server's body */
+        static const u8 garbage[8] = {'B', 'R', 'P', 'I', 9u, 1u, 4u, 0u};
+        u8 bad[BREAK_PREDICTION_WIRE_INPUT_SIZE(1u, CORE_APP_PREDICTION_INPUT_BYTES)];
+        u32 hostile = (u32)(CORE_APP_PREDICTION_MAX_ACCEL + 1);
+        memcpy(bad, "BRPI", 4u);
+        bad[4] = BREAK_PREDICTION_WIRE_VERSION;
+        bad[5] = 1u;
+        bad[6] = (u8)CORE_APP_PREDICTION_INPUT_BYTES;
+        bad[7] = 0u;
+        for (u32 i = 0u; i < 8u; ++i) bad[8u + i] = (u8)(i == 0u ? 1u : 0u);
+        for (u32 i = 0u; i < 4u; ++i) bad[16u + i] = (u8)(hostile >> (8u * i));
+        ok = client_send(&a, BREAK_NET_MESSAGE_ID_PREDICTION_INPUT, BREAK_PREDICTION_WIRE_VERSION,
+                         garbage, sizeof(garbage)) &&
+             client_send(&a, BREAK_NET_MESSAGE_ID_PREDICTION_INPUT, BREAK_PREDICTION_WIRE_VERSION,
+                         bad, sizeof(bad));
+        check(ok, "prediction_sent_hostile_batches");
+    }
+    for (u32 tick = 1u; ok && tick <= NET_CLIENT_PREDICTION_TICKS; ++tick) {
+        u8 in[CORE_APP_PREDICTION_INPUT_BYTES];
+        u32 accel = (u32)prediction_accel(tick);
+        for (u32 i = 0u; i < 4u; ++i) in[i] = (u8)(accel >> (8u * i));
+        ok = break_prediction_apply_input(p, tick, in) == BREAK_PREDICTION_OK;
+        if (ok) {
+            memcpy(history[tick], break_prediction_predicted_state(p),
+                   CORE_APP_PREDICTION_STATE_BYTES);
+            inputs++;
+            if (tick % 4u == 0u) ok = prediction_send_batch(&a, p);
+            if (ok && tick == 8u &&
+                break_prediction_wire_encode_inputs(p, resend, sizeof(resend), &resend_len) !=
+                    BREAK_PREDICTION_OK) {
+                ok = false;
+            }
+            if (ok && tick % 8u == 0u) {
+                ok = prediction_wait_tick(&a, p, (const u8(*)[CORE_APP_PREDICTION_STATE_BYTES])history,
+                                          tick, &snapshots, &matched, &mispredicted, &last_tick,
+                                          10000u);
+            }
+        }
+    }
+    check(ok, "prediction_inputs_acknowledged_in_order");
+    if (ok && resend_len > 0u) {
+        /* a whole old batch again: duplicates only, the body must not move */
+        ok = client_send(&a, BREAK_NET_MESSAGE_ID_PREDICTION_INPUT, BREAK_PREDICTION_WIRE_VERSION,
+                         resend, resend_len);
+        if (ok) {
+            CoreAppClockProbe probe = {CORE_APP_CLOCK_PROBE_REQUEST, 0u, 0u, 0u};
+            CoreAppClockProbe reply;
+            u64 t3 = 0u;
+            probe.t0 = now_us();
+            ok = send_clock_probe(&a, &probe, CORE_APP_CLOCK_PROBE_BYTES) &&
+                 client_next_clock_reply(&a, probe.t0, &reply, &t3, 10000u) == 1;
+        }
+        check(ok, "prediction_resent_batch_handled_before_close");
+    }
+    check(break_prediction_pending_count(p) == 0u, "prediction_every_input_confirmed");
+    check_welcome(&a, "prediction");
+    fprintf(g_report, "prediction inputs=%u snapshots=%u matched=%u mispredicted=%u last_tick=%llu\n",
+            inputs, snapshots, matched, mispredicted, (unsigned long long)last_tick);
+    client_close(&a);
+    break_prediction_destroy(p);
+}
+
 static void scenario_authenticated(void) {
     NetClient a;
     CoreAppSnapshot first, later, forged;
@@ -2322,6 +2477,7 @@ int main(int argc, char **argv) {
     bool single = argc == 4 && strcmp(argv[3], "single") == 0;
     bool aspect = argc == 4 && strcmp(argv[3], "aspect") == 0;
     bool world = argc == 4 && strcmp(argv[3], "world") == 0;
+    bool prediction = argc == 4 && strcmp(argv[3], "prediction") == 0;
     const char *trace_path = NULL;
     /* --trace PATH may follow the arguments above */
     for (int i = 3; i + 1 < argc; ++i) {
@@ -2340,10 +2496,11 @@ int main(int argc, char **argv) {
         single = argc > 4 && strcmp(argv[3], "single") == 0;
         aspect = argc > 4 && strcmp(argv[3], "aspect") == 0;
         world = argc > 4 && strcmp(argv[3], "world") == 0;
+        prediction = argc > 4 && strcmp(argv[3], "prediction") == 0;
     } else if (argc != 3 && !late_auth && !voice && !voice_relay && !voice_mute &&
-               !voice_flood && !single && !aspect && !world) {
+               !voice_flood && !single && !aspect && !world && !prediction) {
         fprintf(stderr, "usage: test_core_app_net_client PORT_FILE REPORT_FILE"
-                        " [late-auth|voice|voice-relay|voice-mute|voice-flood|single|aspect|world]"
+                        " [late-auth|voice|voice-relay|voice-mute|voice-flood|single|aspect|world|prediction]"
                         " [--trace PATH]\n");
         return 2;
     }
@@ -2374,6 +2531,8 @@ int main(int argc, char **argv) {
         scenario_aspect();
     } else if (g_failures == 0 && world) {
         scenario_world();
+    } else if (g_failures == 0 && prediction) {
+        scenario_prediction();
     } else if (g_failures == 0) {
         scenario_authenticated();
         scenario_unauthenticated();

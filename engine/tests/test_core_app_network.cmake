@@ -54,6 +54,12 @@
 # and delta BRWD targets only at drain, then returns a full, a base-mismatched
 # delta and a recovery full. BRWC ACK/NEED_FULL controls barrier server drain.
 #
+# MODE=prediction: --prediction server. The peer predicts its own body with
+# core_app_prediction_step and sends input batches (0x400c) that overlap and
+# repeat ticks; one batch carries an out-of-range input and one does not
+# decode. Every server snapshot (0x400d) must equal the peer's own state
+# for that tick, and the networked trace must equal the offline one.
+#
 # MODE=offline: the same scenario twice without --network must give
 # byte-identical traces with no network line. In a build without the
 # transport, nm must find no break_net_/break_session_/snow_/Snow symbol.
@@ -194,7 +200,8 @@ endif()
 if(NOT MODE STREQUAL "loopback" AND NOT MODE STREQUAL "late_auth" AND NOT MODE STREQUAL "voice"
    AND NOT MODE STREQUAL "voice_relay" AND NOT MODE STREQUAL "voice_relay_off"
    AND NOT MODE STREQUAL "voice_mute" AND NOT MODE STREQUAL "voice_flood"
-   AND NOT MODE STREQUAL "single" AND NOT MODE STREQUAL "aspect" AND NOT MODE STREQUAL "world")
+   AND NOT MODE STREQUAL "single" AND NOT MODE STREQUAL "aspect" AND NOT MODE STREQUAL "world"
+   AND NOT MODE STREQUAL "prediction")
     message(FATAL_ERROR "unknown MODE=${MODE}")
 endif()
 foreach(var NET_CLIENT TLS_CERT TLS_KEY)
@@ -225,6 +232,8 @@ elseif(MODE STREQUAL "aspect")
     set(client_mode aspect)
 elseif(MODE STREQUAL "world")
     set(client_mode world)
+elseif(MODE STREQUAL "prediction")
+    set(client_mode prediction)
 endif()
 set(relay_args "")
 if(MODE STREQUAL "voice_relay" OR MODE STREQUAL "voice_mute" OR MODE STREQUAL "voice_flood")
@@ -238,11 +247,15 @@ set(world_args "")
 if(MODE STREQUAL "world")
     set(world_args --world-replication)
 endif()
+set(prediction_args "")
+if(MODE STREQUAL "prediction")
+    set(prediction_args --prediction)
+endif()
 execute_process(
     COMMAND ${CORE_APP_RUNNER} "${CORE_APP}" ${common_args} --trace "${WORK_DIR}/network.trace"
         --network --bind 127.0.0.1:0 --tls-cert "${TLS_CERT}" --tls-key "${TLS_KEY}"
         --psk-env CORE_APP_TEST_PSK --port-file "${WORK_DIR}/server.port"
-        --net-poll-ms ${poll_ms} ${relay_args} ${aspect_args} ${world_args}
+        --net-poll-ms ${poll_ms} ${relay_args} ${aspect_args} ${world_args} ${prediction_args}
     COMMAND "${NET_CLIENT}" "${WORK_DIR}/server.port" "${WORK_DIR}/client.report"
         ${client_mode} --trace "${WORK_DIR}/peer.trace"
     RESULTS_VARIABLE results
@@ -408,6 +421,49 @@ if(NOT MODE STREQUAL "aspect" AND trace MATCHES "event=network_aspect_stats")
 endif()
 if(NOT MODE STREQUAL "world" AND trace MATCHES "event=network_world_stats")
     message(FATAL_ERROR "default-off run emitted World statistics")
+endif()
+if(NOT MODE STREQUAL "prediction" AND trace MATCHES "event=network_prediction_stats")
+    message(FATAL_ERROR "default-off run emitted prediction statistics")
+endif()
+if(MODE STREQUAL "prediction")
+    stat_value("${stats}" authenticated authenticated)
+    if(NOT authenticated EQUAL 1)
+        message(FATAL_ERROR "only the prediction peer connects in MODE=prediction: ${stats}")
+    endif()
+    if(NOT trace MATCHES "COREAPPTRACE version=1 event=network_prediction_stats[^\n]*")
+        message(FATAL_ERROR "the enabled server did not report network_prediction_stats")
+    endif()
+    set(prediction_stats "${CMAKE_MATCH_0}")
+    message(STATUS "${prediction_stats}")
+    # 40 inputs applied once each; the out-of-range input stops its batch
+    # (apply_failed), the undecodable batch is rejected
+    foreach(pair opened=1 closed=1 applied=40 rejected=1 apply_failed=1)
+        if(NOT prediction_stats MATCHES " ${pair}( |$)")
+            message(FATAL_ERROR "expected ${pair}: ${prediction_stats}")
+        endif()
+    endforeach()
+    expect_at_least("${prediction_stats}" duplicates 1)
+    expect_at_least("${prediction_stats}" snapshots_sent 1)
+    # a snapshot goes out only when the body advanced since the last one
+    stat_value("${prediction_stats}" snapshots_sent snapshots_sent)
+    stat_value("${prediction_stats}" batches batches)
+    if(snapshots_sent GREATER batches)
+        message(FATAL_ERROR "more snapshots than accepted batches: ${prediction_stats}")
+    endif()
+    if(NOT report MATCHES "prediction inputs=40 snapshots=([0-9]+) matched=([0-9]+) mispredicted=0 last_tick=40\n")
+        message(FATAL_ERROR "prediction peer did not converge with the server:\n${report}")
+    endif()
+    if(NOT CMAKE_MATCH_1 EQUAL CMAKE_MATCH_2 OR CMAKE_MATCH_1 LESS 1)
+        message(FATAL_ERROR "every server snapshot must match the peer's prediction: ${report}")
+    endif()
+    run_offline(offline)
+    read_core_lines("${WORK_DIR}/network.trace" networked)
+    read_core_lines("${WORK_DIR}/offline.trace" offline)
+    if(NOT networked STREQUAL offline)
+        message(FATAL_ERROR "prediction input changed the non-network trace")
+    endif()
+    message(STATUS "core_app prediction loopback contract passed")
+    return()
 endif()
 if(MODE STREQUAL "world")
     stat_value("${stats}" authenticated authenticated)

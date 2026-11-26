@@ -334,6 +334,30 @@ CoreAppSnapshotOutcome core_app_voice_mute_decode(const u8 *payload, size_t size
     return CORE_APP_SNAPSHOT_OK;
 }
 
+bool core_app_prediction_step(void *user, const void *state, const void *input,
+                              void *out_state) {
+    const u8 *s = (const u8 *)state;
+    i32 accel;
+    i32 velocity;
+    u32 position;
+    (void)user;
+    if (!state || !input || !out_state) return false;
+    accel = (i32)get_u32((const u8 *)input);
+    if (accel > CORE_APP_PREDICTION_MAX_ACCEL || accel < -CORE_APP_PREDICTION_MAX_ACCEL)
+        return false;
+    velocity = (i32)get_u32(s + 4);
+    /* the stored state may come from a peer: clamp before adding */
+    if (velocity > CORE_APP_PREDICTION_MAX_SPEED) velocity = CORE_APP_PREDICTION_MAX_SPEED;
+    if (velocity < -CORE_APP_PREDICTION_MAX_SPEED) velocity = -CORE_APP_PREDICTION_MAX_SPEED;
+    velocity += accel;
+    if (velocity > CORE_APP_PREDICTION_MAX_SPEED) velocity = CORE_APP_PREDICTION_MAX_SPEED;
+    if (velocity < -CORE_APP_PREDICTION_MAX_SPEED) velocity = -CORE_APP_PREDICTION_MAX_SPEED;
+    position = get_u32(s) + (u32)velocity;
+    put_u32((u8 *)out_state, position);
+    put_u32((u8 *)out_state + 4, (u32)velocity);
+    return true;
+}
+
 void core_app_snapshot_outbox_init(CoreAppSnapshotOutbox *outbox) {
     if (!outbox) return;
     memset(outbox, 0, sizeof(*outbox));

@@ -1886,3 +1886,51 @@ arm64 lane 新增 `test_core_app_network`（25/25）和 `test_core_app_network_o
 仍未完成：**权威 simulation 合并、inbound apply 到权威 World、预测/回滚、共享 live World、跨 World 持久身份、AOI 裁剪、自动换级、完整资产链、可靠每 epoch 广播、指标协议与告警**。本项不预写远端或其他平台验收。
 
 更新（2026-11-26）：指标协议与告警已在 `runtime_core` 交付（注册表、六处子系统导出、阈值/持续/边沿告警、历史与窗口增量、严格解码、HTTP 推送与告警投递，见 `docs/design/runtime_metrics.md`）；跨 World 持久身份的映射表已在 `break_ecs_replication` 交付（见 `docs/design/ecs_snapshot_replication_aoi.md`「跨 World 持久身份」），但二者都尚未接入 core_app。其余各项不变。
+
+## 补充（2026-11-27）：可选的客户端预测通道 `--prediction`
+
+- **配置**：`core_app --network ... --prediction` 开启，默认关闭。单独使用会走既有 `network options require --network` 错误，`--help` 列出该选项。关闭时不创建预测会话，也不输出 `network_prediction_stats`。
+- **模型**：每个连接对应一个由服务端拥有的物体，状态为 8 字节（i32 位置、i32 速度，小端），输入为 4 字节（i32 加速度）。step 函数 `core_app_prediction_step` 位于 `core_app_network`，客户端和服务端共用，规则见 `core_app_network.h`「Prediction channel」：速度加上加速度后限制在 ±1000，位置按 u32 回绕累加。加速度超出 ±8 时 step 返回 false，服务端在这里拒绝对端不可能合法发送的输入。这个物体不是关卡实体，所以不会改变 simulation trace。
+- **服务端接线**（`core_app_net_transport.c`）：
+  - 启动时创建 `break_prediction_session` 并挂到会话管理器上，消息为 `0x400c`。
+  - 连接打开时，在 aspect 之后、World 之前打开预测槽，物体清零，第一个输入 tick 为 1；关闭、释放、销毁时依次关闭。
+  - 收件箱按 tick 顺序把新输入交给 `net_prediction_apply`，由它对该连接的物体执行 step。
+  - 每个 tick，对已认证且收到过欢迎消息的连接，只要物体在上次快照后前进过，就发送一个 `0x400d` 快照；发送被拒绝时下一个 tick 重试。
+- **安全**：快照里的状态对客户端来说是不可信数据。测试 `prediction_step_clamps_a_hostile_stored_velocity` 发现，存储的速度接近 i32 上限时，加法会发生有符号溢出（UBSan 报告）。现在先把存储的速度限制在范围内再相加。
+- **trace**：`network_prediction_stats` 包含 opened、closed、batches、applied、rejected、apply_failed、duplicates、gaps、snapshots_sent。
+
+**测试**：
+- `test_core_app_network` 新增 4 例，共 29 例，先以链接失败为 RED：
+  - golden 字节。
+  - 越界输入不写输出。
+  - 速度限制与位置回绕。
+  - 恶意存储速度。
+- `test_core_app_target_contract` 检查 `--prediction` 需要 `--network`，并出现在 `--help` 中。
+- 新增真实 loopback `test_core_app_network_prediction`（MODE=prediction），客户端预测 40 个 tick，每 4 个 tick 发一次批次，批次彼此重叠。在这些批次之前，先发一个无法解码的批次和一个唯一输入越界的批次；结束后整批重发第 8 tick 时的旧批次。驱动脚本检查：
+  - opened=1、closed=1、applied=40、rejected=1、apply_failed=1。
+  - 至少 1 个重复输入、至少 1 个快照，快照数不超过被接受的批次数。
+  - 客户端报告 `inputs=40 matched=snapshots mispredicted=0 last_tick=40`，即每个快照都与客户端自己预测的该 tick 状态逐字节相等。
+  - 联网 trace 与离线 trace 相同。
+
+实测为 batches=11、duplicates=28、snapshots_sent=9、matched=9。
+
+**变异**：
+- step 函数 17 项，16 项判红。存活的一项只交换两次写出的先后顺序，属于等价变异。
+- 传输层：
+  - 判红：apply 忽略 step 的结果、第一个输入 tick 改为 2、去掉 tick 驱动的快照发送、关闭计数不增。
+  - 存活后补断言判红：去掉「物体未前进则不发送」的检查。现在要求快照数不超过批次数。
+  - 等价变异，检查已删除：apply 中检查 `prediction_open`。会话只对 `net_prediction_open` 打开过的连接调用 apply。
+  - 等价变异，检查保留：
+    - 发送前检查 `net_slot_sendable`：未认证的连接收不到输入，物体不会前进，也就不会触发发送。保留它，是为了让「只向已认证且已欢迎的连接发送」不依赖这条间接推理，这与其他通道的规则一致。
+    - `slot < 0` 时返回 false（已加注释）：会话只对已打开的连接调用 apply，这些连接一定有槽。
+
+**验证**：
+- 联网构建（`CORE_APP_ENABLE_NETWORK=ON`、Snowflake、crypto）下 `-R test_core_app` 55/55。
+- `build-current-vk` 非 fuzz 465/465，fuzz 24/24。
+- Snowflake ASan 构建：相关标签 69/72。失败的 3 项（lifecycle_load_unload、gpu_vulkan、crash_context）报 `ASan runtime does not come first`，在不带本改动的 HEAD 上同样失败。
+- Windows 实机 MSVC 全量构建通过，`test_core_app_network` 29/29，相关测试 62/62。Windows 构建未开联网 `core_app`，loopback 不在其中运行。
+
+仍未完成：客户端侧的表现 World 与镜像 World 接线（库层能力见 `docs/design/client_prediction.md` 第 9 节）；把预测物体换成关卡中真实的用户实体，这需要先完成权威 simulation 合并。
+
+本提交自身的远端工作流结果不在此预写。
+
