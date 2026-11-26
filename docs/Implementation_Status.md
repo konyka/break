@@ -14177,3 +14177,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：`test_runtime_metrics.c` 新增 3 用例（encode→decode 逐项 round-trip 含 UINT64_MAX、15 类畸形输入外加内嵌 NUL 逐条整体拒绝且不写输出、边界值与容量不足/格式错误优先）。先以未声明函数编译失败为 RED。三项变异判红：去掉前导零校验、去掉溢出校验、去掉重复 name 校验。
 - **验证**：`test_runtime_metrics` 28/28（normal/ASan+UBSan/TSan 均 28/28）。
 - **边界**：仍无把字节送到采集器的传输，也无告警投递。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。本收据提交自身的远端工作流结果不在此预写。
+
+## 阈值告警与历史采样切片的远端收据（2026-11-26）
+
+- 推送 `63f8563c..c65a642b`（fast-forward），含 `24261fa6`（阈值告警求值）、`97271caa`（有界历史采样）与 IO 收据提交 `c65a642b`。
+- 远端 CI `45805244713` 结论 **success**：25 success、3 条件 skip（Steam Deck、Proton、`lane-gpu-runtime-windows-d3d12`），0 失败；四条 macOS lane、`Linux arm64 cross-build + QEMU tests (GCC)` 均 success（`test_runtime_metrics` 随 QEMU 运行）。
+- 独立的 windows-d3d12 工作流 `45805244598` success。
+- 边界同两切片收据。
