@@ -1083,8 +1083,9 @@ static void net_world_publish_runtime(CoreAppNetTransport *t) {
     usize outbound_before;
     usize outbound_after;
     if (!t->world_adapter || !t->world_publication || !t->world_level_initialized) return;
-    /* Fragments leave the reactor while the adapter drains below, so the legacy
-     * counter is sampled around the whole path, not just the publish call. */
+    /* Fragments leave the reactor while the adapter drains below, so the counter
+     * is the reactor outbound growth across this whole path. That also includes
+     * any control retry the same drain sends; it is not an exact fragment count. */
     outbound_before = break_net_reactor_outbound_count(t->reactor);
     for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
         BreakWorldSessionSenderState state;

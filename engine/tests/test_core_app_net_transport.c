@@ -2593,6 +2593,79 @@ TEST(world_publication_survives_adapter_destroy_timeout) {
     aspect_fixture_dispose(&fixture);
 }
 
+TEST(world_publication_reopen_starts_unready_with_new_epoch) {
+    AspectTransportFixture fixture;
+    BreakRuntimeWorldSession *adapter;
+    BreakRuntimeWorldConnectionSnapshot snapshot;
+    WorldAttempt attempt;
+    u64 old_epoch = 0u;
+    const BreakConnectionKey key = 0x940fu;
+    ASSERT_TRUE(world_fixture_start(&fixture, "core_app_world_publication_reopen.port", true,
+                                    false));
+    ASSERT_TRUE(world_fixture_open(&fixture, key));
+    ASSERT_TRUE(world_fixture_welcome(&fixture, key));
+    world_clear_outbound(&fixture);
+    world_fixture_tick(&fixture);
+    adapter = core_app_net_transport_world_adapter(fixture.transport);
+    ASSERT_TRUE(break_runtime_world_session_connection_snapshots(adapter, &snapshot, 1u) == 1u);
+    ASSERT_TRUE(snapshot.publish_ready);
+    ASSERT_TRUE(break_runtime_world_session_connection_epoch(adapter, key, &old_epoch));
+    ASSERT_NOT_NULL(core_app_net_transport_world_reopen_for_test(fixture.transport, key));
+    ASSERT_TRUE(break_runtime_world_session_connection_snapshots(adapter, &snapshot, 1u) == 1u);
+    ASSERT_NEQ(snapshot.connection_epoch, old_epoch);
+    ASSERT_FALSE(snapshot.publish_ready);
+    world_clear_outbound(&fixture);
+    world_fixture_tick(&fixture);
+    ASSERT_TRUE(break_runtime_world_session_connection_snapshots(adapter, &snapshot, 1u) == 1u);
+    ASSERT_TRUE(snapshot.publish_ready);
+    ASSERT_TRUE(world_collect_attempt(&fixture, key, NULL, 0u, &attempt));
+    ASSERT_EQ(attempt.kind, BREAK_WORLD_DELTA_WIRE_FULL);
+    ASSERT_EQ(attempt.delta_id, 1u);
+    core_app_net_transport_world_disconnect_for_test(fixture.transport, key);
+    ASSERT_EQ(break_runtime_world_session_connection_snapshots(adapter, NULL, 0u), 0u);
+    ASSERT_TRUE(transport_fixture_destroy(&fixture));
+    aspect_fixture_dispose(&fixture);
+}
+
+TEST(world_publication_notice_overload_recovers_next_tick) {
+    AspectTransportFixture fixture;
+    CoreAppNetWorldTestView view;
+    BreakRuntimeWorldCommand stale;
+    WorldAttempt initial;
+    const BreakConnectionKey key = 0x9410u;
+    u32 queued = 0u;
+    ASSERT_TRUE(world_fixture_start(&fixture, "core_app_world_publication_overload.port", true,
+                                    false));
+    ASSERT_TRUE(world_fixture_open(&fixture, key));
+    ASSERT_TRUE(world_fixture_welcome(&fixture, key));
+    world_clear_outbound(&fixture);
+    memset(&stale, 0, sizeof(stale));
+    stale.kind = BREAK_RUNTIME_WORLD_COMMAND_ACK;
+    stale.connection_key = key;
+    stale.connection_epoch = UINT64_C(0xFFFF);
+    stale.level_generation = 9u;
+    stale.delta_id = 1u;
+    stale.target_snapshot_id = 1u;
+    stale.target_tick = 1u;
+    while (core_app_net_transport_world_submit(fixture.transport, &stale, 0u) ==
+           BREAK_RUNTIME_OK) {
+        ASSERT_TRUE(++queued < 1024u);
+    }
+    ASSERT_TRUE(queued != 0u);
+    world_fixture_tick(&fixture);
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    ASSERT_EQ(view.notice_overloads, 1u);
+    ASSERT_EQ(world_outbound_deltas_for(&fixture, key), 0u);
+    world_fixture_tick(&fixture);
+    ASSERT_TRUE(world_collect_attempt(&fixture, key, NULL, 0u, &initial));
+    ASSERT_EQ(initial.kind, BREAK_WORLD_DELTA_WIRE_FULL);
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    ASSERT_EQ(view.notice_overloads, 1u);
+    ASSERT_EQ(view.publish_rejected, 0u);
+    ASSERT_TRUE(transport_fixture_destroy(&fixture));
+    aspect_fixture_dispose(&fixture);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(destroy_reports_stop_timeout_and_keeps_the_reactor);
     RUN_TEST(voice_frame_counts_invalid_and_skipped_frames);
@@ -2636,4 +2709,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(world_publication_restarted_tick_keeps_publishing);
     RUN_TEST(world_publication_legacy_switch_skips_runtime_notice);
     RUN_TEST(world_publication_survives_adapter_destroy_timeout);
+    RUN_TEST(world_publication_reopen_starts_unready_with_new_epoch);
+    RUN_TEST(world_publication_notice_overload_recovers_next_tick);
 TEST_MAIN_END()

@@ -1106,7 +1106,7 @@ authority handoff 和默认全局公平调度仍未交付。正常断连顺序�
 
 ## 第 17 节补充（2026-11-26）：生产 Runtime 发布接线完成，权威 simulation 仍未接入
 
-可选 `--world-replication` 的生产 transport 现在默认经 Runtime adapter 发布：它拥有自己的 publication，按认证状态同步就绪位，每次结构屏障后构建快照、publish、提交 direct notice，由 adapter owner drain 完成 full/delta。逐槽 legacy 发布保留为 `world_use_legacy_publish` 回退位，真实 loopback 在默认 Runtime 路径下的既有计数与 legacy 完全一致。
+可选 `--world-replication` 的生产 transport 现在默认经 Runtime adapter 发布：它拥有自己的 publication，按认证状态同步就绪位，每次结构屏障后构建快照、publish、提交 direct notice，由 adapter owner drain 完成 full/delta。逐槽 legacy 发布保留为 `world_use_legacy_publish` 回退位，真实 loopback 做相等断言的既有计数（full/delta 发布、apply、need_full、rejected、queue_depth、dropped 等）在默认 Runtime 路径下与 legacy 相同，`sent_fragments` 只断言下限。
 
 因此以下缺口的状态发生变化：
 

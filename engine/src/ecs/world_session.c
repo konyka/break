@@ -885,6 +885,7 @@ bool break_world_session_sender_state(const BreakWorldSession *session,
     size_t slot;
     const BreakWorldSessionConnection *state;
     if (!out_state) return false;
+    /* Zeroes the tail padding too; callers and tests compare states with memcmp. */
     memset(out_state, 0, sizeof(*out_state));
     if (!session) return false;
     slot = world_session_connection_index(session, connection);
