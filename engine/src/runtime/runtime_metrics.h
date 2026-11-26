@@ -551,6 +551,42 @@ BreakRuntimeError break_runtime_metrics_retry_drain_timed(
     u64 now_us,
     BreakRuntimeMetricsRetryDrainResult *out_result);
 
+/* Serializes the queue's pending entries, oldest first, so a backlog can be
+ * written to disk and survives a restart. The image is self-describing and
+ * checksummed: "BRKR1" (5), then a little-endian u32 entry count, then each
+ * entry as little-endian u32 attempts, little-endian u32 payload length, and
+ * the payload bytes, then a little-endian CRC-32 (ISO-HDLC) over everything
+ * before it. Deadlines are not saved: a restored entry is due immediately.
+ * Counters other than the per-entry attempt count are process-local and are
+ * not saved.
+ *
+ * OVERLOAD when `capacity` is below the image size: *out_len gets the required
+ * size and `out` is untouched. OK writes exactly that many bytes and sets
+ * *out_len. INVALID on NULL queue/out_len, or NULL out with non-zero capacity.
+ * REJECTED off the owner thread. */
+BreakRuntimeError break_runtime_metrics_retry_save(
+    BreakRuntimeMetricsRetryQueue *queue,
+    void *out,
+    usize capacity,
+    usize *out_len);
+
+/* Appends the entries of a save image to the queue, oldest first, after
+ * whatever it already holds. The image is validated completely before the
+ * queue changes: a bad magic, a truncated image, a count or length that
+ * overruns the buffer, trailing bytes, a payload larger than the queue's
+ * max_payload_bytes, or a CRC mismatch is INVALID with *out_loaded = 0 and the
+ * queue untouched. When the queue fills up, the oldest entries are dropped and
+ * counted in dropped_oldest, exactly as enqueue does. Loaded entries keep their
+ * attempt counts; their deadline is 0, so they are due at once.
+ * *out_loaded receives the number of entries in the image.
+ * INVALID on NULL queue/bytes/out_loaded, or zero len. REJECTED off the owner
+ * thread or while a drain callback is running. */
+BreakRuntimeError break_runtime_metrics_retry_load(
+    BreakRuntimeMetricsRetryQueue *queue,
+    const void *bytes,
+    usize len,
+    u32 *out_loaded);
+
 /* The head entry's backoff deadline in *out_due_us (0 = due now), so an owner
  * can sleep until then instead of polling. STALE when the queue is empty (no
  * output written). INVALID on NULL arguments; REJECTED off the owner thread. */

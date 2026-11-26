@@ -405,3 +405,39 @@ INVALID 且不写输出；差一字节 OVERLOAD 与空文档；参数校验与�
 两种写法都不越界）。另用随机文档（含按位翻转与类型冲突）跑 200000 次，ASan+UBSan+leak 下每个
 OK 结果都能被 `decode` 接受且长度一致，每个 INVALID 都把长度置 0。normal/ASan+UBSan/TSan 65/65；
 `build-current-vk` 非 fuzz 全量 462/462。
+
+## 33. 重试队列持久化到磁盘
+
+第 22 节的队列只在内存中。进程重启或崩溃时，积压的待投递遥测全部丢失，而采集端长时间不可用时
+重启恰恰最常见。`break_runtime_metrics_retry_save` 把待投递条目序列化成一段字节，
+`break_runtime_metrics_retry_load` 把它读回。库只产出和接受字节，不碰文件：调用方用
+`platform_atomic_writer_*`（写临时文件、fsync、rename、fsync 目录）落盘，所以 `runtime_core`
+不新增依赖，掉电时也不会留下半写的文件。
+
+- **格式**：`"BRKR1"`（5 字节），小端 u32 条目数，每条为小端 u32 attempts、小端 u32 payload
+  长度和 payload 字节，最后是小端 CRC-32（ISO-HDLC，反射多项式 0xEDB88320），覆盖它之前的所有
+  字节。条目按 FIFO 从旧到新排列。
+- **保存什么**：payload 与每条的 attempts。截止时间不保存，读回的条目立即可发（重启本身已经是一次
+  等待）。其余统计计数是进程内的，不保存。
+- **save**：容量不足时 OVERLOAD，`*out_len` 给出所需大小且不写输出；传 `NULL, 0` 即可查询大小。
+- **load 整体先校验**：魔数、长度下限、CRC、条目数与每条长度都不得越过缓冲、长度为 0、长度超过本
+  队列的 `max_payload_bytes`、CRC 前有多余字节，任一不满足都返回 INVALID，`*out_loaded = 0`，队列
+  不变。读入文件来自进程控制之外（写到一半崩溃、坏扇区、被篡改），所以必须当作不可信输入。
+- **load 追加**：通过校验后按 FIFO 追加在现有条目之后；满了就像 `enqueue` 一样丢最旧并计入
+  `dropped_oldest`。追加时临时关闭 `coalesce_repeats`，保证两条相同 payload 和各自的 attempts 原样
+  恢复，之后普通 `enqueue` 的折叠照常生效。drain 回调中调用 load 返回 REJECTED（与 enqueue 同理：
+  回调持有借出的槽位）。
+- **规范形**：读回再保存，得到逐字节相同的镜像。
+
+验证：`test_runtime_metrics` 新增 9 例（共 74 例），先以未声明函数编译失败为 RED：往返恢复
+payload、attempts 与顺序，空队列；容量查询与差一 OVERLOAD；读入更小的队列保留最新条目；逐字节
+翻转与每个截断长度都整体拒绝且不改队列，尾随字节也拒绝；超过槽位的条目整体拒绝；在有效 CRC 之后
+检查魔数、条目数、长度 0、长度越过尾部和过短镜像；向折叠队列恢复重复条目；drain 回调中 load 被拒；
+参数校验。17 项变异判红（其中「去掉条目头边界」与「放宽最小长度」只在 ASan 下判红，测试把镜像放在
+大小恰好的堆块中），另有 1 项等价变异：去掉「payload 长度不得越过尾部」检查后，越界长度仍被后面的
+尾随字节检查拒绝，而 `max_payload_bytes` 上限（≤ 64 KiB）保证 `at + entry_len` 不会回绕。
+新增 fuzz 目标 `fuzz_runtime_metrics_retry_load`（种子 79，进 CI 三处 fuzz 构建列表）：以库自身保存的
+镜像为种子，变异后一半重新封 CRC 以触达 CRC 之后的检查。不变量：不越界；拒绝时队列逐字节不变；
+接受的镜像读入空队列再保存必须逐字节等于输入。种子 79 与 113 各 200000 次在 ASan+UBSan+leak 下
+干净（约 6.7k 接受）。负向对照：去掉条目头边界时 ASan 报 heap-buffer-overflow，去掉尾随字节检查时
+fuzzer 报「not canonical」。normal/ASan+UBSan/TSan 74/74；`build-current-vk` fuzz lane 22/22。

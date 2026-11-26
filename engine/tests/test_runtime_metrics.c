@@ -1583,6 +1583,365 @@ TEST(retry_untimed_drain_ignores_any_backoff_deadline) {
 }
 
 
+static usize retry_save_to(BreakRuntimeMetricsRetryQueue *q, u8 *buf, usize cap) {
+    usize len = 0u;
+    return break_runtime_metrics_retry_save(q, buf, cap, &len) == BREAK_RUNTIME_OK ? len : 0u;
+}
+
+TEST(retry_save_then_load_restores_payloads_attempts_and_order) {
+    BreakRuntimeMetricsRetryQueue *src = make_retry(4u, 64u);
+    BreakRuntimeMetricsRetryQueue *dst = make_retry(4u, 64u);
+    BreakRuntimeMetricsRetryStats stats;
+    u8 blob[1024];
+    usize len;
+    u32 attempts = 0u;
+    u32 loaded = 0u;
+    const void *bytes = NULL;
+    usize blen = 0u;
+    ASSERT_NOT_NULL(src);
+    ASSERT_NOT_NULL(dst);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(src, "one", 3u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(src, "two", 3u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(src, "three", 5u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_record_attempt(src, &attempts), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_record_attempt(src, &attempts), BREAK_RUNTIME_OK);
+    len = retry_save_to(src, blob, sizeof blob);
+    ASSERT_TRUE(len > 0u);
+    ASSERT_EQ(break_runtime_metrics_retry_load(dst, blob, len, &loaded), BREAK_RUNTIME_OK);
+    ASSERT_EQ(loaded, 3u);
+    /* FIFO order and the head's attempt count survive the round trip. */
+    ASSERT_EQ(break_runtime_metrics_retry_peek(dst, &bytes, &blen, &attempts), BREAK_RUNTIME_OK);
+    ASSERT_EQ(blen, 3u);
+    ASSERT_TRUE(memcmp(bytes, "one", 3u) == 0);
+    ASSERT_EQ(attempts, 2u);
+    ASSERT_EQ(break_runtime_metrics_retry_release(dst), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(retry_head_is(dst, "two"));
+    ASSERT_EQ(break_runtime_metrics_retry_peek(dst, &bytes, &blen, &attempts), BREAK_RUNTIME_OK);
+    ASSERT_EQ(attempts, 0u);
+    ASSERT_EQ(break_runtime_metrics_retry_release(dst), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(retry_head_is(dst, "three"));
+    ASSERT_EQ(break_runtime_metrics_retry_stats(dst, &stats), BREAK_RUNTIME_OK);
+    ASSERT_EQ(stats.queued, 1u);
+    /* The saved image is canonical: saving the reloaded queue reproduces it. */
+    {
+        BreakRuntimeMetricsRetryQueue *again = make_retry(4u, 64u);
+        u8 blob2[1024];
+        usize len2;
+        ASSERT_NOT_NULL(again);
+        ASSERT_EQ(break_runtime_metrics_retry_load(again, blob, len, &loaded), BREAK_RUNTIME_OK);
+        len2 = retry_save_to(again, blob2, sizeof blob2);
+        ASSERT_EQ(len2, len);
+        ASSERT_TRUE(memcmp(blob, blob2, len) == 0);
+        break_runtime_metrics_retry_destroy(again);
+    }
+    /* An empty queue saves to a valid image that loads as zero entries. */
+    {
+        BreakRuntimeMetricsRetryQueue *empty = make_retry(2u, 8u);
+        BreakRuntimeMetricsRetryQueue *into = make_retry(2u, 8u);
+        u8 eb[64];
+        usize elen;
+        ASSERT_NOT_NULL(empty);
+        ASSERT_NOT_NULL(into);
+        elen = retry_save_to(empty, eb, sizeof eb);
+        ASSERT_TRUE(elen > 0u);
+        ASSERT_EQ(break_runtime_metrics_retry_load(into, eb, elen, &loaded), BREAK_RUNTIME_OK);
+        ASSERT_EQ(loaded, 0u);
+        break_runtime_metrics_retry_destroy(into);
+        break_runtime_metrics_retry_destroy(empty);
+    }
+    break_runtime_metrics_retry_destroy(dst);
+    break_runtime_metrics_retry_destroy(src);
+}
+
+TEST(retry_save_reports_the_required_size) {
+    BreakRuntimeMetricsRetryQueue *q = make_retry(2u, 16u);
+    u8 blob[256];
+    usize need = 0u;
+    usize len = 0u;
+    ASSERT_NOT_NULL(q);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "payload", 7u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_save(q, NULL, 0u, &need), BREAK_RUNTIME_OVERLOAD);
+    ASSERT_TRUE(need > 7u);
+    ASSERT_EQ(break_runtime_metrics_retry_save(q, blob, need - 1u, &len), BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(len, need);
+    ASSERT_EQ(break_runtime_metrics_retry_save(q, blob, need, &len), BREAK_RUNTIME_OK);
+    ASSERT_EQ(len, need);
+    break_runtime_metrics_retry_destroy(q);
+}
+
+TEST(retry_load_into_a_smaller_queue_keeps_the_newest_entries) {
+    BreakRuntimeMetricsRetryQueue *src = make_retry(4u, 16u);
+    BreakRuntimeMetricsRetryQueue *dst = make_retry(2u, 16u);
+    BreakRuntimeMetricsRetryStats stats;
+    u8 blob[512];
+    usize len;
+    u32 loaded = 0u;
+    ASSERT_NOT_NULL(src);
+    ASSERT_NOT_NULL(dst);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(src, "a", 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(src, "b", 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(src, "c", 1u), BREAK_RUNTIME_OK);
+    len = retry_save_to(src, blob, sizeof blob);
+    ASSERT_TRUE(len > 0u);
+    /* Same rule as enqueue on a full ring: the oldest entries are dropped. */
+    ASSERT_EQ(break_runtime_metrics_retry_load(dst, blob, len, &loaded), BREAK_RUNTIME_OK);
+    ASSERT_EQ(loaded, 3u);
+    ASSERT_EQ(break_runtime_metrics_retry_stats(dst, &stats), BREAK_RUNTIME_OK);
+    ASSERT_EQ(stats.queued, 2u);
+    ASSERT_EQ(stats.dropped_oldest, 1u);
+    ASSERT_TRUE(retry_head_is(dst, "b"));
+    break_runtime_metrics_retry_destroy(dst);
+    break_runtime_metrics_retry_destroy(src);
+}
+
+TEST(retry_load_rejects_corruption_as_a_whole) {
+    BreakRuntimeMetricsRetryQueue *src = make_retry(4u, 64u);
+    BreakRuntimeMetricsRetryQueue *dst = make_retry(4u, 64u);
+    BreakRuntimeMetricsRetryStats stats;
+    u8 blob[512];
+    u8 bad[512];
+    usize len;
+    u32 loaded = 0u;
+    ASSERT_NOT_NULL(src);
+    ASSERT_NOT_NULL(dst);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(src, "alpha", 5u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(src, "beta", 4u), BREAK_RUNTIME_OK);
+    len = retry_save_to(src, blob, sizeof blob);
+    ASSERT_TRUE(len > 0u);
+    /* The destination already holds an entry; a rejected load leaves it. */
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(dst, "kept", 4u), BREAK_RUNTIME_OK);
+    /* Every single-byte flip and every truncation is rejected. */
+    for (usize i = 0u; i < len; ++i) {
+        memcpy(bad, blob, len);
+        bad[i] ^= 0x01u;
+        loaded = 99u;
+        ASSERT_EQ(break_runtime_metrics_retry_load(dst, bad, len, &loaded),
+                  BREAK_RUNTIME_INVALID);
+        ASSERT_EQ(loaded, 0u);
+    }
+    for (usize cut = 0u; cut < len; ++cut) {
+        ASSERT_EQ(break_runtime_metrics_retry_load(dst, blob, cut, &loaded),
+                  BREAK_RUNTIME_INVALID);
+    }
+    /* Trailing bytes after a valid image are not ignored. */
+    memcpy(bad, blob, len);
+    bad[len] = 0u;
+    ASSERT_EQ(break_runtime_metrics_retry_load(dst, bad, len + 1u, &loaded),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_retry_stats(dst, &stats), BREAK_RUNTIME_OK);
+    ASSERT_EQ(stats.queued, 1u);
+    ASSERT_EQ(stats.enqueued, 1u);
+    ASSERT_TRUE(retry_head_is(dst, "kept"));
+    break_runtime_metrics_retry_destroy(dst);
+    break_runtime_metrics_retry_destroy(src);
+}
+
+TEST(retry_load_rejects_an_entry_larger_than_the_queue_slot) {
+    BreakRuntimeMetricsRetryQueue *src = make_retry(2u, 64u);
+    BreakRuntimeMetricsRetryQueue *dst = make_retry(2u, 4u);
+    BreakRuntimeMetricsRetryStats stats;
+    u8 blob[256];
+    usize len;
+    u32 loaded = 0u;
+    ASSERT_NOT_NULL(src);
+    ASSERT_NOT_NULL(dst);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(src, "ok", 2u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(src, "too-long", 8u), BREAK_RUNTIME_OK);
+    len = retry_save_to(src, blob, sizeof blob);
+    ASSERT_TRUE(len > 0u);
+    /* The image is well formed, but one entry cannot fit a 4-byte slot. The
+     * load is refused as a whole rather than half applied. */
+    ASSERT_EQ(break_runtime_metrics_retry_load(dst, blob, len, &loaded), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(loaded, 0u);
+    ASSERT_EQ(break_runtime_metrics_retry_stats(dst, &stats), BREAK_RUNTIME_OK);
+    ASSERT_EQ(stats.queued, 0u);
+    break_runtime_metrics_retry_destroy(dst);
+    break_runtime_metrics_retry_destroy(src);
+}
+
+/* Independent CRC-32 (ISO-HDLC) so a test can re-seal an image it edited and
+ * reach the checks behind the checksum. */
+static u32 test_crc32(const u8 *p, usize n) {
+    u32 crc = 0xFFFFFFFFu;
+    for (usize i = 0u; i < n; ++i) {
+        crc ^= p[i];
+        for (int b = 0; b < 8; ++b) crc = (crc & 1u) ? (crc >> 1) ^ 0xEDB88320u : crc >> 1;
+    }
+    return ~crc;
+}
+
+static void test_seal(u8 *img, usize len) {
+    u32 crc = test_crc32(img, len - 4u);
+    img[len - 4u] = (u8)crc;
+    img[len - 3u] = (u8)(crc >> 8);
+    img[len - 2u] = (u8)(crc >> 16);
+    img[len - 1u] = (u8)(crc >> 24);
+}
+
+TEST(retry_load_checks_magic_and_framing_behind_a_valid_checksum) {
+    BreakRuntimeMetricsRetryQueue *src = make_retry(2u, 16u);
+    BreakRuntimeMetricsRetryQueue *dst = make_retry(2u, 16u);
+    u8 blob[256];
+    u8 bad[256];
+    usize len;
+    u32 loaded = 0u;
+    ASSERT_NOT_NULL(src);
+    ASSERT_NOT_NULL(dst);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(src, "abc", 3u), BREAK_RUNTIME_OK);
+    len = retry_save_to(src, blob, sizeof blob);
+    ASSERT_TRUE(len > 0u);
+    /* The CRC is computed the same way as the library's: a re-sealed copy of
+     * the original image still loads, so the re-seal is faithful. */
+    memcpy(bad, blob, len);
+    test_seal(bad, len);
+    ASSERT_EQ(break_runtime_metrics_retry_load(dst, bad, len, &loaded), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_release(dst), BREAK_RUNTIME_OK);
+    /* Wrong magic with a matching CRC. */
+    memcpy(bad, blob, len);
+    bad[4] = '2';
+    test_seal(bad, len);
+    ASSERT_EQ(break_runtime_metrics_retry_load(dst, bad, len, &loaded), BREAK_RUNTIME_INVALID);
+    /* A count of 0 leaves the entry's bytes trailing before the CRC. */
+    memcpy(bad, blob, len);
+    bad[5] = bad[6] = bad[7] = bad[8] = 0u;
+    test_seal(bad, len);
+    ASSERT_EQ(break_runtime_metrics_retry_load(dst, bad, len, &loaded), BREAK_RUNTIME_INVALID);
+    /* A zero-length entry is never produced by save. Build a well-framed image
+     * holding one: magic, count 1, attempts 0, length 0, no payload, CRC. Its
+     * framing is exact, so only the zero-length rule can reject it. */
+    {
+        u8 zero[5 + 4 + 8 + 4];
+        memcpy(zero, "BRKR1", 5u);
+        memset(zero + 5, 0, sizeof zero - 5u);
+        zero[5] = 1u;
+        test_seal(zero, sizeof zero);
+        ASSERT_EQ(break_runtime_metrics_retry_load(dst, zero, sizeof zero, &loaded),
+                  BREAK_RUNTIME_INVALID);
+    }
+    ASSERT_EQ(loaded, 0u);
+    /* A count larger than the entries present: the walker must stop at the
+     * end of the buffer instead of reading another entry header past it. The
+     * image is exactly sized in its own heap block so ASan sees an over-read. */
+    {
+        u8 *over = (u8 *)malloc(len);
+        ASSERT_NOT_NULL(over);
+        memcpy(over, blob, len);
+        over[5] = 2u;
+        test_seal(over, len);
+        ASSERT_EQ(break_runtime_metrics_retry_load(dst, over, len, &loaded),
+                  BREAK_RUNTIME_INVALID);
+        free(over);
+    }
+    /* An entry length that runs past the CRC. */
+    {
+        u8 *over = (u8 *)malloc(len);
+        ASSERT_NOT_NULL(over);
+        memcpy(over, blob, len);
+        over[13] = 4u; /* "abc" holds 3 bytes; 4 overlaps the trailer */
+        test_seal(over, len);
+        ASSERT_EQ(break_runtime_metrics_retry_load(dst, over, len, &loaded),
+                  BREAK_RUNTIME_INVALID);
+        free(over);
+    }
+    /* Shorter than magic + count + CRC, yet sealed. */
+    {
+        u8 tiny[5 + 4];
+        memcpy(tiny, "BRKR1", 5u);
+        test_seal(tiny, sizeof tiny);
+        ASSERT_EQ(break_runtime_metrics_retry_load(dst, tiny, sizeof tiny, &loaded),
+                  BREAK_RUNTIME_INVALID);
+    }
+    break_runtime_metrics_retry_destroy(dst);
+    break_runtime_metrics_retry_destroy(src);
+}
+
+TEST(retry_load_restores_repeats_even_into_a_coalescing_queue) {
+    BreakRuntimeMetricsRetryQueue *src = make_retry(4u, 16u);
+    BreakRuntimeMetricsRetryQueue *dst = make_retry_coalescing(4u, 16u);
+    BreakRuntimeMetricsRetryStats stats;
+    u8 blob[256];
+    usize len;
+    u32 loaded = 0u;
+    u32 attempts = 0u;
+    const void *bytes = NULL;
+    usize blen = 0u;
+    ASSERT_NOT_NULL(src);
+    ASSERT_NOT_NULL(dst);
+    /* Two identical payloads with different attempt counts. Folding them on
+     * load would lose one entry and one attempt history. */
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(src, "same", 4u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_record_attempt(src, &attempts), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(src, "same", 4u), BREAK_RUNTIME_OK);
+    len = retry_save_to(src, blob, sizeof blob);
+    ASSERT_EQ(break_runtime_metrics_retry_load(dst, blob, len, &loaded), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_stats(dst, &stats), BREAK_RUNTIME_OK);
+    ASSERT_EQ(stats.queued, 2u);
+    ASSERT_EQ(stats.coalesced, 0u);
+    ASSERT_EQ(break_runtime_metrics_retry_peek(dst, &bytes, &blen, &attempts), BREAK_RUNTIME_OK);
+    ASSERT_EQ(attempts, 1u);
+    /* Coalescing still applies to ordinary enqueues afterwards. */
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(dst, "same", 4u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_stats(dst, &stats), BREAK_RUNTIME_OK);
+    ASSERT_EQ(stats.coalesced, 1u);
+    break_runtime_metrics_retry_destroy(dst);
+    break_runtime_metrics_retry_destroy(src);
+}
+
+static u8 g_load_image[256];
+static usize g_load_image_len;
+static BreakRuntimeError g_load_result;
+
+static BreakRuntimeError load_from_send(void *user, const void *bytes, usize len) {
+    u32 loaded = 0u;
+    (void)bytes;
+    (void)len;
+    g_load_result = break_runtime_metrics_retry_load((BreakRuntimeMetricsRetryQueue *)user,
+                                                     g_load_image, g_load_image_len, &loaded);
+    return BREAK_RUNTIME_OK;
+}
+
+TEST(retry_load_is_refused_from_inside_a_drain_callback) {
+    BreakRuntimeMetricsRetryQueue *src = make_retry(2u, 16u);
+    BreakRuntimeMetricsRetryQueue *q = make_retry(2u, 16u);
+    BreakRuntimeMetricsRetryDrainResult r;
+    BreakRuntimeMetricsRetryStats stats;
+    ASSERT_NOT_NULL(src);
+    ASSERT_NOT_NULL(q);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(src, "x", 1u), BREAK_RUNTIME_OK);
+    g_load_image_len = retry_save_to(src, g_load_image, sizeof g_load_image);
+    ASSERT_TRUE(g_load_image_len > 0u);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "head", 4u), BREAK_RUNTIME_OK);
+    g_load_result = BREAK_RUNTIME_OK;
+    /* A load would append into the ring while send holds a borrowed slot. */
+    ASSERT_EQ(break_runtime_metrics_retry_drain(q, load_from_send, q, 1u, 0u, &r),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(g_load_result, BREAK_RUNTIME_REJECTED);
+    ASSERT_EQ(break_runtime_metrics_retry_stats(q, &stats), BREAK_RUNTIME_OK);
+    ASSERT_EQ(stats.queued, 0u);
+    break_runtime_metrics_retry_destroy(q);
+    break_runtime_metrics_retry_destroy(src);
+}
+
+TEST(retry_persist_validates_arguments_and_ownership_rules) {
+    BreakRuntimeMetricsRetryQueue *q = make_retry(2u, 8u);
+    u8 blob[64];
+    usize len = 0u;
+    u32 loaded = 0u;
+    ASSERT_NOT_NULL(q);
+    ASSERT_EQ(break_runtime_metrics_retry_save(NULL, blob, sizeof blob, &len),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_retry_save(q, blob, sizeof blob, NULL), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_retry_save(q, NULL, 8u, &len), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_retry_load(NULL, blob, 4u, &loaded), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_retry_load(q, NULL, 4u, &loaded), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_retry_load(q, blob, 4u, NULL), BREAK_RUNTIME_INVALID);
+    /* Not an image at all. */
+    memset(blob, 0, sizeof blob);
+    ASSERT_EQ(break_runtime_metrics_retry_load(q, blob, sizeof blob, &loaded),
+              BREAK_RUNTIME_INVALID);
+    break_runtime_metrics_retry_destroy(q);
+}
+
 TEST(history_aggregate_reports_window_min_max_mean) {
     BreakRuntimeMetrics *m = make_metrics(8u);
     BreakRuntimeMetricsHistory *h = make_history(4u, 4u);
@@ -2003,4 +2362,13 @@ TEST_MAIN_BEGIN()
     RUN_TEST(merge_reports_the_required_size_and_handles_empty_documents);
     RUN_TEST(merge_validates_arguments);
     RUN_TEST(merge_rejects_more_distinct_names_than_one_document_may_hold);
+    RUN_TEST(retry_save_then_load_restores_payloads_attempts_and_order);
+    RUN_TEST(retry_save_reports_the_required_size);
+    RUN_TEST(retry_load_into_a_smaller_queue_keeps_the_newest_entries);
+    RUN_TEST(retry_load_rejects_corruption_as_a_whole);
+    RUN_TEST(retry_load_rejects_an_entry_larger_than_the_queue_slot);
+    RUN_TEST(retry_load_checks_magic_and_framing_behind_a_valid_checksum);
+    RUN_TEST(retry_load_restores_repeats_even_into_a_coalescing_queue);
+    RUN_TEST(retry_load_is_refused_from_inside_a_drain_callback);
+    RUN_TEST(retry_persist_validates_arguments_and_ownership_rules);
 TEST_MAIN_END()

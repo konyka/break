@@ -14411,3 +14411,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **实现**：新增 `break_runtime_metrics_merge` 与 `BREAK_RUNTIME_METRICS_MERGE_MAX_DOCUMENTS`（64），把多份编码文档（从旧到新）合成一份：每个名字取最新文档的值，按首次出现排序，输出可被严格解码。整批先校验，任一文档非法、名字改变类型、合并后超过 `MAX_CAPACITY` 个名字都返回 INVALID 且不写输出；放不下时 OVERLOAD 并给出所需长度。纯函数，任何线程可调用。设计见 `docs/design/runtime_metrics.md` 第 32 节；`missing_capabilities.md` 对账列表同步移除「批量合并」。
 - **TDD 与变异**：`test_runtime_metrics` 新增 6 例，先以未声明函数编译失败为 RED。10 项变异判红；首轮「文档数上限差一」存活，补「恰好 64 份可、65 份拒绝」后判红。两项等价变异（NULL 文档检查、写入前放得下判断差一）的理由与 ASan 探针证据见设计文档。另以随机文档跑 200000 次（ASan+UBSan+leak），OK 结果均可被严格解码。
 - **验证**：`test_runtime_metrics` 65/65（normal/ASan+UBSan 含 leak 检测/TSan）；`build-current-vk` 非 fuzz 全量 CTest 462/462。本提交自身的远端工作流结果不在此预写。
+
+## 指标重试队列的磁盘持久化（2026-11-27）
+
+- **缺口**：`missing_capabilities.md` 对账列表把「磁盘持久化」列为指标协议未交付项。重试队列只在内存中，进程重启后积压遥测全部丢失。
+- **实现**：新增 `break_runtime_metrics_retry_save` 与 `break_runtime_metrics_retry_load`。镜像为 `"BRKR1"`、条目数、逐条 attempts/长度/payload、末尾 CRC-32，均为小端。库只处理字节，落盘由调用方经 `platform_atomic_writer_*` 完成，`runtime_core` 不新增依赖。load 整体先校验（魔数、CRC、越界、长度 0、超槽位、尾随字节），失败时队列不变；通过后按 FIFO 追加，满时丢最旧，恢复期间不折叠重复条目，drain 回调中被拒。截止时间不保存，读回立即可发。设计见 `docs/design/runtime_metrics.md` 第 33 节；对账列表同步移除「磁盘持久化」。
+- **TDD 与变异**：`test_runtime_metrics` 新增 9 例，先以未声明函数编译失败为 RED。17 项变异判红：首轮有 6 项存活（魔数、尾随字节、长度 0、drain 中 load、恢复时折叠、恢复后未还原折叠），补测试后全部判红；其中两项边界变异只在 ASan 下判红。1 项等价变异（payload 长度越过尾部）的理由见设计文档。
+- **fuzz**：新增 `fuzz_runtime_metrics_retry_load`（种子 79，进 CI 三处 fuzz 构建列表）。种子 79 与 113 各 200000 次在 ASan+UBSan+leak 下干净；负向对照分别以 heap-buffer-overflow 和「not canonical」判红。
+- **验证**：`test_runtime_metrics` 74/74（normal/ASan+UBSan 含 leak 检测/TSan）；`build-current-vk` fuzz lane 22/22；非 fuzz 全量 462 项中 460 项通过，余下两项 `test_core_app_*contract` 因新 fuzz 源文件尚未提交而无法从 `git archive HEAD` 配置，提交后复跑。本提交自身的远端工作流结果不在此预写。

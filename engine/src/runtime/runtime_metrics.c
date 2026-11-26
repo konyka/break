@@ -1156,3 +1156,110 @@ BreakRuntimeError break_runtime_metrics_retry_next_due(
     *out_due_us = queue->entries[queue->head].due_us;
     return BREAK_RUNTIME_OK;
 }
+
+/* Save image: "BRKR1", u32 count, then per entry u32 attempts, u32 len and the
+ * payload, then a CRC-32 (ISO-HDLC, reflected 0xEDB88320) of all prior bytes.
+ * Integers are little-endian. */
+static const char k_retry_magic[5] = {'B', 'R', 'K', 'R', '1'};
+#define RETRY_IMAGE_HEADER 9u /* magic + count */
+#define RETRY_IMAGE_ENTRY_HEADER 8u
+#define RETRY_IMAGE_TRAILER 4u
+
+static u32 retry_crc32(const u8 *p, usize n) {
+    u32 crc = 0xFFFFFFFFu;
+    for (usize i = 0u; i < n; ++i) {
+        crc ^= p[i];
+        for (int b = 0; b < 8; ++b) crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
+    }
+    return ~crc;
+}
+
+static void retry_put_u32(u8 *p, u32 v) {
+    p[0] = (u8)v;
+    p[1] = (u8)(v >> 8);
+    p[2] = (u8)(v >> 16);
+    p[3] = (u8)(v >> 24);
+}
+
+static u32 retry_get_u32(const u8 *p) {
+    return (u32)p[0] | ((u32)p[1] << 8) | ((u32)p[2] << 16) | ((u32)p[3] << 24);
+}
+
+BreakRuntimeError break_runtime_metrics_retry_save(BreakRuntimeMetricsRetryQueue *queue,
+                                                   void *out, usize capacity, usize *out_len) {
+    usize need = RETRY_IMAGE_HEADER + RETRY_IMAGE_TRAILER;
+    u8 *p;
+    usize at;
+    if (!queue || !out_len) return BREAK_RUNTIME_INVALID;
+    if (!out && capacity != 0u) return BREAK_RUNTIME_INVALID;
+    if (!retry_is_owner(queue)) return BREAK_RUNTIME_REJECTED;
+    for (u32 i = 0u; i < queue->count; ++i) {
+        u32 slot = (queue->head + i) % queue->capacity;
+        need += RETRY_IMAGE_ENTRY_HEADER + queue->entries[slot].len;
+    }
+    *out_len = need;
+    if (capacity < need) return BREAK_RUNTIME_OVERLOAD;
+    p = (u8 *)out;
+    memcpy(p, k_retry_magic, sizeof k_retry_magic);
+    retry_put_u32(p + sizeof k_retry_magic, queue->count);
+    at = RETRY_IMAGE_HEADER;
+    for (u32 i = 0u; i < queue->count; ++i) {
+        u32 slot = (queue->head + i) % queue->capacity;
+        const RetryEntry *entry = &queue->entries[slot];
+        retry_put_u32(p + at, entry->attempts);
+        retry_put_u32(p + at + 4u, (u32)entry->len);
+        at += RETRY_IMAGE_ENTRY_HEADER;
+        memcpy(p + at, retry_slot_bytes(queue, slot), entry->len);
+        at += entry->len;
+    }
+    retry_put_u32(p + at, retry_crc32(p, at));
+    return BREAK_RUNTIME_OK;
+}
+
+BreakRuntimeError break_runtime_metrics_retry_load(BreakRuntimeMetricsRetryQueue *queue,
+                                                   const void *bytes, usize len,
+                                                   u32 *out_loaded) {
+    const u8 *p = (const u8 *)bytes;
+    u32 count;
+    usize at;
+    if (!out_loaded) return BREAK_RUNTIME_INVALID;
+    *out_loaded = 0u;
+    if (!queue || !bytes || len == 0u) return BREAK_RUNTIME_INVALID;
+    if (!retry_is_owner(queue)) return BREAK_RUNTIME_REJECTED;
+    if (queue->draining) return BREAK_RUNTIME_REJECTED;
+    /* Pass 1: validate the whole image without touching the queue. */
+    if (len < RETRY_IMAGE_HEADER + RETRY_IMAGE_TRAILER) return BREAK_RUNTIME_INVALID;
+    if (memcmp(p, k_retry_magic, sizeof k_retry_magic) != 0) return BREAK_RUNTIME_INVALID;
+    if (retry_get_u32(p + len - RETRY_IMAGE_TRAILER) != retry_crc32(p, len - RETRY_IMAGE_TRAILER))
+        return BREAK_RUNTIME_INVALID;
+    count = retry_get_u32(p + sizeof k_retry_magic);
+    at = RETRY_IMAGE_HEADER;
+    for (u32 i = 0u; i < count; ++i) {
+        u32 entry_len;
+        if (len - RETRY_IMAGE_TRAILER - at < RETRY_IMAGE_ENTRY_HEADER) return BREAK_RUNTIME_INVALID;
+        entry_len = retry_get_u32(p + at + 4u);
+        at += RETRY_IMAGE_ENTRY_HEADER;
+        if (entry_len == 0u || entry_len > queue->max_payload_bytes) return BREAK_RUNTIME_INVALID;
+        if (len - RETRY_IMAGE_TRAILER - at < entry_len) return BREAK_RUNTIME_INVALID;
+        at += entry_len;
+    }
+    if (at != len - RETRY_IMAGE_TRAILER) return BREAK_RUNTIME_INVALID; /* trailing bytes */
+    /* Pass 2: append. Enqueue applies the full-ring eviction rule; it cannot
+     * fail here because every length was checked against the slot size. */
+    at = RETRY_IMAGE_HEADER;
+    for (u32 i = 0u; i < count; ++i) {
+        u32 attempts = retry_get_u32(p + at);
+        u32 entry_len = retry_get_u32(p + at + 4u);
+        u32 newest;
+        bool coalesce = queue->coalesce_repeats;
+        at += RETRY_IMAGE_ENTRY_HEADER;
+        queue->coalesce_repeats = false; /* restore entries exactly as saved */
+        (void)break_runtime_metrics_retry_enqueue(queue, p + at, entry_len);
+        queue->coalesce_repeats = coalesce;
+        newest = (queue->head + queue->count - 1u) % queue->capacity;
+        queue->entries[newest].attempts = attempts;
+        at += entry_len;
+    }
+    *out_loaded = count;
+    return BREAK_RUNTIME_OK;
+}

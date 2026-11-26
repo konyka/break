@@ -8453,6 +8453,14 @@ endif()
     target_include_directories(fuzz_runtime_metrics_decode PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(fuzz_runtime_metrics_decode PRIVATE runtime_core)
 
+    # Mutation fuzzer for break_runtime_metrics_retry_load, which parses a retry
+    # backlog image read back from disk. Rejected inputs must leave the queue
+    # untouched; accepted ones must save back to the same bytes.
+    add_executable(fuzz_runtime_metrics_retry_load EXCLUDE_FROM_ALL
+        tests/fuzz_runtime_metrics_retry_load.c)
+    target_include_directories(fuzz_runtime_metrics_retry_load PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(fuzz_runtime_metrics_retry_load PRIVATE runtime_core)
+
     # Mutation fuzzer for break_crash_symbols_open, the untrusted ELF/Mach-O
     # (thin or universal) symbol-file parser the server-side crash symbol store
     # runs on files it is handed. Seeds from a real binary and checks open and
@@ -8591,6 +8599,9 @@ endif()
         add_test(NAME fuzz_core_app_network_smoke COMMAND fuzz_core_app_network 2000 41)
         add_test(NAME fuzz_world_delta_wire_smoke COMMAND fuzz_world_delta_wire 2000 47)
         add_test(NAME fuzz_runtime_metrics_decode_smoke COMMAND fuzz_runtime_metrics_decode 2000 53)
+        add_test(NAME fuzz_runtime_metrics_retry_load_smoke
+                 COMMAND fuzz_runtime_metrics_retry_load 2000 79)
+        set_tests_properties(fuzz_runtime_metrics_retry_load_smoke PROPERTIES LABELS "fuzz")
         add_test(NAME fuzz_break_online_voice_smoke COMMAND fuzz_break_online_voice 2000 43)
         if(TARGET fuzz_crash_symbols)
             add_test(NAME fuzz_crash_symbols_smoke COMMAND fuzz_crash_symbols 2000 59)
