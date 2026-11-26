@@ -94,3 +94,32 @@ legacy `net_world_publish_slot()` 在同一 tick 内不再调用；保留函数�
 
 1. **publication 与 tick 接线**：transport 字段、create/init/destroy 顺序、tick 发布点、legacy 开关、统计字段；对应单元与 loopback 测试，含四项变异。
 2. **文档与最终验收**：六份设计/状态文档追加 2026-11-26 小节，双后端与合同，评审、推送与远端收据。
+
+## 修订 1（2026-11-26，实施前核查）
+
+实施前复查代码，发现上文方案 A 直接落地会出错，修订如下。上文保留作记录，以本节为准。
+
+### 发现的问题
+
+1. **未认证连接会收到快照。** adapter 的 OPEN 在 `CONNECTION_OPENED` 时提交，早于 AUTH-v2。adapter fanout 对所有已 OPEN 连接发送，而 legacy 只对 `net_slot_sendable()`（已认证且已 welcome）的槽发送。照原方案接线会把权威 World 发给未认证的 TLS 对端，也会让 World 包先于 welcome 到达。
+2. **流控语义不同。** legacy 是停等：已有 history 且无 pending attempt、无 force_full 时跳过，等 ACK 释放 history 再发下一个。adapter 每个新 publication epoch 都发。直接替换会改变真实 loopback 的 `full_publishes=1 delta_publishes=1` 等计数，也会持续堆积 history。
+3. **adapter 未接 publication。** `world_adapter_register` 创建 adapter 时 `config.publication` 为 NULL，`submit_publish_current` 会返回 REJECTED。
+4. **tick 可能回退。** core tick 在关卡重载时可能从头计数，而 World level 初始化后不再变化；publication 会拒绝同 level 下不递增的 tick，发布会永久停住。
+5. **不需要重建 publication。** publication 以 level 0 创建后，接受任何 `level >= 0` 的发布，lease 带的是发布时的 level。原方案的"rebaseline 后重建"没有必要，删除。
+
+### 修订后的方案
+
+- **ECS：** `BreakWorldSessionSenderState` 末尾追加 `bool force_full`，如实反映 Session 内部的强制全量标志（NEED_FULL 或 rebaseline 置位，全量发出后清除）。
+- **Runtime：** `BreakRuntimeWorldSessionConfig` 追加两个默认 false 的开关，两者都要求 `publication` 非空：
+  - `publish_requires_ready`：新 OPEN 的连接默认不就绪。调用方用新增的 `break_runtime_world_session_set_publish_ready(adapter, key, epoch, ready)` 按 key+epoch 设置，错配返回 STALE。未就绪连接不参与 fanout、continuation 重算和 dirty 统计，attempt 标量保持不动。
+  - `publish_waits_for_ack`：fanout 时按 Session 状态判断，连接没有进行中的 attempt、history 非空且没有 force_full 时视为"等待 ACK"，本次不发，把该连接的 `held_publication_epoch` 记为当前 epoch。与 completed/terminal 一样，held 等于当前 epoch 时连接视为干净，不算 dirty，也不触发 continuation。这一规则在每次 drain 内用当时的 Session 状态求值，不会因 transport 的判断过时而多发包。
+  - `BreakRuntimeWorldConnectionSnapshot` 追加 `publish_ready` 与 `held_publication_epoch`。
+- **transport：**
+  - publication 在 `net_world_create()` 中以 level 0 创建，注册 adapter 时传入 `publication`，并设 `publish_requires_ready = true`。
+  - 每 tick 在原 legacy 发布点（pump、tick_drain 之后，且 reactor 事件队列为空时）把每个 world_open 槽的就绪状态设为 `net_slot_sendable()`。
+  - 有任一就绪槽需要新目标（history 为空或 force_full，且没有进行中的 attempt）时，构建快照并 publish，成功后提交 notice。之后只要 adapter `pending() != 0` 就 drain 一次，由 continuation 续发 OVERLOAD 留下的 attempt。
+  - 快照 tick 使用 transport 内单调计数：`publish_tick = max(current_tick, publish_tick + 1)`。
+  - 默认走 Runtime 路径；`world_use_legacy_publish` 为 true 时回到旧逐槽路径。
+  - 新增统计 `snapshot_build_failures`、`publish_rejected`、`notice_overloads`，以及 test-only 的构建失败注入。
+  - 销毁顺序不变：`net_destroy()` 先销毁 adapter，失败即返回；publication 在 `net_world_destroy()` 中 close+destroy，所以 adapter 未释放时 publication 一定保留。
+- **验收：** 真实 loopback `test_core_app_network_world` 的既有计数不改，默认 Runtime 路径必须原样通过，以此证明与 legacy 等价。
