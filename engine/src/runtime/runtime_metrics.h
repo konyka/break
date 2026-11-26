@@ -385,3 +385,30 @@ BreakRuntimeError break_runtime_metrics_retry_release(
 BreakRuntimeError break_runtime_metrics_retry_stats(
     const BreakRuntimeMetricsRetryQueue *queue,
     BreakRuntimeMetricsRetryStats *out_stats);
+
+/* Delivery callback for break_runtime_metrics_retry_drain(): sends one payload
+ * and returns OK on success; any other result counts as a failed attempt. */
+typedef BreakRuntimeError (*BreakRuntimeMetricsRetrySendFn)(void *user, const void *bytes,
+                                                            usize len);
+
+typedef struct BreakRuntimeMetricsRetryDrainResult {
+    u32 delivered;  /* entries sent and released */
+    u32 abandoned;  /* entries released after reaching max_attempts */
+    u32 failed;     /* failed sends this call (entry kept, attempt recorded) */
+} BreakRuntimeMetricsRetryDrainResult;
+
+/* Runs the peek -> send -> release/record loop from the oldest entry, sending
+ * at most `max_sends` payloads. A successful send releases the entry and goes
+ * on to the next one. A failed send records an attempt; if the entry has then
+ * reached `max_attempts` (0 = never give up) it is released and counted as
+ * abandoned and draining continues, otherwise draining stops so the caller
+ * backs off until its next step. Owner thread only; performs no I/O itself.
+ * INVALID on NULL queue/send/out_result or max_sends == 0; REJECTED off the
+ * owner thread. An empty queue is OK with all counts zero. */
+BreakRuntimeError break_runtime_metrics_retry_drain(
+    BreakRuntimeMetricsRetryQueue *queue,
+    BreakRuntimeMetricsRetrySendFn send,
+    void *user,
+    u32 max_sends,
+    u32 max_attempts,
+    BreakRuntimeMetricsRetryDrainResult *out_result);

@@ -956,6 +956,118 @@ TEST(retry_queue_round_trips_a_real_metrics_encoding) {
     break_runtime_metrics_destroy(m);
 }
 
+
+typedef struct {
+    u32 calls;
+    u32 fail_first;   /* fail this many calls, then succeed */
+    bool always_fail;
+    char seen[8][16];
+} FakeSender;
+
+static BreakRuntimeError fake_send(void *user, const void *bytes, usize len) {
+    FakeSender *f = (FakeSender *)user;
+    if (f->calls < 8u && len < sizeof(f->seen[0])) {
+        memcpy(f->seen[f->calls], bytes, len);
+        f->seen[f->calls][len] = '\0';
+    }
+    f->calls++;
+    if (f->always_fail || f->calls <= f->fail_first) return BREAK_RUNTIME_FAILED;
+    return BREAK_RUNTIME_OK;
+}
+
+TEST(retry_drain_delivers_in_order_within_the_send_budget) {
+    BreakRuntimeMetricsRetryQueue *q = make_retry(4u, 64u);
+    BreakRuntimeMetricsRetryDrainResult r;
+    FakeSender f;
+    memset(&f, 0, sizeof(f));
+    ASSERT_NOT_NULL(q);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "a", 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "b", 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "c", 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_drain(q, fake_send, &f, 2u, 0u, &r), BREAK_RUNTIME_OK);
+    ASSERT_EQ(r.delivered, 2u);
+    ASSERT_EQ(r.failed, 0u);
+    ASSERT_EQ(f.calls, 2u);
+    ASSERT_TRUE(strcmp(f.seen[0], "a") == 0);
+    ASSERT_TRUE(strcmp(f.seen[1], "b") == 0);
+    ASSERT_TRUE(retry_head_is(q, "c"));
+    ASSERT_EQ(break_runtime_metrics_retry_drain(q, fake_send, &f, 8u, 0u, &r), BREAK_RUNTIME_OK);
+    ASSERT_EQ(r.delivered, 1u);
+    /* Empty queue: OK, nothing sent. */
+    ASSERT_EQ(break_runtime_metrics_retry_drain(q, fake_send, &f, 8u, 0u, &r), BREAK_RUNTIME_OK);
+    ASSERT_EQ(r.delivered + r.failed + r.abandoned, 0u);
+    ASSERT_EQ(f.calls, 3u);
+    break_runtime_metrics_retry_destroy(q);
+}
+
+TEST(retry_drain_stops_on_failure_and_keeps_the_entry) {
+    BreakRuntimeMetricsRetryQueue *q = make_retry(4u, 64u);
+    BreakRuntimeMetricsRetryDrainResult r;
+    FakeSender f;
+    const void *bytes = NULL;
+    usize len = 0u;
+    u32 attempts = 0u;
+    memset(&f, 0, sizeof(f));
+    f.fail_first = 1u;
+    ASSERT_NOT_NULL(q);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "a", 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "b", 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_drain(q, fake_send, &f, 8u, 0u, &r), BREAK_RUNTIME_OK);
+    /* One failed send backs off: nothing delivered, head kept with 1 attempt. */
+    ASSERT_EQ(r.failed, 1u);
+    ASSERT_EQ(r.delivered, 0u);
+    ASSERT_EQ(f.calls, 1u);
+    ASSERT_EQ(break_runtime_metrics_retry_peek(q, &bytes, &len, &attempts), BREAK_RUNTIME_OK);
+    ASSERT_EQ(attempts, 1u);
+    ASSERT_TRUE(retry_head_is(q, "a"));
+    /* Next step: the sender recovers and both entries go out in order. */
+    ASSERT_EQ(break_runtime_metrics_retry_drain(q, fake_send, &f, 8u, 0u, &r), BREAK_RUNTIME_OK);
+    ASSERT_EQ(r.delivered, 2u);
+    ASSERT_TRUE(strcmp(f.seen[1], "a") == 0);
+    ASSERT_TRUE(strcmp(f.seen[2], "b") == 0);
+    break_runtime_metrics_retry_destroy(q);
+}
+
+TEST(retry_drain_abandons_a_poison_payload_at_max_attempts) {
+    BreakRuntimeMetricsRetryQueue *q = make_retry(4u, 64u);
+    BreakRuntimeMetricsRetryDrainResult r;
+    FakeSender f;
+    memset(&f, 0, sizeof(f));
+    f.always_fail = true;
+    ASSERT_NOT_NULL(q);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "p", 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "q", 1u), BREAK_RUNTIME_OK);
+    /* First failure on "p" is below the limit: stop and keep it. */
+    ASSERT_EQ(break_runtime_metrics_retry_drain(q, fake_send, &f, 8u, 2u, &r), BREAK_RUNTIME_OK);
+    ASSERT_EQ(r.failed, 1u);
+    ASSERT_EQ(r.abandoned, 0u);
+    ASSERT_TRUE(retry_head_is(q, "p"));
+    /* Second failure reaches the limit: "p" is dropped and draining moves on
+     * to "q", whose own first failure stops the drain. */
+    ASSERT_EQ(break_runtime_metrics_retry_drain(q, fake_send, &f, 8u, 2u, &r), BREAK_RUNTIME_OK);
+    ASSERT_EQ(r.abandoned, 1u);
+    ASSERT_EQ(r.failed, 2u);
+    ASSERT_TRUE(retry_head_is(q, "q"));
+    break_runtime_metrics_retry_destroy(q);
+}
+
+TEST(retry_drain_validates_arguments) {
+    BreakRuntimeMetricsRetryQueue *q = make_retry(2u, 8u);
+    BreakRuntimeMetricsRetryDrainResult r;
+    FakeSender f;
+    memset(&f, 0, sizeof(f));
+    ASSERT_NOT_NULL(q);
+    ASSERT_EQ(break_runtime_metrics_retry_drain(NULL, fake_send, &f, 1u, 0u, &r),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_retry_drain(q, NULL, &f, 1u, 0u, &r), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_retry_drain(q, fake_send, &f, 0u, 0u, &r),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_retry_drain(q, fake_send, &f, 1u, 0u, NULL),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(f.calls, 0u);
+    break_runtime_metrics_retry_destroy(q);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(create_validates_config_and_defaults);
     RUN_TEST(counter_adds_accumulate_and_saturate);
@@ -992,4 +1104,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(retry_queue_counts_attempts_per_entry);
     RUN_TEST(retry_queue_validates_configuration_and_payloads);
     RUN_TEST(retry_queue_round_trips_a_real_metrics_encoding);
+    RUN_TEST(retry_drain_delivers_in_order_within_the_send_budget);
+    RUN_TEST(retry_drain_stops_on_failure_and_keeps_the_entry);
+    RUN_TEST(retry_drain_abandons_a_poison_payload_at_max_attempts);
+    RUN_TEST(retry_drain_validates_arguments);
 TEST_MAIN_END()

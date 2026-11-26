@@ -193,3 +193,23 @@ backlog：调用方持有的定长 FIFO，存放**已编码**的 payload 字节�
 
 仍不做：按渠道分队列、去重、批量合并、压缩、持久化到磁盘，以及自动退避计时（退避策略由
 调用方的步进节奏决定）。
+
+## 23. 重试队列的排空循环
+
+第 22 节只提供 peek/record_attempt/release 原语，每个调用方都要自己写同一个循环。
+`break_runtime_metrics_retry_drain(queue, send, user, max_sends, max_attempts, out)` 把它收进
+库里：从队首开始，最多调用 `send` `max_sends` 次。
+
+- `send` 返回 OK：释放该条，计入 `delivered`，继续下一条。
+- `send` 返回其他值：记一次 attempt，计入 `failed`。若该条 attempts 已达到 `max_attempts`
+  （0 表示永不放弃），释放并计入 `abandoned`，继续下一条；否则立即停止，让调用方等到下一次
+  诊断步进再试（退避节奏由步进频率决定）。
+- 空队列返回 OK 且计数全零；NULL queue/send/out 或 `max_sends == 0` 为 INVALID；非所有者
+  线程 REJECTED。函数本身不做 I/O，`send` 通常包一层 `break_runtime_metrics_push_http` 一类的
+  推送，阻塞时长由它决定，所以应放在诊断线程上调用。
+
+停在第一次未达上限的失败上，是为了在采集端不可用时不把整个 backlog 连续打一遍。
+
+验证：`test_runtime_metrics` 新增 4 例（共 39 例）：在发送预算内按序投递、失败后停止并保留
+该条、毒 payload 达到上限后丢弃并继续、参数校验。五项变异判红：失败后继续、忽略发送预算、
+永不放弃、上限比较差一、成功后不释放。

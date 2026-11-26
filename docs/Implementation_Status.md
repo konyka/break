@@ -14286,3 +14286,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：`test_runtime_metrics` 新增 5 例（FIFO 与 release 推进、队满丢最旧、逐条 attempts 含槽位复用归零、配置与 payload 校验、真实 metrics 编码 enqueue→peek→decode 往返）。先以未定义类型编译失败为 RED。四项变异全部判红：队满改为拒收、槽位复用不清 attempts（初版因 calloc 清零而存活，补「环绕复用已记次数的槽位」断言后判红）、payload 上限用硬上限而非配置值、release 不推进队首。
 - **验证**：`test_runtime_metrics` 35/35（normal/ASan+UBSan 含 leak 检测/TSan 均 35/35）。非 Snowflake，`build-current-vk` 树即可构建。
 - **边界**：不做按渠道分队列、去重、批量合并、压缩、磁盘持久化与自动退避计时（退避由调用方步进节奏决定）；推送本身仍仅 POSIX。本收据提交自身的远端工作流结果不在此预写。
+
+## 重试队列排空循环（2026-11-26）
+
+- **实现**：`break_runtime_metrics_retry_drain`（`engine/src/runtime/runtime_metrics.{h,c}`）把 peek→send→release/record_attempt 收为一个循环：成功释放并继续，失败记 attempt；达到 `max_attempts`（0 为永不放弃）则丢弃并继续，否则停止等待下一次步进。最多调用 `send` `max_sends` 次，自身不做 I/O。设计见 `docs/design/runtime_metrics.md` 第 23 节。
+- **TDD 与变异**：`test_runtime_metrics` 新增 4 例，先以未定义引用链接失败为 RED。五项变异判红：失败后继续、忽略发送预算、永不放弃、上限比较差一（`>=` 改 `>`）、成功后不释放。
+- **验证**：`test_runtime_metrics` 39/39（normal/ASan+UBSan 含 leak 检测/TSan 均 39/39）；`build-current-vk` 全量 CTest 463/463、0 失败。
+- **边界**：退避仍由调用方步进节奏决定；去重、批量、压缩、持久化与 Windows 推送不在本切片。本收据提交自身的远端工作流结果不在此预写。

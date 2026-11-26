@@ -816,3 +816,31 @@ BreakRuntimeError break_runtime_metrics_retry_stats(
     out_stats->queued = queue->count;
     return BREAK_RUNTIME_OK;
 }
+
+BreakRuntimeError break_runtime_metrics_retry_drain(
+    BreakRuntimeMetricsRetryQueue *queue, BreakRuntimeMetricsRetrySendFn send, void *user,
+    u32 max_sends, u32 max_attempts, BreakRuntimeMetricsRetryDrainResult *out_result) {
+    u32 sends = 0u;
+    if (!queue || !send || !out_result || max_sends == 0u) return BREAK_RUNTIME_INVALID;
+    if (!retry_is_owner(queue)) return BREAK_RUNTIME_REJECTED;
+    memset(out_result, 0, sizeof(*out_result));
+    while (queue->count != 0u && sends < max_sends) {
+        RetryEntry *entry = &queue->entries[queue->head];
+        BreakRuntimeError sent = send(user, retry_slot_bytes(queue, queue->head), entry->len);
+        sends++;
+        if (sent == BREAK_RUNTIME_OK) {
+            (void)break_runtime_metrics_retry_release(queue);
+            out_result->delivered++;
+            continue;
+        }
+        (void)break_runtime_metrics_retry_record_attempt(queue, NULL);
+        out_result->failed++;
+        if (max_attempts != 0u && entry->attempts >= max_attempts) {
+            (void)break_runtime_metrics_retry_release(queue);
+            out_result->abandoned++;
+            continue;
+        }
+        break;
+    }
+    return BREAK_RUNTIME_OK;
+}
