@@ -249,3 +249,16 @@ backlog：调用方持有的定长 FIFO，存放**已编码**的 payload 字节�
 
 这一缺陷是在没有新需求的情况下，对已推送代码做复查时发现的；原有测试只覆盖了「正常的」
 回调，不能证明回调可以安全地触碰队列。
+
+## 26. Windows 推送的前置条件（勘察，未实现）
+
+第 20/21 节的 HTTP 推送标注「仅 POSIX」。勘察确认根因在底层传输：`break_http`
+（`engine/src/net_http/break_http.{h,c}`）头部明确写明「POSIX only (sockets, poll). Windows is
+not implemented.」，直接用 BSD socket 与 `poll`。`runtime_metrics_push_http` 只是其薄封装，
+本身没有平台分支。
+
+因此「Windows 指标推送」不是指标层的小切片，而要先把 `break_http` 的 socket/poll 层移植到
+Winsock（`WSAStartup`、`SOCKET`、`WSAPoll`、错误码映射、TLS 的平台证书存储取舍等），属于独立
+网络子系统移植。本机无 Windows 环境、Windows CI 通道当前排队未执行，无法在此验证，故不在此
+实现，如实记为前置条件未满足；待 `break_http` 具备 Windows 传输后，推送层预计只需放宽
+`_POSIX_C_SOURCE` 守卫即可复用。
