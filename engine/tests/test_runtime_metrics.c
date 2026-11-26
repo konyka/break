@@ -1273,6 +1273,135 @@ TEST(history_aggregate_sum_saturates_without_overflow) {
     break_runtime_metrics_destroy(m);
 }
 
+static void record_gauge_frames(BreakRuntimeMetrics *m, BreakRuntimeMetricsHistory *h,
+                                const char *name, const u64 *values, u32 n) {
+    for (u32 i = 0u; i < n; ++i) {
+        ASSERT_EQ(break_runtime_metrics_set(m, name, BREAK_RUNTIME_METRIC_GAUGE, values[i]),
+                  BREAK_RUNTIME_OK);
+        ASSERT_EQ(break_runtime_metrics_history_record(h, m, 10u * (i + 1u)), BREAK_RUNTIME_OK);
+    }
+}
+
+TEST(aggregate_alerts_pick_the_requested_stat) {
+    BreakRuntimeMetrics *m = make_metrics(8u);
+    BreakRuntimeMetricsHistory *h = make_history(4u, 4u);
+    static const u64 values[] = {2u, 20u, 2u}; /* min 2, max 20, mean 8 */
+    BreakRuntimeMetricAlertRule rules[3] = {
+        {"lat", BREAK_RUNTIME_METRIC_ALERT_ABOVE, 5u},
+        {"lat", BREAK_RUNTIME_METRIC_ALERT_BELOW, 5u},
+        {"lat", BREAK_RUNTIME_METRIC_ALERT_ABOVE, 10u}, /* only MAX crosses 10 */
+    };
+    u32 fired[3] = {9u, 9u, 9u};
+    u32 count = 9u;
+    ASSERT_NOT_NULL(m);
+    ASSERT_NOT_NULL(h);
+    record_gauge_frames(m, h, "lat", values, 3u);
+    /* MIN 2: only BELOW 5 fires. */
+    ASSERT_EQ(break_runtime_metrics_history_evaluate_aggregate_alerts(
+                  h, rules, 3u, 3u, BREAK_RUNTIME_METRIC_AGGREGATE_MIN, fired, 3u, &count),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(count, 1u);
+    ASSERT_EQ(fired[0], 1u);
+    /* MAX 20: ABOVE 5 and ABOVE 10 fire. */
+    ASSERT_EQ(break_runtime_metrics_history_evaluate_aggregate_alerts(
+                  h, rules, 3u, 3u, BREAK_RUNTIME_METRIC_AGGREGATE_MAX, fired, 3u, &count),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(count, 2u);
+    ASSERT_EQ(fired[0], 0u);
+    ASSERT_EQ(fired[1], 2u);
+    /* MEAN 8: only ABOVE 5 fires (8 is not above 10). */
+    ASSERT_EQ(break_runtime_metrics_history_evaluate_aggregate_alerts(
+                  h, rules, 3u, 3u, BREAK_RUNTIME_METRIC_AGGREGATE_MEAN, fired, 3u, &count),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(count, 1u);
+    ASSERT_EQ(fired[0], 0u);
+    /* Window 1 (newest = 2): MEAN 2 -> only BELOW fires. */
+    ASSERT_EQ(break_runtime_metrics_history_evaluate_aggregate_alerts(
+                  h, rules, 3u, 1u, BREAK_RUNTIME_METRIC_AGGREGATE_MEAN, fired, 3u, &count),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(count, 1u);
+    ASSERT_EQ(fired[0], 1u);
+    break_runtime_metrics_history_destroy(h);
+    break_runtime_metrics_destroy(m);
+}
+
+TEST(aggregate_alerts_threshold_is_strict_and_unproven_never_fires) {
+    BreakRuntimeMetrics *m = make_metrics(8u);
+    BreakRuntimeMetricsHistory *h = make_history(4u, 4u);
+    static const u64 values[] = {5u, 5u};
+    BreakRuntimeMetricAlertRule rules[3] = {
+        {"lat", BREAK_RUNTIME_METRIC_ALERT_ABOVE, 5u},
+        {"lat", BREAK_RUNTIME_METRIC_ALERT_BELOW, 5u},
+        {"ghost", BREAK_RUNTIME_METRIC_ALERT_BELOW, 100u},
+    };
+    u32 fired[3] = {0u, 0u, 0u};
+    u32 count = 9u;
+    ASSERT_NOT_NULL(m);
+    ASSERT_NOT_NULL(h);
+    record_gauge_frames(m, h, "lat", values, 2u);
+    /* Value equal to threshold fires neither; absent name never fires. */
+    ASSERT_EQ(break_runtime_metrics_history_evaluate_aggregate_alerts(
+                  h, rules, 3u, 2u, BREAK_RUNTIME_METRIC_AGGREGATE_MEAN, fired, 3u, &count),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(count, 0u);
+    /* Window longer than retained frames: nothing fires, not an error. */
+    ASSERT_EQ(break_runtime_metrics_history_evaluate_aggregate_alerts(
+                  h, rules, 3u, 3u, BREAK_RUNTIME_METRIC_AGGREGATE_MIN, fired, 3u, &count),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(count, 0u);
+    break_runtime_metrics_history_destroy(h);
+    break_runtime_metrics_destroy(m);
+}
+
+TEST(aggregate_alerts_overload_and_validation) {
+    BreakRuntimeMetrics *m = make_metrics(8u);
+    BreakRuntimeMetricsHistory *h = make_history(4u, 4u);
+    static const u64 values[] = {50u};
+    BreakRuntimeMetricAlertRule rules[2] = {
+        {"lat", BREAK_RUNTIME_METRIC_ALERT_ABOVE, 1u},
+        {"lat", BREAK_RUNTIME_METRIC_ALERT_ABOVE, 2u},
+    };
+    BreakRuntimeMetricAlertRule bad_name = {NULL, BREAK_RUNTIME_METRIC_ALERT_ABOVE, 1u};
+    BreakRuntimeMetricAlertRule bad_op = {"lat", (BreakRuntimeMetricAlertOp)7, 1u};
+    u32 fired[2] = {77u, 77u};
+    u32 count = 9u;
+    ASSERT_NOT_NULL(m);
+    ASSERT_NOT_NULL(h);
+    record_gauge_frames(m, h, "lat", values, 1u);
+    /* Two firing rules but room for one -> OVERLOAD with the required count. */
+    ASSERT_EQ(break_runtime_metrics_history_evaluate_aggregate_alerts(
+                  h, rules, 2u, 1u, BREAK_RUNTIME_METRIC_AGGREGATE_MAX, fired, 1u, &count),
+              BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(count, 2u);
+    ASSERT_EQ(fired[0], 77u);
+    count = 9u;
+    ASSERT_EQ(break_runtime_metrics_history_evaluate_aggregate_alerts(
+                  NULL, rules, 2u, 1u, BREAK_RUNTIME_METRIC_AGGREGATE_MAX, fired, 2u, &count),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(count, 0u);
+    ASSERT_EQ(break_runtime_metrics_history_evaluate_aggregate_alerts(
+                  h, rules, 2u, 0u, BREAK_RUNTIME_METRIC_AGGREGATE_MAX, fired, 2u, &count),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_history_evaluate_aggregate_alerts(
+                  h, rules, 2u, BREAK_RUNTIME_METRICS_HISTORY_MAX_DEPTH + 1u,
+                  BREAK_RUNTIME_METRIC_AGGREGATE_MAX, fired, 2u, &count),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_history_evaluate_aggregate_alerts(
+                  h, rules, 2u, 1u, (BreakRuntimeMetricAggregateStat)9, fired, 2u, &count),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_history_evaluate_aggregate_alerts(
+                  h, &bad_name, 1u, 1u, BREAK_RUNTIME_METRIC_AGGREGATE_MAX, fired, 2u, &count),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_history_evaluate_aggregate_alerts(
+                  h, &bad_op, 1u, 1u, BREAK_RUNTIME_METRIC_AGGREGATE_MAX, fired, 2u, &count),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_history_evaluate_aggregate_alerts(
+                  h, rules, 2u, 1u, BREAK_RUNTIME_METRIC_AGGREGATE_MAX, fired, 2u, NULL),
+              BREAK_RUNTIME_INVALID);
+    break_runtime_metrics_history_destroy(h);
+    break_runtime_metrics_destroy(m);
+}
+
 TEST(history_aggregate_validates_arguments) {
     BreakRuntimeMetrics *m = make_metrics(8u);
     BreakRuntimeMetricsHistory *h = make_history(4u, 4u);
@@ -1326,6 +1455,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(history_aggregate_counts_only_present_frames);
     RUN_TEST(history_aggregate_sum_saturates_without_overflow);
     RUN_TEST(history_aggregate_validates_arguments);
+    RUN_TEST(aggregate_alerts_pick_the_requested_stat);
+    RUN_TEST(aggregate_alerts_threshold_is_strict_and_unproven_never_fires);
+    RUN_TEST(aggregate_alerts_overload_and_validation);
     RUN_TEST(history_delta_rejects_gauges_and_bad_arguments);
     RUN_TEST(decode_round_trips_the_encoding);
     RUN_TEST(decode_rejects_malformed_input_as_a_whole);

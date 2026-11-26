@@ -291,6 +291,32 @@ BreakRuntimeError break_runtime_metrics_history_aggregate(
     u64 *out_mean,
     u32 *out_counted);
 
+/* Statistic an aggregate alert compares against its rule threshold. */
+typedef enum BreakRuntimeMetricAggregateStat {
+    BREAK_RUNTIME_METRIC_AGGREGATE_MIN = 0,
+    BREAK_RUNTIME_METRIC_AGGREGATE_MAX = 1,
+    BREAK_RUNTIME_METRIC_AGGREGATE_MEAN = 2
+} BreakRuntimeMetricAggregateStat;
+
+/* Windowed aggregate alerts: a rule fires when
+ * break_runtime_metrics_history_aggregate over the newest `window` frames
+ * succeeds and the chosen `stat` is STRICTLY above (ABOVE) or below (BELOW)
+ * the rule threshold. A window longer than the retained frames, or a name
+ * absent from every frame of the window, never fires. Output, OVERLOAD and
+ * rule validation follow break_runtime_metrics_evaluate_alerts. INVALID (with
+ * *out_count = 0) also on NULL history, `window` of 0 or above
+ * BREAK_RUNTIME_METRICS_HISTORY_MAX_DEPTH, or an unknown `stat`. Same thread
+ * as the history. */
+BreakRuntimeError break_runtime_metrics_history_evaluate_aggregate_alerts(
+    const BreakRuntimeMetricsHistory *history,
+    const BreakRuntimeMetricAlertRule *rules,
+    u32 rule_count,
+    u32 window,
+    BreakRuntimeMetricAggregateStat stat,
+    u32 *fired,
+    u32 fired_capacity,
+    u32 *out_count);
+
 /* Strict decoder for the break_runtime_metrics_encode() text, for a remote
  * collector reading untrusted bytes. `text` is `len` bytes (no NUL needed).
  * Every line must be exactly `BRKM1 <name> <counter|gauge> <value>\n`: name

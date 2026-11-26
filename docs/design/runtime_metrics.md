@@ -301,3 +301,25 @@ window, out_min, out_max, out_mean, out_counted)` 在最新 `window` 帧（age 0
 饱和不回绕（帧 0=UINT64_MAX、帧 1=2，证明钳制值与回绕值不同）；参数校验（空历史、超窗、
 NULL、window 0）。5/5 变异全部被捕获（min/max 比较翻转、关闭饱和、mean 除以 window、把缺帧
 计入 counted）。normal/ASan+UBSan/TSan 下 47/47，runtime_core 标签 12/12（ASan）。
+
+## 29. 基于窗口聚合的告警
+
+第 16/17 节的告警逐帧比较（单帧或「连续 sustain 帧都越线」），无法表达「最近 N 帧的均值越线」
+或「窗口内峰值越线」。`break_runtime_metrics_history_evaluate_aggregate_alerts(history, rules,
+rule_count, window, stat, fired, fired_capacity, out_count)` 对每条规则调用第 28 节的
+`history_aggregate`，取 `stat`（`MIN`/`MAX`/`MEAN`）与阈值做严格比较（ABOVE 为 `>`，BELOW 为 `<`）。
+
+- 与 sustain 告警的区别：sustain 要求每帧都越线，一帧回落即不触发；MEAN 允许个别尖峰被平均，
+  MAX 让单个尖峰即触发，MIN 表示「整个窗口都高于阈值」（等价于 sustain ABOVE）。
+- 证据不足不触发：`window` 超过已保留帧数，或窗口内全部帧都没有该指标，规则不触发，也不报错。
+  这与 sustain 告警「帧数不足视为未触发」一致。
+- 输出、OVERLOAD（`*out_count` 给出所需容量，`fired` 不动）与规则校验沿用
+  `break_runtime_metrics_evaluate_alerts`。另外，以下情况返回 INVALID 且 `*out_count = 0`：
+  history 为 NULL、`window` 为 0 或大于 `BREAK_RUNTIME_METRICS_HISTORY_MAX_DEPTH`、`stat` 未知。
+- 纯读，与历史同线程，不加锁，不引入浮点。
+
+测试（`test_runtime_metrics.c`，新增 3 例）：数据 2/20/2 加阈值 5 与 10 区分三种 stat；阈值等值不
+触发、缺名不触发、超窗不触发；OVERLOAD 与全部 INVALID 分支。8/8 变异判红：三处 stat 选择各自
+换错、`>` 改 `>=`、`<` 改 `<=`、去掉 stat 校验、不计数 required（OVERLOAD 失效）、窗口上限差一。
+normal/ASan+UBSan/TSan 下 50/50；`runtime_core` 标签 12/12（ASan）；`build-current-vk` 非 fuzz
+全量 462/462。

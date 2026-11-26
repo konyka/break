@@ -548,6 +548,60 @@ BreakRuntimeError break_runtime_metrics_history_aggregate(
     return BREAK_RUNTIME_OK;
 }
 
+static bool metrics_aggregate_alert_fires(const BreakRuntimeMetricsHistory *history,
+                                          const BreakRuntimeMetricAlertRule *rule, u32 window,
+                                          BreakRuntimeMetricAggregateStat stat) {
+    u64 lo = 0u;
+    u64 hi = 0u;
+    u64 mean = 0u;
+    u64 value;
+    if (break_runtime_metrics_history_aggregate(history, rule->name, window, &lo, &hi, &mean,
+                                                NULL) != BREAK_RUNTIME_OK)
+        return false;
+    value = stat == BREAK_RUNTIME_METRIC_AGGREGATE_MIN   ? lo
+            : stat == BREAK_RUNTIME_METRIC_AGGREGATE_MAX ? hi
+                                                         : mean;
+    return rule->op == BREAK_RUNTIME_METRIC_ALERT_ABOVE ? value > rule->threshold
+                                                        : value < rule->threshold;
+}
+
+BreakRuntimeError break_runtime_metrics_history_evaluate_aggregate_alerts(
+    const BreakRuntimeMetricsHistory *history,
+    const BreakRuntimeMetricAlertRule *rules,
+    u32 rule_count,
+    u32 window,
+    BreakRuntimeMetricAggregateStat stat,
+    u32 *fired,
+    u32 fired_capacity,
+    u32 *out_count) {
+    u32 required = 0u;
+    u32 written = 0u;
+    if (!out_count) return BREAK_RUNTIME_INVALID;
+    *out_count = 0u;
+    if (!history || window == 0u || window > BREAK_RUNTIME_METRICS_HISTORY_MAX_DEPTH ||
+        (stat != BREAK_RUNTIME_METRIC_AGGREGATE_MIN &&
+         stat != BREAK_RUNTIME_METRIC_AGGREGATE_MAX &&
+         stat != BREAK_RUNTIME_METRIC_AGGREGATE_MEAN) ||
+        (!rules && rule_count != 0u) || (!fired && fired_capacity != 0u) ||
+        rule_count > BREAK_RUNTIME_METRICS_MAX_CAPACITY)
+        return BREAK_RUNTIME_INVALID;
+    for (u32 r = 0u; r < rule_count; ++r) {
+        if (!rules[r].name || (rules[r].op != BREAK_RUNTIME_METRIC_ALERT_ABOVE &&
+                               rules[r].op != BREAK_RUNTIME_METRIC_ALERT_BELOW))
+            return BREAK_RUNTIME_INVALID;
+    }
+    for (u32 r = 0u; r < rule_count; ++r)
+        if (metrics_aggregate_alert_fires(history, &rules[r], window, stat)) required++;
+    if (required > fired_capacity) {
+        *out_count = required;
+        return BREAK_RUNTIME_OVERLOAD;
+    }
+    for (u32 r = 0u; r < rule_count; ++r)
+        if (metrics_aggregate_alert_fires(history, &rules[r], window, stat)) fired[written++] = r;
+    *out_count = written;
+    return BREAK_RUNTIME_OK;
+}
+
 BreakRuntimeError break_runtime_metrics_history_delta(
     const BreakRuntimeMetricsHistory *history,
     const char *name,
