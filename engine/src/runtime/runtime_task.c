@@ -1,9 +1,11 @@
 #include <runtime/runtime_task.h>
 
 #include <core/platform_thread.h>
+#include <runtime/runtime_metrics.h>
 #include <runtime/runtime_test_hooks.h>
 
 #include <stdatomic.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -361,5 +363,48 @@ BreakRuntimeError break_runtime_task_queue_publish_completions(
     queue->completion_bus = bus;
     queue->completion_kind = kind;
     platform_mutex_unlock(&queue->mutex);
+    return BREAK_RUNTIME_OK;
+}
+
+BreakRuntimeError break_runtime_task_queue_export_metrics(
+    BreakRuntimeTaskQueue *queue,
+    struct BreakRuntimeMetrics *metrics,
+    const char *prefix)
+{
+    BreakRuntimeTaskStats stats;
+    struct {
+        const char *suffix;
+        u64 value;
+    } gauges[8];
+    char name[128];
+    u32 i;
+    if (!queue || !metrics || !prefix || prefix[0] == '\0') {
+        return BREAK_RUNTIME_INVALID;
+    }
+    if (break_runtime_task_queue_stats(queue, &stats) != BREAK_RUNTIME_OK) {
+        return BREAK_RUNTIME_INVALID;
+    }
+    gauges[0].suffix = "submitted";             gauges[0].value = stats.submitted;
+    gauges[1].suffix = "forwarded";             gauges[1].value = stats.forwarded;
+    gauges[2].suffix = "overload_rejects";      gauges[2].value = stats.overload_rejects;
+    gauges[3].suffix = "closed_rejects";        gauges[3].value = stats.closed_rejects;
+    gauges[4].suffix = "forward_rejects";       gauges[4].value = stats.forward_rejects;
+    gauges[5].suffix = "high_water";            gauges[5].value = stats.high_water;
+    gauges[6].suffix = "completions_published"; gauges[6].value = stats.completions_published;
+    gauges[7].suffix = "completions_dropped";   gauges[7].value = stats.completions_dropped;
+    for (i = 0; i < 8u; i++) {
+        BreakRuntimeError result;
+        int n = snprintf(name, sizeof(name), "%s.%s", prefix, gauges[i].suffix);
+        if (n < 0) {
+            return BREAK_RUNTIME_FAILED;
+        }
+        /* The registry rejects an over-long name with INVALID; let that be the
+         * reported error rather than silently truncating here. */
+        result = break_runtime_metrics_set(metrics, name, BREAK_RUNTIME_METRIC_GAUGE,
+                                           gauges[i].value);
+        if (result != BREAK_RUNTIME_OK) {
+            return result;
+        }
+    }
     return BREAK_RUNTIME_OK;
 }

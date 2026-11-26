@@ -14081,3 +14081,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 远端 CI `45792669354` **completed success：25 success、3 条件 skip、0 failed**。`Linux arm64 cross-build + QEMU tests (GCC)` success，`windows-d3d12` success。3 条 skip 为 Steam Deck 真机基准、Proton 兼容参考通道与 `lane-gpu-runtime-windows-d3d12`。
 - 本地已记：`test_runtime_bus` 17/17（normal/ASan+UBSan/TSan）。
 - 边界同本切片收据：远程传输、历史采样与告警未交付；queue 绑定（后续提交）之外的 task/world session 等子系统尚未接线。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。
+
+
+## Task 队列计数导出到指标注册表（指标协议：第三处子系统 name 绑定）（2026-11-26）
+
+- **实现**：`runtime_task` 新增 `break_runtime_task_queue_export_metrics(queue, metrics, prefix)`（`engine/src/runtime/runtime_task.{c,h}`），把任务队列 8 个观测计数按 `prefix` 写为 GAUGE（`submitted`/`forwarded`/`overload_rejects`/`closed_rejects`/`forward_rejects`/`high_water`/`completions_published`/`completions_dropped`）。与 queue 绑定同构：gauge 幂等、多前缀并存、先取 stats 再进注册表 leaf 锁、过长 prefix 由 name 校验回 INVALID 并停止。设计见 `docs/design/runtime_metrics.md` 第 10 节。
+- **TDD 与变异**：`test_runtime_facade.c` 新增 1 用例（2 submit + 1 overload 后导出 8 gauge 值校验、再导出幂等含值不增、NULL/空/过长 prefix 的 INVALID）。两项变异判红：改 counter+add（幂等值翻倍）、吞掉 set 错误（过长 prefix 的 INVALID）。
+- **验证**：`test_runtime_facade` 23/23（normal/ASan+UBSan/TSan 均 23/23）；`test_runtime_bus`、`test_runtime_metrics`、`test_runtime_core_target_contract`、io/reload/mainloop 全绿。
+- **边界**：指标协议边界不变——仍无远程传输、历史采样与告警；bus/queue/task 为前三处子系统绑定，world session 等后续接线。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。本收据提交自身的远端工作流结果不在此预写。

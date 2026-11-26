@@ -136,3 +136,21 @@ BreakRuntimeError break_runtime_task_queue_publish_completions(
 BreakRuntimeError break_runtime_task_queue_stats(
     BreakRuntimeTaskQueue *queue,
     BreakRuntimeTaskStats *out_stats);
+
+struct BreakRuntimeMetrics; /* runtime_metrics.h */
+
+/* Mirrors the task queue's observability counters into `metrics` as GAUGES
+ * named "<prefix>.submitted", ".forwarded", ".overload_rejects",
+ * ".closed_rejects", ".forward_rejects", ".high_water",
+ * ".completions_published", ".completions_dropped". Gauges (not counters) so
+ * re-exporting the same cumulative counters is idempotent. `prefix` must be a
+ * non-empty string short enough that "<prefix>.completions_published" (the
+ * longest suffix) fits the metric-name budget; an over-long prefix surfaces
+ * the INVALID that break_runtime_metrics_set returns. Any set error (table
+ * full, closed, kind mismatch) is returned and stops the export. INVALID on a
+ * NULL argument or NULL/empty prefix. The metrics registry must be owned by
+ * the calling thread. */
+BreakRuntimeError break_runtime_task_queue_export_metrics(
+    BreakRuntimeTaskQueue *queue,
+    struct BreakRuntimeMetrics *metrics,
+    const char *prefix);

@@ -1315,6 +1315,61 @@ static u64 facade_metric_of(BreakRuntimeMetrics *m, const char *name)
     return UINT64_MAX;
 }
 
+TEST(task_queue_export_metrics_mirrors_counters_as_idempotent_gauges)
+{
+    BreakRuntimeTaskConfig cfg;
+    BreakRuntimeTaskQueue *q = NULL;
+    BreakRuntimeMetrics *m = NULL;
+    BreakRuntimeMetricSample out[32];
+    u32 n = 0u;
+
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.capacity = 2u;
+    ASSERT_EQ(break_runtime_task_queue_create(&cfg, &q), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_create(NULL, &m), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_task_submit(q, inline_probe_task, make_value_msg(1u, 1u),
+                                        TASK_PRIORITY_NORMAL),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_task_submit(q, inline_probe_task, make_value_msg(2u, 2u),
+                                        TASK_PRIORITY_NORMAL),
+              BREAK_RUNTIME_OK);
+    {
+        BreakRuntimeOwnedMessage *payload = make_value_msg(3u, 3u);
+        ASSERT_EQ(break_runtime_task_submit(q, inline_probe_task, payload, TASK_PRIORITY_NORMAL),
+                  BREAK_RUNTIME_OVERLOAD);
+        break_runtime_message_release(payload);
+    }
+
+    ASSERT_EQ(break_runtime_task_queue_export_metrics(NULL, m, "task.sim"), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_task_queue_export_metrics(q, NULL, "task.sim"), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_task_queue_export_metrics(q, m, NULL), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_task_queue_export_metrics(q, m, ""), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_task_queue_export_metrics(q, m, "task.sim"), BREAK_RUNTIME_OK);
+    ASSERT_EQ(facade_metric_of(m, "task.sim.submitted"), 2u);
+    ASSERT_EQ(facade_metric_of(m, "task.sim.overload_rejects"), 1u);
+    ASSERT_EQ(facade_metric_of(m, "task.sim.high_water"), 2u);
+    ASSERT_EQ(facade_metric_of(m, "task.sim.completions_published"), 0u);
+    ASSERT_EQ(break_runtime_metrics_snapshot(m, out, 32u, &n), BREAK_RUNTIME_OK);
+    ASSERT_EQ(n, 8u);
+
+    /* idempotent re-export: gauges, no slot or value growth */
+    ASSERT_EQ(break_runtime_task_queue_export_metrics(q, m, "task.sim"), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_snapshot(m, out, 32u, &n), BREAK_RUNTIME_OK);
+    ASSERT_EQ(n, 8u);
+    ASSERT_EQ(facade_metric_of(m, "task.sim.submitted"), 2u);
+
+    /* an over-long prefix overflows the longest metric name; INVALID surfaces */
+    {
+        char longp[48];
+        memset(longp, 'p', sizeof longp);
+        longp[sizeof longp - 1u] = '\0';
+        ASSERT_EQ(break_runtime_task_queue_export_metrics(q, m, longp), BREAK_RUNTIME_INVALID);
+    }
+
+    break_runtime_metrics_destroy(m);
+    break_runtime_task_queue_destroy(q);
+}
+
 TEST(queue_export_metrics_mirrors_counters_as_idempotent_gauges)
 {
     BreakRuntimeQueue *q = NULL;
@@ -1403,4 +1458,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(message_copy_keeps_correlation_id);
     RUN_TEST(correlation_next_is_unique_across_threads);
     RUN_TEST(queue_export_metrics_mirrors_counters_as_idempotent_gauges);
+    RUN_TEST(task_queue_export_metrics_mirrors_counters_as_idempotent_gauges);
 TEST_MAIN_END()
