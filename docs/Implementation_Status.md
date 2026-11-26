@@ -14219,3 +14219,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：新增 `test_world_snapshot_filter`（5 用例），先以未声明函数编译失败为 RED。四项变异判红：忽略谓词（5 用例红）、tick 偏移（3 红）、字节偏移错误、id 与 hash 脱钩。
 - **验证**：`test_world_snapshot_filter` 5/5、`test_ecs_replication` 35/35（normal/ASan+UBSan/TSan）；`ctest -L "ecs|replication|core_app"` 在提交后全绿（两项按 git HEAD 归档的合同测试需提交后运行）。arm64 QEMU lane 已加入该测试。
 - **边界**：尚未接入 publication、world session 的逐连接 delta 链与 core_app `--world-replication`，生产路径仍向每个连接发送完整 World。本收据提交自身的远端工作流结果不在此预写。
+
+## 指标 HTTP 推送与告警投递切片的远端收据（2026-11-26）
+
+- 推送 `c29d6b48..52edb4f1`（fast-forward），含 `baf4a14b`（指标 HTTP 推送）、`ee5a62df`（告警边沿编码与投递）与收据提交 `52edb4f1`。
+- 远端 CI `45810910174` 结论 **success**：25 success、3 条件 skip（Steam Deck、Proton、`lane-gpu-runtime-windows-d3d12`），0 失败；四条 macOS lane 与 `Linux arm64 cross-build + QEMU tests (GCC)` 均 success（`test_runtime_metrics_push_http` 随 QEMU 运行）。
+- 独立的 windows-d3d12 工作流 `45810910158` success。
+- 边界同两切片收据。
