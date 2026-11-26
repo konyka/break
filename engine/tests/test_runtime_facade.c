@@ -2,6 +2,7 @@
 #include <runtime/runtime_message.h>
 #include <runtime/runtime_queue.h>
 #include <runtime/runtime_bus.h>
+#include <runtime/runtime_metrics.h>
 #include <runtime/runtime_task.h>
 #include <runtime/runtime_test_hooks.h>
 #include <core/platform_thread.h>
@@ -1304,6 +1305,81 @@ TEST(task_completions_never_block_a_worker)
     break_runtime_bus_destroy(bus);
 }
 
+static u64 facade_metric_of(BreakRuntimeMetrics *m, const char *name)
+{
+    BreakRuntimeMetricSample out[32];
+    u32 n = 0u, i;
+    if (break_runtime_metrics_snapshot(m, out, 32u, &n) != BREAK_RUNTIME_OK) return UINT64_MAX;
+    for (i = 0u; i < n; i++)
+        if (strcmp(out[i].name, name) == 0) return out[i].value;
+    return UINT64_MAX;
+}
+
+TEST(queue_export_metrics_mirrors_counters_as_idempotent_gauges)
+{
+    BreakRuntimeQueue *q = NULL;
+    BreakRuntimeMetrics *m = NULL;
+    BreakRuntimeMetricSample out[32];
+    BreakRuntimeOwnedMessage *msg = NULL;
+    u64 gen;
+    u32 n = 0u;
+    int i;
+
+    ASSERT_EQ(break_runtime_queue_create(NULL, &q), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_create(NULL, &m), BREAK_RUNTIME_OK);
+    gen = break_runtime_queue_generation(q);
+    for (i = 1; i <= 3; i++) {
+        msg = make_value_msg((u64)i, (u32)i);
+        ASSERT_NOT_NULL(msg);
+        ASSERT_EQ(break_runtime_queue_enqueue(q, msg, gen), BREAK_RUNTIME_OK);
+    }
+    msg = NULL;
+    ASSERT_EQ(break_runtime_queue_poll(q, &msg), BREAK_RUNTIME_OK);
+    break_runtime_message_release(msg);
+    /* a stale enqueue so stale_rejects is nonzero; caller keeps the message */
+    msg = make_value_msg(99u, 99u);
+    ASSERT_NOT_NULL(msg);
+    ASSERT_EQ(break_runtime_queue_enqueue(q, msg, gen + 1u), BREAK_RUNTIME_STALE);
+    break_runtime_message_release(msg);
+
+    ASSERT_EQ(break_runtime_queue_export_metrics(NULL, m, "q.input"), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_queue_export_metrics(q, NULL, "q.input"), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_queue_export_metrics(q, m, NULL), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_queue_export_metrics(q, m, ""), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_queue_export_metrics(q, m, "q.input"), BREAK_RUNTIME_OK);
+    ASSERT_EQ(facade_metric_of(m, "q.input.enqueued"), 3u);
+    ASSERT_EQ(facade_metric_of(m, "q.input.dequeued"), 1u);
+    ASSERT_EQ(facade_metric_of(m, "q.input.stale_rejects"), 1u);
+    ASSERT_EQ(facade_metric_of(m, "q.input.overload_rejects"), 0u);
+    ASSERT_EQ(facade_metric_of(m, "q.input.closed_rejects"), 0u);
+    ASSERT_EQ(facade_metric_of(m, "q.input.high_water"), 3u);
+    ASSERT_EQ(break_runtime_metrics_snapshot(m, out, 32u, &n), BREAK_RUNTIME_OK);
+    ASSERT_EQ(n, 6u);
+
+    /* idempotent re-export: gauges, no slot growth and no value growth */
+    ASSERT_EQ(break_runtime_queue_export_metrics(q, m, "q.input"), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_snapshot(m, out, 32u, &n), BREAK_RUNTIME_OK);
+    ASSERT_EQ(n, 6u);
+    ASSERT_EQ(facade_metric_of(m, "q.input.enqueued"), 3u);
+    ASSERT_EQ(facade_metric_of(m, "q.input.high_water"), 3u);
+
+    /* a distinct prefix tracks a second queue's gauges alongside */
+    ASSERT_EQ(break_runtime_queue_export_metrics(q, m, "q.output"), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_snapshot(m, out, 32u, &n), BREAK_RUNTIME_OK);
+    ASSERT_EQ(n, 12u);
+
+    /* an over-long prefix overflows the metric name; the set INVALID surfaces */
+    {
+        char longp[48];
+        memset(longp, 'p', sizeof longp);
+        longp[sizeof longp - 1u] = '\0';
+        ASSERT_EQ(break_runtime_queue_export_metrics(q, m, longp), BREAK_RUNTIME_INVALID);
+    }
+
+    break_runtime_metrics_destroy(m);
+    break_runtime_queue_destroy(q);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(message_copy_produces_independent_owned_bytes);
     RUN_TEST(message_copy_validates_null_and_size);
@@ -1326,4 +1402,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(task_completions_never_block_a_worker);
     RUN_TEST(message_copy_keeps_correlation_id);
     RUN_TEST(correlation_next_is_unique_across_threads);
+    RUN_TEST(queue_export_metrics_mirrors_counters_as_idempotent_gauges);
 TEST_MAIN_END()

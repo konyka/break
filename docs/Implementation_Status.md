@@ -14066,3 +14066,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 远端 CI `45789757885` **completed success：25 success、3 条件 skip、0 failed**。`Linux arm64 cross-build + QEMU tests (GCC)` success，`test_runtime_metrics` 已随允许列表在 QEMU 下实际运行。3 条 skip 为 Steam Deck 真机基准、Proton 兼容参考通道与 `lane-gpu-runtime-windows-d3d12`。
 - `windows-d3d12` **success**。
 - 边界同本切片收据：远程传输、历史采样/时间序列、聚合与告警规则，以及各子系统 name 绑定仍未交付（bus 绑定见下一节，于后续提交）。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。
+
+
+## Queue 计数导出到指标注册表（指标协议：第二处子系统 name 绑定）（2026-11-26）
+
+- **实现**：`runtime_queue` 新增 `break_runtime_queue_export_metrics(queue, metrics, prefix)`（`engine/src/runtime/runtime_queue.{c,h}`），把单队列 6 个观测计数按调用方 `prefix` 写入注册表为 GAUGE：`<prefix>.{enqueued,dequeued,overload_rejects,stale_rejects,closed_rejects,high_water}`。队列多实例故按前缀命名；gauge 使重复导出幂等，不同前缀并存。先取队列 stats 再进注册表 leaf 锁，不交叉持锁。过长 prefix 由注册表 name 校验回 INVALID 并停止，不静默截断。设计见 `docs/design/runtime_metrics.md` 第 9 节。
+- **TDD 与变异**：`test_runtime_facade.c` 新增 1 用例（3 enqueue/1 poll/1 stale 后导出 6 gauge 值校验、再导出幂等含值不增、第二前缀并存至 12 槽、NULL/空/过长 prefix 的 INVALID）。两项变异判红：改 counter+add（再导出值翻倍，幂等值断言红）、吞掉 set 错误（过长 prefix 的 INVALID 断言红）。
+- **验证**：`test_runtime_facade` 22/22（normal/ASan+UBSan/TSan 均 22/22）；`test_runtime_bus`、`test_runtime_metrics`、`test_runtime_core_target_contract`、io/reload/mainloop 全绿。
+- **边界**：不改变指标协议边界——仍无远程传输、历史采样与告警；bus（上一节）与 queue 为前两处子系统绑定，task、world session 等后续接线。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。本收据提交自身的远端工作流结果不在此预写。

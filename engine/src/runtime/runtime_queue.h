@@ -116,3 +116,20 @@ BreakRuntimeError break_runtime_queue_wait(
 BreakRuntimeError break_runtime_queue_stats(
     BreakRuntimeQueue *queue,
     BreakRuntimeQueueStats *out_stats);
+
+struct BreakRuntimeMetrics; /* runtime_metrics.h */
+
+/* Mirrors the queue's observability counters into `metrics` as GAUGES named
+ * "<prefix>.enqueued", ".dequeued", ".overload_rejects", ".stale_rejects",
+ * ".closed_rejects", ".high_water". Gauges (not counters) so re-exporting the
+ * same cumulative counters is idempotent. `prefix` must be 1..32 chars and
+ * leave room for the longest suffix (".overload_rejects", 17 chars) within the
+ * metric-name budget; a prefix that would overflow a name is reported as the
+ * INVALID that break_runtime_metrics_set returns. Any set error (table full,
+ * closed, kind mismatch) is returned and stops the export. INVALID on a NULL
+ * argument or NULL/empty prefix. The metrics registry must be owned by the
+ * calling thread. */
+BreakRuntimeError break_runtime_queue_export_metrics(
+    BreakRuntimeQueue *queue,
+    struct BreakRuntimeMetrics *metrics,
+    const char *prefix);

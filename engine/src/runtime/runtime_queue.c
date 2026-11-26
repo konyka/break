@@ -1,8 +1,10 @@
 #include <runtime/runtime_queue.h>
 
 #include <core/platform_thread.h>
+#include <runtime/runtime_metrics.h>
 #include <runtime/runtime_test_hooks.h>
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -286,5 +288,46 @@ BreakRuntimeError break_runtime_queue_stats(
     out_stats->closed_rejects = queue->closed_rejects;
     out_stats->high_water = queue->high_water;
     platform_mutex_unlock(&queue->mutex);
+    return BREAK_RUNTIME_OK;
+}
+
+BreakRuntimeError break_runtime_queue_export_metrics(
+    BreakRuntimeQueue *queue,
+    struct BreakRuntimeMetrics *metrics,
+    const char *prefix)
+{
+    BreakRuntimeQueueStats stats;
+    struct {
+        const char *suffix;
+        u64 value;
+    } gauges[6];
+    char name[128];
+    u32 i;
+    if (!queue || !metrics || !prefix || prefix[0] == '\0') {
+        return BREAK_RUNTIME_INVALID;
+    }
+    if (break_runtime_queue_stats(queue, &stats) != BREAK_RUNTIME_OK) {
+        return BREAK_RUNTIME_INVALID;
+    }
+    gauges[0].suffix = "enqueued";         gauges[0].value = stats.enqueued;
+    gauges[1].suffix = "dequeued";         gauges[1].value = stats.dequeued;
+    gauges[2].suffix = "overload_rejects"; gauges[2].value = stats.overload_rejects;
+    gauges[3].suffix = "stale_rejects";    gauges[3].value = stats.stale_rejects;
+    gauges[4].suffix = "closed_rejects";   gauges[4].value = stats.closed_rejects;
+    gauges[5].suffix = "high_water";       gauges[5].value = stats.high_water;
+    for (i = 0; i < 6u; i++) {
+        BreakRuntimeError result;
+        int n = snprintf(name, sizeof(name), "%s.%s", prefix, gauges[i].suffix);
+        if (n < 0) {
+            return BREAK_RUNTIME_FAILED;
+        }
+        /* The registry rejects an over-long name with INVALID; let that be the
+         * reported error rather than silently truncating here. */
+        result = break_runtime_metrics_set(metrics, name, BREAK_RUNTIME_METRIC_GAUGE,
+                                           gauges[i].value);
+        if (result != BREAK_RUNTIME_OK) {
+            return result;
+        }
+    }
     return BREAK_RUNTIME_OK;
 }
