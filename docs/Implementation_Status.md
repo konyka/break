@@ -14184,3 +14184,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 远端 CI `45805244713` 结论 **success**：25 success、3 条件 skip（Steam Deck、Proton、`lane-gpu-runtime-windows-d3d12`），0 失败；四条 macOS lane、`Linux arm64 cross-build + QEMU tests (GCC)` 均 success（`test_runtime_metrics` 随 QEMU 运行）。
 - 独立的 windows-d3d12 工作流 `45805244598` success。
 - 边界同两切片收据。
+
+## 指标 HTTP 推送到采集器（指标协议：远程传输）（2026-11-26）
+
+- **实现**：新增独立静态库 `runtime_metrics_push_http`（`engine/src/runtime/runtime_metrics_push_http.{c,h}`，依赖 `runtime_core` + `break_http`，仅在 `break_http` 存在时构建）：`break_runtime_metrics_push_http(ctx, metrics)` 按长度编码注册表并 POST 到 `<base_url>/metrics`，只有 HTTP 200 为 OK，其余传输结果为 FAILED；非法 URL/参数 INVALID、非拥有线程 REJECTED、超过 64 KiB OVERLOAD，均在连接之前拒绝。与 `break_crash_upload_http` 同构，`runtime_core` 归档保持无网络符号。设计见 `docs/design/runtime_metrics.md` 第 20 节。
+- **TDD 与变异**：新增 `test_runtime_metrics_push_http`（6 用例，回环一次性假采集器）：200 时请求行/Content-Type 正确且 body 经 `break_runtime_metrics_decode` 还原为快照；500/204/302/缺 Content-Length/无回答为 FAILED；空注册表推送空 body；尾斜杠与 NULL 在连接前拒绝且假采集器未收到字节；非拥有线程 REJECTED；1024 个满长名 + UINT64_MAX 的注册表 OVERLOAD 且不发送；非回环明文 http 与无 CA 的 https 为 FAILED。先以缺失头文件编译失败为 RED。三项变异判红：参数校验短路为 FAILED、忽略 status 只看传输成功、去掉 64 KiB 上限。
+- **验证**：`test_runtime_metrics_push_http` 6/6（normal/ASan+UBSan/TSan 均 6/6）；`ctest -L runtime_core` 12/12；`test_core_app_contract_compat` 与 `test_core_app_ctest_config_contract`（按 git HEAD 归档重新配置）提交后通过。arm64 QEMU lane 的构建目标与运行白名单已加入该测试。
+- **边界**：仅 POSIX（同 `break_http`），无 Windows 实现；不做重试调度、批量或压缩；告警投递仍未实现。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。本收据提交自身的远端工作流结果不在此预写。

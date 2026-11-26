@@ -794,6 +794,17 @@ if(TARGET break_http AND TARGET break_crash)
     target_link_libraries(break_crash_upload_http PUBLIC break_crash break_http)
 endif()
 
+# runtime_metrics_push_http — POSTs the BRKM1 metrics encoding to a collector
+# over break_http. Its own library so the runtime_core archive stays free of
+# network symbols; never linked into engine, engine_demo, dxx_break or editor.
+if(TARGET break_http)
+    add_library(runtime_metrics_push_http STATIC src/runtime/runtime_metrics_push_http.c)
+    set_property(TARGET runtime_metrics_push_http PROPERTY C_STANDARD 11)
+    target_include_directories(runtime_metrics_push_http PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(runtime_metrics_push_http PUBLIC runtime_core break_http)
+endif()
+
 # Formal optional replication libraries. These are intentionally independent of
 # engine and Snowflake: consumers opt in and own the transport/session boundary.
 add_library(break_ecs_replication STATIC
@@ -8914,6 +8925,15 @@ endif()
         target_link_libraries(test_break_crash_upload_http PRIVATE break_crash_upload_http pthread)
         add_test(NAME test_break_crash_upload_http COMMAND test_break_crash_upload_http)
         set_tests_properties(test_break_crash_upload_http PROPERTIES LABELS "headless;security;crash" TIMEOUT 120)
+    endif()
+
+    if(TARGET runtime_metrics_push_http)
+        add_executable(test_runtime_metrics_push_http tests/test_runtime_metrics_push_http.c)
+        target_include_directories(test_runtime_metrics_push_http PRIVATE ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_runtime_metrics_push_http PRIVATE runtime_metrics_push_http pthread)
+        add_test(NAME test_runtime_metrics_push_http COMMAND test_runtime_metrics_push_http)
+        set_tests_properties(test_runtime_metrics_push_http PROPERTIES
+            LABELS "headless;runtime_core;security" TIMEOUT 120)
     endif()
 
     if(TARGET break_crash_cluster AND TARGET break_crash_upload_http AND TARGET break_crash_symbolize)

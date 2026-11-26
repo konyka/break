@@ -55,7 +55,7 @@
 
 ## 7. 边界
 
-本块只交付进程内注册表与文本编码。远程传输（把编码推给采集器）仍未实现，采集端的严格解码见第 19 节（阈值告警求值见第 14 节，有界历史采样见第 15 节，计数器窗口增量见第 18 节）；指标值的语义绑定（哪些子系统注册哪些 name）由各消费者在后续切片接线，本库不预置任何业务 name。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。
+本块只交付进程内注册表与文本编码。远程推送见第 20 节，采集端的严格解码见第 19 节（阈值告警求值见第 14 节，有界历史采样见第 15 节，计数器窗口增量见第 18 节）；指标值的语义绑定（哪些子系统注册哪些 name）由各消费者在后续切片接线，本库不预置任何业务 name。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。
 
 ## 8. 子系统接线：Bus 聚合导出（第一处 name 绑定）
 
@@ -142,4 +142,14 @@
 - 每行必须严格为 `BRKM1 <name> <counter|gauge> <value>\n`：name 同注册表规则（1..47 字节、无 ≤0x20 字节）；value 为规范十进制（无符号、无前导零，"0" 除外），不超过 `UINT64_MAX`；单空格分隔、仅 LF 行尾（CR 非法）、无空行、无重复 name、行数不超过 `BREAK_RUNTIME_METRICS_MAX_CAPACITY`。内嵌 NUL 因不属于合法 name 字节而被拒。
 - 任何违规 → 整体 `INVALID`，`*out_count = 0`，`out` 不写；合法输入但 `capacity` 不足 → `OVERLOAD` 并报所需行数，`out` 不写。格式错误优先于容量不足。
 - 空输入合法（0 行）。round-trip：`decode(encode(snapshot))` 与 `snapshot` 逐项相等。
-- 不含传输本身：把字节从被测进程送到采集器（socket、HTTP 等）仍未实现。
+- 不含传输本身：HTTP 推送见第 20 节。
+
+## 20. HTTP 推送到采集器
+
+`break_runtime_metrics_push_http(ctx, metrics)`（`engine/src/runtime/runtime_metrics_push_http.{c,h}`）把注册表当前编码 POST 到 `<base_url>/metrics`，`Content-Type: text/x-break-metrics`。它是独立静态库 `runtime_metrics_push_http`（依赖 `runtime_core` 与 `break_http`），与 `break_crash_upload_http` 同构：`runtime_core` 归档保持无网络符号，engine/engine_demo/dxx_break/editor 不链接它。
+
+- 传输规则沿用 `break_http`：https 必须给 CA 文件，明文 http 只允许回环地址，不跟随重定向，连接与总 I/O 时间有界。
+- 只有完整的 HTTP 200 回答算 `OK`；连接/TLS 失败、超时、URL 被拒、非 200、畸形回答一律 `FAILED`，重试由调用方安排。
+- 本地拒绝且不发起连接：ctx/metrics 为 NULL、base URL 为空/无 NUL/以 `/` 结尾/拼接后超长 → `INVALID`；非注册表拥有线程 → `REJECTED`；编码超过 `BREAK_RUNTIME_METRICS_PUSH_HTTP_MAX_BYTES`（64 KiB）→ `OVERLOAD`；编码缓冲分配失败 → `OOM`。
+- 先以零容量 encode 取所需长度，再按长度一次分配并编码；空注册表推送空 body。
+- 调用阻塞至多 `break_http` 的时间预算，应放在诊断线程步进中，不能在热路径调用。仅 POSIX（同 `break_http`）；无 Windows 实现。告警投递仍未实现。
