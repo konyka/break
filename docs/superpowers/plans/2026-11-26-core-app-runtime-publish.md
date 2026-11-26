@@ -186,3 +186,14 @@ git commit -m "feat(core-app): wire runtime snapshot publication"
 - [ ] **Step 2: 提交** `docs(core-app): describe runtime publish wiring`。
 - [ ] **Step 3: 最终 HEAD 双后端完整 CTest**，记录注册/通过/条件 skip/失败/耗时。
 - [ ] **Step 4: 评审、推送与收据**：任务与整分支评审后 fast-forward 推送，监视 CI/Windows/QUIC/Proton，成功后建收据工作区追加两份文档收据并核验 SHA。
+
+## 执行修订（2026-11-26）
+
+设计文档的「修订 1」把原三步拆成实际的三个提交，顺序如下：
+
+1. `feat(ecs): report sender force_full in world session state` —— `BreakWorldSessionSenderState.force_full`，一个 RED 用例覆盖初始、NEED_FULL、全量发出、rebaseline 四种状态；同时修正一个依赖旧字段的既有用例（它在 NEED_FULL 之后沿用过期快照）。
+2. `feat(runtime): gate world publish fanout on readiness and ACK wait` —— `publish_requires_ready` / `publish_waits_for_ack`、`set_publish_ready()`、`held_publication_epoch` 与快照字段；四个新用例，七项变异全部判红。
+3. `feat(core-app): publish authoritative world through the runtime adapter` —— publication 生命周期、tick 发布点、单调快照 tick、三个失败计数、legacy 开关、构建失败注入；六个新用例，八项变异全部判红，真实 loopback 计数不变。
+
+原来的 Step 4「rebaseline 重建 publication」取消：publication 以 level 0 创建后接受任何更高 level，lease 自带发布时的 level。
+原来的 Step 5「关闭顺序注入」保留，实际验证方式是在 adapter destroy 返回 TIMEOUT 后断言 publication 仍可 acquire、销毁成功后为 NULL。

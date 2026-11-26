@@ -286,7 +286,7 @@ World adapter 以同一 mutex 保护 binding 占用和 lifecycle_destroying。�
 
 direct notice 架构保持不变：生产者只构造 16 字节 `0x5754/v1` publish-current notice 并 `submit_publish_current`，owner `drain` 才 acquire publication current 并对每个已 OPEN 的连接调用 World Session。多个代次在这里是分离的：level generation（Session rebaseline）、publication epoch（发布替换）、connection epoch（每连接 OPEN 身份）、queue generation（adapter FIFO）各自独立推进，adapter 以 publication epoch 判账、以 connection epoch 校验 OPEN、以 level generation 做 STALE 拒绝，互不混用。
 
-target 依赖边界不变：loopback 测试通过 `runtime_world_session_test`（PUBLIC 链接 `runtime_core_test break_net_test break_ecs_replication_test`）加 `runtime_core` 链接正式 adapter，不把 adapter/lifecycle 源直接编入可执行文件，`runtime_core` 的源与依赖也没有改变。**core_app 不自动接线这条数据面**：snapshot/lease/BRWD/BRFG 的 Runtime 数据面仍只在测试 fixture 中组合，生产 core_app 不会自动注册 publication 或把权威 World 接入 Runtime。
+target 依赖边界不变：loopback 测试通过 `runtime_world_session_test`（PUBLIC 链接 `runtime_core_test break_net_test break_ecs_replication_test`）加 `runtime_core` 链接正式 adapter，不把 adapter/lifecycle 源直接编入可执行文件，`runtime_core` 的源与依赖也没有改变。**已于 2026-11-26 改变**：当时 `core_app` 不接线这条数据面，snapshot/lease/BRWD/BRFG 只在测试 fixture 中组合。本切片之后，`--world-replication` 的生产 transport 默认创建自己的 publication，按认证状态同步就绪位，并在每次结构屏障后构建快照、publish、提交 notice 交给 adapter fanout；逐槽 legacy 发布降为 `world_use_legacy_publish` 回退位。详见 `docs/design/core_app_integration.md` 的 2026-11-26 小节。
 
 ## 聚合统计与逐连接诊断的分工（2026-11-26）
 

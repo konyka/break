@@ -1103,3 +1103,18 @@ authority handoff 和默认全局公平调度仍未交付。正常断连顺序�
 诊断快照用例已拆成三个独立用例并补上槽位复用后的升序断言，`test_runtime_world_session` 52/52，双后端完整 CTest 与远端 CI `45725560238`、windows-d3d12 `45725560433` 均通过；这只是测试可定位性的提升，不新增生产行为。
 
 能力边界不变：指标协议与远程采集、告警，以及共享 live World、权威 simulation 合并、跨 World 持久身份、AOI 裁剪、自动换级、完整资产链、inbound completion 映射与可靠每 epoch 广播仍未交付。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。
+
+## 第 17 节补充（2026-11-26）：生产 Runtime 发布接线完成，权威 simulation 仍未接入
+
+可选 `--world-replication` 的生产 transport 现在默认经 Runtime adapter 发布：它拥有自己的 publication，按认证状态同步就绪位，每次结构屏障后构建快照、publish、提交 direct notice，由 adapter owner drain 完成 full/delta。逐槽 legacy 发布保留为 `world_use_legacy_publish` 回退位，真实 loopback 在默认 Runtime 路径下的既有计数与 legacy 完全一致。
+
+因此以下缺口的状态发生变化：
+
+- **“core_app 不自动接线这条数据面”**：不再成立，本切片已接线。
+- **publication 生命周期**：由 transport 拥有，与权威 World 同生命周期；adapter 销毁失败时保留。
+
+以下缺口不因本次接线关闭：
+
+- **权威 simulation 合并 / inbound apply 到权威 World**：仍未实现；收到对端快照仍只进每连接 diagnostic World，与权威 World 无关。
+- **预测/回滚、共享 live World、跨 World 持久身份、AOI 裁剪、自动换级、完整资产链、可靠每 epoch 广播、指标协议与远程采集、告警**：仍未实现。
+- **生产 level rebaseline 策略**：publication 接受更高 level（lease 自带 level），但"何时换级"仍由外部首 tick 锁定，不是自动策略。

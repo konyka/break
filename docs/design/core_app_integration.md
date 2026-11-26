@@ -1866,3 +1866,19 @@ arm64 lane 新增 `test_core_app_network`（25/25）和 `test_core_app_network_o
 - **离线 hooks 合同**：成对校验只读取函数指针，在所有构建生效。离线半对和任何非 NULL
   成对 hooks 均明确 INVALID；两个 NULL 保持五项，离线不新增链接依赖。transport-enabled
   world-off 成对注册返回空 adapter 时同样回退五项，真实 world on 六项不变。
+
+
+## 补充（2026-11-26）：生产侧 Runtime 发布接线
+
+- **归属**：`--world-replication` 下的 `BreakWorldSnapshotPublication` 由 transport 拥有，与 `world_authoritative`/`world_schemas` 同生命周期。它以 level 0 创建，之后接受任何更高 level 的发布，lease 自带发布时的 level，因此关卡换代不需要重建 publication。创建失败即 `net_world_create` 失败并走既有回滚。
+- **前置缺口**：此前的生产 adapter 没有接 publication，`submit_publish_current` 只会返回 REJECTED；生产路径也从未调用它。本切片补上这条接线。
+- **tick 顺序**：发布点仍在原 legacy 位置（pump 与 `net_world_tick_drain` 之后，且 reactor 事件队列为空）。每个 world_open 槽先按 `net_slot_sendable()` 同步就绪状态，只有某个就绪槽确实能接新目标（history 为空或 force_full，且没有进行中的 attempt）时才构建快照、publish、提交 notice，再 drain adapter。未认证连接不会收到 World 包，也不会让 World 包先于 welcome 到达。
+- **快照 tick**：使用 transport 内单调计数 `max(current_tick, publish_tick + 1)`。核心 tick 在关卡重载时可能从头计数，而 publication 会拒绝同 level 下不递增的 tick；不这样做发布会永久停住。
+- **流控**：adapter 新增两个默认关闭的开关。`publish_requires_ready` 让新连接默认不就绪，由 transport 按认证状态开启；未就绪连接不参与 fanout、continuation 与脏计账，attempt 标量保持不动。`publish_waits_for_ack` 在 fanout 时按当时 Session 状态判断——没有进行中的 attempt、history 非空且无 force_full 就记为 held，不再发新目标。这正是 legacy 的停等规则，因此真实 loopback 的 `full_publishes=1 delta_publishes=1` 等计数在默认 Runtime 路径下与 legacy 完全一致。
+- **依赖**：Session 的 `BreakWorldSessionSenderState` 追加 `force_full`，如实反映内部强制全量标志（NEED_FULL 或 rebaseline 置位，全量发出后清除）。此前该标志不可观测，外部无法区分"history 非空等 ACK"与"必须发全量"。
+- **回退位**：`CoreAppNetTransportConfig.world_use_legacy_publish`（默认 false）打开后回到逐槽 `net_world_publish_slot`，不提交 notice。
+- **失败计数**：`snapshot_build_failures`（构建失败）、`publish_rejected`（publication 拒绝）与 `notice_overloads`（notice 队列满）计入 transport，经测试视图暴露；`sent_fragments` 改为在整条 Runtime 路径前后采样，因为分片是在 adapter drain 中离开 reactor 的。
+- **关闭顺序**：`net_destroy` 先销毁 adapter，失败即返回，因此 publication 一定保留；publication 在 `net_world_destroy` 中 close+destroy。
+- **验证**：`test_core_app_net_transport` 由 36 增至 **42**，覆盖默认关闭、认证门控与 ACK 停等、构建失败计数与恢复、核心 tick 回绕仍单调、legacy 开关、adapter destroy TIMEOUT 后 publication 仍可 acquire。`test_runtime_world_session` 由 52 增至 **56**，`test_world_session_recovery` 由 22 增至 **23**。八项 transport 变异与七项 adapter 变异全部实际判红（其中一个变异等价、一个被编译错误挡住，未计入）。真实进程 `test_core_app_network_world` 与 `test_core_app_network_single_session` 在默认 Runtime 路径下通过。
+
+仍未完成：**权威 simulation 合并、inbound apply 到权威 World、预测/回滚、共享 live World、跨 World 持久身份、AOI 裁剪、自动换级、完整资产链、可靠每 epoch 广播、指标协议与告警**。本项不预写远端或其他平台验收。

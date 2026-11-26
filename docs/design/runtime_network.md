@@ -570,3 +570,16 @@ E1/E2：A 填满自身 share 后第一次 drain 返回 OVERLOAD，`attempt_targe
 `break_runtime_world_session_publish_progress()` 返回 adapter 级只读摘要：`observed_publication_epoch` 是最近一次 drain acquire 到的 publication epoch（0 表示尚未 drain）；`open_connections` 与 `dirty_connections` 在同一临界区内统计；`request_pending` 表示 notice 已消费但尚未在批次末尾 fanout；`continuation_pending` 是最新一次 drain 末尾**重算**的 continuation 标志，其判据包含 Session `attempt_pending`，因此它不单独代表 adapter 欠账——与 `publish_dirty` 的边界说明并列看待。`observed_publication_epoch == 0` 表示当前观测窗口内没有已知 epoch：既可能是从未 drain，也可能是 rebaseline 或空/已关闭 publication 把它清回了 0。
 
 `dirty_connections` 使用与 `BreakRuntimeWorldConnectionSnapshot.publish_dirty` 逐字相同的判据，两者不会分叉；但它同样**不含** Session `attempt_pending`，因此摘要不为零不代表 `pending()` 非零，反之亦然。`adapter` 或输出为 NULL 时返回 false 并清零输出；查询不调用 World Session、publication 或 queue，不推进状态机。
+
+
+## 补充（2026-11-26）：World 发布经 Runtime adapter
+
+生产 core_app 的 `--world-replication` 现在默认把权威 World 发布成 immutable snapshot，再由 Runtime adapter 的 direct notice 驱动既有 fanout；逐槽 legacy 发布降为 `world_use_legacy_publish` 回退位。
+
+adapter 侧新增两个默认关闭的门控，供需要精确复刻 legacy 停等语义的生产方使用：`publish_requires_ready` 让新连接默认不就绪（`break_runtime_world_session_set_publish_ready()` 按 key+epoch 开启），`publish_waits_for_ack` 让"history 非空、无进行中 attempt、无 force_full"的连接记为 held 而不是继续发送。未就绪连接不参与 fanout、continuation 与脏计账，其 attempt 标量保持不变；成为就绪后由调用方再提交一次 notice。
+
+`BreakRuntimeWorldConnectionSnapshot` 追加 `publish_ready` 与 `held_publication_epoch`；held 与 completed/terminal 一样参与"该连接在本 epoch 是否干净"的判断。两个开关都要求配置了 publication。
+
+这与传输层的 AUTH 边界互补：Runtime 不判断认证，认证仍由 transport 以就绪状态表达，所以未认证对端不会收到 World 包。
+
+未改变：wire 格式、消息 id、`network_world_stats` 字段与默认关闭时的行为。指标协议与远程采集、告警，以及共享 live World、权威 simulation 合并、AOI、自动换级仍未交付。
