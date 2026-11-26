@@ -42,7 +42,7 @@
 
 ## 4. 未交付
 
-- 发送通道：两种报文已在 `break_net` 消息注册表中登记（第 7 节），但还没有会话层的收发接线，由调用方用 `break_net_envelope` 封装后发送。
+- 发送通道：已交付。两种报文登记为 `break_net` 消息（第 7 节），服务端的会话层收发由 `break_prediction_session` 完成（第 8 节）。
 - 接入 World/ECS：预测器只处理字节块，没有接到 `break_ecs_replication` 或 `core_app`。
 - 插值与平滑：其他实体的快照插值已由 `break_snapshot_interp` 交付（第 6 节）；本地实体在校正后的状态跳变仍立即生效，平滑留给表现层。
 - 服务端的延迟补偿（回溯命中判定）：已由 `break_lag_compensation` 交付，见 `docs/design/lag_compensation.md`。
@@ -141,5 +141,29 @@
 - Snowflake 构建（ASan+UBSan）下 `test_break_session` 43/43，`-L network` 28/28，`-L "snowflake|editor"` 33/33。
 - `build-current-vk` 非 fuzz 全量 464/464，fuzz 24/24。
 - Windows 实机 MSVC 全量构建通过，`test_break_prediction_wire` 10/10，网络、预测、会话、World 相关测试全部通过。
+
+本提交自身的远端工作流结果不在此预写。
+
+## 8. 会话层接线（`break_prediction_session`）
+
+`engine/src/network/break_prediction_session.{h,c}` 把服务端的输入收件箱和快照发送接到 `break_net` 会话管理器与 reactor 上，编入 `break_net`（只在 `BREAK_ENABLE_SNOWFLAKE=ON` 时构建）。
+
+- **连接**：每个打开的连接占一个槽，槽里有一个 `break_prediction_inbox` 和一个拒绝计数。`open(conn, first_tick)` 从 `first_tick` 开始收输入；`first_tick` 为 0、连接已打开、槽已满都返回 false。`close` 释放槽，重新打开的连接从新的起点开始。槽数为 1..4096。
+- **接收**：`attach(session, manager)` 为 `0x400c` 注册 handler。handler 解码批次，把每个新输入按 tick 顺序交给调用方的 `apply` 一次，并附带连接号。重复和缺口计入统计。
+- **失败语义**：批次解码失败、或者来自没有打开的连接，handler 返回 false。会话管理器把它记为 HANDLER_FAILED，但对非认证消息不会关闭会话；本模块把它计入该连接的 `rejected()`。是否断开持续发坏批次的对端，由调用方根据 `rejected()` 决定。`apply` 返回 false 时批次停在该输入，handler 同样失败，下一个批次从同一 tick 继续。
+- **发送**：`send_snapshot(conn, state)` 用该连接收件箱的最后 tick 编码快照，经 `break_net_reactor_send` 以 `0x400d`、版本 `BREAK_PREDICTION_WIRE_VERSION` 发出。没有 reactor（只收模式）、连接没有打开、state 为 NULL 时返回 `BREAK_NET_SEND_INVALID`。
+- **线程**：所有调用都在轮询会话管理器的逻辑线程上进行，本模块不加线程、锁或原子操作。
+
+**测试**：`test_break_prediction_session` 8 例，先以链接失败为 RED。测试用 Snowflake 的回环 reactor 和真实会话管理器，把会话推进到已认证状态后投递 `MESSAGE_RECEIVED` 事件；出站快照用 `break_net_reactor_poll_outbound_for_test` 取出后再解码比对。覆盖两个连接各自按序应用、重叠批次去重、缺口、坏批次和未打开连接的拒绝、apply 中途失败后续传、快照携带最后 tick、输入长度与配置不符时拒绝、只收模式不能发送、开关连接与上限、配置校验。
+
+**变异**：25 项。其中「`find` 不检查槽是否在用」一项起初存活，补上「新建会话对连接 0 查不到」的断言后判红。「`send_snapshot` 不检查 reactor 为 NULL」是等价变异：`break_net_reactor_send_correlated` 对 NULL reactor 同样返回 `BREAK_NET_SEND_INVALID`。这个检查仍然保留，让只收模式的语义不依赖下层实现。其余全部判红。
+
+**验证**：
+- Snowflake ASan+UBSan 构建 8/8 无泄漏，`-L "network|snowflake|editor|session"` 59/59。
+- TSan 构建 8/8；`-L "network|snowflake|session"` 32/33，唯一失败是 `test_core_app_network_offline`，即本机 Fedora 上已记录的 Lua longjmp CHECK 环境问题，与本改动无关。
+- `build-current-vk` 非 fuzz 全量 464/464，fuzz 24/24。
+- Windows 实机 MSVC 全量构建通过，相关测试 24/24。Windows 构建没有开 Snowflake，所以本模块不在其中编译。
+
+仍未交付：把预测接入 World/ECS（`break_ecs_replication`、`core_app`）。
 
 本提交自身的远端工作流结果不在此预写。

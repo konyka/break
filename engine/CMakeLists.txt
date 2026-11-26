@@ -984,7 +984,10 @@ if(BREAK_ENABLE_SNOWFLAKE)
         src/network/break_replication_session.c
         src/network/break_online_aspect_session.c
         src/ecs/world_session.c
-        src/network/break_msg_rate.c)
+        src/network/break_msg_rate.c
+        src/network/break_prediction.c
+        src/network/break_prediction_wire.c
+        src/network/break_prediction_session.c)
     set_property(TARGET break_net PROPERTY C_STANDARD 11)
     target_include_directories(break_net PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -7221,6 +7224,14 @@ endif()
         add_test(NAME test_break_online_aspect_session COMMAND test_break_online_aspect_session)
         set_tests_properties(test_break_online_aspect_session PROPERTIES
             TIMEOUT 30 LABELS "network;snowflake;session;replication;aspect")
+
+        add_executable(test_break_prediction_session tests/test_break_prediction_session.c)
+        target_include_directories(test_break_prediction_session PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_break_prediction_session PRIVATE break_net_test break_online)
+        add_test(NAME test_break_prediction_session COMMAND test_break_prediction_session)
+        set_tests_properties(test_break_prediction_session PROPERTIES
+            TIMEOUT 30 LABELS "network;snowflake;session")
 
         add_executable(test_world_session tests/test_world_session.c)
         target_include_directories(test_world_session PRIVATE

@@ -14479,3 +14479,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **修正**：原批次上限（32 个 × 4096 字节）超过信封的 64 KiB 载荷上限。批次总长现在不超过 64 KiB：编码端相应减少个数，解码端拒绝更长的批次。
 - **TDD**：`test_break_session` 先以未声明标识符编译失败为 RED，随后以上限断言失败发现上述问题；`test_break_prediction_wire` 新增大输入批次一例；两项变异判红。
 - **验证**：Snowflake ASan 构建 `test_break_session` 43/43、`-L network` 28/28、`-L "snowflake|editor"` 33/33；`build-current-vk` 非 fuzz 464/464，fuzz 24/24；Windows 实机 MSVC 全量构建通过，相关测试通过。本提交自身的远端工作流结果不在此预写。
+
+## 预测的会话层接线（2026-11-27）
+
+- **缺口**：`client_prediction.md` 第 4 节把会话层的收发通道列为未交付。
+- **实现**：新增 `engine/src/network/break_prediction_session.{h,c}`，编入 `break_net`。每个连接一个输入收件箱，`0x400c` 的 handler 解码批次并按序交给调用方的 `apply`；快照经 reactor 以 `0x400d` 发送。坏批次和未打开连接的批次计入 `rejected()`，断开策略由调用方决定。设计见 `docs/design/client_prediction.md` 第 8 节。
+- **TDD 与变异**：`test_break_prediction_session` 8 例，先以链接失败为 RED。25 项变异中一项靠补断言判红，一项为等价变异（理由见设计文档），其余判红。
+- **验证**：Snowflake ASan+UBSan 8/8，相关标签 59/59；TSan 8/8，标签内唯一失败为已记录的 Lua longjmp 环境问题；`build-current-vk` 非 fuzz 464/464，fuzz 24/24；Windows 实机 MSVC 全量构建通过，相关测试 24/24。本提交自身的远端工作流结果不在此预写。
