@@ -464,3 +464,45 @@ calloc 置零后才进入逐条填充；build 的清理则是在**实体数组�
 结论：该崩溃模式仅存在于 `world_snapshot.c` 的两段式结构（entity 数组与其内层 component 数组），
 build 与 filter 共用 `snapshot_destroy`，两处已由同一个 `entities != NULL` 守卫覆盖。不是跨模块
 的系统性缺陷。
+
+## 补充（2026-11-27）：可靠的每 epoch 广播
+
+`BreakWorldSnapshotPublication` 只保存最新快照：读得慢的一方会跳过中间发布的 epoch，这是有意的 coalesce 语义。需要每个 epoch 都送达时，使用新增的 `BreakWorldSnapshotLog`（`engine/src/ecs/world_snapshot_log.{h,c}`，编入 `break_ecs_replication`）。
+
+- **模型**：环形保存最近 `capacity` 个快照（1..1024）；每个读者（1..256）有自己的下一个 epoch，`read` 按 1、2、3……的顺序交出，不跳过。epoch 从 1 开始，每次发布加 1；快照的 tick 必须大于上一个快照的 tick，tick 0 因此也被拒绝。
+- **满时的策略**：只有发布需要最旧快照的槽位时才丢弃它。若此时仍有读者没读到它：
+  - 默认返回 `FULL`，什么都不变，由生产方稍后重试，不丢失任何 epoch。
+  - 设置 `evict_slow_readers` 时，驱逐这些读者，每个读者只计一次 `evicted_readers`，被驱逐后不再阻塞日志。它的下一次 `read` 返回一次 `LAGGED`，之后从最旧的保留 epoch 继续。中间缺失的部分要当作新的基线处理：对 World 复制来说，就是改发 full 快照，而不是 delta。
+- **读者**：后加入的读者从加入之后的下一个 epoch 开始；移除读者后，它阻塞的快照不再等待它，id 可复用。`backlog` 返回尚未读取的 epoch 数；对被驱逐的读者，返回它在 `LAGGED` 之后将读到的数量。
+- **线程**：所有调用共用一把内部互斥锁，发布、读取和读者管理可以在不同线程上进行。lease 持有自己的快照引用，日志销毁后仍然有效。
+
+**测试**：`test_world_snapshot_log` 8 例，先以链接失败为 RED。覆盖：
+- 两个读者按序读到全部 epoch，读取与发布交错。
+- 慢读者导致 `FULL`，腾出一个槽位后重试得到下一个 epoch。
+- 驱逐恰好发生在第一次需要该槽位的发布上，并且只计一次；`LAGGED` 之后从最旧的保留 epoch 继续。
+- 后加入的读者从下一个 epoch 开始。
+- 移除读者后释放它阻塞的快照，id 可复用。
+- 配置、schema、tick 和参数校验，非 OK 结果把 lease 清零。
+- lease 比日志活得久。
+- 两个读线程对一个发布线程，经过容量为 4 的日志，各自收到 2000 个 epoch，顺序正确、无驱逐。
+
+**变异**：47 项全部判红或消除。初轮存活 6 项：
+- 3 项是冗余检查，已删除：
+  - 不驱逐时不存在被标记为 lagged 的读者。
+  - `last_tick` 从 0 开始，已经拒绝 tick 0。
+  - 空闲槽位清零后 `lagged` 本来就是 false。
+- 2 项补测试后判红：驱逐计数随发布逐步检查；被驱逐读者的 `backlog`。
+- 1 项补断言后判红：非 OK 读取时 lease 被清零。
+
+另有 1 项是有意构造的等价对照，用来检查脚本本身。
+
+**验证**：
+- normal、ASan+UBSan、TSan（连跑 3 次）下 8/8。
+- 契约测试 44/44。
+- `build-current-vk` 非 fuzz 466/466，fuzz 24/24。
+- Windows 实机 MSVC 全量构建通过，本测试 8/8，相关测试 22/22。
+
+仍未完成：Runtime adapter 和 core_app 的 World 发布仍使用 coalesce 的 `BreakWorldSnapshotPublication`，没有改为可选的可靠日志。
+
+本提交自身的远端工作流结果不在此预写。
+

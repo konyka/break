@@ -813,6 +813,7 @@ add_library(break_ecs_replication STATIC
     src/ecs/replication_schema.c
     src/ecs/world_snapshot.c
     src/ecs/world_snapshot_publication.c
+    src/ecs/world_snapshot_log.c
     src/ecs/world_delta.c
     src/ecs/world_delta_wire.c
     src/ecs/net_entity_map.c
@@ -6139,6 +6140,7 @@ endif()
         src/ecs/replication_schema.c
         src/ecs/world_snapshot.c
         src/ecs/world_snapshot_publication.c
+        src/ecs/world_snapshot_log.c
         src/ecs/world_delta.c
         src/ecs/world_delta_wire.c
         src/ecs/net_entity_map.c
@@ -6153,6 +6155,15 @@ endif()
     if(NOT ENGINE_PLATFORM STREQUAL "windows")
         target_link_libraries(break_ecs_replication_test PUBLIC m)
     endif()
+
+    # test_world_snapshot_log: reliable per-epoch broadcast of World
+    # snapshots (docs/design/ecs_snapshot_replication_aoi.md).
+    add_executable(test_world_snapshot_log tests/test_world_snapshot_log.c)
+    target_include_directories(test_world_snapshot_log PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_world_snapshot_log PRIVATE break_ecs_replication)
+    add_test(NAME test_world_snapshot_log COMMAND test_world_snapshot_log)
+    set_tests_properties(test_world_snapshot_log PROPERTIES
+        TIMEOUT 60 LABELS "headless;ecs;replication")
 
     add_executable(test_world_snapshot_publication tests/test_world_snapshot_publication.c)
     target_include_directories(test_world_snapshot_publication PRIVATE ${TEST_INCLUDE_DIRS})

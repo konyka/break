@@ -14520,3 +14520,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
   - Windows 实机 MSVC 全量构建通过，相关测试 62/62。
   - 本提交自身的远端工作流结果不在此预写。
 
+## 可靠的每 epoch 广播原语（2026-11-27）
+
+- **缺口**：`missing_capabilities.md` 列为未交付，现有 publication 只保存最新快照，中间 epoch 会被 coalesce。
+- **实现**：新增 `engine/src/ecs/world_snapshot_log.{h,c}`，编入 `break_ecs_replication`。环形保存最近若干快照，每个读者按序读到全部 epoch。满时默认返回 FULL；可选驱逐慢读者，被驱逐的读者收到一次 LAGGED 后从最旧的保留 epoch 继续。所有调用共用一把内部互斥锁。设计见 `docs/design/ecs_snapshot_replication_aoi.md` 2026-11-27 补充。
+- **TDD 与变异**：`test_world_snapshot_log` 8 例，先以链接失败为 RED，含两读一写的多线程测试。47 项变异全部判红或消除：3 项冗余检查已删除，3 项补测试后判红。
+- **验证**：normal/ASan+UBSan/TSan 8/8；契约测试 44/44；`build-current-vk` 非 fuzz 466/466，fuzz 24/24；Windows 实机 MSVC 全量构建通过，相关测试 22/22。
+- **仍未完成**：Runtime adapter 和 core_app 的发布路径接入。本提交自身的远端工作流结果不在此预写。
+
