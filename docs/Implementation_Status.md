@@ -14260,3 +14260,8 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：`test_world_session_recovery` 新增 2 例（过滤回传视图 id/tick、NULL keep 回传 target id/tick 且允许 NULL 输出）。先以未定义引用链接失败为 RED。两项变异判红：回传 target id 而非视图 id、不写输出。
 - **验证**：`test_world_session_recovery` 31/31（normal/ASan+UBSan 含 leak 检测/TSan 均 31/31）。
 - **边界**：Runtime adapter 改用它对账、core_app 启用过滤由后续切片实施。本收据提交自身的远端工作流结果不在此预写。
+
+## AOI 适配器/共享过滤切片的远端收据（2026-11-26 续）
+
+- `6a16139e`（AOI scope→谓词适配器）远端 CI `45829350618` 结论 failure，但三个非成功项全是 **cancelled 且 steps=0**（`macOS Snowflake replication`、`macOS Cocoa + MoltenVK`、`iOS native Metal build-only`）——等待 macOS/iOS runner 容量而从未进入执行的基础设施取消，非测试失败；其余 **22 success、3 条件 skip、0 failed**，含 windows-d3d12（独立 run `45829350314` success）、proton（`45829592322` success）与 Linux/arm64 全绿。改动是 `engine/src/ecs` 纯 C，与 macOS/iOS 无关。令牌对 Actions 只读，无法 rerun；后续提交触发新 macOS/iOS lane 自然重试。
+- `1cc7f4c6`、`23045a82`、`c51ccac3`、`836bcc2d` 的 CI 在 runner backlog 中排队/被并发组取代；windows-d3d12 与 proton 的已完成项均 success。HEAD 最终 CI 收据待后续记录。
