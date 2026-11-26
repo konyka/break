@@ -793,6 +793,169 @@ TEST(alert_edge_encoding_reports_required_length_and_validates) {
               BREAK_RUNTIME_INVALID);
 }
 
+
+static BreakRuntimeMetricsRetryQueue *make_retry(u32 capacity, usize max_payload) {
+    BreakRuntimeMetricsRetryConfig cfg;
+    BreakRuntimeMetricsRetryQueue *q = NULL;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.capacity = capacity;
+    cfg.max_payload_bytes = max_payload;
+    return break_runtime_metrics_retry_create(&cfg, &q) == BREAK_RUNTIME_OK ? q : NULL;
+}
+
+static bool retry_head_is(BreakRuntimeMetricsRetryQueue *q, const char *expect) {
+    const void *bytes = NULL;
+    usize len = 0u;
+    u32 attempts = 0u;
+    if (break_runtime_metrics_retry_peek(q, &bytes, &len, &attempts) != BREAK_RUNTIME_OK)
+        return false;
+    return len == strlen(expect) && memcmp(bytes, expect, len) == 0;
+}
+
+TEST(retry_queue_is_fifo_and_release_advances) {
+    BreakRuntimeMetricsRetryQueue *q = make_retry(4u, 64u);
+    BreakRuntimeMetricsRetryStats stats;
+    ASSERT_NOT_NULL(q);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "one", 3u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "two", 3u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "three", 5u), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(retry_head_is(q, "one"));
+    ASSERT_EQ(break_runtime_metrics_retry_release(q), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(retry_head_is(q, "two"));
+    ASSERT_EQ(break_runtime_metrics_retry_release(q), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(retry_head_is(q, "three"));
+    ASSERT_EQ(break_runtime_metrics_retry_release(q), BREAK_RUNTIME_OK);
+    /* Empty: peek, attempt and release are all STALE. */
+    {
+        const void *bytes = NULL;
+        usize len = 7u;
+        u32 attempts = 7u;
+        ASSERT_EQ(break_runtime_metrics_retry_peek(q, &bytes, &len, &attempts),
+                  BREAK_RUNTIME_STALE);
+        ASSERT_EQ(break_runtime_metrics_retry_release(q), BREAK_RUNTIME_STALE);
+        ASSERT_EQ(break_runtime_metrics_retry_record_attempt(q, &attempts),
+                  BREAK_RUNTIME_STALE);
+    }
+    ASSERT_EQ(break_runtime_metrics_retry_stats(q, &stats), BREAK_RUNTIME_OK);
+    ASSERT_EQ(stats.queued, 0u);
+    ASSERT_EQ(stats.enqueued, 3u);
+    ASSERT_EQ(stats.released, 3u);
+    ASSERT_EQ(stats.dropped_oldest, 0u);
+    break_runtime_metrics_retry_destroy(q);
+}
+
+TEST(retry_queue_full_drops_the_oldest_entry) {
+    BreakRuntimeMetricsRetryQueue *q = make_retry(2u, 64u);
+    BreakRuntimeMetricsRetryStats stats;
+    ASSERT_NOT_NULL(q);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "a", 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "b", 1u), BREAK_RUNTIME_OK);
+    /* Full: the newest wins and the oldest is evicted, still OK. */
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "c", 1u), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(retry_head_is(q, "b"));
+    ASSERT_EQ(break_runtime_metrics_retry_stats(q, &stats), BREAK_RUNTIME_OK);
+    ASSERT_EQ(stats.queued, 2u);
+    ASSERT_EQ(stats.enqueued, 3u);
+    ASSERT_EQ(stats.dropped_oldest, 1u);
+    ASSERT_EQ(break_runtime_metrics_retry_release(q), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(retry_head_is(q, "c"));
+    break_runtime_metrics_retry_destroy(q);
+}
+
+TEST(retry_queue_counts_attempts_per_entry) {
+    BreakRuntimeMetricsRetryQueue *q = make_retry(2u, 64u);
+    BreakRuntimeMetricsRetryStats stats;
+    const void *bytes = NULL;
+    usize len = 0u;
+    u32 attempts = 99u;
+    ASSERT_NOT_NULL(q);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "x", 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "y", 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_peek(q, &bytes, &len, &attempts), BREAK_RUNTIME_OK);
+    ASSERT_EQ(attempts, 0u);
+    ASSERT_EQ(break_runtime_metrics_retry_record_attempt(q, &attempts), BREAK_RUNTIME_OK);
+    ASSERT_EQ(attempts, 1u);
+    ASSERT_EQ(break_runtime_metrics_retry_record_attempt(q, &attempts), BREAK_RUNTIME_OK);
+    ASSERT_EQ(attempts, 2u);
+    ASSERT_EQ(break_runtime_metrics_retry_peek(q, &bytes, &len, &attempts), BREAK_RUNTIME_OK);
+    ASSERT_EQ(attempts, 2u);
+    /* Attempts belong to the entry: the next entry starts clean. */
+    ASSERT_EQ(break_runtime_metrics_retry_release(q), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_peek(q, &bytes, &len, &attempts), BREAK_RUNTIME_OK);
+    ASSERT_EQ(attempts, 0u);
+    ASSERT_EQ(break_runtime_metrics_retry_stats(q, &stats), BREAK_RUNTIME_OK);
+    ASSERT_EQ(stats.attempts, 2u);
+    /* Slot reuse must clear attempts: wrap the ring so a new payload lands in
+     * the slot whose previous entry had recorded attempts. */
+    ASSERT_EQ(break_runtime_metrics_retry_record_attempt(q, &attempts), BREAK_RUNTIME_OK);
+    ASSERT_EQ(attempts, 1u);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "z", 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_release(q), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(retry_head_is(q, "z"));
+    ASSERT_EQ(break_runtime_metrics_retry_peek(q, &bytes, &len, &attempts), BREAK_RUNTIME_OK);
+    ASSERT_EQ(attempts, 0u);
+    break_runtime_metrics_retry_destroy(q);
+}
+
+TEST(retry_queue_validates_configuration_and_payloads) {
+    BreakRuntimeMetricsRetryQueue *q = NULL;
+    BreakRuntimeMetricsRetryConfig cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.capacity = 0u;
+    cfg.max_payload_bytes = 16u;
+    ASSERT_EQ(break_runtime_metrics_retry_create(&cfg, &q), BREAK_RUNTIME_INVALID);
+    cfg.capacity = BREAK_RUNTIME_METRICS_RETRY_MAX_ENTRIES + 1u;
+    ASSERT_EQ(break_runtime_metrics_retry_create(&cfg, &q), BREAK_RUNTIME_INVALID);
+    cfg.capacity = 2u;
+    cfg.max_payload_bytes = 0u;
+    ASSERT_EQ(break_runtime_metrics_retry_create(&cfg, &q), BREAK_RUNTIME_INVALID);
+    cfg.max_payload_bytes = BREAK_RUNTIME_METRICS_RETRY_MAX_PAYLOAD_BYTES + 1u;
+    ASSERT_EQ(break_runtime_metrics_retry_create(&cfg, &q), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_retry_create(NULL, &q), BREAK_RUNTIME_INVALID);
+    cfg.max_payload_bytes = 4u;
+    ASSERT_EQ(break_runtime_metrics_retry_create(&cfg, NULL), BREAK_RUNTIME_INVALID);
+    ASSERT_TRUE(q == NULL);
+    q = make_retry(2u, 4u);
+    ASSERT_NOT_NULL(q);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, NULL, 2u), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "ab", 0u), BREAK_RUNTIME_INVALID);
+    /* One byte past the configured payload cap. */
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "abcde", 5u), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "abcd", 4u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(NULL, "a", 1u), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_retry_stats(NULL, NULL), BREAK_RUNTIME_INVALID);
+    break_runtime_metrics_retry_destroy(q);
+    break_runtime_metrics_retry_destroy(NULL);
+}
+
+TEST(retry_queue_round_trips_a_real_metrics_encoding) {
+    BreakRuntimeMetrics *m = make_metrics(0u);
+    BreakRuntimeMetricsRetryQueue *q = make_retry(4u, 4096u);
+    BreakRuntimeMetricSample decoded[8];
+    char buf[1024];
+    usize len = 0u;
+    const void *bytes = NULL;
+    usize held = 0u;
+    u32 attempts = 0u;
+    u32 count = 0u;
+    ASSERT_NOT_NULL(m);
+    ASSERT_NOT_NULL(q);
+    ASSERT_EQ(break_runtime_metrics_add(m, "pushes.failed", BREAK_RUNTIME_METRIC_COUNTER, 4u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_encode(m, buf, sizeof(buf), &len), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(len > 0u);
+    /* A failed delivery parks the exact encoded bytes for a later attempt. */
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, buf, len), BREAK_RUNTIME_OK);
+    memset(buf, 0, sizeof(buf));
+    ASSERT_EQ(break_runtime_metrics_retry_peek(q, &bytes, &held, &attempts), BREAK_RUNTIME_OK);
+    ASSERT_EQ(held, len);
+    ASSERT_EQ(break_runtime_metrics_decode((const char *)bytes, held, decoded, 8u, &count),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(sample_value(decoded, count, "pushes.failed"), 4u);
+    ASSERT_EQ(break_runtime_metrics_retry_release(q), BREAK_RUNTIME_OK);
+    break_runtime_metrics_retry_destroy(q);
+    break_runtime_metrics_destroy(m);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(create_validates_config_and_defaults);
     RUN_TEST(counter_adds_accumulate_and_saturate);
@@ -824,4 +987,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(decode_accepts_boundary_values_and_reports_required_count);
     RUN_TEST(alert_edge_encoding_lists_only_transitions_in_rule_order);
     RUN_TEST(alert_edge_encoding_reports_required_length_and_validates);
+    RUN_TEST(retry_queue_is_fifo_and_release_advances);
+    RUN_TEST(retry_queue_full_drops_the_oldest_entry);
+    RUN_TEST(retry_queue_counts_attempts_per_entry);
+    RUN_TEST(retry_queue_validates_configuration_and_payloads);
+    RUN_TEST(retry_queue_round_trips_a_real_metrics_encoding);
 TEST_MAIN_END()

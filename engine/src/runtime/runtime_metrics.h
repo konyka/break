@@ -308,3 +308,80 @@ BreakRuntimeError break_runtime_metrics_encode_alert_edges(
     char *buf,
     usize capacity,
     usize *out_len);
+
+/* Bounded retry queue for failed metric/alert deliveries (design:
+ * docs/design/runtime_metrics.md section 22).
+ *
+ * The push helpers report FAILED without retrying, so a caller that wants
+ * at-least-once delivery had to keep its own backlog. This is that backlog:
+ * a caller-owned, fixed-capacity FIFO of already-encoded payload bytes. It
+ * starts no threads, never retries by itself and performs no I/O; the owner
+ * drives it from its diagnostics step.
+ *
+ * Ownership and threading match the registry: every call is owner-thread only
+ * (the creating thread; REJECTED otherwise). All storage is allocated at
+ * create, so enqueue never allocates.
+ *
+ * A full queue drops the OLDEST entry to admit the newest (freshest telemetry
+ * wins) and counts the drop. Each entry carries the number of delivery
+ * attempts made for it, so a caller can give up on a poison payload. */
+typedef struct BreakRuntimeMetricsRetryQueue BreakRuntimeMetricsRetryQueue; /* opaque */
+
+#define BREAK_RUNTIME_METRICS_RETRY_MAX_ENTRIES 256u
+#define BREAK_RUNTIME_METRICS_RETRY_MAX_PAYLOAD_BYTES (64u * 1024u)
+
+typedef struct BreakRuntimeMetricsRetryConfig {
+    u32 capacity;           /* entries retained; 1..BREAK_RUNTIME_METRICS_RETRY_MAX_ENTRIES */
+    usize max_payload_bytes; /* per entry; 1..BREAK_RUNTIME_METRICS_RETRY_MAX_PAYLOAD_BYTES */
+} BreakRuntimeMetricsRetryConfig;
+
+typedef struct BreakRuntimeMetricsRetryStats {
+    u32 queued;        /* entries currently held */
+    u64 enqueued;      /* accepted enqueues */
+    u64 dropped_oldest;/* entries evicted to admit a newer one */
+    u64 released;      /* entries removed by release() */
+    u64 attempts;      /* total attempt bumps recorded */
+} BreakRuntimeMetricsRetryStats;
+
+/* INVALID on NULL out, NULL config, a zero or over-bound capacity or
+ * max_payload_bytes; OOM on allocation failure. */
+BreakRuntimeError break_runtime_metrics_retry_create(
+    const BreakRuntimeMetricsRetryConfig *config,
+    BreakRuntimeMetricsRetryQueue **out);
+void break_runtime_metrics_retry_destroy(BreakRuntimeMetricsRetryQueue *queue);
+
+/* Copies `len` bytes as the newest entry with attempts = 0. A full queue drops
+ * the oldest entry first (counted) and still returns OK. INVALID on NULL
+ * queue, NULL bytes with non-zero len, zero len, or len above the configured
+ * max_payload_bytes. REJECTED off the owner thread. */
+BreakRuntimeError break_runtime_metrics_retry_enqueue(
+    BreakRuntimeMetricsRetryQueue *queue,
+    const void *bytes,
+    usize len);
+
+/* Borrows the oldest entry without removing it: *out_bytes points into the
+ * queue and stays valid until the next enqueue/release/destroy. *out_attempts
+ * receives the attempts recorded so far. STALE when the queue is empty (no
+ * output written). INVALID on NULL queue/out_bytes/out_len; REJECTED off the
+ * owner thread. */
+BreakRuntimeError break_runtime_metrics_retry_peek(
+    BreakRuntimeMetricsRetryQueue *queue,
+    const void **out_bytes,
+    usize *out_len,
+    u32 *out_attempts);
+
+/* Records one more delivery attempt for the oldest entry (saturating at
+ * UINT32_MAX) and reports the new total. STALE when empty. */
+BreakRuntimeError break_runtime_metrics_retry_record_attempt(
+    BreakRuntimeMetricsRetryQueue *queue,
+    u32 *out_attempts);
+
+/* Removes the oldest entry (after a successful delivery, or to abandon a
+ * poison payload). STALE when empty. */
+BreakRuntimeError break_runtime_metrics_retry_release(
+    BreakRuntimeMetricsRetryQueue *queue);
+
+/* Owner-thread snapshot of the counters. INVALID on NULL argument. */
+BreakRuntimeError break_runtime_metrics_retry_stats(
+    const BreakRuntimeMetricsRetryQueue *queue,
+    BreakRuntimeMetricsRetryStats *out_stats);

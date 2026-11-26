@@ -680,3 +680,139 @@ BreakRuntimeError break_runtime_metrics_encode_alert_edges(
     buf[written] = '\0';
     return BREAK_RUNTIME_OK;
 }
+
+/* Bounded retry queue (design: docs/design/runtime_metrics.md section 22).
+ * Owner-thread only, so no mutex: a ring of fixed-size payload slots carved
+ * from one allocation. Enqueue copies bytes; a full ring evicts the oldest so
+ * the freshest telemetry survives. */
+typedef struct RetryEntry {
+    usize len;
+    u32 attempts;
+} RetryEntry;
+
+struct BreakRuntimeMetricsRetryQueue {
+    PlatformThreadId owner;
+    u32 capacity;
+    usize max_payload_bytes;
+    u32 head;  /* oldest entry */
+    u32 count;
+    RetryEntry *entries;
+    u8 *payloads; /* capacity * max_payload_bytes */
+    BreakRuntimeMetricsRetryStats stats;
+};
+
+static bool retry_is_owner(const BreakRuntimeMetricsRetryQueue *queue) {
+    return platform_thread_id_equal(platform_thread_current_id(), queue->owner);
+}
+
+static u8 *retry_slot_bytes(BreakRuntimeMetricsRetryQueue *queue, u32 slot) {
+    return queue->payloads + (usize)slot * queue->max_payload_bytes;
+}
+
+BreakRuntimeError break_runtime_metrics_retry_create(
+    const BreakRuntimeMetricsRetryConfig *config,
+    BreakRuntimeMetricsRetryQueue **out) {
+    BreakRuntimeMetricsRetryQueue *queue;
+    if (!out) return BREAK_RUNTIME_INVALID;
+    *out = NULL;
+    if (!config) return BREAK_RUNTIME_INVALID;
+    if (config->capacity == 0u ||
+        config->capacity > BREAK_RUNTIME_METRICS_RETRY_MAX_ENTRIES) {
+        return BREAK_RUNTIME_INVALID;
+    }
+    if (config->max_payload_bytes == 0u ||
+        config->max_payload_bytes > BREAK_RUNTIME_METRICS_RETRY_MAX_PAYLOAD_BYTES) {
+        return BREAK_RUNTIME_INVALID;
+    }
+    queue = (BreakRuntimeMetricsRetryQueue *)calloc(1u, sizeof(*queue));
+    if (!queue) return BREAK_RUNTIME_OOM;
+    queue->entries = (RetryEntry *)calloc(config->capacity, sizeof(*queue->entries));
+    queue->payloads = (u8 *)calloc((usize)config->capacity, config->max_payload_bytes);
+    if (!queue->entries || !queue->payloads) {
+        free(queue->payloads);
+        free(queue->entries);
+        free(queue);
+        return BREAK_RUNTIME_OOM;
+    }
+    queue->owner = platform_thread_current_id();
+    queue->capacity = config->capacity;
+    queue->max_payload_bytes = config->max_payload_bytes;
+    *out = queue;
+    return BREAK_RUNTIME_OK;
+}
+
+void break_runtime_metrics_retry_destroy(BreakRuntimeMetricsRetryQueue *queue) {
+    if (!queue) return;
+    free(queue->payloads);
+    free(queue->entries);
+    free(queue);
+}
+
+BreakRuntimeError break_runtime_metrics_retry_enqueue(
+    BreakRuntimeMetricsRetryQueue *queue, const void *bytes, usize len) {
+    u32 slot;
+    if (!queue || !bytes || len == 0u) return BREAK_RUNTIME_INVALID;
+    if (len > queue->max_payload_bytes) return BREAK_RUNTIME_INVALID;
+    if (!retry_is_owner(queue)) return BREAK_RUNTIME_REJECTED;
+    if (queue->count == queue->capacity) {
+        /* Drop the oldest so the newest payload is admitted. */
+        queue->head = (queue->head + 1u) % queue->capacity;
+        queue->count--;
+        queue->stats.dropped_oldest++;
+    }
+    slot = (queue->head + queue->count) % queue->capacity;
+    memcpy(retry_slot_bytes(queue, slot), bytes, len);
+    queue->entries[slot].len = len;
+    queue->entries[slot].attempts = 0u;
+    queue->count++;
+    queue->stats.enqueued++;
+    queue->stats.queued = queue->count;
+    return BREAK_RUNTIME_OK;
+}
+
+BreakRuntimeError break_runtime_metrics_retry_peek(
+    BreakRuntimeMetricsRetryQueue *queue, const void **out_bytes, usize *out_len,
+    u32 *out_attempts) {
+    if (!queue || !out_bytes || !out_len) return BREAK_RUNTIME_INVALID;
+    if (!retry_is_owner(queue)) return BREAK_RUNTIME_REJECTED;
+    if (queue->count == 0u) return BREAK_RUNTIME_STALE;
+    *out_bytes = retry_slot_bytes(queue, queue->head);
+    *out_len = queue->entries[queue->head].len;
+    if (out_attempts) *out_attempts = queue->entries[queue->head].attempts;
+    return BREAK_RUNTIME_OK;
+}
+
+BreakRuntimeError break_runtime_metrics_retry_record_attempt(
+    BreakRuntimeMetricsRetryQueue *queue, u32 *out_attempts) {
+    RetryEntry *entry;
+    if (!queue) return BREAK_RUNTIME_INVALID;
+    if (!retry_is_owner(queue)) return BREAK_RUNTIME_REJECTED;
+    if (queue->count == 0u) return BREAK_RUNTIME_STALE;
+    entry = &queue->entries[queue->head];
+    if (entry->attempts != UINT32_MAX) entry->attempts++;
+    queue->stats.attempts++;
+    if (out_attempts) *out_attempts = entry->attempts;
+    return BREAK_RUNTIME_OK;
+}
+
+BreakRuntimeError break_runtime_metrics_retry_release(
+    BreakRuntimeMetricsRetryQueue *queue) {
+    if (!queue) return BREAK_RUNTIME_INVALID;
+    if (!retry_is_owner(queue)) return BREAK_RUNTIME_REJECTED;
+    if (queue->count == 0u) return BREAK_RUNTIME_STALE;
+    queue->head = (queue->head + 1u) % queue->capacity;
+    queue->count--;
+    queue->stats.released++;
+    queue->stats.queued = queue->count;
+    return BREAK_RUNTIME_OK;
+}
+
+BreakRuntimeError break_runtime_metrics_retry_stats(
+    const BreakRuntimeMetricsRetryQueue *queue,
+    BreakRuntimeMetricsRetryStats *out_stats) {
+    if (!queue || !out_stats) return BREAK_RUNTIME_INVALID;
+    if (!retry_is_owner(queue)) return BREAK_RUNTIME_REJECTED;
+    *out_stats = queue->stats;
+    out_stats->queued = queue->count;
+    return BREAK_RUNTIME_OK;
+}

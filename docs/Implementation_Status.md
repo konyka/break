@@ -14279,3 +14279,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **结论**：`core_app --world-replication` 的 World 是刻意保持为固定 POD 计数器的诊断对象集（`net_world_create` 注册的 schema 只有 `u32` 等计数组件，无位置分量；无空间索引、无 witness），所以没有可用的 AOI 数据来源。aspect 路径虽有 `aspect_index`/`aspect_scopes` 与 `break_aoi_compute`，但服务的是 2 个与 `world_objects[]` 无关的诊断对象，其 `BreakAoIEntityId` 未经 `break_net_entity_map` 绑定到 World Entity。
 - **因此**：「core_app 设置 `publish_keep`」不作为实现项，改记为前置条件未满足；在该 World 上启用过滤需要先给诊断对象编造空间语义或把 aspect 身份映射到 World Entity，两者都属于新增功能而非接线，无产品需求前不做（YAGNI）。
 - **已交付的链路**：filter 原语、稳定 id scope 适配器、live-World 与共享 target 两种过滤发布、按连接目标身份回传、adapter 的 `publish_keep` 接入，均有回归与变异保护。缺的是一个具备空间语义（位置组件 + 空间索引 + 每连接 witness）的宿主应用，不是缺实现。详见 `docs/design/runtime_world_aoi_integration.md`「core_app 接线的实际结论」。
+
+## 指标投递失败的有界重试队列（指标协议：at-least-once backlog）（2026-11-26）
+
+- **实现**：`runtime_metrics` 新增 `BreakRuntimeMetricsRetryQueue`（`engine/src/runtime/runtime_metrics.{h,c}`）：调用方持有的定长 FIFO，存放已编码 payload 字节；所有调用仅限所有者线程（其他线程 REJECTED），存储在 create 时一次分配故 enqueue 不分配、不加锁、不起线程、不做 I/O。队满淘汰最旧一条并计数后仍接纳最新（最新遥测优先）；逐条记录投递尝试数（`UINT32_MAX` 饱和）供调用方放弃毒 payload；`peek` 借出队首字节直到下次 enqueue/release/destroy；空队列的 peek/attempt/release 为 STALE。设计见 `docs/design/runtime_metrics.md` 第 22 节。
+- **TDD 与变异**：`test_runtime_metrics` 新增 5 例（FIFO 与 release 推进、队满丢最旧、逐条 attempts 含槽位复用归零、配置与 payload 校验、真实 metrics 编码 enqueue→peek→decode 往返）。先以未定义类型编译失败为 RED。四项变异全部判红：队满改为拒收、槽位复用不清 attempts（初版因 calloc 清零而存活，补「环绕复用已记次数的槽位」断言后判红）、payload 上限用硬上限而非配置值、release 不推进队首。
+- **验证**：`test_runtime_metrics` 35/35（normal/ASan+UBSan 含 leak 检测/TSan 均 35/35）。非 Snowflake，`build-current-vk` 树即可构建。
+- **边界**：不做按渠道分队列、去重、批量合并、压缩、磁盘持久化与自动退避计时（退避由调用方步进节奏决定）；推送本身仍仅 POSIX。本收据提交自身的远端工作流结果不在此预写。

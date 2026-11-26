@@ -167,3 +167,29 @@ STEADY 不产生输出，全 STEADY 编码为空串。缓冲不足 → `OVERLOAD
 `break_runtime_metrics_push_alerts_http(ctx, rules, edges, count)`（`runtime_metrics_push_http.h`）把编码 POST 到 `<base_url>/alerts`，`Content-Type: text/x-break-alerts`，传输规则与第 20 节相同。没有转变时不发请求并返回 `OK`；只有 HTTP 200 为 `OK`，其余传输结果 `FAILED`；输入被编码器拒绝、base URL 非法 → `INVALID`；超过 64 KiB → `OVERLOAD`，均不发起连接。不触碰注册表，任意线程可调，但会阻塞，应放在诊断线程步进中。
 
 典型接线：每次 `history_record` 之后调用 `history_alert_edges`，再把结果交给 `push_alerts_http`；投递失败时由调用方决定是否重发同一批边沿。不做重试队列、去重或多渠道路由。
+
+## 22. 投递失败的有界重试队列
+
+第 20、21 节的推送在失败时只返回 `FAILED`，不自行重试，所以想要 at-least-once 的调用方
+原先必须自己维护 backlog。`BreakRuntimeMetricsRetryQueue`（`runtime_metrics.{h,c}`）就是这个
+backlog：调用方持有的定长 FIFO，存放**已编码**的 payload 字节。它不起线程、不自行重试、
+不做任何 I/O，由所有者在诊断线程步进中驱动。
+
+- **所有权**：与注册表同构，所有调用仅限创建线程（其他线程 `REJECTED`）。因为只有所有者
+  访问，实现不加锁；全部存储在 create 时一次分配，`enqueue` 不再分配。
+- **容量**：`capacity`（1..256 条）与 `max_payload_bytes`（1..64 KiB，与推送的 64 KiB 上限
+  一致）。零值或越界在 create 时 `INVALID`，分配失败 `OOM`。
+- **满队列丢最旧**：队满时先淘汰最旧一条（计入 `dropped_oldest`）再接纳最新一条，仍返回
+  `OK`。取向是“最新的遥测更有价值”，而不是拒收新数据。
+- **逐条 attempts**：每条记录自己的投递尝试次数，`record_attempt` 对队首加一（在
+  `UINT32_MAX` 饱和）并回报新值，调用方据此放弃毒 payload。槽位复用时 attempts 必须归零。
+- **borrow 语义**：`peek` 借出队首字节，指针在下一次 `enqueue`/`release`/`destroy` 前有效；
+  空队列时 `peek`/`record_attempt`/`release` 均为 `STALE`，不写输出。
+- **统计**：`queued`、`enqueued`、`dropped_oldest`、`released`、`attempts`。
+
+典型接线：`push_http`/`push_alerts_http` 返回 `FAILED` 时把这次编码的字节 `enqueue`；
+每次诊断步进 `peek` 队首重发，成功则 `release`，失败则 `record_attempt`，attempts 超过
+调用方阈值时 `release` 丢弃。队列只保存字节，不关心是 metrics 还是 alerts 编码。
+
+仍不做：按渠道分队列、去重、批量合并、压缩、持久化到磁盘，以及自动退避计时（退避策略由
+调用方的步进节奏决定）。
