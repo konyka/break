@@ -1197,8 +1197,9 @@ authority handoff 和默认全局公平调度仍未交付。正常断连顺序�
 - **core_app 启用 AOI 过滤**：前置条件未满足（该诊断 World 无位置/空间索引/witness，
   详见 `docs/design/runtime_world_aoi_integration.md`「core_app 接线的实际结论」），不属于
   可接线项而非缺实现。
-- **指标协议**：按渠道分队列、批量合并、压缩、磁盘持久化；HTTP 推送仅 POSIX，无 Windows
-  实现。（去重已由 `coalesce_repeats` 交付，见 `runtime_metrics.md` 第 24 节；自动退避计时
-  已由 `break_runtime_metrics_retry_drain_timed` 交付，见第 31 节。）
+- **指标协议**：按渠道分队列、压缩、磁盘持久化；HTTP 推送仅 POSIX，无 Windows 实现。
+  （去重已由 `coalesce_repeats` 交付，见 `runtime_metrics.md` 第 24 节；自动退避计时已由
+  `break_runtime_metrics_retry_drain_timed` 交付，见第 31 节；批量合并已由
+  `break_runtime_metrics_merge` 交付，见第 32 节。）
 
 既有 Lua/TSan 进程限制、条件 skip 与完整 sanitizer suite 边界不变。本节不预写远端结果。

@@ -730,6 +730,180 @@ TEST(decode_accepts_boundary_values_and_reports_required_count) {
     ASSERT_EQ(break_runtime_metrics_decode("", 0u, NULL, 2u, &n), BREAK_RUNTIME_INVALID);
 }
 
+static BreakRuntimeError merge_texts(const char *const *docs, u32 n, char *out, usize cap,
+                                     usize *out_len) {
+    const void *ptrs[4];
+    usize lens[4];
+    for (u32 i = 0u; i < n; ++i) {
+        ptrs[i] = docs[i];
+        lens[i] = strlen(docs[i]);
+    }
+    return break_runtime_metrics_merge(ptrs, lens, n, out, cap, out_len);
+}
+
+TEST(merge_keeps_the_newest_value_per_name_in_first_seen_order) {
+    static const char *const docs[] = {
+        "BRKM1 net.sent counter 10\nBRKM1 q.depth gauge 4\n",
+        "BRKM1 q.depth gauge 9\nBRKM1 pool.free gauge 2\n",
+        "BRKM1 net.sent counter 25\n",
+    };
+    char out[256];
+    usize len = 0u;
+    ASSERT_EQ(merge_texts(docs, 3u, out, sizeof out, &len), BREAK_RUNTIME_OK);
+    /* Names keep the order they were first seen; each takes the newest
+     * document's value (a counter is monotonic, so the newer snapshot already
+     * includes the older one). */
+    ASSERT_STR_EQ(out,
+                  "BRKM1 net.sent counter 25\n"
+                  "BRKM1 q.depth gauge 9\n"
+                  "BRKM1 pool.free gauge 2\n");
+    ASSERT_EQ(len, strlen(out));
+}
+
+TEST(merge_output_is_strictly_decodable_and_round_trips_encode) {
+    BreakRuntimeMetrics *m = make_metrics(8u);
+    BreakRuntimeMetricSample back[8];
+    char a[256];
+    char b[256];
+    char out[512];
+    const void *ptrs[2];
+    usize lens[2];
+    usize len = 0u;
+    u32 n = 0u;
+    ASSERT_NOT_NULL(m);
+    ASSERT_EQ(break_runtime_metrics_add(m, "x", BREAK_RUNTIME_METRIC_COUNTER, 1u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_encode(m, a, sizeof a, &lens[0]), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_add(m, "x", BREAK_RUNTIME_METRIC_COUNTER, 4u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_set(m, "y", BREAK_RUNTIME_METRIC_GAUGE, UINT64_MAX),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_encode(m, b, sizeof b, &lens[1]), BREAK_RUNTIME_OK);
+    ptrs[0] = a;
+    ptrs[1] = b;
+    ASSERT_EQ(break_runtime_metrics_merge(ptrs, lens, 2u, out, sizeof out, &len),
+              BREAK_RUNTIME_OK);
+    /* Merging a document with a later snapshot of the same registry yields
+     * exactly the later snapshot's encoding. */
+    ASSERT_EQ(len, lens[1]);
+    ASSERT_TRUE(memcmp(out, b, len) == 0);
+    ASSERT_EQ(break_runtime_metrics_decode(out, len, back, 8u, &n), BREAK_RUNTIME_OK);
+    ASSERT_EQ(n, 2u);
+    ASSERT_EQ(back[0].value, 5u);
+    ASSERT_EQ(back[1].value, UINT64_MAX);
+    break_runtime_metrics_destroy(m);
+}
+
+TEST(merge_rejects_a_kind_change_and_any_malformed_input_as_a_whole) {
+    static const char *const kind_flip[] = {
+        "BRKM1 a counter 1\n",
+        "BRKM1 a gauge 1\n",
+    };
+    static const char *const one_bad[] = {
+        "BRKM1 a counter 1\n",
+        "BRKM1 b counter 01\n",
+    };
+    char out[64];
+    usize len = 7u;
+    memcpy(out, "sentinel", 9u);
+    ASSERT_EQ(merge_texts(kind_flip, 2u, out, sizeof out, &len), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(len, 0u);
+    ASSERT_STR_EQ(out, "sentinel");
+    len = 7u;
+    ASSERT_EQ(merge_texts(one_bad, 2u, out, sizeof out, &len), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(len, 0u);
+    ASSERT_STR_EQ(out, "sentinel");
+}
+
+TEST(merge_reports_the_required_size_and_handles_empty_documents) {
+    static const char *const docs[] = {
+        "BRKM1 alpha counter 1\n",
+        "",
+        "BRKM1 beta gauge 22\n",
+    };
+    static const char *const empties[] = {"", ""};
+    char out[64];
+    usize len = 0u;
+    const usize want = strlen("BRKM1 alpha counter 1\nBRKM1 beta gauge 22\n");
+    /* Needs `want` bytes plus a NUL. One byte short: OVERLOAD with the size. */
+    memcpy(out, "sentinel", 9u);
+    ASSERT_EQ(merge_texts(docs, 3u, out, want, &len), BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(len, want);
+    ASSERT_EQ(out[0], '\0');
+    ASSERT_EQ(merge_texts(docs, 3u, out, want + 1u, &len), BREAK_RUNTIME_OK);
+    ASSERT_EQ(len, want);
+    ASSERT_STR_EQ(out, "BRKM1 alpha counter 1\nBRKM1 beta gauge 22\n");
+    /* All-empty input merges to the empty document. */
+    ASSERT_EQ(merge_texts(empties, 2u, out, sizeof out, &len), BREAK_RUNTIME_OK);
+    ASSERT_EQ(len, 0u);
+    ASSERT_STR_EQ(out, "");
+}
+
+TEST(merge_validates_arguments) {
+    const void *ptrs[1] = {"BRKM1 a counter 1\n"};
+    usize lens[1] = {18u};
+    const void *null_doc[1] = {NULL};
+    usize nonzero[1] = {3u};
+    char out[32];
+    usize len = 0u;
+    ASSERT_EQ(break_runtime_metrics_merge(ptrs, lens, 1u, out, sizeof out, NULL),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_merge(NULL, lens, 1u, out, sizeof out, &len),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_merge(ptrs, NULL, 1u, out, sizeof out, &len),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_merge(ptrs, lens, 1u, NULL, 8u, &len), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_merge(null_doc, nonzero, 1u, out, sizeof out, &len),
+              BREAK_RUNTIME_INVALID);
+    {
+        /* Exactly the document cap is accepted; one more is refused. */
+        const void *many[BREAK_RUNTIME_METRICS_MERGE_MAX_DOCUMENTS + 1u];
+        usize many_lens[BREAK_RUNTIME_METRICS_MERGE_MAX_DOCUMENTS + 1u];
+        for (u32 i = 0u; i <= BREAK_RUNTIME_METRICS_MERGE_MAX_DOCUMENTS; ++i) {
+            many[i] = "BRKM1 a counter 1\n";
+            many_lens[i] = 18u;
+        }
+        ASSERT_EQ(break_runtime_metrics_merge(many, many_lens,
+                                              BREAK_RUNTIME_METRICS_MERGE_MAX_DOCUMENTS, out,
+                                              sizeof out, &len),
+                  BREAK_RUNTIME_OK);
+        ASSERT_EQ(len, 18u);
+        ASSERT_EQ(break_runtime_metrics_merge(many, many_lens,
+                                              BREAK_RUNTIME_METRICS_MERGE_MAX_DOCUMENTS + 1u, out,
+                                              sizeof out, &len),
+                  BREAK_RUNTIME_INVALID);
+    }
+    /* Zero documents is the empty merge. */
+    ASSERT_EQ(break_runtime_metrics_merge(NULL, NULL, 0u, out, sizeof out, &len),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(len, 0u);
+}
+
+TEST(merge_rejects_more_distinct_names_than_one_document_may_hold) {
+    /* Each document is valid on its own, but together they hold more distinct
+     * names than BREAK_RUNTIME_METRICS_MAX_CAPACITY, which the strict decoder
+     * would refuse. The merge must refuse rather than emit such a document. */
+    enum { k_docs = 2, k_per = 600 };
+    static char docs[k_docs][k_per * 24];
+    const void *ptrs[k_docs];
+    usize lens[k_docs];
+    static char out[k_docs * k_per * 24 + 1];
+    usize len = 0u;
+    for (u32 d = 0u; d < k_docs; ++d) {
+        usize at = 0u;
+        for (u32 i = 0u; i < k_per; ++i) {
+            int w = snprintf(docs[d] + at, sizeof docs[d] - at, "BRKM1 d%u.n%u gauge 1\n", d, i);
+            ASSERT_TRUE(w > 0);
+            at += (usize)w;
+        }
+        ptrs[d] = docs[d];
+        lens[d] = at;
+    }
+    ASSERT_EQ(break_runtime_metrics_merge(ptrs, lens, k_docs, out, sizeof out, &len),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(len, 0u);
+}
+
 TEST(alert_edge_encoding_lists_only_transitions_in_rule_order) {
     const BreakRuntimeMetricAlertRule rules[] = {
         {"q.depth", BREAK_RUNTIME_METRIC_ALERT_ABOVE, 5u},
@@ -1823,4 +1997,10 @@ TEST_MAIN_BEGIN()
     RUN_TEST(retry_reused_slot_starts_with_no_deadline);
     RUN_TEST(retry_timed_drain_validates_arguments);
     RUN_TEST(retry_untimed_drain_ignores_any_backoff_deadline);
+    RUN_TEST(merge_keeps_the_newest_value_per_name_in_first_seen_order);
+    RUN_TEST(merge_output_is_strictly_decodable_and_round_trips_encode);
+    RUN_TEST(merge_rejects_a_kind_change_and_any_malformed_input_as_a_whole);
+    RUN_TEST(merge_reports_the_required_size_and_handles_empty_documents);
+    RUN_TEST(merge_validates_arguments);
+    RUN_TEST(merge_rejects_more_distinct_names_than_one_document_may_hold);
 TEST_MAIN_END()

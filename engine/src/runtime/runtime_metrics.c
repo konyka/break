@@ -770,6 +770,86 @@ BreakRuntimeError break_runtime_metrics_decode(
     return BREAK_RUNTIME_OK;
 }
 
+BreakRuntimeError break_runtime_metrics_merge(const void *const *docs, const usize *lens,
+                                              u32 count, char *out, usize capacity,
+                                              usize *out_len) {
+    BreakRuntimeMetricSample *merged = NULL;
+    BreakRuntimeMetricSample *scratch = NULL;
+    u32 merged_count = 0u;
+    usize needed = 0u;
+    usize written = 0u;
+    BreakRuntimeError result = BREAK_RUNTIME_OK;
+    if (!out_len) return BREAK_RUNTIME_INVALID;
+    *out_len = 0u;
+    if ((!docs || !lens) && count != 0u) return BREAK_RUNTIME_INVALID;
+    if (!out && capacity != 0u) return BREAK_RUNTIME_INVALID;
+    if (count > BREAK_RUNTIME_METRICS_MERGE_MAX_DOCUMENTS) return BREAK_RUNTIME_INVALID;
+    for (u32 d = 0u; d < count; ++d) {
+        if (!docs[d] && lens[d] != 0u) return BREAK_RUNTIME_INVALID;
+    }
+    merged = (BreakRuntimeMetricSample *)calloc(BREAK_RUNTIME_METRICS_MAX_CAPACITY,
+                                                sizeof(*merged));
+    scratch = (BreakRuntimeMetricSample *)calloc(BREAK_RUNTIME_METRICS_MAX_CAPACITY,
+                                                 sizeof(*scratch));
+    if (!merged || !scratch) {
+        result = BREAK_RUNTIME_OOM;
+        goto done;
+    }
+    /* Validate and fold every document before writing a single output byte. */
+    for (u32 d = 0u; d < count; ++d) {
+        u32 n = 0u;
+        if (break_runtime_metrics_decode((const char *)docs[d], lens[d], scratch,
+                                         BREAK_RUNTIME_METRICS_MAX_CAPACITY,
+                                         &n) != BREAK_RUNTIME_OK) {
+            result = BREAK_RUNTIME_INVALID;
+            goto done;
+        }
+        for (u32 i = 0u; i < n; ++i) {
+            u32 j = 0u;
+            while (j < merged_count && strcmp(merged[j].name, scratch[i].name) != 0) ++j;
+            if (j < merged_count) {
+                if (merged[j].kind != scratch[i].kind) {
+                    result = BREAK_RUNTIME_INVALID;
+                    goto done;
+                }
+                merged[j].value = scratch[i].value; /* newer document wins */
+                continue;
+            }
+            if (merged_count == BREAK_RUNTIME_METRICS_MAX_CAPACITY) {
+                result = BREAK_RUNTIME_INVALID;
+                goto done;
+            }
+            merged[merged_count++] = scratch[i];
+        }
+    }
+    for (u32 j = 0u; j < merged_count; ++j) {
+        char line[BREAK_RUNTIME_METRICS_NAME_CAPACITY + 48u];
+        int n = snprintf(line, sizeof(line), "BRKM1 %s %s %llu\n", merged[j].name,
+                         merged[j].kind == BREAK_RUNTIME_METRIC_COUNTER ? "counter" : "gauge",
+                         (unsigned long long)merged[j].value);
+        if (n < 0) {
+            result = BREAK_RUNTIME_FAILED;
+            goto done;
+        }
+        if (needed + (usize)n + 1u <= capacity) {
+            memcpy(out + written, line, (usize)n);
+            written += (usize)n;
+        }
+        needed += (usize)n;
+    }
+    *out_len = needed;
+    if (needed + 1u > capacity) {
+        if (out && capacity != 0u) out[0] = '\0';
+        result = BREAK_RUNTIME_OVERLOAD;
+        goto done;
+    }
+    out[written] = '\0';
+done:
+    free(scratch);
+    free(merged);
+    return result;
+}
+
 BreakRuntimeError break_runtime_metrics_encode_alert_edges(
     const BreakRuntimeMetricAlertRule *rules,
     const BreakRuntimeMetricAlertEdge *edges,

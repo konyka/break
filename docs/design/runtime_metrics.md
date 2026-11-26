@@ -374,3 +374,34 @@ now_us, out)` 在同一循环上加入按条目的指数退避截止时间。
 为 0、允许 `max_us < base_us`、`next_due` 读错条目。首轮有两项存活（移位溢出保护、入队清零），
 补两例后判红。normal/ASan+UBSan（含 leak 检测）/TSan 下 59/59，`test_runtime_metrics_push_http`
 10/10；`build-current-vk` 非 fuzz 全量 462/462。
+
+## 32. 批量合并多份编码文档
+
+采集端不可用时，重试队列里会积压多份同一注册表的快照编码。逐份重发既浪费请求，也让采集端
+收到一串中间状态。`break_runtime_metrics_merge(docs, lens, count, out, capacity, out_len)` 把
+`count` 份 `break_runtime_metrics_encode()` 格式的文档（按时间从旧到新）合成一份，作为单个
+payload 发出。
+
+- **合并规则**：每个名字只出现一次，顺序是它第一次出现的位置，取值来自含有它的**最新**文档。
+  counter 单调递增，gauge 是当前水平，两种类型都是最新快照覆盖旧快照，所以不做求和。
+- **输出可被严格解码**：结果本身是合法的 `break_runtime_metrics_decode()` 输入。合并同一注册表
+  的旧快照和新快照，结果逐字节等于新快照的编码。
+- **整批先校验**：任何一份文档按 `decode` 的规则非法、某个名字在不同文档间改变类型、合并后名字
+  超过 `BREAK_RUNTIME_METRICS_MAX_CAPACITY`（严格解码器会拒绝这样的文档），或 `count` 超过
+  `BREAK_RUNTIME_METRICS_MERGE_MAX_DOCUMENTS`（64），一律 INVALID，`*out_len = 0` 且不写 `out`。
+  不会输出半合并的结果。
+- **容量**：结果放不下 `capacity` 字节加一个 NUL 时返回 OVERLOAD，`*out_len` 给出所需长度，
+  `capacity > 0` 时 `out[0] = '\0'`。与 `encode` 的约定相同。
+- **纯函数**：不持有锁、不访问注册表，任何线程都可调用。合并时用两块各
+  `MAX_CAPACITY` 条样本的临时缓冲，分配失败返回 OOM。
+
+验证：`test_runtime_metrics` 新增 6 例（共 65 例），先以未声明函数编译失败为 RED：按首次出现
+顺序取最新值；合并同一注册表的新旧快照等于新快照编码且可严格解码；类型改变与任一非法文档整批
+INVALID 且不写输出；差一字节 OVERLOAD 与空文档；参数校验与恰好 64 份可、65 份拒绝；两份各 600
+个不同名字合计超上限被拒。变异检查：不取最新值、改变顺序、接受类型改变、不限名字数、OVERLOAD
+误报 OK、跳过非法文档、输出不加 NUL、OVERLOAD 不清空输出、不报告长度、文档数上限差一，均判红。
+两项为等价变异不计：去掉 NULL 文档检查（`decode` 自身已对 `NULL` 且长度非零返回 INVALID），以及
+写入前的放得下判断差一（最终的 `needed + 1u > capacity` 已经决定结果；用 ASan 逐个容量探针确认
+两种写法都不越界）。另用随机文档（含按位翻转与类型冲突）跑 200000 次，ASan+UBSan+leak 下每个
+OK 结果都能被 `decode` 接受且长度一致，每个 INVALID 都把长度置 0。normal/ASan+UBSan/TSan 65/65；
+`build-current-vk` 非 fuzz 全量 462/462。

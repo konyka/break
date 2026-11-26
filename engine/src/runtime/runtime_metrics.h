@@ -337,6 +337,34 @@ BreakRuntimeError break_runtime_metrics_history_aggregate_alert_edges(
     BreakRuntimeMetricAlertEdge *edges,
     u32 edge_capacity);
 
+#define BREAK_RUNTIME_METRICS_MERGE_MAX_DOCUMENTS 64u
+
+/* Batch merge: folds `count` encoded documents (each in the
+ * break_runtime_metrics_encode() format, `lens[i]` bytes, oldest first) into
+ * one document, so a backlog of snapshots goes out as a single payload. Each
+ * name appears once, in the order it was first seen, with the value from the
+ * NEWEST document that has it: a counter is monotonic and a gauge is a level,
+ * so the latest snapshot supersedes earlier ones for both kinds. The output is
+ * itself a valid input for break_runtime_metrics_decode().
+ *
+ * The whole batch is validated before anything is written. INVALID (with
+ * *out_len = 0 and `out` untouched) when any document is malformed in the
+ * break_runtime_metrics_decode() sense, a name changes kind between
+ * documents, the merged set has more than BREAK_RUNTIME_METRICS_MAX_CAPACITY
+ * names, `count` exceeds BREAK_RUNTIME_METRICS_MERGE_MAX_DOCUMENTS, or on NULL
+ * out_len, NULL docs/lens with a non-zero count, a NULL document with a
+ * non-zero length, or NULL `out` with a non-zero capacity. A result that does
+ * not fit `capacity` bytes plus a NUL -> OVERLOAD with *out_len = required
+ * length and out[0] = '\0' when capacity > 0. On OK, `out` is NUL-terminated
+ * and *out_len excludes the NUL. Pure; any thread. */
+BreakRuntimeError break_runtime_metrics_merge(
+    const void *const *docs,
+    const usize *lens,
+    u32 count,
+    char *out,
+    usize capacity,
+    usize *out_len);
+
 /* Strict decoder for the break_runtime_metrics_encode() text, for a remote
  * collector reading untrusted bytes. `text` is `len` bytes (no NUL needed).
  * Every line must be exactly `BRKM1 <name> <counter|gauge> <value>\n`: name

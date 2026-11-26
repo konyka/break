@@ -14404,3 +14404,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **实现**：新增 `BreakRuntimeMetricsRetryBackoff`（`base_us`、`max_us`）、`break_runtime_metrics_retry_drain_timed` 与 `break_runtime_metrics_retry_next_due`，`DrainResult` 新增 `deferred`。每条记录 `due_us`；失败后截止时间为 `now_us + min(base_us*2^(n-1), max_us)`，移位与加法都饱和到 `UINT64_MAX` 而不回绕。新条目与复用槽位从 0 开始。库不读时钟，`now_us` 由调用方传入。原 `retry_drain` 不看截止时间，行为不变。设计见 `docs/design/runtime_metrics.md` 第 31 节；`missing_capabilities.md` 对账列表同步移除「去重」「自动退避计时」两项。
 - **TDD 与变异**：`test_runtime_metrics` 新增 7 例，先以未知类型编译失败为 RED。12 项变异判红；首轮「去掉移位溢出保护」「入队不清截止时间」存活，补「55 次 attempts 后移位溢出」「容量 1 复用槽位」两例后判红。
 - **验证**：`test_runtime_metrics` 59/59（normal/ASan+UBSan 含 leak 检测/TSan），`test_runtime_metrics_push_http` 10/10；`build-current-vk` 非 fuzz 全量 CTest 462/462。本提交自身的远端工作流结果不在此预写。
+
+## 指标编码文档的批量合并（2026-11-27）
+
+- **缺口**：`missing_capabilities.md` 对账列表把「批量合并」列为指标协议未交付项。重试队列积压的多份快照只能逐份重发。
+- **实现**：新增 `break_runtime_metrics_merge` 与 `BREAK_RUNTIME_METRICS_MERGE_MAX_DOCUMENTS`（64），把多份编码文档（从旧到新）合成一份：每个名字取最新文档的值，按首次出现排序，输出可被严格解码。整批先校验，任一文档非法、名字改变类型、合并后超过 `MAX_CAPACITY` 个名字都返回 INVALID 且不写输出；放不下时 OVERLOAD 并给出所需长度。纯函数，任何线程可调用。设计见 `docs/design/runtime_metrics.md` 第 32 节；`missing_capabilities.md` 对账列表同步移除「批量合并」。
+- **TDD 与变异**：`test_runtime_metrics` 新增 6 例，先以未声明函数编译失败为 RED。10 项变异判红；首轮「文档数上限差一」存活，补「恰好 64 份可、65 份拒绝」后判红。两项等价变异（NULL 文档检查、写入前放得下判断差一）的理由与 ASan 探针证据见设计文档。另以随机文档跑 200000 次（ASan+UBSan+leak），OK 结果均可被严格解码。
+- **验证**：`test_runtime_metrics` 65/65（normal/ASan+UBSan 含 leak 检测/TSan）；`build-current-vk` 非 fuzz 全量 CTest 462/462。本提交自身的远端工作流结果不在此预写。
