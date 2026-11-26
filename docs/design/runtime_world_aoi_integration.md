@@ -156,6 +156,33 @@ core_app 级（`test_core_app_net_transport` / loopback）：
 
 ## 仍未交付
 
-- core_app `net_world_publish_runtime` 尚未设置 `publish_keep`，生产路径仍向每条连接发送完整
-  World；`break_aoi_compute` → `BreakNetEntityScope` 的生产组装也未接线。
+- core_app `net_world_publish_runtime` 未设置 `publish_keep`（原因见下节「core_app 接线的实际
+  结论」：该 World 无位置/空间索引/witness，没有 AOI 数据来源，不属于可接线项）。
 - 权威 simulation 合并、inbound apply、预测回滚、共享 live World 不在本切片。
+
+## core_app 接线的实际结论（2026-11-26 勘察）
+
+原计划的「core_app `net_world_publish_runtime` 设置 `publish_keep`」在当前 core_app 形态下
+**没有可用的 AOI 数据来源**，因此不作为实现项，改记为前置条件未满足。
+
+勘察结果（`engine/apps/core_app/core_app_net_transport.c`）：
+
+- World 侧：`net_world_create` 建立 `world_authoritative`，注册的 schema 只有 POD 计数类组件
+  （`u32` 等，无位置/朝向），并创建固定 `CORE_APP_WORLD_OBJECT_COUNT` 个实体作为诊断对象。
+  该 World 没有空间索引，也没有任何 witness/观察者状态。
+- aspect 侧确实有 AOI：`aspect_index`（`break_spatial_index_create(16.0f)`）、
+  `aspect_aoi[]`、`aspect_scopes[]`，由 `net_aspect_sync_slot` 调 `break_aoi_compute` 维护。
+  但它服务的是 `aspect_objects[CORE_APP_ASPECT_OBJECT_COUNT]`（2 个固定诊断对象），
+  与 `world_objects[]` 是两套互不相关的身份，aspect 的 `BreakAoIEntityId` 不是 World Entity，
+  也没有经 `break_net_entity_map` 绑定到 World。
+
+因此在 core_app 里启用过滤，必须先为 World 诊断对象编造位置分量、空间索引与 witness，
+或把 aspect 的 AOI 身份经 `BreakNetEntityMap` 映射到 World Entity。两者都不是「接线」，
+而是给一个刻意保持为固定 POD 计数器的诊断 World 新增空间语义；在没有产品需求驱动前
+不实现（YAGNI）。
+
+真正需要 AOI 裁剪的接入点是有空间语义的宿主：它自己持有 World、位置组件、空间索引与每连接
+witness，用 `break_aoi_compute` 得到 scope，经 `break_net_entity_map` 绑定 `BreakNetEntityId`，
+填 `BreakNetEntityScope`，再把 `break_net_entity_scope_keep` 作为 `publish_keep`、
+以 `publish_keep_user_for` 按连接返回该 scope 交给 adapter。本仓库已交付这条链路的全部库级
+与 adapter 级部件并有回归保护；缺的只是一个具备空间语义的宿主应用，不是缺实现。

@@ -14273,3 +14273,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **变异**：「永不过滤」判红（初版只断言计数时存活，加强为按各自视图 id ACK 后判红）。「用 lease 身份对账」经实测确认为**等价变异**：`had_active == false` 时身份比较被 `!had_active` 短路；`had_active == true` 时 `publish_snapshot_filtered_id` 在续发分支提前返回、回传值取自该 attempt 自身而不执行过滤，两种比较结论相同。曾编写 E1→E2 过滤用例尝试暴露，正确实现与变异实现的探针输出一致，故删除该用例而非保留假阳性。详见 `docs/design/runtime_world_aoi_integration.md` 的变异检查一节（该节同时更正了前一条收据中「未被覆盖」的判断）。
 - **验证**：`test_runtime_world_session` 60/60（normal/ASan+UBSan 含 leak 检测/TSan 均 60/60）；`test_world_session_loopback` 10/10、`test_world_session_recovery` 31/31 回归不变。
 - **边界**：core_app 尚未设置 `publish_keep`，生产路径仍发送完整 World；AOI scope 的生产组装未接线。本收据提交自身的远端工作流结果不在此预写。
+
+## core_app AOI 接线的前置条件勘察（2026-11-26）
+
+- **结论**：`core_app --world-replication` 的 World 是刻意保持为固定 POD 计数器的诊断对象集（`net_world_create` 注册的 schema 只有 `u32` 等计数组件，无位置分量；无空间索引、无 witness），所以没有可用的 AOI 数据来源。aspect 路径虽有 `aspect_index`/`aspect_scopes` 与 `break_aoi_compute`，但服务的是 2 个与 `world_objects[]` 无关的诊断对象，其 `BreakAoIEntityId` 未经 `break_net_entity_map` 绑定到 World Entity。
+- **因此**：「core_app 设置 `publish_keep`」不作为实现项，改记为前置条件未满足；在该 World 上启用过滤需要先给诊断对象编造空间语义或把 aspect 身份映射到 World Entity，两者都属于新增功能而非接线，无产品需求前不做（YAGNI）。
+- **已交付的链路**：filter 原语、稳定 id scope 适配器、live-World 与共享 target 两种过滤发布、按连接目标身份回传、adapter 的 `publish_keep` 接入，均有回归与变异保护。缺的是一个具备空间语义（位置组件 + 空间索引 + 每连接 witness）的宿主应用，不是缺实现。详见 `docs/design/runtime_world_aoi_integration.md`「core_app 接线的实际结论」。
