@@ -1190,7 +1190,7 @@ authority handoff 和默认全局公平调度仍未交付。正常断连顺序�
 **仍未交付（经本次核对确认）**：
 
 - **权威 simulation 合并 / inbound apply 到权威 World**：入站快照仍只进每连接诊断 World。
-- **预测与回滚**：未实现。
+- **预测与回滚**：核心算法已由 `break_prediction` 交付（立即应用输入、快照校正、回滚重放、resync，见 `docs/design/client_prediction.md`）；传输与确认协议、接入 World/ECS、插值平滑、服务端延迟补偿仍未实现。
 - **共享 live World**：跨连接共享的是 immutable snapshot，不是可变 `World *`。
 - **完整资产链**、跨 World 资产依赖解析：未实现。
 - **可靠的每 epoch 广播**：当前为非可靠，允许中间 epoch coalesce。

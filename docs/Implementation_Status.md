@@ -14442,3 +14442,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **实现**：`break_http.c` 顶部新增平台映射层：Winsock 2、`WSAPoll`、`ioctlsocket(FIONBIO)`、`WSAGetLastError`、`GetTickCount64`；信号保护在 Windows 上为空；`WSAStartup` 在第一次连接时执行一次。TLS 仍只信任 `ca_file`。`sock_setup` 现在检查非阻塞设置是否成功。IPv6 回环判断改为逐字节比较，避免 Windows SDK 的 inline 函数进入导出表。CMake 在 Windows 上构建 `break_http`（链接 `ws2_32`）、`runtime_metrics_push_http`、`break_crash_upload_http` 和 `fuzz_http_head`；依赖 POSIX 测试服务器的 `test_break_http`、`test_break_crash_upload_http`、update 参考服务器与 e2e 仍只在 Linux/macOS 构建。设计见 `docs/design/runtime_metrics.md` 第 36 节；对账列表中指标协议已无剩余项。
 - **TDD 与变异**：`test_runtime_metrics_push_http` 改为跨平台，新增「静默采集端在 io 超时处被切断」和「传输自行启动 Winsock」（仅 Windows）两例。Windows 实机上去掉非阻塞设置、去掉 Winsock 启动两项变异分别判红；Linux 上两项 IPv6 判断变异判红。
 - **验证**：Linux normal/ASan+UBSan/TSan 下推送测试 12/12、`test_break_http` 72/72、`test_break_crash_upload_http` 8/8；`build-current-vk` 非 fuzz 460/460，fuzz 23/23。Windows 实机 MSVC 下推送测试 13/13，全量结果见 `docs/testing/cross_platform_matrix.md`。本提交自身的远端工作流结果不在此预写。
+
+## 客户端预测与服务端校正（2026-11-27）
+
+- **缺口**：`missing_capabilities.md` 对账列表把「预测与回滚」列为未实现。
+- **实现**：新增 `engine/src/network/break_prediction.{h,c}`，纯 C、与传输无关。客户端输入立即在预测状态上运行；服务端快照到达时丢弃已覆盖的输入，与当时的预测逐字节比较，不同则回滚到快照并用客户端规则重放剩余输入；快照超过预测时 resync，旧快照返回 STALE。重放先写 scratch 环，任何 `step` 失败都不改变预测器。设计见 `docs/design/client_prediction.md`。
+- **TDD 与变异**：`test_break_prediction` 14 例，先以链接失败为 RED，含 400 tick 的随机乱序快照性质测试。32 项变异判红；首轮 3 项存活，补两例后判红。
+- **验证**：normal/ASan+UBSan/TSan 14/14；Windows 实机 MSVC 14/14；`build-current-vk` 非 fuzz 461/461，fuzz 23/23。
+- **未交付**：传输与确认协议、接入 World/ECS、插值平滑、服务端延迟补偿。本提交自身的远端工作流结果不在此预写。

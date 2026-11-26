@@ -9180,6 +9180,14 @@ endif()
     add_test(NAME test_break_msg_rate COMMAND test_break_msg_rate)
     set_tests_properties(test_break_msg_rate PROPERTIES LABELS "headless;network")
 
+    # test_break_prediction: client-side prediction with server reconciliation
+    # (pure C, no transport; docs/design/client_prediction.md).
+    add_executable(test_break_prediction tests/test_break_prediction.c
+        src/network/break_prediction.c)
+    target_include_directories(test_break_prediction PRIVATE ${TEST_INCLUDE_DIRS})
+    add_test(NAME test_break_prediction COMMAND test_break_prediction)
+    set_tests_properties(test_break_prediction PROPERTIES LABELS "headless;network")
+
     # test_filewatch_backend: platform-agnostic backend selection policy.
     add_executable(test_filewatch_backend tests/test_filewatch_backend.c
         src/platform/filewatch_backend.c)
