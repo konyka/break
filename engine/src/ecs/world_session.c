@@ -30,6 +30,7 @@ typedef struct {
     size_t next_fragment;
     u8 *payload;
     size_t packet_bytes;
+    u64 log_epoch; /* the log epoch this attempt carries, 0 if not from a log */
 } BreakWorldSessionAttempt;
 
 typedef struct {
@@ -952,6 +953,58 @@ BreakNetSendResult break_world_session_publish_snapshot_filtered_id(
         return BREAK_NET_SEND_INVALID;
     }
     return world_session_resume_attempt(session, state);
+}
+
+static BreakWorldSessionLogResult world_session_log_result(BreakNetSendResult result)
+{
+    switch (result) {
+    case BREAK_NET_SEND_OK: return BREAK_WORLD_SESSION_LOG_SENT;
+    case BREAK_NET_SEND_OVERLOAD: return BREAK_WORLD_SESSION_LOG_OVERLOAD;
+    case BREAK_NET_SEND_CLOSED: return BREAK_WORLD_SESSION_LOG_CLOSED;
+    default: return BREAK_WORLD_SESSION_LOG_INVALID;
+    }
+}
+
+BreakWorldSessionLogResult break_world_session_publish_from_log(
+    BreakWorldSession *session, BreakConnectionKey connection, BreakWorldSnapshotLog *log,
+    BreakWorldSnapshotReaderId reader, u64 level_generation, u64 *out_epoch)
+{
+    size_t slot;
+    BreakWorldSessionConnection *state;
+    BreakWorldSnapshotLogLease lease;
+    BreakWorldSnapshotLogResult read;
+    BreakNetSendResult result;
+    if (!session || !session->reactor) return BREAK_WORLD_SESSION_LOG_CLOSED;
+    slot = world_session_connection_index(session, connection);
+    if (slot == session->max_connections) return BREAK_WORLD_SESSION_LOG_CLOSED;
+    if (!log) return BREAK_WORLD_SESSION_LOG_INVALID;
+    state = &session->connections[slot];
+    if (state->attempt.active) {
+        u64 epoch = state->attempt.log_epoch;
+        result = world_session_resume_attempt(session, state);
+        if (out_epoch && (result == BREAK_NET_SEND_OK || result == BREAK_NET_SEND_OVERLOAD))
+            *out_epoch = epoch;
+        return world_session_log_result(result);
+    }
+    read = break_world_snapshot_log_peek(log, reader, &lease);
+    if (read == BREAK_WORLD_SNAPSHOT_LOG_LAGGED) {
+        /* the epochs in between are gone: the delta chain is broken */
+        state->force_full = true;
+        read = break_world_snapshot_log_peek(log, reader, &lease);
+    }
+    if (read == BREAK_WORLD_SNAPSHOT_LOG_EMPTY) return BREAK_WORLD_SESSION_LOG_IDLE;
+    if (read != BREAK_WORLD_SNAPSHOT_LOG_OK) return BREAK_WORLD_SESSION_LOG_INVALID;
+    result = break_world_session_publish_snapshot(session, connection, lease.snapshot,
+                                                  level_generation);
+    /* consumed only once an attempt exists (sent, or pending after OVERLOAD);
+     * a failed build leaves the epoch to be offered again */
+    if (result == BREAK_NET_SEND_OK || result == BREAK_NET_SEND_OVERLOAD)
+        (void)break_world_snapshot_log_advance(log, reader, lease.epoch);
+    if (state->attempt.active) state->attempt.log_epoch = lease.epoch;
+    if (out_epoch && (result == BREAK_NET_SEND_OK || result == BREAK_NET_SEND_OVERLOAD))
+        *out_epoch = lease.epoch;
+    break_world_snapshot_log_lease_release(&lease);
+    return world_session_log_result(result);
 }
 
 bool break_world_session_sender_state(const BreakWorldSession *session,

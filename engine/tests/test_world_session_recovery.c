@@ -2344,6 +2344,358 @@ TEST(world_session_publish_filtered_delta_chain_follows_scope_changes)
     fixture_dispose(&fixture);
 }
 
+static BreakWorldSnapshotLog *make_log(Fixture *fixture, u32 capacity, bool evict)
+{
+    BreakWorldSnapshotLogConfig config;
+    memset(&config, 0, sizeof(config));
+    config.schema_hash = break_schema_hash(fixture->schemas);
+    config.capacity = capacity;
+    config.max_readers = 2u;
+    config.evict_slow_readers = evict;
+    return break_world_snapshot_log_create(&config);
+}
+
+static bool log_publish_value(Fixture *fixture, BreakWorldSnapshotLog *log, u32 value, u64 tick)
+{
+    BreakWorldSnapshot *snapshot;
+    BreakWorldSnapshotLogResult result;
+    if (!set_value(fixture->authoritative, value)) return false;
+    snapshot = break_world_snapshot_build(fixture->authoritative, fixture->schemas, tick);
+    if (!snapshot) return false;
+    result = break_world_snapshot_log_publish(log, snapshot, NULL);
+    break_world_snapshot_release(snapshot);
+    return result == BREAK_WORLD_SNAPSHOT_LOG_OK;
+}
+
+/* Two connections drain the same log. B's transport is full while epochs 1
+ * and 2 are pending; once it drains, B still receives epochs 1, 2, 3 in
+ * order, each acknowledged so the chain moves from full to deltas, while A
+ * independently receives every epoch too. */
+TEST(world_session_publish_from_log_delivers_every_epoch_in_order)
+{
+    Fixture fixture;
+    BreakWorldSnapshotLog *log;
+    BreakWorldSnapshotReaderId ra;
+    BreakWorldSnapshotReaderId rb;
+    AttemptWire attempt;
+    u64 epoch = 0u;
+    u64 a_ticks[3] = {0u, 0u, 0u};
+    u64 b_ticks[3] = {0u, 0u, 0u};
+
+    ASSERT_TRUE(fixture_init(&fixture));
+    ASSERT_TRUE(break_world_session_open(fixture.session, 22u));
+    log = make_log(&fixture, 4u, false);
+    ASSERT_NOT_NULL(log);
+    ASSERT_TRUE(break_world_snapshot_log_add_reader(log, &ra));
+    ASSERT_TRUE(break_world_snapshot_log_add_reader(log, &rb));
+    ASSERT_EQ(break_world_session_publish_from_log(fixture.session, 11u, log, ra, TEST_LEVEL,
+                                                   &epoch),
+              BREAK_WORLD_SESSION_LOG_IDLE);
+    for (u32 i = 0u; i < 3u; ++i) ASSERT_TRUE(log_publish_value(&fixture, log, 100u + i, 10u + i));
+
+    /* A: each epoch in turn, ACKed so the next one is a delta on it */
+    for (u32 i = 0u; i < 3u; ++i) {
+        ASSERT_EQ(break_world_session_publish_from_log(fixture.session, 11u, log, ra, TEST_LEVEL,
+                                                       &epoch),
+                  BREAK_WORLD_SESSION_LOG_SENT);
+        ASSERT_EQ(epoch, (u64)i + 1u);
+        ASSERT_TRUE(collect_attempt_for_connection(&fixture, 11u, &attempt));
+        ASSERT_EQ(attempt.kind, i == 0u ? BREAK_WORLD_DELTA_WIRE_FULL : BREAK_WORLD_DELTA_WIRE_DELTA);
+        a_ticks[i] = attempt.target_tick;
+        ASSERT_TRUE(ack_attempt(&fixture, &attempt));
+        clear_attempt(&attempt);
+    }
+    ASSERT_EQ(break_world_session_publish_from_log(fixture.session, 11u, log, ra, TEST_LEVEL,
+                                                   &epoch),
+              BREAK_WORLD_SESSION_LOG_IDLE);
+
+    /* B: the transport is full, so epoch 1 stays an active attempt */
+    for (usize i = 0u; i < BREAK_NET_OUTBOUND_QUEUE_CAPACITY; ++i) {
+        if (break_net_reactor_send(fixture.reactor, 22u, BREAK_NET_MESSAGE_ID_PING, 1u, "x", 1u) !=
+            BREAK_NET_SEND_OK) {
+            break;
+        }
+    }
+    epoch = 0u;
+    ASSERT_EQ(break_world_session_publish_from_log(fixture.session, 22u, log, rb, TEST_LEVEL,
+                                                   &epoch),
+              BREAK_WORLD_SESSION_LOG_OVERLOAD);
+    ASSERT_EQ(epoch, 1u);
+    ASSERT_EQ(break_world_snapshot_log_backlog(log, rb), 2u);
+    /* still full: the same attempt resumes, no further epoch is read */
+    epoch = 0u;
+    ASSERT_EQ(break_world_session_publish_from_log(fixture.session, 22u, log, rb, TEST_LEVEL,
+                                                   &epoch),
+              BREAK_WORLD_SESSION_LOG_OVERLOAD);
+    ASSERT_EQ(epoch, 1u);
+    ASSERT_EQ(break_world_snapshot_log_backlog(log, rb), 2u);
+    {
+        BreakNetOwnedMessage message;
+        u64 outbound_connection = 0u;
+        while (break_net_reactor_poll_outbound_for_test(fixture.reactor, &outbound_connection,
+                                                        &message) == BREAK_NET_EVENT_OK) {
+            ASSERT_EQ(message.message_id, BREAK_NET_MESSAGE_ID_PING);
+            break_net_message_release(&message);
+        }
+    }
+    for (u32 i = 0u; i < 3u; ++i) {
+        ASSERT_EQ(break_world_session_publish_from_log(fixture.session, 22u, log, rb, TEST_LEVEL,
+                                                       &epoch),
+                  BREAK_WORLD_SESSION_LOG_SENT);
+        ASSERT_EQ(epoch, (u64)i + 1u);
+        ASSERT_TRUE(collect_attempt_for_connection(&fixture, 22u, &attempt));
+        ASSERT_EQ(attempt.kind, i == 0u ? BREAK_WORLD_DELTA_WIRE_FULL : BREAK_WORLD_DELTA_WIRE_DELTA);
+        b_ticks[i] = attempt.target_tick;
+        ASSERT_TRUE(ack_attempt_for_connection(&fixture, 22u, &attempt, 1u, 0u));
+        clear_attempt(&attempt);
+    }
+    for (u32 i = 0u; i < 3u; ++i) {
+        ASSERT_EQ(a_ticks[i], 10u + i);
+        ASSERT_EQ(b_ticks[i], 10u + i);
+    }
+    ASSERT_EQ(break_world_session_publish_from_log(fixture.session, 22u, log, rb, TEST_LEVEL,
+                                                   NULL),
+              BREAK_WORLD_SESSION_LOG_IDLE);
+    break_world_snapshot_log_destroy(log);
+    fixture_dispose(&fixture);
+}
+
+/* An evicted reader lost epochs, so its baseline no longer describes a
+ * contiguous chain: the next packet must be full even though an ACKed
+ * baseline exists. */
+TEST(world_session_publish_from_log_sends_full_after_lagged)
+{
+    Fixture fixture;
+    BreakWorldSnapshotLog *log;
+    BreakWorldSnapshotReaderId ra;
+    BreakWorldSnapshotReaderId rb;
+    AttemptWire attempt;
+    u64 epoch = 0u;
+
+    ASSERT_TRUE(fixture_init(&fixture));
+    log = make_log(&fixture, 2u, true);
+    ASSERT_NOT_NULL(log);
+    ASSERT_TRUE(break_world_snapshot_log_add_reader(log, &ra));
+    ASSERT_TRUE(break_world_snapshot_log_add_reader(log, &rb)); /* never drained: holds nothing back */
+    ASSERT_TRUE(log_publish_value(&fixture, log, 1u, 10u));
+    ASSERT_EQ(break_world_session_publish_from_log(fixture.session, 11u, log, ra, TEST_LEVEL,
+                                                   &epoch),
+              BREAK_WORLD_SESSION_LOG_SENT);
+    ASSERT_TRUE(collect_attempt_for_connection(&fixture, 11u, &attempt));
+    ASSERT_EQ(attempt.kind, BREAK_WORLD_DELTA_WIRE_FULL);
+    ASSERT_TRUE(ack_attempt(&fixture, &attempt));
+    clear_attempt(&attempt);
+    for (u32 i = 0u; i < 4u; ++i) ASSERT_TRUE(log_publish_value(&fixture, log, 2u + i, 11u + i));
+    /* epochs 2 and 3 were evicted before A read them */
+    ASSERT_EQ(break_world_session_publish_from_log(fixture.session, 11u, log, ra, TEST_LEVEL,
+                                                   &epoch),
+              BREAK_WORLD_SESSION_LOG_SENT);
+    ASSERT_EQ(epoch, 4u);
+    ASSERT_TRUE(collect_attempt_for_connection(&fixture, 11u, &attempt));
+    ASSERT_EQ(attempt.kind, BREAK_WORLD_DELTA_WIRE_FULL);
+    ASSERT_EQ(attempt.target_tick, 13u);
+    ASSERT_TRUE(ack_attempt(&fixture, &attempt));
+    clear_attempt(&attempt);
+    /* back on a contiguous chain: a delta again */
+    ASSERT_EQ(break_world_session_publish_from_log(fixture.session, 11u, log, ra, TEST_LEVEL,
+                                                   &epoch),
+              BREAK_WORLD_SESSION_LOG_SENT);
+    ASSERT_EQ(epoch, 5u);
+    ASSERT_TRUE(collect_attempt_for_connection(&fixture, 11u, &attempt));
+    ASSERT_EQ(attempt.kind, BREAK_WORLD_DELTA_WIRE_DELTA);
+    ASSERT_EQ(attempt.base_tick, 13u);
+    clear_attempt(&attempt);
+    break_world_snapshot_log_destroy(log);
+    fixture_dispose(&fixture);
+}
+
+/* An epoch whose packet cannot be built (over the packet limit) is not
+ * consumed: the call fails and the same epoch is offered again. */
+TEST(world_session_publish_from_log_keeps_an_epoch_that_failed_to_build)
+{
+    Fixture fixture;
+    BreakWorldSnapshotLog *log;
+    BreakWorldSnapshotReaderId reader;
+    BreakWorldSessionSenderState state;
+    u64 epoch = 55u;
+
+    ASSERT_TRUE(fixture_init_scaled(&fixture, 4u, 16384u, 80u, 4096u, 8u, 64u));
+    log = make_log(&fixture, 2u, false);
+    ASSERT_TRUE(break_world_snapshot_log_add_reader(log, &reader));
+    ASSERT_TRUE(log_publish_value(&fixture, log, 1u, 10u));
+    ASSERT_EQ(break_world_session_publish_from_log(fixture.session, 11u, log, reader, TEST_LEVEL,
+                                                   &epoch),
+              BREAK_WORLD_SESSION_LOG_INVALID);
+    ASSERT_EQ(epoch, 55u);
+    ASSERT_EQ(break_world_snapshot_log_backlog(log, reader), 1u);
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, 11u, &state));
+    ASSERT_FALSE(state.attempt_pending);
+    ASSERT_EQ(break_world_session_publish_from_log(fixture.session, 11u, log, reader, TEST_LEVEL,
+                                                   &epoch),
+              BREAK_WORLD_SESSION_LOG_INVALID);
+    ASSERT_EQ(break_world_snapshot_log_backlog(log, reader), 1u);
+    break_world_snapshot_log_destroy(log);
+    fixture_dispose(&fixture);
+}
+
+/* A resumed attempt keeps its epoch and maps the transport's result: no log
+ * is still INVALID without touching the attempt, and a stopped reactor is
+ * CLOSED. */
+TEST(world_session_publish_from_log_resume_reports_epoch_invalid_and_closed)
+{
+    Fixture fixture;
+    BreakWorldSnapshotLog *log;
+    BreakWorldSnapshotReaderId reader;
+    u64 epoch = 55u;
+
+    ASSERT_TRUE(fixture_init(&fixture));
+    log = make_log(&fixture, 2u, false);
+    ASSERT_TRUE(break_world_snapshot_log_add_reader(log, &reader));
+    ASSERT_TRUE(log_publish_value(&fixture, log, 1u, 10u));
+    {
+        /* an active attempt with no log: still refused, the attempt is kept */
+        BreakWorldSessionSenderState state;
+        for (usize i = 0u; i < BREAK_NET_OUTBOUND_QUEUE_CAPACITY; ++i) {
+            if (break_net_reactor_send(fixture.reactor, 11u, BREAK_NET_MESSAGE_ID_PING, 1u, "x",
+                                       1u) != BREAK_NET_SEND_OK) {
+                break;
+            }
+        }
+        ASSERT_EQ(break_world_session_publish_from_log(fixture.session, 11u, log, reader,
+                                                       TEST_LEVEL, &epoch),
+                  BREAK_WORLD_SESSION_LOG_OVERLOAD);
+        ASSERT_EQ(epoch, 1u);
+        epoch = 55u;
+        ASSERT_EQ(break_world_session_publish_from_log(fixture.session, 11u, NULL, reader,
+                                                       TEST_LEVEL, &epoch),
+                  BREAK_WORLD_SESSION_LOG_INVALID);
+        ASSERT_EQ(epoch, 55u);
+        ASSERT_TRUE(break_world_session_sender_state(fixture.session, 11u, &state));
+        ASSERT_TRUE(state.attempt_pending);
+        /* the reactor stops: a resumed attempt reports CLOSED */
+        ASSERT_TRUE(break_net_reactor_stop(fixture.reactor, 1000u));
+        ASSERT_EQ(break_world_session_publish_from_log(fixture.session, 11u, log, reader,
+                                                       TEST_LEVEL, &epoch),
+                  BREAK_WORLD_SESSION_LOG_CLOSED);
+        ASSERT_EQ(epoch, 55u);
+    }
+    break_world_snapshot_log_destroy(log);
+    fixture_dispose(&fixture);
+}
+
+/* An attempt started by publish_snapshot is resumed by publish_from_log
+ * without reading the log, and reports epoch 0; the log's next epoch then
+ * follows. */
+TEST(world_session_publish_from_log_resumes_a_foreign_attempt_as_epoch_zero)
+{
+    Fixture fixture;
+    BreakWorldSnapshotLog *log;
+    BreakWorldSnapshotReaderId reader;
+    BreakWorldSnapshot *direct;
+    AttemptWire attempt;
+    u64 epoch = 55u;
+
+    ASSERT_TRUE(fixture_init(&fixture));
+    log = make_log(&fixture, 2u, false);
+    ASSERT_TRUE(break_world_snapshot_log_add_reader(log, &reader));
+    ASSERT_TRUE(log_publish_value(&fixture, log, 1u, 10u));
+    ASSERT_TRUE(set_value(fixture.authoritative, 9u));
+    direct = break_world_snapshot_build(fixture.authoritative, fixture.schemas, 20u);
+    ASSERT_NOT_NULL(direct);
+    for (usize i = 0u; i < BREAK_NET_OUTBOUND_QUEUE_CAPACITY; ++i) {
+        if (break_net_reactor_send(fixture.reactor, 11u, BREAK_NET_MESSAGE_ID_PING, 1u, "x", 1u) !=
+            BREAK_NET_SEND_OK) {
+            break;
+        }
+    }
+    /* first a log epoch overloads and is then finished, so a stale epoch would show */
+    ASSERT_EQ(break_world_session_publish_from_log(fixture.session, 11u, log, reader, TEST_LEVEL,
+                                                   &epoch),
+              BREAK_WORLD_SESSION_LOG_OVERLOAD);
+    ASSERT_EQ(epoch, 1u);
+    {
+        BreakNetOwnedMessage message;
+        u64 outbound_connection = 0u;
+        while (break_net_reactor_poll_outbound_for_test(fixture.reactor, &outbound_connection,
+                                                        &message) == BREAK_NET_EVENT_OK) {
+            break_net_message_release(&message);
+        }
+    }
+    ASSERT_EQ(break_world_session_publish_from_log(fixture.session, 11u, log, reader, TEST_LEVEL,
+                                                   &epoch),
+              BREAK_WORLD_SESSION_LOG_SENT);
+    ASSERT_EQ(epoch, 1u);
+    (void)collect_attempt_for_connection(&fixture, 11u, &attempt);
+    clear_attempt(&attempt);
+    for (usize i = 0u; i < BREAK_NET_OUTBOUND_QUEUE_CAPACITY; ++i) {
+        if (break_net_reactor_send(fixture.reactor, 11u, BREAK_NET_MESSAGE_ID_PING, 1u, "x", 1u) !=
+            BREAK_NET_SEND_OK) {
+            break;
+        }
+    }
+    ASSERT_EQ(break_world_session_publish_snapshot(fixture.session, 11u, direct, TEST_LEVEL),
+              BREAK_NET_SEND_OVERLOAD);
+    break_world_snapshot_release(direct);
+    {
+        BreakNetOwnedMessage message;
+        u64 outbound_connection = 0u;
+        while (break_net_reactor_poll_outbound_for_test(fixture.reactor, &outbound_connection,
+                                                        &message) == BREAK_NET_EVENT_OK) {
+            ASSERT_EQ(message.message_id, BREAK_NET_MESSAGE_ID_PING);
+            break_net_message_release(&message);
+        }
+    }
+    epoch = 55u;
+    ASSERT_TRUE(log_publish_value(&fixture, log, 2u, 30u));
+    ASSERT_EQ(break_world_session_publish_from_log(fixture.session, 11u, log, reader, TEST_LEVEL,
+                                                   &epoch),
+              BREAK_WORLD_SESSION_LOG_SENT);
+    ASSERT_EQ(epoch, 0u);
+    ASSERT_TRUE(collect_attempt_for_connection(&fixture, 11u, &attempt));
+    ASSERT_EQ(attempt.target_tick, 20u);
+    clear_attempt(&attempt);
+    ASSERT_EQ(break_world_snapshot_log_backlog(log, reader), 1u);
+    ASSERT_EQ(break_world_session_publish_from_log(fixture.session, 11u, log, reader, TEST_LEVEL,
+                                                   &epoch),
+              BREAK_WORLD_SESSION_LOG_SENT);
+    ASSERT_EQ(epoch, 2u);
+    break_world_snapshot_log_destroy(log);
+    fixture_dispose(&fixture);
+}
+
+TEST(world_session_publish_from_log_validates_arguments)
+{
+    Fixture fixture;
+    BreakWorldSnapshotLog *log;
+    BreakWorldSnapshotReaderId reader;
+    u64 epoch = 55u;
+
+    ASSERT_TRUE(fixture_init(&fixture));
+    log = make_log(&fixture, 2u, false);
+    ASSERT_TRUE(break_world_snapshot_log_add_reader(log, &reader));
+    ASSERT_TRUE(log_publish_value(&fixture, log, 1u, 10u));
+    ASSERT_EQ(break_world_session_publish_from_log(NULL, 11u, log, reader, TEST_LEVEL, &epoch),
+              BREAK_WORLD_SESSION_LOG_CLOSED);
+    ASSERT_EQ(break_world_session_publish_from_log(fixture.session, 99u, log, reader, TEST_LEVEL,
+                                                   &epoch),
+              BREAK_WORLD_SESSION_LOG_CLOSED);
+    ASSERT_EQ(break_world_session_publish_from_log(fixture.session, 11u, NULL, reader, TEST_LEVEL,
+                                                   &epoch),
+              BREAK_WORLD_SESSION_LOG_INVALID);
+    ASSERT_EQ(break_world_session_publish_from_log(fixture.session, 11u, log, reader + 1u,
+                                                   TEST_LEVEL, &epoch),
+              BREAK_WORLD_SESSION_LOG_INVALID);
+    ASSERT_EQ(epoch, 55u);
+    /* nothing was consumed by the refused calls */
+    ASSERT_EQ(break_world_snapshot_log_backlog(log, reader), 1u);
+    ASSERT_EQ(break_world_session_publish_from_log(fixture.session, 11u, log, reader, TEST_LEVEL,
+                                                   &epoch),
+              BREAK_WORLD_SESSION_LOG_SENT);
+    ASSERT_EQ(epoch, 1u);
+    break_world_snapshot_log_destroy(log);
+    fixture_dispose(&fixture);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(world_session_publish_filtered_delta_chain_follows_scope_changes);
     RUN_TEST(world_session_publish_snapshot_filtered_fans_shared_target_per_scope);
@@ -2376,4 +2728,10 @@ TEST_MAIN_BEGIN()
     RUN_TEST(world_session_legacy_need_full_can_refresh_same_tick);
     RUN_TEST(world_session_snapshot_invalid_input_is_atomic_and_preserves_delta_id);
     RUN_TEST(world_session_snapshot_rebaseline_rejects_old_lease_and_refills_both);
+    RUN_TEST(world_session_publish_from_log_delivers_every_epoch_in_order);
+    RUN_TEST(world_session_publish_from_log_sends_full_after_lagged);
+    RUN_TEST(world_session_publish_from_log_keeps_an_epoch_that_failed_to_build);
+    RUN_TEST(world_session_publish_from_log_resume_reports_epoch_invalid_and_closed);
+    RUN_TEST(world_session_publish_from_log_resumes_a_foreign_attempt_as_epoch_zero);
+    RUN_TEST(world_session_publish_from_log_validates_arguments);
 TEST_MAIN_END()

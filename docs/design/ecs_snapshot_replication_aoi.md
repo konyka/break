@@ -504,5 +504,45 @@ build 与 filter 共用 `snapshot_destroy`，两处已由同一个 `entities != 
 
 仍未完成：Runtime adapter 和 core_app 的 World 发布仍使用 coalesce 的 `BreakWorldSnapshotPublication`，没有改为可选的可靠日志。
 
+### 接到 World session：`break_world_session_publish_from_log`
+
+`break_world_session_publish_from_log(session, connection, log, reader, level_generation, &epoch)` 把日志里该读者的下一个 epoch 发给这个连接。每个 epoch 都按顺序送达，而不是只送最新的。
+
+- **续发优先**：连接上有活动 attempt（之前 OVERLOAD）时，先续发它；在它完成之前不读取新的 epoch，所以不会有 epoch 被它挡住而跳过。续发的 attempt 自己记着它携带的 epoch（`BreakWorldSessionAttempt.log_epoch`），OVERLOAD 和 SENT 时都报告这个 epoch。由 `publish_snapshot` 等其他调用发起的 attempt，报告的 epoch 为 0。
+- **发送**：下一个 epoch 经 `break_world_session_publish_snapshot` 发出，即在 ACK 建立基线前发 full，之后发 delta。
+- **只在 attempt 建立后消费**：日志新增 `break_world_snapshot_log_peek`/`_advance`，先 peek、后 advance。只有返回 OK 或 OVERLOAD（attempt 已存在）时才 advance。包构建失败（例如超过包大小上限）返回 INVALID，同一个 epoch 下次还会提供，不会丢失。`advance` 只接受该读者的下一个 epoch；如果 peek 之后读者被驱逐，`advance` 拒绝，读者必须重新 peek 并处理 LAGGED。
+- **LAGGED**：读者被驱逐，中间的 epoch 已经丢失，delta 链断了。此时把连接标为 force_full，下一个包发 full，内容为最旧的保留 epoch；之后恢复 delta。
+- 返回值：SENT、IDLE（已是最新）、OVERLOAD、CLOSED（未知连接、会话关闭或 reactor 已停止）、INVALID。
+
+**测试**：
+- `test_world_snapshot_log` 增至 10 例：
+  - peek 不消费，advance 只接受下一个 epoch 且只生效一次。
+  - peek 后被驱逐时 advance 拒绝，peek 先报 LAGGED、再从最旧的保留 epoch 继续。
+- `test_world_session_recovery` 新增 6 例，共 37 例，先以链接失败为 RED：
+  - 两个连接读同一个日志：A 逐个发送并 ACK，依次为 full、delta、delta。B 的传输队列满时 epoch 1 停在 attempt 上，再次调用仍续发同一个 attempt、不读新 epoch；队列清空后，B 按序收到 1、2、3。
+  - 驱逐后即使已有 ACK 过的基线也发 full，之后恢复 delta，且 delta 的基准是那个 full。
+  - 包构建失败时 epoch 不被消费。
+  - 续发时没有日志返回 INVALID 且保留 attempt；reactor 停止后续发返回 CLOSED。
+  - 续发其他调用发起的 attempt 时报告 epoch 0，随后发送日志的下一个 epoch。
+  - 参数校验。
+
+**变异**：25 项，判红或编译失败（等价于判红）23 项。存活 2 项：
+- 把「attempt 存在时才记录 log_epoch」改为无条件记录：这只在 attempt 不存在时有区别，而 attempt 不存在时没有人读这个字段，属于等价变异。
+- 清零 attempt 时保留 log_epoch：`world_session_build_attempt_from_snapshot` 建立新 attempt 时会先整体清零，旧值不会泄漏到新 attempt，同样等价。
+
+初轮另有 4 项存活，都已补测试或重构后判红：
+- 原先放在连接上的 epoch 字段改到 attempt 上，由 attempt 的生命周期管理。
+- CLOSED 映射（补了 reactor 停止的用例）。
+- 无日志时的续发。
+- 包构建失败时不消费。
+
+**验证**：
+- ASan+UBSan、TSan 下两个测试分别为 10/10、37/37。
+- Snowflake ASan 构建 `-L "network|snowflake|session|ecs|replication"` 40/40。
+- `build-current-vk` 非 fuzz 466/466，fuzz 24/24。
+- Windows 实机 MSVC 全量构建通过，相关测试 22/22。Windows 未开 Snowflake，World session 不在其中编译。
+
+仍未完成：Runtime adapter 和 core_app 的发布路径改用日志。
+
 本提交自身的远端工作流结果不在此预写。
 

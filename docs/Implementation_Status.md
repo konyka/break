@@ -14528,3 +14528,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **验证**：normal/ASan+UBSan/TSan 8/8；契约测试 44/44；`build-current-vk` 非 fuzz 466/466，fuzz 24/24；Windows 实机 MSVC 全量构建通过，相关测试 22/22。
 - **仍未完成**：Runtime adapter 和 core_app 的发布路径接入。本提交自身的远端工作流结果不在此预写。
 
+## World session 从可靠日志按序发送（2026-11-27）
+
+- **实现**：`break_world_session_publish_from_log` 把日志中读者的下一个 epoch 发给连接：先续发已有 attempt，只在 attempt 建立后消费，驱逐后下一个包发 full。日志新增 `peek`/`advance` 来支持这种先发后消费的方式。设计见 `docs/design/ecs_snapshot_replication_aoi.md`「接到 World session」。
+- **TDD 与变异**：`test_world_snapshot_log` 增至 10 例，`test_world_session_recovery` 增至 37 例，均先以链接失败为 RED。25 项变异中 23 项判红，2 项为等价变异（理由见设计文档）。
+- **验证**：ASan+UBSan/TSan 下 10/10、37/37；Snowflake ASan 构建相关标签 40/40；`build-current-vk` 非 fuzz 466/466，fuzz 24/24；Windows 实机 MSVC 全量构建通过，相关测试 22/22。
+- **仍未完成**：Runtime adapter 和 core_app 发布路径接入。本提交自身的远端工作流结果不在此预写。
+

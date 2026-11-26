@@ -1,6 +1,7 @@
 #pragma once
 
 #include <ecs/world_delta_wire.h>
+#include <ecs/world_snapshot_log.h>
 #include <network/break_replication_session.h>
 
 #ifdef __cplusplus
@@ -151,6 +152,36 @@ BreakNetSendResult break_world_session_publish_snapshot_filtered_id(
     BreakWorldSnapshot *target, u64 level_generation,
     BreakWorldSnapshotEntityFilter keep, void *keep_user,
     u64 *out_target_id, u64 *out_target_tick);
+/* Reliable per-epoch publishing: sends this connection the next epoch of
+ * `log` that `reader` has not read yet (ecs/world_snapshot_log.h), so every
+ * epoch reaches the connection in order instead of only the latest one.
+ *
+ * - An active attempt (a previous OVERLOAD) is resumed first; no epoch is
+ *   read until it finished, so an epoch is never skipped behind it.
+ * - The next epoch goes through break_world_session_publish_snapshot: full
+ *   until an ACK establishes a baseline, then deltas.
+ * - LAGGED (the reader was evicted from the log) forces the next packet to
+ *   be full, because the epochs in between are gone; then the oldest
+ *   retained epoch is sent.
+ * - The epoch is consumed (break_world_snapshot_log_advance) only once an
+ *   attempt exists; when the packet cannot be built (INVALID) the same epoch
+ *   is offered again on the next call.
+ *
+ * *out_epoch (may be NULL) gets the epoch sent or resumed on SENT and
+ * OVERLOAD; 0 when the resumed attempt was started by another publish call.
+ * Owner thread only, like the other publish calls. */
+typedef enum {
+    BREAK_WORLD_SESSION_LOG_SENT = 0,  /* one epoch fully sent */
+    BREAK_WORLD_SESSION_LOG_IDLE,      /* the reader is up to date */
+    BREAK_WORLD_SESSION_LOG_OVERLOAD,  /* transport full; call again to resume */
+    BREAK_WORLD_SESSION_LOG_CLOSED,    /* unknown connection or closed session */
+    BREAK_WORLD_SESSION_LOG_INVALID    /* bad argument, reader or snapshot */
+} BreakWorldSessionLogResult;
+
+BreakWorldSessionLogResult break_world_session_publish_from_log(
+    BreakWorldSession *session, BreakConnectionKey connection, BreakWorldSnapshotLog *log,
+    BreakWorldSnapshotReaderId reader, u64 level_generation, u64 *out_epoch);
+
 bool break_world_session_sender_state(const BreakWorldSession *session,
                                       BreakConnectionKey connection,
                                       BreakWorldSessionSenderState *out_state);

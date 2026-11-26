@@ -342,6 +342,80 @@ TEST(publish_validates_schema_tick_and_arguments) {
     source_dispose(&s);
 }
 
+TEST(peek_and_advance_consume_only_on_commit) {
+    Source s;
+    BreakWorldSnapshotLogConfig cfg;
+    BreakWorldSnapshotLog *log;
+    BreakWorldSnapshotReaderId r;
+    BreakWorldSnapshotLogLease lease;
+    BreakWorldSnapshotLogStats st;
+    ASSERT_TRUE(source_init(&s));
+    cfg = config_for(&s, 4u, false);
+    log = break_world_snapshot_log_create(&cfg);
+    ASSERT_TRUE(break_world_snapshot_log_add_reader(log, &r));
+    ASSERT_EQ(break_world_snapshot_log_peek(log, r, &lease), BREAK_WORLD_SNAPSHOT_LOG_EMPTY);
+    ASSERT_FALSE(break_world_snapshot_log_advance(log, r, 1u)); /* nothing published yet */
+    ASSERT_EQ(publish_tick(log, &s, 3u, NULL), BREAK_WORLD_SNAPSHOT_LOG_OK);
+    ASSERT_EQ(publish_tick(log, &s, 4u, NULL), BREAK_WORLD_SNAPSHOT_LOG_OK);
+    for (u32 i = 0u; i < 2u; ++i) { /* peeking twice yields the same epoch */
+        ASSERT_EQ(break_world_snapshot_log_peek(log, r, &lease), BREAK_WORLD_SNAPSHOT_LOG_OK);
+        ASSERT_EQ(lease.epoch, 1u);
+        ASSERT_EQ(counter_of(&lease, s.entity), 3u);
+        break_world_snapshot_log_lease_release(&lease);
+    }
+    ASSERT_EQ(break_world_snapshot_log_backlog(log, r), 2u);
+    ASSERT_FALSE(break_world_snapshot_log_advance(log, r, 2u)); /* not the peeked epoch */
+    ASSERT_FALSE(break_world_snapshot_log_advance(log, r + 1u, 1u));
+    ASSERT_FALSE(break_world_snapshot_log_advance(NULL, r, 1u));
+    ASSERT_TRUE(break_world_snapshot_log_advance(log, r, 1u));
+    ASSERT_FALSE(break_world_snapshot_log_advance(log, r, 1u)); /* only once */
+    ASSERT_EQ(break_world_snapshot_log_backlog(log, r), 1u);
+    break_world_snapshot_log_stats(log, &st);
+    ASSERT_EQ(st.delivered, 1u);
+    expect_read(log, r, &s, 2u, 4u);
+    memset(&lease, 0xab, sizeof lease);
+    ASSERT_EQ(break_world_snapshot_log_peek(log, r + 1u, &lease), BREAK_WORLD_SNAPSHOT_LOG_INVALID);
+    ASSERT_TRUE(lease.snapshot == NULL);
+    ASSERT_EQ(break_world_snapshot_log_peek(log, r, NULL), BREAK_WORLD_SNAPSHOT_LOG_INVALID);
+    break_world_snapshot_log_destroy(log);
+    source_dispose(&s);
+}
+
+TEST(peek_reports_lagged_and_resumes_like_read) {
+    Source s;
+    BreakWorldSnapshotLogConfig cfg;
+    BreakWorldSnapshotLog *log;
+    BreakWorldSnapshotReaderId fast;
+    BreakWorldSnapshotReaderId slow;
+    BreakWorldSnapshotLogLease lease;
+    ASSERT_TRUE(source_init(&s));
+    cfg = config_for(&s, 2u, true);
+    log = break_world_snapshot_log_create(&cfg);
+    ASSERT_TRUE(break_world_snapshot_log_add_reader(log, &fast));
+    ASSERT_TRUE(break_world_snapshot_log_add_reader(log, &slow));
+    for (u64 t = 1u; t <= 4u; ++t) {
+        ASSERT_EQ(publish_tick(log, &s, t, NULL), BREAK_WORLD_SNAPSHOT_LOG_OK);
+        expect_read(log, fast, &s, t, (u32)t);
+    }
+    ASSERT_EQ(break_world_snapshot_log_peek(log, slow, &lease), BREAK_WORLD_SNAPSHOT_LOG_LAGGED);
+    ASSERT_EQ(break_world_snapshot_log_peek(log, slow, &lease), BREAK_WORLD_SNAPSHOT_LOG_OK);
+    ASSERT_EQ(lease.epoch, 3u);
+    break_world_snapshot_log_lease_release(&lease);
+    /* evicted again before committing: advance refuses, peek says LAGGED */
+    ASSERT_EQ(publish_tick(log, &s, 5u, NULL), BREAK_WORLD_SNAPSHOT_LOG_OK);
+    expect_read(log, fast, &s, 5u, 5u);
+    ASSERT_EQ(publish_tick(log, &s, 6u, NULL), BREAK_WORLD_SNAPSHOT_LOG_OK);
+    ASSERT_FALSE(break_world_snapshot_log_advance(log, slow, 3u));
+    ASSERT_EQ(break_world_snapshot_log_peek(log, slow, &lease), BREAK_WORLD_SNAPSHOT_LOG_LAGGED);
+    ASSERT_EQ(break_world_snapshot_log_peek(log, slow, &lease), BREAK_WORLD_SNAPSHOT_LOG_OK);
+    ASSERT_EQ(lease.epoch, 5u);
+    ASSERT_TRUE(break_world_snapshot_log_advance(log, slow, lease.epoch));
+    break_world_snapshot_log_lease_release(&lease);
+    expect_read(log, slow, &s, 6u, 6u);
+    break_world_snapshot_log_destroy(log);
+    source_dispose(&s);
+}
+
 TEST(a_lease_outlives_the_log) {
     Source s;
     BreakWorldSnapshotLogConfig cfg;
@@ -448,6 +522,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(a_reader_added_later_starts_at_the_next_epoch);
     RUN_TEST(removing_a_reader_releases_what_it_held_back);
     RUN_TEST(publish_validates_schema_tick_and_arguments);
+    RUN_TEST(peek_and_advance_consume_only_on_commit);
+    RUN_TEST(peek_reports_lagged_and_resumes_like_read);
     RUN_TEST(a_lease_outlives_the_log);
     RUN_TEST(threaded_readers_receive_every_epoch_through_a_small_log);
 TEST_MAIN_END()

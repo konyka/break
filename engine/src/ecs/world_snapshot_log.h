@@ -87,6 +87,19 @@ bool break_world_snapshot_log_remove_reader(BreakWorldSnapshotLog *log,
 BreakWorldSnapshotLogResult break_world_snapshot_log_read(BreakWorldSnapshotLog *log,
                                                           BreakWorldSnapshotReaderId reader,
                                                           BreakWorldSnapshotLogLease *out_lease);
+/* Like read, but does not consume: the same epoch is returned again until
+ * break_world_snapshot_log_advance commits it. A LAGGED result is reported
+ * once and moves the reader to the oldest retained epoch, as with read. Use
+ * this when handing the snapshot on can fail and the epoch must not be lost
+ * (break_world_session_publish_from_log). */
+BreakWorldSnapshotLogResult break_world_snapshot_log_peek(BreakWorldSnapshotLog *log,
+                                                          BreakWorldSnapshotReaderId reader,
+                                                          BreakWorldSnapshotLogLease *out_lease);
+/* Consumes `epoch`, which must be the reader's next one. False otherwise:
+ * unknown reader, a different epoch, nothing published, or the reader was
+ * evicted since the peek (it must peek again and handle LAGGED). */
+bool break_world_snapshot_log_advance(BreakWorldSnapshotLog *log,
+                                      BreakWorldSnapshotReaderId reader, u64 epoch);
 /* Epochs published but not yet read by `reader`; 0 for an unknown id. */
 u64 break_world_snapshot_log_backlog(BreakWorldSnapshotLog *log,
                                      BreakWorldSnapshotReaderId reader);

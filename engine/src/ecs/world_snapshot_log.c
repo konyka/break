@@ -151,33 +151,68 @@ bool break_world_snapshot_log_remove_reader(BreakWorldSnapshotLog *log,
     return r != NULL;
 }
 
-BreakWorldSnapshotLogResult break_world_snapshot_log_read(BreakWorldSnapshotLog *log,
-                                                          BreakWorldSnapshotReaderId reader,
-                                                          BreakWorldSnapshotLogLease *out_lease) {
-    BreakWorldSnapshotLogResult result = BREAK_WORLD_SNAPSHOT_LOG_OK;
+/* Caller holds the mutex. Fills *out_lease with the reader's next epoch
+ * without consuming it. */
+static BreakWorldSnapshotLogResult peek_locked(BreakWorldSnapshotLog *log, Reader *r,
+                                               BreakWorldSnapshotLogLease *out_lease) {
+    BreakWorldSnapshot *snapshot;
+    if (r->lagged) {
+        r->lagged = false;
+        r->next = oldest_epoch(log);
+        return BREAK_WORLD_SNAPSHOT_LOG_LAGGED;
+    }
+    if (r->next == log->next_epoch) return BREAK_WORLD_SNAPSHOT_LOG_EMPTY;
+    snapshot = log->ring[r->next % log->config.capacity];
+    break_world_snapshot_retain(snapshot);
+    out_lease->snapshot = snapshot;
+    out_lease->epoch = r->next;
+    return BREAK_WORLD_SNAPSHOT_LOG_OK;
+}
+
+static BreakWorldSnapshotLogResult take(BreakWorldSnapshotLog *log,
+                                        BreakWorldSnapshotReaderId reader,
+                                        BreakWorldSnapshotLogLease *out_lease, bool consume) {
+    BreakWorldSnapshotLogResult result;
     Reader *r;
     if (out_lease) memset(out_lease, 0, sizeof(*out_lease));
     if (!log || !out_lease) return BREAK_WORLD_SNAPSHOT_LOG_INVALID;
     platform_mutex_lock(&log->mutex);
     r = find_reader(log, reader);
-    if (!r) {
-        result = BREAK_WORLD_SNAPSHOT_LOG_INVALID;
-    } else if (r->lagged) {
-        r->lagged = false;
-        r->next = oldest_epoch(log);
-        result = BREAK_WORLD_SNAPSHOT_LOG_LAGGED;
-    } else if (r->next == log->next_epoch) {
-        result = BREAK_WORLD_SNAPSHOT_LOG_EMPTY;
-    } else {
-        BreakWorldSnapshot *snapshot = log->ring[r->next % log->config.capacity];
-        break_world_snapshot_retain(snapshot);
-        out_lease->snapshot = snapshot;
-        out_lease->epoch = r->next;
+    result = r ? peek_locked(log, r, out_lease) : BREAK_WORLD_SNAPSHOT_LOG_INVALID;
+    if (result == BREAK_WORLD_SNAPSHOT_LOG_OK && consume) {
         r->next++;
         log->stats.delivered++;
     }
     platform_mutex_unlock(&log->mutex);
     return result;
+}
+
+BreakWorldSnapshotLogResult break_world_snapshot_log_read(BreakWorldSnapshotLog *log,
+                                                          BreakWorldSnapshotReaderId reader,
+                                                          BreakWorldSnapshotLogLease *out_lease) {
+    return take(log, reader, out_lease, true);
+}
+
+BreakWorldSnapshotLogResult break_world_snapshot_log_peek(BreakWorldSnapshotLog *log,
+                                                          BreakWorldSnapshotReaderId reader,
+                                                          BreakWorldSnapshotLogLease *out_lease) {
+    return take(log, reader, out_lease, false);
+}
+
+bool break_world_snapshot_log_advance(BreakWorldSnapshotLog *log,
+                                      BreakWorldSnapshotReaderId reader, u64 epoch) {
+    bool advanced = false;
+    Reader *r;
+    if (!log) return false;
+    platform_mutex_lock(&log->mutex);
+    r = find_reader(log, reader);
+    if (r && !r->lagged && r->next == epoch && epoch < log->next_epoch) {
+        r->next++;
+        log->stats.delivered++;
+        advanced = true;
+    }
+    platform_mutex_unlock(&log->mutex);
+    return advanced;
 }
 
 u64 break_world_snapshot_log_backlog(BreakWorldSnapshotLog *log,
