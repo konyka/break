@@ -52,6 +52,13 @@ typedef struct {
     u32 max_connections;
     BreakWorldSnapshotPublication *publication; /* borrowed; NULL disables */
     u32 publish_connection_budget;              /* 0 = 8; allowed 1..64 */
+    /* Both gates require a publication. requires_ready: a new connection is
+     * not ready until set_publish_ready(); an unready connection is skipped by
+     * fanout, continuation and dirty accounting, and keeps its attempt scalars.
+     * waits_for_ack: a connection with no active attempt, a nonempty history
+     * and no force_full is held for the current epoch instead of sent. */
+    bool publish_requires_ready;
+    bool publish_waits_for_ack;
 } BreakRuntimeWorldSessionConfig;
 
 typedef struct {
@@ -110,6 +117,13 @@ BreakRuntimeError break_runtime_world_session_submit_publish_current(
     BreakRuntimeWorldSession *adapter,
     const BreakRuntimeWorldPublishCurrentNotice *notice,
     u64 correlation_id);
+/* Any thread. INVALID for a NULL adapter or zero key, REJECTED when the
+ * adapter was created without publish_requires_ready, STALE when the key is
+ * not open or the epoch does not match. Making a connection ready does not
+ * publish by itself; submit a publish-current notice afterwards. */
+BreakRuntimeError break_runtime_world_session_set_publish_ready(
+    BreakRuntimeWorldSession *adapter, u64 connection_key, u64 connection_epoch,
+    bool ready);
 void break_runtime_world_session_close(
     BreakRuntimeWorldSession *adapter);
 bool break_runtime_world_session_is_closed(
@@ -129,8 +143,9 @@ void break_runtime_world_session_stats(
 /* Per-connection read-only view for diagnosis. The query copies adapter scalars
  * under the adapter mutex; it never calls World Session, publication or queue and
  * never advances the state machine. `publish_dirty` mirrors the adapter-owned terms of
- * the fanout continuation for one connection (retry, saved attempt scalars, then the
- * observed-epoch comparison); it deliberately omits the continuation's Session
+ * the fanout continuation for one connection (false while unready; otherwise retry,
+ * saved attempt scalars, then the observed-epoch comparison against completed, terminal
+ * and held epochs); it deliberately omits the continuation's Session
  * `attempt_pending` probe, so it answers "this adapter still owes a publication", not
  * "the authoritative World differs" and not "pending() is zero". */
 typedef struct {
@@ -143,6 +158,8 @@ typedef struct {
     u64 attempt_target_tick;
     bool retry_publish;
     bool publish_dirty;
+    bool publish_ready;           /* always true without publish_requires_ready */
+    u64 held_publication_epoch;   /* epoch last held by publish_waits_for_ack */
 } BreakRuntimeWorldConnectionSnapshot;
 
 /* Writes up to `capacity` open connections in ascending slot order and returns the

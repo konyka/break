@@ -18,7 +18,9 @@ typedef struct {
     u64 attempt_publication_epoch;
     u64 attempt_target_snapshot_id;
     u64 attempt_target_tick;
+    u64 held_publication_epoch;
     bool retry_publish;
+    bool publish_ready;
 } RuntimeWorldConnection;
 
 struct BreakRuntimeWorldSession {
@@ -30,6 +32,8 @@ struct BreakRuntimeWorldSession {
     u32 subscriber_id;
     u32 max_connections;
     u32 publish_connection_budget;
+    bool publish_requires_ready;
+    bool publish_waits_for_ack;
     bool closed;
     bool unsubscribed;
     bool lifecycle_bound;
@@ -148,6 +152,7 @@ static void runtime_world_clear_connection_publish(RuntimeWorldConnection *conne
     connection->attempt_publication_epoch = 0u;
     connection->attempt_target_snapshot_id = 0u;
     connection->attempt_target_tick = 0u;
+    connection->held_publication_epoch = 0u;
     connection->retry_publish = false;
 }
 
@@ -212,6 +217,7 @@ static BreakRuntimeError runtime_world_apply(BreakRuntimeWorldSession *adapter,
         runtime_world_clear_connection_publish(&adapter->connections[slot]);
         adapter->connections[slot].key = command->connection_key;
         adapter->connections[slot].epoch = epoch;
+        adapter->connections[slot].publish_ready = !adapter->publish_requires_ready;
         adapter->next_connection_epoch++;
         return BREAK_RUNTIME_OK;
     }
@@ -269,7 +275,17 @@ static bool runtime_world_publish_clean(const RuntimeWorldConnection *connection
            connection->attempt_target_snapshot_id == 0u &&
            connection->attempt_target_tick == 0u &&
            (connection->completed_publication_epoch == publication_epoch ||
-            connection->terminal_publication_epoch == publication_epoch);
+            connection->terminal_publication_epoch == publication_epoch ||
+            connection->held_publication_epoch == publication_epoch);
+}
+
+/* The Session has a sent but unacknowledged target and nothing forces a full,
+ * so a new target would only grow the history (legacy stop-and-wait rule). */
+static bool runtime_world_publish_waits_for_ack(const BreakRuntimeWorldSession *adapter,
+                                                const BreakWorldSessionSenderState *state)
+{
+    return adapter->publish_waits_for_ack && !state->attempt_pending &&
+           state->history_count != 0u && !state->force_full;
 }
 
 static BreakRuntimeError runtime_world_publish_connection(
@@ -298,6 +314,10 @@ static BreakRuntimeError runtime_world_publish_connection(
         return BREAK_RUNTIME_FAILED;
     }
     if (runtime_world_publish_clean(connection, &before, lease->publication_epoch)) {
+        return BREAK_RUNTIME_OK;
+    }
+    if (!connection->retry_publish && runtime_world_publish_waits_for_ack(adapter, &before)) {
+        connection->held_publication_epoch = lease->publication_epoch;
         return BREAK_RUNTIME_OK;
     }
 
@@ -378,7 +398,7 @@ static bool runtime_world_recompute_continuation(
     for (usize i = 0u; i < adapter->max_connections; ++i) {
         const RuntimeWorldConnection *connection = &adapter->connections[i];
         BreakWorldSessionSenderState state;
-        if (connection->key == 0u) continue;
+        if (connection->key == 0u || !connection->publish_ready) continue;
         if (connection->retry_publish ||
             connection->attempt_publication_epoch != 0u ||
             connection->attempt_target_snapshot_id != 0u ||
@@ -390,7 +410,8 @@ static bool runtime_world_recompute_continuation(
             return true;
         }
         if (connection->completed_publication_epoch != current_epoch &&
-            connection->terminal_publication_epoch != current_epoch) {
+            connection->terminal_publication_epoch != current_epoch &&
+            connection->held_publication_epoch != current_epoch) {
             return true;
         }
     }
@@ -442,13 +463,15 @@ static BreakRuntimeError runtime_world_publish_current(
         usize slot = adapter->publish_cursor;
         RuntimeWorldConnection *connection = &adapter->connections[slot];
         bool called = false;
-        if (connection->key != 0u && calls == budget) {
+        if (connection->key == 0u || !connection->publish_ready) {
+            /* not eligible: skipped without consuming budget */
+        } else if (calls == budget) {
             BreakWorldSessionSenderState state;
             if (!break_world_session_sender_state(adapter->session, connection->key, &state) ||
                 !runtime_world_publish_clean(connection, &state, lease.publication_epoch)) {
                 break;
             }
-        } else if (connection->key != 0u) {
+        } else {
             BreakRuntimeError connection_result = runtime_world_publish_connection(
                 adapter, slot, &lease, &called);
             if (called) calls++;
@@ -480,7 +503,11 @@ BreakRuntimeWorldSession *break_runtime_world_session_create(
     u32 capacity;
     u32 max_connections;
     if (!config || !config->session || !config->bus) return NULL;
-    if (!config->publication && config->publish_connection_budget != 0u) return NULL;
+    if (!config->publication &&
+        (config->publish_connection_budget != 0u || config->publish_requires_ready ||
+         config->publish_waits_for_ack)) {
+        return NULL;
+    }
     if (config->publish_connection_budget > 64u) return NULL;
     capacity = config->queue_capacity == 0u
                    ? RUNTIME_WORLD_DEFAULT_QUEUE_CAPACITY
@@ -502,6 +529,8 @@ BreakRuntimeWorldSession *break_runtime_world_session_create(
     adapter->max_connections = max_connections;
     adapter->publish_connection_budget = config->publish_connection_budget == 0u
         ? 8u : config->publish_connection_budget;
+    adapter->publish_requires_ready = config->publish_requires_ready;
+    adapter->publish_waits_for_ack = config->publish_waits_for_ack;
     adapter->next_connection_epoch = 1u;
     adapter->next_sequence = 1u;
     platform_mutex_init(&adapter->mutex);
@@ -758,6 +787,29 @@ BreakRuntimeError break_runtime_world_session_submit_publish_current(
     return result;
 }
 
+BreakRuntimeError break_runtime_world_session_set_publish_ready(
+    BreakRuntimeWorldSession *adapter, u64 connection_key, u64 connection_epoch,
+    bool ready)
+{
+    BreakRuntimeError result = BREAK_RUNTIME_OK;
+    usize slot;
+    if (!adapter || connection_key == 0u) return BREAK_RUNTIME_INVALID;
+    platform_mutex_lock(&adapter->mutex);
+    if (!adapter->publish_requires_ready) {
+        result = BREAK_RUNTIME_REJECTED;
+    } else {
+        slot = runtime_world_find_connection(adapter, connection_key);
+        if (slot == adapter->max_connections ||
+            adapter->connections[slot].epoch != connection_epoch) {
+            result = BREAK_RUNTIME_STALE;
+        } else {
+            adapter->connections[slot].publish_ready = ready;
+        }
+    }
+    platform_mutex_unlock(&adapter->mutex);
+    return result;
+}
+
 void break_runtime_world_session_close(BreakRuntimeWorldSession *adapter)
 {
     if (!adapter) return;
@@ -887,13 +939,15 @@ bool break_runtime_world_session_connection_epoch(
 static bool runtime_world_connection_dirty_locked(
     const BreakRuntimeWorldSession *adapter, const RuntimeWorldConnection *connection)
 {
+    if (!connection->publish_ready) return false;
     return connection->retry_publish ||
            connection->attempt_publication_epoch != 0u ||
            connection->attempt_target_snapshot_id != 0u ||
            connection->attempt_target_tick != 0u ||
            (adapter->publish_observed_epoch != 0u &&
             connection->completed_publication_epoch != adapter->publish_observed_epoch &&
-            connection->terminal_publication_epoch != adapter->publish_observed_epoch);
+            connection->terminal_publication_epoch != adapter->publish_observed_epoch &&
+            connection->held_publication_epoch != adapter->publish_observed_epoch);
 }
 
 usize break_runtime_world_session_connection_snapshots(
@@ -918,6 +972,8 @@ usize break_runtime_world_session_connection_snapshots(
         snapshot.attempt_target_tick = connection->attempt_target_tick;
         snapshot.retry_publish = connection->retry_publish;
         snapshot.publish_dirty = runtime_world_connection_dirty_locked(adapter, connection);
+        snapshot.publish_ready = connection->publish_ready;
+        snapshot.held_publication_epoch = connection->held_publication_epoch;
         if (out_snapshots && opened < capacity) out_snapshots[opened] = snapshot;
         ++opened;
     }
