@@ -97,11 +97,13 @@ BreakRuntimeError break_runtime_reload_deps_committed(BreakRuntimeReloadDeps *de
     r = break_asset_graph_dependents(deps->graph, id, deps->scratch, deps->max_assets, &count);
     if (r == BREAK_ASSET_GRAPH_OVERLOAD) return BREAK_RUNTIME_OVERLOAD;
     if (r != BREAK_ASSET_GRAPH_OK) return BREAK_RUNTIME_FAILED;
-    if (count == 0u) return BREAK_RUNTIME_OK;
     for (u32 i = 0u; i < count; ++i) {
         if (!find_path(deps, deps->scratch[i])) return BREAK_RUNTIME_FAILED;
         if (!in_list(deps->queue, deps->queued, deps->scratch[i])) added++;
     }
+    /* Unreachable guard: queued ids are distinct and each has one of at most
+     * max_assets recorded paths. Kept so the queue write below stays bounded
+     * if that invariant ever changes. */
     if (deps->queued + added > deps->max_assets) return BREAK_RUNTIME_OVERLOAD;
     /* An asset already in flight is queued again: its dependency changed
      * after its reload started. */
@@ -109,8 +111,24 @@ BreakRuntimeError break_runtime_reload_deps_committed(BreakRuntimeReloadDeps *de
         if (!in_list(deps->queue, deps->queued, deps->scratch[i]))
             deps->queue[deps->queued++] = deps->scratch[i];
     }
-    deps->stats.chains++;
+    if (added > 0u) deps->stats.chains++;
     return BREAK_RUNTIME_OK;
+}
+
+BreakRuntimeError break_runtime_reload_deps_committed_path(BreakRuntimeReloadDeps *deps,
+                                                           const char *path) {
+    BreakRuntimeError first = BREAK_RUNTIME_OK;
+    if (!deps || !path || path[0] == '\0') return BREAK_RUNTIME_INVALID;
+    for (u32 i = 0u; i < deps->path_count; ++i) {
+        BreakRuntimeError r;
+        if (strcmp(deps->paths[i].path, path) != 0 ||
+            !break_asset_graph_contains(deps->graph, deps->paths[i].id)) {
+            continue;
+        }
+        r = break_runtime_reload_deps_committed(deps, deps->paths[i].id);
+        if (r != BREAK_RUNTIME_OK && first == BREAK_RUNTIME_OK) first = r;
+    }
+    return first;
 }
 
 static void remove_queued(BreakRuntimeReloadDeps *deps, u32 index) {

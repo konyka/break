@@ -371,3 +371,25 @@ arm64 lane 新增 `test_hotreload`（7 例），与 VFS、异步加载和 filewa
 仍未完成：依赖图接入 manifest 与场景加载；文件监视产生的提交还要由所有者手动转给 `committed`。
 
 本提交自身的远端工作流结果不在此预写。
+
+## 补充（2026-11-27）：从提交钩子直接启动依赖重建
+
+上一节留下的缺口是：文件监视产生的提交要由所有者手动转给 `committed`。新增 `break_runtime_reload_deps_committed_path(deps, path)`，协调器的 commit 钩子在所有者线程上调用它即可，整条链从文件事件自动启动：`notify_file_event` → `pump_events` → `commit_owner`（钩子转发路径）→ `break_runtime_reload_deps_pump` 依次重建依赖者。
+
+- 对每个记录了该路径、且在依赖图中的 id 调用 `committed`。没有 id 记录的路径、或 id 不在图中的路径被忽略并返回 OK，所以钩子可以无条件转发每次提交。
+- 链自身提交的依赖者也会被转发。它们的依赖者已在队列中，不会新增入队项，也不会计为新链：`stats.chains` 现在只在确有新入队项时增加。
+- 多个 id 共用一个路径时逐个尝试，某个 id 失败不影响其他 id，返回第一个错误。路径为 NULL 或空返回 INVALID。
+- `committed` 中原有的 `count == 0` 提前返回已删除：变异测试显示它与后续逻辑等价（没有新增项时不入队、不计链）。容量检查 `queued + added > max_assets` 不可能触发：队列中的 id 互不相同，且每个都有一条记录的路径，而路径最多 `max_assets` 条。保留它是为了在这个不变式改变时队列写入仍有界，源码已注释说明。
+
+**TDD**：先加 4 例测试，以缺少该函数的编译失败为 RED。覆盖：只调用 `notify_file_event`，提交顺序为 tex、mat_a、scene，且只计 1 条链；未知路径和不在图中的 id 被忽略；共用路径的两个 id 各自启动链，依赖者只入队一次；共用路径的某个 id 失败时其他 id 照常入队并返回 FAILED。
+
+**变异**：25 项中 23 项判红。存活 2 项均为等价变异：`j == i` 跳过（上一节已说明）和上述不可触发的容量检查。
+
+**验证**：
+- ASan+UBSan 下 13/13，TSan 下连跑 3 次 13/13。
+- `build-current-vk` 非 fuzz 469/469，fuzz 24/24。
+- Windows 实机 MSVC 全量构建通过，本测试 13/13；同次唯一失败的 `test_platform_win32_runtime` 需要交互桌面，属已记录的环境限制。
+
+仍未完成：依赖图接入 manifest 与场景加载。
+
+本提交自身的远端工作流结果不在此预写。

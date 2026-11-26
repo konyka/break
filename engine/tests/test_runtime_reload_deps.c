@@ -27,6 +27,9 @@ typedef struct {
 } Probe;
 
 static Probe g_probe;
+/* when set, the commit hook forwards each commit, like an owner would */
+static BreakRuntimeReloadDeps *g_hook_deps;
+static BreakRuntimeError g_hook_result;
 
 static BreakRuntimeError probe_validate(const char *path, const void *bytes, usize size,
                                         void *user) {
@@ -46,6 +49,7 @@ static BreakRuntimeError probe_commit(const char *path, const void *bytes, usize
         snprintf(g_probe.order[g_probe.count], sizeof(g_probe.order[0]), "%s", path);
         g_probe.count++;
     }
+    if (g_hook_deps) g_hook_result = break_runtime_reload_deps_committed_path(g_hook_deps, path);
     return BREAK_RUNTIME_OK;
 }
 
@@ -129,6 +133,7 @@ static bool fx_init(Fx *fx, u32 max_assets) {
 }
 
 static void fx_dispose(Fx *fx) {
+    g_hook_deps = NULL;
     break_runtime_reload_deps_destroy(fx->deps);
     if (fx->reload) {
         (void)break_runtime_reload_shutdown(fx->reload, 2000u);
@@ -369,6 +374,97 @@ TEST(more_dependents_than_fit_is_overload) {
     fx_dispose(&fx);
 }
 
+/* Drives file events too: the chain starts from the commit hook alone. */
+static bool run_events_until_idle(Fx *fx) {
+    for (u32 spin = 0u; spin < 200000u; ++spin) {
+        BreakRuntimeReloadDepsStats st;
+        BreakRuntimeReloadStats rs;
+        u32 n = 0u;
+        (void)break_runtime_reload_pump_events(fx->reload, 16u, &n);
+        (void)break_runtime_reload_commit_owner(fx->reload, 16u, &n);
+        if (break_runtime_reload_deps_pump(fx->deps) != BREAK_RUNTIME_OK) return false;
+        if (break_runtime_reload_deps_stats(fx->deps, &st) != BREAK_RUNTIME_OK) return false;
+        if (break_runtime_reload_stats(fx->reload, &rs) != BREAK_RUNTIME_OK) return false;
+        if (st.queued == 0u && !st.in_flight && rs.active == 0u && g_probe.count > 0u) return true;
+        platform_thread_yield();
+    }
+    return false;
+}
+
+TEST(a_watched_file_change_starts_the_chain_from_the_commit_hook) {
+    Fx fx;
+    BreakRuntimeReloadDepsStats st;
+    ASSERT_TRUE(fx_init(&fx, 16u));
+    g_hook_deps = fx.deps;
+    ASSERT_EQ(break_runtime_reload_notify_file_event(fx.reload, "tex.bin"), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(run_events_until_idle(&fx));
+    ASSERT_EQ(g_probe.count, 3u);
+    ASSERT_STR_EQ(g_probe.order[0], "tex.bin");
+    ASSERT_STR_EQ(g_probe.order[1], "mat_a.bin");
+    ASSERT_STR_EQ(g_probe.order[2], "scene.bin");
+    ASSERT_EQ(g_hook_result, BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_stats(fx.deps, &st), BREAK_RUNTIME_OK);
+    /* the chain's own commits of mat_a and scene start no further chain */
+    ASSERT_EQ(st.chains, 1u);
+    ASSERT_EQ(st.requested, 2u);
+    ASSERT_EQ(st.rebuilt, 2u);
+    fx_dispose(&fx);
+}
+
+TEST(committed_path_ignores_unknown_paths_and_rejects_bad_arguments) {
+    Fx fx;
+    BreakRuntimeReloadDepsStats st;
+    ASSERT_TRUE(fx_init(&fx, 16u));
+    ASSERT_EQ(break_runtime_reload_deps_committed_path(fx.deps, "untracked.bin"), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_committed_path(fx.deps, "other.bin"), BREAK_RUNTIME_OK);
+    /* a recorded path whose id is not in the graph */
+    ASSERT_EQ(break_runtime_reload_deps_set_path(fx.deps, 55u, "orphan.bin"), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_committed_path(fx.deps, "orphan.bin"), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_stats(fx.deps, &st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(st.chains, 0u);
+    ASSERT_EQ(st.queued, 0u);
+    ASSERT_EQ(break_runtime_reload_deps_committed_path(fx.deps, "shader.bin"), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_stats(fx.deps, &st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(st.chains, 1u);
+    ASSERT_EQ(st.queued, 3u);
+    ASSERT_EQ(break_runtime_reload_deps_committed_path(NULL, "tex.bin"), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_reload_deps_committed_path(fx.deps, NULL), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_reload_deps_committed_path(fx.deps, ""), BREAK_RUNTIME_INVALID);
+    ASSERT_TRUE(run_until_idle(&fx));
+    fx_dispose(&fx);
+}
+
+/* Two ids reloading from one file are both treated as changed. */
+TEST(every_id_sharing_the_committed_path_starts_its_chain) {
+    Fx fx;
+    BreakRuntimeReloadDepsStats st;
+    ASSERT_TRUE(fx_init(&fx, 16u));
+    ASSERT_EQ(break_runtime_reload_deps_set_path(fx.deps, kShader, "tex.bin"), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_committed_path(fx.deps, "tex.bin"), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_stats(fx.deps, &st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(st.chains, 2u);
+    ASSERT_EQ(st.queued, 3u); /* mat_a, mat_b, scene once each */
+    ASSERT_TRUE(run_until_idle(&fx));
+    fx_dispose(&fx);
+}
+
+/* One id sharing the path fails; the others still queue and the first error
+ * is reported. */
+TEST(a_failing_id_on_a_shared_path_does_not_stop_the_others) {
+    Fx fx;
+    BreakRuntimeReloadDepsStats st;
+    const BreakAssetId on_tex[] = {kTex};
+    ASSERT_TRUE(fx_init(&fx, 16u));
+    ASSERT_EQ(break_asset_graph_add(fx.graph, 77u, on_tex, 1u), BREAK_ASSET_GRAPH_OK); /* no path */
+    ASSERT_EQ(break_runtime_reload_deps_set_path(fx.deps, kShader, "tex.bin"), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_committed_path(fx.deps, "tex.bin"), BREAK_RUNTIME_FAILED);
+    ASSERT_EQ(break_runtime_reload_deps_stats(fx.deps, &st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(st.chains, 1u);
+    ASSERT_EQ(st.queued, 3u); /* the shader's dependents */
+    ASSERT_TRUE(run_until_idle(&fx));
+    fx_dispose(&fx);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(a_changed_texture_rebuilds_its_material_then_the_scene);
     RUN_TEST(a_shared_dependency_rebuilds_each_dependent_once_in_order);
@@ -379,4 +475,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(validation_paths_and_capacity);
     RUN_TEST(a_dependent_without_a_path_fails_the_commit_and_queues_nothing);
     RUN_TEST(more_dependents_than_fit_is_overload);
+    RUN_TEST(a_watched_file_change_starts_the_chain_from_the_commit_hook);
+    RUN_TEST(committed_path_ignores_unknown_paths_and_rejects_bad_arguments);
+    RUN_TEST(every_id_sharing_the_committed_path_starts_its_chain);
+    RUN_TEST(a_failing_id_on_a_shared_path_does_not_stop_the_others);
 TEST_MAIN_END()

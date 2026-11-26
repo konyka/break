@@ -14570,3 +14570,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：`test_runtime_reload_deps` 9 例，先以链接失败为 RED，使用真实 VFS 和真实协调器。存活的重试变异靠补测试判红；剩余 1 项存活为等价变异，理由见设计文档。
 - **验证**：ASan+UBSan 9/9，TSan 连跑 3 次 9/9；`build-current-vk` 非 fuzz 469/469，fuzz 24/24；Windows 实机 MSVC 全量构建通过，本测试 9/9（同次唯一失败的 `test_platform_win32_runtime` 需要交互桌面，属已记录的环境限制）。
 - **仍未完成**：依赖图接入 manifest 与场景加载。本提交自身的远端工作流结果不在此预写。
+
+## 从提交钩子启动依赖重建 `committed_path`（2026-11-27）
+
+- **缺口**：文件监视产生的提交要由所有者手动转给依赖重建。
+- **实现**：新增 `break_runtime_reload_deps_committed_path`，协调器 commit 钩子可无条件转发每次提交，整条链从文件事件自动启动；未知路径被忽略，共用路径的 id 逐个尝试，`stats.chains` 只在确有新入队项时增加。设计见 `docs/design/runtime_hot_reload.md` 2026-11-27「从提交钩子直接启动依赖重建」。
+- **TDD 与变异**：`test_runtime_reload_deps` 增至 13 例，先以编译失败为 RED。25 项变异中 23 项判红，2 项等价变异的理由见设计文档。
+- **验证**：ASan+UBSan 13/13，TSan 连跑 3 次 13/13；`build-current-vk` 非 fuzz 469/469，fuzz 24/24；Windows 实机 MSVC 全量构建通过，本测试 13/13。
+- **仍未完成**：依赖图接入 manifest 与场景加载。本提交自身的远端工作流结果不在此预写。

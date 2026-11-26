@@ -14,6 +14,8 @@
  *
  *  - break_runtime_reload_deps_committed(id) takes the graph's rebuild order
  *    (break_asset_graph_dependents) and queues those ids;
+ *    break_runtime_reload_deps_committed_path(path) does the same from the
+ *    coordinator's commit hook, for the ids recorded with that path;
  *  - break_runtime_reload_deps_pump issues the queued reloads one at a
  *    time, each only when none of its dependencies is still queued, and the
  *    next only after the previous one reached a terminal state, so a
@@ -64,6 +66,16 @@ BreakRuntimeError break_runtime_reload_deps_set_path(BreakRuntimeReloadDeps *dep
  * dependents do not fit; FAILED when a dependent has no recorded path. */
 BreakRuntimeError break_runtime_reload_deps_committed(BreakRuntimeReloadDeps *deps,
                                                       BreakAssetId id);
+
+/* The same for every asset id whose recorded path is `path`, so the
+ * coordinator's commit hook can forward each commit as it happens: a path
+ * no id records, or whose id is not in the graph, is ignored (OK). The
+ * chain's own commits may be forwarded too; their dependents are already
+ * queued, so they start no new chain. Every matching id is tried; the first
+ * error is returned. INVALID for a NULL or empty path. Owner thread only:
+ * the commit hook runs there. */
+BreakRuntimeError break_runtime_reload_deps_committed_path(BreakRuntimeReloadDeps *deps,
+                                                           const char *path);
 
 /* Advances the chain: polls the in-flight dependent and, once it is
  * terminal, issues the next one. Call every tick after commit_owner.
