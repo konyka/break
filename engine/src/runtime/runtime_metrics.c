@@ -263,3 +263,47 @@ BreakRuntimeError break_runtime_metrics_stats(
     platform_mutex_unlock(&metrics->mutex);
     return BREAK_RUNTIME_OK;
 }
+
+static bool metrics_alert_fires(const BreakRuntimeMetricSample *samples, u32 sample_count,
+                                const BreakRuntimeMetricAlertRule *rule) {
+    for (u32 i = 0u; i < sample_count; ++i) {
+        if (strcmp(samples[i].name, rule->name) != 0) continue;
+        return rule->op == BREAK_RUNTIME_METRIC_ALERT_ABOVE ? samples[i].value > rule->threshold
+                                                            : samples[i].value < rule->threshold;
+    }
+    return false;
+}
+
+BreakRuntimeError break_runtime_metrics_evaluate_alerts(
+    const BreakRuntimeMetricSample *samples,
+    u32 sample_count,
+    const BreakRuntimeMetricAlertRule *rules,
+    u32 rule_count,
+    u32 *fired,
+    u32 fired_capacity,
+    u32 *out_count) {
+    u32 required = 0u;
+    u32 written = 0u;
+    if (!out_count) return BREAK_RUNTIME_INVALID;
+    *out_count = 0u;
+    if ((!samples && sample_count != 0u) || (!rules && rule_count != 0u) ||
+        (!fired && fired_capacity != 0u) ||
+        sample_count > BREAK_RUNTIME_METRICS_MAX_CAPACITY ||
+        rule_count > BREAK_RUNTIME_METRICS_MAX_CAPACITY)
+        return BREAK_RUNTIME_INVALID;
+    for (u32 r = 0u; r < rule_count; ++r) {
+        if (!rules[r].name || (rules[r].op != BREAK_RUNTIME_METRIC_ALERT_ABOVE &&
+                               rules[r].op != BREAK_RUNTIME_METRIC_ALERT_BELOW))
+            return BREAK_RUNTIME_INVALID;
+    }
+    for (u32 r = 0u; r < rule_count; ++r)
+        if (metrics_alert_fires(samples, sample_count, &rules[r])) required++;
+    if (required > fired_capacity) {
+        *out_count = required;
+        return BREAK_RUNTIME_OVERLOAD;
+    }
+    for (u32 r = 0u; r < rule_count; ++r)
+        if (metrics_alert_fires(samples, sample_count, &rules[r])) fired[written++] = r;
+    *out_count = written;
+    return BREAK_RUNTIME_OK;
+}

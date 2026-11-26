@@ -223,6 +223,107 @@ TEST(snapshot_and_encode_reject_non_owner_thread) {
     break_runtime_metrics_destroy(m);
 }
 
+static const BreakRuntimeMetricSample kAlertSamples[] = {
+    {"queue.depth", BREAK_RUNTIME_METRIC_GAUGE, 10u},
+    {"net.sent", BREAK_RUNTIME_METRIC_COUNTER, 3u},
+    {"pool.free", BREAK_RUNTIME_METRIC_GAUGE, 2u},
+};
+
+TEST(alerts_fire_on_strict_threshold_crossing_in_rule_order) {
+    const BreakRuntimeMetricAlertRule rules[] = {
+        {"queue.depth", BREAK_RUNTIME_METRIC_ALERT_ABOVE, 9u},  /* 10 > 9 fires */
+        {"queue.depth", BREAK_RUNTIME_METRIC_ALERT_ABOVE, 10u}, /* equal: silent */
+        {"pool.free", BREAK_RUNTIME_METRIC_ALERT_BELOW, 2u},    /* equal: silent */
+        {"pool.free", BREAK_RUNTIME_METRIC_ALERT_BELOW, 3u},    /* 2 < 3 fires */
+        {"missing", BREAK_RUNTIME_METRIC_ALERT_BELOW, 100u},    /* absent: silent */
+        {"net.sent", BREAK_RUNTIME_METRIC_ALERT_ABOVE, 0u},     /* 3 > 0 fires */
+    };
+    u32 fired[8];
+    u32 n = 99u;
+    ASSERT_EQ(break_runtime_metrics_evaluate_alerts(kAlertSamples, 3u, rules, 6u, fired, 8u, &n),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(n, 3u);
+    ASSERT_EQ(fired[0], 0u);
+    ASSERT_EQ(fired[1], 3u);
+    ASSERT_EQ(fired[2], 5u);
+    ASSERT_EQ(break_runtime_metrics_evaluate_alerts(kAlertSamples, 3u, rules, 0u, fired, 8u, &n),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(n, 0u);
+}
+
+TEST(alerts_report_required_count_when_output_too_small) {
+    const BreakRuntimeMetricAlertRule rules[] = {
+        {"queue.depth", BREAK_RUNTIME_METRIC_ALERT_ABOVE, 1u},
+        {"net.sent", BREAK_RUNTIME_METRIC_ALERT_ABOVE, 1u},
+    };
+    u32 fired[1] = {77u};
+    u32 n = 0u;
+    ASSERT_EQ(break_runtime_metrics_evaluate_alerts(kAlertSamples, 3u, rules, 2u, fired, 1u, &n),
+              BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(n, 2u);
+    ASSERT_EQ(fired[0], 77u);
+    ASSERT_EQ(break_runtime_metrics_evaluate_alerts(kAlertSamples, 3u, rules, 2u, NULL, 0u, &n),
+              BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(n, 2u);
+}
+
+TEST(alerts_validate_arguments) {
+    const BreakRuntimeMetricAlertRule good[] = {
+        {"queue.depth", BREAK_RUNTIME_METRIC_ALERT_ABOVE, 1u}};
+    const BreakRuntimeMetricAlertRule bad_op[] = {
+        {"queue.depth", (BreakRuntimeMetricAlertOp)7, 1u}};
+    const BreakRuntimeMetricAlertRule null_name[] = {
+        {NULL, BREAK_RUNTIME_METRIC_ALERT_ABOVE, 1u}};
+    u32 fired[2];
+    u32 n = 5u;
+    ASSERT_EQ(break_runtime_metrics_evaluate_alerts(kAlertSamples, 3u, good, 1u, fired, 2u, NULL),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_evaluate_alerts(NULL, 3u, good, 1u, fired, 2u, &n),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_evaluate_alerts(kAlertSamples, 3u, NULL, 1u, fired, 2u, &n),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_evaluate_alerts(kAlertSamples, 3u, good, 1u, NULL, 2u, &n),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_evaluate_alerts(kAlertSamples, 3u, bad_op, 1u, fired, 2u, &n),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_evaluate_alerts(kAlertSamples, 3u, null_name, 1u, fired, 2u,
+                                                    &n),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_evaluate_alerts(kAlertSamples, 3u, good,
+                                                    BREAK_RUNTIME_METRICS_MAX_CAPACITY + 1u,
+                                                    fired, 2u, &n),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(n, 0u);
+    ASSERT_EQ(break_runtime_metrics_evaluate_alerts(NULL, 0u, good, 1u, fired, 2u, &n),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(n, 0u);
+}
+
+TEST(alerts_evaluate_a_live_snapshot) {
+    BreakRuntimeMetrics *m = make_metrics(8u);
+    BreakRuntimeMetricSample out[8];
+    const BreakRuntimeMetricAlertRule rules[] = {
+        {"bus.depth", BREAK_RUNTIME_METRIC_ALERT_ABOVE, 4u}};
+    u32 count = 0u;
+    u32 fired[1];
+    u32 n = 0u;
+    ASSERT_NOT_NULL(m);
+    ASSERT_EQ(break_runtime_metrics_set(m, "bus.depth", BREAK_RUNTIME_METRIC_GAUGE, 4u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_snapshot(m, out, 8u, &count), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_evaluate_alerts(out, count, rules, 1u, fired, 1u, &n),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(n, 0u);
+    ASSERT_EQ(break_runtime_metrics_set(m, "bus.depth", BREAK_RUNTIME_METRIC_GAUGE, 5u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_snapshot(m, out, 8u, &count), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_evaluate_alerts(out, count, rules, 1u, fired, 1u, &n),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(n, 1u);
+    ASSERT_EQ(fired[0], 0u);
+    break_runtime_metrics_destroy(m);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(create_validates_config_and_defaults);
     RUN_TEST(counter_adds_accumulate_and_saturate);
@@ -234,4 +335,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(encode_reports_required_length_when_too_small);
     RUN_TEST(close_rejects_updates_but_keeps_snapshot_readable);
     RUN_TEST(snapshot_and_encode_reject_non_owner_thread);
+    RUN_TEST(alerts_fire_on_strict_threshold_crossing_in_rule_order);
+    RUN_TEST(alerts_report_required_count_when_output_too_small);
+    RUN_TEST(alerts_validate_arguments);
+    RUN_TEST(alerts_evaluate_a_live_snapshot);
 TEST_MAIN_END()

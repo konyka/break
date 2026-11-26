@@ -127,3 +127,34 @@ BreakRuntimeError break_runtime_metrics_encode(
 BreakRuntimeError break_runtime_metrics_stats(
     BreakRuntimeMetrics *metrics,
     BreakRuntimeMetricsStats *out_stats);
+
+/* Threshold alert rules over a snapshot. A rule fires when the sample named
+ * `name` exists and its value is STRICTLY above (ABOVE) or below (BELOW)
+ * `threshold`; an absent name never fires. */
+typedef enum BreakRuntimeMetricAlertOp {
+    BREAK_RUNTIME_METRIC_ALERT_ABOVE = 0,
+    BREAK_RUNTIME_METRIC_ALERT_BELOW = 1
+} BreakRuntimeMetricAlertOp;
+
+typedef struct BreakRuntimeMetricAlertRule {
+    const char *name; /* sample name to test; must be non-NULL */
+    BreakRuntimeMetricAlertOp op;
+    u64 threshold;
+} BreakRuntimeMetricAlertRule;
+
+/* Pure, stateless, any thread: evaluates `rules` against `samples` (e.g. the
+ * output of break_runtime_metrics_snapshot) and writes the indices of firing
+ * rules into `fired` in rule order. *out_count receives the number of firing
+ * rules. Too small `fired` -> OVERLOAD with *out_count = required count and
+ * `fired` untouched. INVALID (with *out_count = 0) on NULL out_count, NULL
+ * samples/rules/fired with a non-zero count, a rule with a NULL name or an
+ * unknown op, or sample/rule count above BREAK_RUNTIME_METRICS_MAX_CAPACITY;
+ * every rule is validated before any is evaluated. */
+BreakRuntimeError break_runtime_metrics_evaluate_alerts(
+    const BreakRuntimeMetricSample *samples,
+    u32 sample_count,
+    const BreakRuntimeMetricAlertRule *rules,
+    u32 rule_count,
+    u32 *fired,
+    u32 fired_capacity,
+    u32 *out_count);

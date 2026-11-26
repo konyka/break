@@ -55,7 +55,7 @@
 
 ## 7. 边界
 
-本块只交付进程内注册表与文本编码。远程传输（把编码推给采集器）、历史采样（时间序列保留）、聚合窗口与告警规则仍未实现；指标值的语义绑定（哪些子系统注册哪些 name）由各消费者在后续切片接线，本库不预置任何业务 name。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。
+本块只交付进程内注册表与文本编码。远程传输（把编码推给采集器）、历史采样（时间序列保留）与聚合窗口仍未实现（阈值告警求值见第 14 节）；指标值的语义绑定（哪些子系统注册哪些 name）由各消费者在后续切片接线，本库不预置任何业务 name。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。
 
 ## 8. 子系统接线：Bus 聚合导出（第一处 name 绑定）
 
@@ -98,3 +98,11 @@
 ## 13. 子系统接线：IO facade 计数导出（按前缀）
 
 `break_runtime_io_export_metrics(metrics, prefix)`（`runtime_io.h`）把进程级 IO facade 的 13 个观测计数按 `prefix` 写入注册表为 GAUGE：`<prefix>.submitted`、`.completed`、`.failed`、`.cancelled`、`.timed_out`、`.overload_rejects`、`.closed_rejects`、`.stale_drops`、`.bytes_published`、`.notices_published`、`.notices_dropped`、`.active`、`.high_water`。IO facade 是进程单例（无句柄），故无实例维度但仍按 `prefix` 命名以便与其它来源区分。与前几处同构：gauge 幂等、过长 prefix 由注册表 name 校验回 INVALID；未 init 时 `break_runtime_io_stats` 的 INVALID 由导出透传。Bus（§8）、Queue（§9）、Task（§10）、World Session（§11）、Reload（§12）、IO（§13）为 runtime_core 全部六个带 stats 的子系统的 name 绑定。这不改变第 7 节边界。
+
+## 14. 阈值告警求值
+
+`break_runtime_metrics_evaluate_alerts(samples, sample_count, rules, rule_count, fired, fired_capacity, out_count)` 是无状态纯函数，任意线程可调：对一份快照（通常是 `break_runtime_metrics_snapshot` 的输出）逐条求值 `BreakRuntimeMetricAlertRule{name, op, threshold}`。`ABOVE` 在值**严格大于**阈值时触发，`BELOW` 在值**严格小于**阈值时触发，等于阈值不触发；快照中不存在该 name 的规则不触发。触发规则的下标按规则顺序写入 `fired`。
+
+- `fired` 不足 → `OVERLOAD`，`*out_count` 为所需数量，`fired` 不写。
+- `INVALID`（`*out_count = 0`）：`out_count` 为 NULL；计数非零而 samples/rules/fired 为 NULL；规则 name 为 NULL 或 op 未知；样本数或规则数超过 `BREAK_RUNTIME_METRICS_MAX_CAPACITY`。所有规则先校验后求值，不会部分写出。
+- 不保留状态：不做去抖、持续时长、恢复通知或告警投递；这些与历史采样一起留待后续。

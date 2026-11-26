@@ -14128,3 +14128,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 远端 CI `45799292153` 结论 **success**：25 success、3 条件 skip（Steam Deck、Proton、`lane-gpu-runtime-windows-d3d12`），0 失败。上次被取消的两条 macOS lane 本次均 success；`Linux arm64 cross-build + QEMU tests (GCC)` success；Windows MinGW headless success。
 - 独立的 windows-d3d12 工作流 `45799292223` success。
 - 边界同各切片收据。
+
+## 指标阈值告警求值（指标协议：告警规则的无状态求值）（2026-11-26）
+
+- **实现**：`runtime_metrics` 新增 `BreakRuntimeMetricAlertRule{name, op, threshold}`（`ABOVE`/`BELOW`）与 `break_runtime_metrics_evaluate_alerts(...)`（`engine/src/runtime/runtime_metrics.{c,h}`）：对快照样本逐条求值，严格越过阈值才触发、等于不触发、缺失 name 不触发，按规则顺序输出触发下标；输出不足回 OVERLOAD 并报所需数量；NULL/未知 op/超上限回 INVALID 且先校验后求值。无状态、任意线程可调。设计见 `docs/design/runtime_metrics.md` 第 14 节。
+- **TDD 与变异**：`test_runtime_metrics.c` 新增 4 用例（严格阈值与规则顺序、输出不足的所需数量、参数校验、对真实快照的 4→5 跨越）。先以未定义类型编译失败为 RED。两项变异判红：`>` 改 `>=`（2 用例红）、去掉 op 校验（1 用例红）。
+- **验证**：`test_runtime_metrics` 14/14（normal/ASan+UBSan/TSan 均 14/14）；`test_runtime_core_target_contract`、`test_runtime_bus`、`test_runtime_facade` 全绿。
+- **边界**：仍无远程传输、历史采样、聚合窗口；告警不做去抖、持续时长、恢复通知与投递。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。本收据提交自身的远端工作流结果不在此预写。
