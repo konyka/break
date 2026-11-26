@@ -14372,3 +14372,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **实现**：新增 `engine/tests/fuzz_crash_symbols.c`，以真实二进制为种子、偏向结构区域变异，断言 open 不越界、lookup 不越写短缓冲；注册 `fuzz_crash_symbols_smoke`（种子 59）进三处 fuzz 列表，`CRASH_SYMBOLS_LIBFUZZER` 可导出到 libFuzzer。目标链接 `break_crash_symbolize` + `platform_fs` + `break_version`，仅在 `TARGET break_crash_symbolize` 时构建。
 - **缺陷**：fuzzer 立即暴露 ELF 路径把 `file + e_shoff`/`sh_offset` 直接转 `Elf64_Shdr*`/`Elf64_Sym*` 解引用的未定义行为（UBSan misaligned，`break_crash_symbolize.c:126`）。修复以 `elf_read_shdr`/`elf_read_sym` 经 `memcpy` 按值读入对齐局部变量；Mach-O 路径本为字节读取无此问题。
 - **验证**：`fuzz_crash_symbols` 种子 59×200000、种子 101×50000 在 ASan+UBSan+leak 全程 clean；负向对照（改回未对齐解引用）在首个探针即 UBSan 失败，证明目标可检出该类缺陷。`test_break_crash_symbolize` 45/45；`build-current-vk` 非 fuzz 全量崩溃相关 9/9。两项 `test_core_app_*contract` 的失败仅因新源文件当时未被 `git archive HEAD` 收录（提交后消失），非回归。本收据提交自身的远端工作流结果不在此预写。
+
+## 崩溃记录文本解析器的 fuzz 目标（2026-11-27）
+
+- **缺口**：`break_crash_record_parse`（采集端对上传的 "break-crash-v1" 记录文本的两遍解析）此前有单元测试但无变异 fuzz。pass 2 信任 pass 1 的边界把数据填入固定缓冲（stack_window/context_blob/modules/name/build_id），两遍不一致即溢出，属需 fuzz 的典型面。
+- **实现**：新增 `engine/tests/fuzz_crash_record.c`，以 golden 记录为种子，除常规变异外会在换行前就地插入偶发数 KiB 的 hex，使单次迭代即可把 blob 推过 4 KiB 字段上界以压到长度判断。不变量：不越界、不改入参、被接受记录可在 64 KiB 内重序列化并再解析且序列化幂等。注册 `fuzz_crash_record_smoke`（种子 61）进三处 fuzz 列表，`CRASH_RECORD_LIBFUZZER` 可导出到 libFuzzer；链接 `break_crash` + `platform_fs` + `break_version`，仅在 `TARGET break_crash` 时构建。
+- **验证**：种子 61×200000、种子 101×100000 在 ASan+UBSan+leak 全程 clean；负向对照（去掉 `bc_valid_hexblob_line` 的 `hex > 2*max_bytes` 上界）在 fuzzer 下立即触发 `bc_decode_hexblob` 的 heap-buffer-overflow（`break_crash.c:229`），证明目标可检出 pass1/pass2 长度不一致的溢出。`test_break_crash` 37/37；`build-current-vk` fuzz lane 18/18。两项 `test_core_app_*contract` 若在提交前运行会因新源未被 `git archive HEAD` 收录而失败，提交后消失，非回归。本收据提交自身的远端工作流结果不在此预写。

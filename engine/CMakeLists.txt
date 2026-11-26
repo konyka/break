@@ -8471,6 +8471,24 @@ endif()
         target_link_libraries(fuzz_crash_symbols PRIVATE break_crash_symbolize)
     endif()
 
+    # Mutation fuzzer for break_crash_record_parse, the two-pass parser the
+    # crash collector runs on untrusted "break-crash-v1" record text. It fills
+    # fixed-size buffers in pass 2 trusting pass 1's bounds, so this guards
+    # against a pass1/pass2 disagreement and against a non-canonical accept.
+    if(TARGET break_crash)
+        add_executable(fuzz_crash_record EXCLUDE_FROM_ALL tests/fuzz_crash_record.c
+            src/platform/platform_fs.c src/core/break_version.c)
+        set_property(TARGET fuzz_crash_record PROPERTY C_STANDARD 11)
+        target_include_directories(fuzz_crash_record PRIVATE ${TEST_INCLUDE_DIRS})
+        if(ENGINE_PLATFORM STREQUAL "linux")
+            target_compile_definitions(fuzz_crash_record PRIVATE
+                ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+        elseif(ENGINE_PLATFORM STREQUAL "windows")
+            target_compile_definitions(fuzz_crash_record PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        endif()
+        target_link_libraries(fuzz_crash_record PRIVATE break_crash)
+    endif()
+
     # Mutation fuzzer for the editor remote session wire path (ids 4..21):
     # mutated envelopes -> the real break_net codec -> the real session
     # manager -> the real editor_remote.c handlers on a live headless shell
@@ -8526,6 +8544,10 @@ endif()
         if(TARGET fuzz_crash_symbols)
             add_test(NAME fuzz_crash_symbols_smoke COMMAND fuzz_crash_symbols 2000 59)
             set_tests_properties(fuzz_crash_symbols_smoke PROPERTIES LABELS "fuzz")
+        endif()
+        if(TARGET fuzz_crash_record)
+            add_test(NAME fuzz_crash_record_smoke COMMAND fuzz_crash_record 2000 61)
+            set_tests_properties(fuzz_crash_record_smoke PROPERTIES LABELS "fuzz")
         endif()
         # Checked-in wire samples, one per file; the name prefix is the expected
         # decode outcome. Regenerate with `fuzz_core_app_network --emit-corpus <dir>`.

@@ -335,3 +335,23 @@ compat/NM/config 的当前六项记录为 **3 pass + 3 expected skip + 0 fail**�
 [windows-d3d12 45101195116](https://github.com/konyka/break/actions/runs/45101195116) 成功，Headless+contract、WARP floor、push-constant gate、Agility deployment、artifact upload 均成功；托管主 CI 的 Windows Clang 也成功。本机 scene_serial 单例失败仍未定位，本机全套不称通过。[QUIC 45101195104](https://github.com/konyka/break/actions/runs/45101195104) conclusion=success，但 `SNOWFLAKE_READ_TOKEN` 未配置，UNAVAILABLE、No test ran，四个场景未执行，不是 QUIC 测试通过。[Proton 45102712864](https://github.com/konyka/break/actions/runs/45102712864) 成功，上游 run-id=`45101195116`、artifact ID `14785842612`；device/pipeline contract 均 77，仅兼容通道，不是 GPU 或原生 D3D12 通过。
 
 这些结果不属于本收据文档提交之后的工作流。本收据提交还会触发新的主 CI、windows-d3d12、Proton，待实际核验后另行记录，不预写成功或 run-id。
+
+## 不可信崩溃记录文本的 fuzz（2026-11-27）
+
+`break_crash_record_parse` 是采集端对客户端上传的 "break-crash-v1" 记录文本的两遍解析器：
+pass 1（`bc_validate`）校验整段结构与每个字段/blob 的长度，pass 2（`bc_fill`）在「pass 1 已保证
+边界」的前提下把数据填入固定大小缓冲（`stack_window[4096]`、`context_blob[4096]`、
+`modules[64]`、每模块 `name[256]`、`build_id[65]`）且不再检查。两遍若对某条边界判断不一致，
+pass 2 就会溢出。此前该解析器有单元测试但无变异 fuzz 目标。
+
+新增 `engine/tests/fuzz_crash_record.c`：以 golden 记录为种子，除常规字节翻转/插入/删除外，还会
+在某个换行前就地插入一段 hex（偶发数 KiB），以便单次迭代就把某个 blob 推过 4 KiB 字段上界，
+从而真正压到长度判断。不变量：parse 对任意字节不越界（ASan/UBSan）、不修改入参；被接受的记录
+必须能在 64 KiB 内重新序列化并再次解析，且序列化幂等（`serialize∘parse` 两次逐字节一致），即
+接受集有稳定规范形而非宽松解析。`CRASH_RECORD_LIBFUZZER=1` 可导出到 libFuzzer。注册为
+`fuzz_crash_record_smoke`（种子 61）。
+
+验证：种子 61 跑 200000 次、种子 101 跑 100000 次，ASan+UBSan+leak 全程 clean（约 1.7k–4k 接受）；
+负向对照把 `bc_valid_hexblob_line` 的 `hex > 2*max_bytes` 上界去掉后，fuzzer 立即以
+`bc_decode_hexblob` 的 heap-buffer-overflow 失败（`break_crash.c:229`），证明该目标确实能捕获
+pass1/pass2 长度不一致导致的溢出。`test_break_crash` 37/37；`build-current-vk` fuzz lane 18/18。
