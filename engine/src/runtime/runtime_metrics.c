@@ -694,6 +694,7 @@ struct BreakRuntimeMetricsRetryQueue {
     PlatformThreadId owner;
     u32 capacity;
     usize max_payload_bytes;
+    bool coalesce_repeats;
     u32 head;  /* oldest entry */
     u32 count;
     RetryEntry *entries;
@@ -737,6 +738,7 @@ BreakRuntimeError break_runtime_metrics_retry_create(
     queue->owner = platform_thread_current_id();
     queue->capacity = config->capacity;
     queue->max_payload_bytes = config->max_payload_bytes;
+    queue->coalesce_repeats = config->coalesce_repeats;
     *out = queue;
     return BREAK_RUNTIME_OK;
 }
@@ -754,6 +756,14 @@ BreakRuntimeError break_runtime_metrics_retry_enqueue(
     if (!queue || !bytes || len == 0u) return BREAK_RUNTIME_INVALID;
     if (len > queue->max_payload_bytes) return BREAK_RUNTIME_INVALID;
     if (!retry_is_owner(queue)) return BREAK_RUNTIME_REJECTED;
+    if (queue->coalesce_repeats && queue->count != 0u) {
+        u32 newest = (queue->head + queue->count - 1u) % queue->capacity;
+        if (queue->entries[newest].len == len &&
+            memcmp(retry_slot_bytes(queue, newest), bytes, len) == 0) {
+            queue->stats.coalesced++;
+            return BREAK_RUNTIME_OK;
+        }
+    }
     if (queue->count == queue->capacity) {
         /* Drop the oldest so the newest payload is admitted. */
         queue->head = (queue->head + 1u) % queue->capacity;

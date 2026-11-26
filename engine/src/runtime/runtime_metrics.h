@@ -333,6 +333,13 @@ typedef struct BreakRuntimeMetricsRetryQueue BreakRuntimeMetricsRetryQueue; /* o
 typedef struct BreakRuntimeMetricsRetryConfig {
     u32 capacity;           /* entries retained; 1..BREAK_RUNTIME_METRICS_RETRY_MAX_ENTRIES */
     usize max_payload_bytes; /* per entry; 1..BREAK_RUNTIME_METRICS_RETRY_MAX_PAYLOAD_BYTES */
+    /* When true, an enqueue whose bytes equal the NEWEST entry's is coalesced:
+     * nothing is stored and `coalesced` counts it. Repeated pushes of an
+     * unchanged registry are the common failure shape, and without this they
+     * would evict distinct telemetry once the ring is full. Only the newest
+     * entry is compared, so the check stays O(payload) and never scans the
+     * ring; non-adjacent duplicates are still kept. */
+    bool coalesce_repeats;
 } BreakRuntimeMetricsRetryConfig;
 
 typedef struct BreakRuntimeMetricsRetryStats {
@@ -341,6 +348,7 @@ typedef struct BreakRuntimeMetricsRetryStats {
     u64 dropped_oldest;/* entries evicted to admit a newer one */
     u64 released;      /* entries removed by release() */
     u64 attempts;      /* total attempt bumps recorded */
+    u64 coalesced;     /* enqueues folded into the newest entry */
 } BreakRuntimeMetricsRetryStats;
 
 /* INVALID on NULL out, NULL config, a zero or over-bound capacity or

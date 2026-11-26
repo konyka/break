@@ -14293,3 +14293,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：`test_runtime_metrics` 新增 4 例，先以未定义引用链接失败为 RED。五项变异判红：失败后继续、忽略发送预算、永不放弃、上限比较差一（`>=` 改 `>`）、成功后不释放。
 - **验证**：`test_runtime_metrics` 39/39（normal/ASan+UBSan 含 leak 检测/TSan 均 39/39）；`build-current-vk` 全量 CTest 463/463、0 失败。
 - **边界**：退避仍由调用方步进节奏决定；去重、批量、压缩、持久化与 Windows 推送不在本切片。本收据提交自身的远端工作流结果不在此预写。
+
+## 重试队列的重复 payload 折叠（2026-11-26）
+
+- **实现**：`BreakRuntimeMetricsRetryConfig.coalesce_repeats`（默认 false）：开启后若新 payload 与最新一条长度与字节都相同则不存储，只计入新增的 `coalesced` 统计并返回 OK。只比较最新一条（O(payload)、不扫环），环中非相邻重复仍保留；长度必须相等，前缀不算重复；队列排空后无比较目标。默认关闭故既有行为不变。设计见 `docs/design/runtime_metrics.md` 第 24 节。
+- **TDD 与变异**：`test_runtime_metrics` 新增 3 例，先以 `stats.queued != 1` 失败为 RED。四项变异判红：忽略配置开关、与最旧一条比较、跳过长度检查、跳过字节比较。
+- **验证**：`test_runtime_metrics` 42/42（normal/ASan+UBSan 含 leak 检测/TSan 均 42/42）；`build-current-vk` 全量 CTest 463/463、0 失败。
+- **边界**：不做全局去重（需哈希索引且会改变 FIFO 语义）、批量合并、压缩、持久化；HTTP 推送仍仅 POSIX。本收据提交自身的远端工作流结果不在此预写。

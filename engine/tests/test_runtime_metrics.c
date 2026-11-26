@@ -1068,6 +1068,75 @@ TEST(retry_drain_validates_arguments) {
     break_runtime_metrics_retry_destroy(q);
 }
 
+
+static BreakRuntimeMetricsRetryQueue *make_retry_coalescing(u32 capacity, usize max_payload) {
+    BreakRuntimeMetricsRetryConfig cfg;
+    BreakRuntimeMetricsRetryQueue *q = NULL;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.capacity = capacity;
+    cfg.max_payload_bytes = max_payload;
+    cfg.coalesce_repeats = true;
+    return break_runtime_metrics_retry_create(&cfg, &q) == BREAK_RUNTIME_OK ? q : NULL;
+}
+
+TEST(retry_coalesces_repeats_of_the_newest_payload) {
+    BreakRuntimeMetricsRetryQueue *q = make_retry_coalescing(4u, 64u);
+    BreakRuntimeMetricsRetryStats stats;
+    ASSERT_NOT_NULL(q);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "same", 4u), BREAK_RUNTIME_OK);
+    /* Identical repeats fold into the newest entry instead of filling the ring. */
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "same", 4u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "same", 4u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_stats(q, &stats), BREAK_RUNTIME_OK);
+    ASSERT_EQ(stats.queued, 1u);
+    ASSERT_EQ(stats.enqueued, 1u);
+    ASSERT_EQ(stats.coalesced, 2u);
+    ASSERT_EQ(stats.dropped_oldest, 0u);
+    /* A different payload is stored; a same-length different-byte one too. */
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "diff", 4u), BREAK_RUNTIME_OK);
+    /* A prefix of the newest is NOT a duplicate (length must match). */
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "dif", 3u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_stats(q, &stats), BREAK_RUNTIME_OK);
+    ASSERT_EQ(stats.queued, 3u);
+    ASSERT_EQ(stats.enqueued, 3u);
+    ASSERT_TRUE(retry_head_is(q, "same"));
+    break_runtime_metrics_retry_destroy(q);
+}
+
+TEST(retry_coalescing_compares_only_the_newest_entry) {
+    BreakRuntimeMetricsRetryQueue *q = make_retry_coalescing(4u, 64u);
+    BreakRuntimeMetricsRetryStats stats;
+    ASSERT_NOT_NULL(q);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "a", 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "b", 1u), BREAK_RUNTIME_OK);
+    /* "a" is in the ring but not newest, so it is stored again. */
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "a", 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_stats(q, &stats), BREAK_RUNTIME_OK);
+    ASSERT_EQ(stats.queued, 3u);
+    ASSERT_EQ(stats.coalesced, 0u);
+    /* Coalescing must not resurrect a released entry as a comparison target. */
+    ASSERT_EQ(break_runtime_metrics_retry_release(q), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_release(q), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_release(q), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "a", 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_stats(q, &stats), BREAK_RUNTIME_OK);
+    ASSERT_EQ(stats.queued, 1u);
+    ASSERT_EQ(stats.coalesced, 0u);
+    break_runtime_metrics_retry_destroy(q);
+}
+
+TEST(retry_without_coalescing_keeps_every_repeat) {
+    BreakRuntimeMetricsRetryQueue *q = make_retry(4u, 64u); /* default: off */
+    BreakRuntimeMetricsRetryStats stats;
+    ASSERT_NOT_NULL(q);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "same", 4u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "same", 4u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_stats(q, &stats), BREAK_RUNTIME_OK);
+    ASSERT_EQ(stats.queued, 2u);
+    ASSERT_EQ(stats.coalesced, 0u);
+    break_runtime_metrics_retry_destroy(q);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(create_validates_config_and_defaults);
     RUN_TEST(counter_adds_accumulate_and_saturate);
@@ -1108,4 +1177,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(retry_drain_stops_on_failure_and_keeps_the_entry);
     RUN_TEST(retry_drain_abandons_a_poison_payload_at_max_attempts);
     RUN_TEST(retry_drain_validates_arguments);
+    RUN_TEST(retry_coalesces_repeats_of_the_newest_payload);
+    RUN_TEST(retry_coalescing_compares_only_the_newest_entry);
+    RUN_TEST(retry_without_coalescing_keeps_every_repeat);
 TEST_MAIN_END()
