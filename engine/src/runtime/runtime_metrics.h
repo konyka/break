@@ -216,3 +216,19 @@ BreakRuntimeError break_runtime_metrics_history_frame(
 BreakRuntimeError break_runtime_metrics_history_stats(
     const BreakRuntimeMetricsHistory *history,
     BreakRuntimeMetricsHistoryStats *out_stats);
+
+/* Sustained alerts over a history: a rule fires only when it fires (as in
+ * break_runtime_metrics_evaluate_alerts) on EACH of the newest `sustain`
+ * frames; with fewer retained frames nothing fires. This debounces a single
+ * spike. Output, OVERLOAD and rule validation follow
+ * break_runtime_metrics_evaluate_alerts. INVALID (with *out_count = 0) also on
+ * NULL history, or `sustain` of 0 or above
+ * BREAK_RUNTIME_METRICS_HISTORY_MAX_DEPTH. Same thread as the history. */
+BreakRuntimeError break_runtime_metrics_history_evaluate_alerts(
+    const BreakRuntimeMetricsHistory *history,
+    const BreakRuntimeMetricAlertRule *rules,
+    u32 rule_count,
+    u32 sustain,
+    u32 *fired,
+    u32 fired_capacity,
+    u32 *out_count);

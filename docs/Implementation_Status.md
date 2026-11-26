@@ -14149,3 +14149,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 远端 CI `45802354553` 结论 **success**：25 success、3 条件 skip（Steam Deck、Proton、`lane-gpu-runtime-windows-d3d12`），0 失败；两条 macOS lane、`Linux arm64 cross-build + QEMU tests (GCC)`、Windows MinGW headless 均 success。
 - 独立的 windows-d3d12 工作流 `45802354575` success。
 - 边界同该切片收据。
+
+## 指标持续告警去抖（指标协议：历史环上的 sustain 窗口）（2026-11-26）
+
+- **实现**：`runtime_metrics` 新增 `break_runtime_metrics_history_evaluate_alerts(history, rules, rule_count, sustain, ...)`（`engine/src/runtime/runtime_metrics.{c,h}`）：规则须在最新 `sustain` 帧每帧都触发才输出，保留帧不足（含 sustain 大于环深度）不触发；输出/OVERLOAD/规则校验与单快照求值一致。设计见 `docs/design/runtime_metrics.md` 第 16 节。
+- **TDD 与变异**：`test_runtime_metrics.c` 新增 3 用例（逐帧窗口与中间回落、参数校验、sustain 大于环深度永不触发）。先以未声明函数编译失败为 RED。两项变异判红：只看最新一帧、去掉帧数不足检查（后者初次存活，补“sustain 大于环深度”用例后判红）。
+- **验证**：`test_runtime_metrics` 21/21（normal/ASan+UBSan/TSan 均 21/21）。
+- **边界**：仍无远程传输、聚合窗口、恢复通知与告警投递。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。本收据提交自身的远端工作流结果不在此预写。

@@ -105,7 +105,7 @@
 
 - `fired` 不足 → `OVERLOAD`，`*out_count` 为所需数量，`fired` 不写。
 - `INVALID`（`*out_count = 0`）：`out_count` 为 NULL；计数非零而 samples/rules/fired 为 NULL；规则 name 为 NULL 或 op 未知；样本数或规则数超过 `BREAK_RUNTIME_METRICS_MAX_CAPACITY`。所有规则先校验后求值，不会部分写出。
-- 不保留状态：不做去抖、持续时长、恢复通知或告警投递；这些留待后续，可在第 15 节的历史帧上组合实现。
+- 不保留状态：不做恢复通知或告警投递；持续时长去抖见第 16 节。
 
 ## 15. 有界历史采样
 
@@ -115,3 +115,7 @@
 - `break_runtime_metrics_history_frame(history, age, out, capacity, out_count, out_tick)`：取回第 `age` 新的帧（0 为最新）。无该帧 → `STALE`、`*out_count = 0`；`out` 不足 → `OVERLOAD` 并报所需数量；`out_tick` 可为 NULL。
 - `break_runtime_metrics_history_stats`：`recorded`/`evicted`/`width_drops`/`frames`。
 - 边界：不做降采样、聚合窗口或速率计算，也不持久化；帧可直接交给第 14 节的告警求值。
+
+## 16. 持续告警（去抖）
+
+`break_runtime_metrics_history_evaluate_alerts(history, rules, rule_count, sustain, fired, fired_capacity, out_count)` 在第 15 节的历史环上求值：一条规则只有在**最新 `sustain` 帧每一帧**都按第 14 节语义触发时才算触发，单帧尖峰不会报警。保留帧数少于 `sustain`（包括 `sustain` 大于环深度）时不触发，因为窗口未被证实。输出顺序、`OVERLOAD` 与规则校验同第 14 节；另外 history 为 NULL、`sustain` 为 0 或超过 `BREAK_RUNTIME_METRICS_HISTORY_MAX_DEPTH` 回 `INVALID`。与历史环同线程调用，无状态。恢复通知（由触发转为不触发的边沿）与告警投递仍未实现。

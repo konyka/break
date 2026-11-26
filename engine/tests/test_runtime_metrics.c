@@ -429,6 +429,91 @@ TEST(history_frame_reports_required_count_when_too_small) {
     break_runtime_metrics_destroy(m);
 }
 
+static void record_depth(BreakRuntimeMetrics *m, BreakRuntimeMetricsHistory *h, u64 v, u64 tick) {
+    (void)break_runtime_metrics_set(m, "q.depth", BREAK_RUNTIME_METRIC_GAUGE, v);
+    (void)break_runtime_metrics_history_record(h, m, tick);
+}
+
+TEST(sustained_alerts_require_every_recent_frame_to_fire) {
+    BreakRuntimeMetrics *m = make_metrics(8u);
+    BreakRuntimeMetricsHistory *h = make_history(8u, 4u);
+    const BreakRuntimeMetricAlertRule rules[] = {
+        {"q.depth", BREAK_RUNTIME_METRIC_ALERT_ABOVE, 5u},
+        {"q.depth", BREAK_RUNTIME_METRIC_ALERT_BELOW, 100u},
+    };
+    u32 fired[2];
+    u32 n = 9u;
+    ASSERT_NOT_NULL(m);
+    ASSERT_NOT_NULL(h);
+    record_depth(m, h, 9u, 1u);
+    ASSERT_EQ(break_runtime_metrics_history_evaluate_alerts(h, rules, 2u, 2u, fired, 2u, &n),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(n, 0u); /* fewer frames than the sustain window: nothing fires */
+    record_depth(m, h, 3u, 2u);
+    record_depth(m, h, 9u, 3u);
+    ASSERT_EQ(break_runtime_metrics_history_evaluate_alerts(h, rules, 2u, 2u, fired, 2u, &n),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(n, 1u); /* rule 0 dipped at tick 2 */
+    ASSERT_EQ(fired[0], 1u);
+    record_depth(m, h, 9u, 4u);
+    ASSERT_EQ(break_runtime_metrics_history_evaluate_alerts(h, rules, 2u, 2u, fired, 2u, &n),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(n, 2u);
+    ASSERT_EQ(fired[0], 0u);
+    ASSERT_EQ(fired[1], 1u);
+    ASSERT_EQ(break_runtime_metrics_history_evaluate_alerts(h, rules, 2u, 3u, fired, 2u, &n),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(n, 1u);
+    ASSERT_EQ(fired[0], 1u);
+    ASSERT_EQ(break_runtime_metrics_history_evaluate_alerts(h, rules, 2u, 1u, fired, 1u, &n),
+              BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(n, 2u);
+    break_runtime_metrics_history_destroy(h);
+    break_runtime_metrics_destroy(m);
+}
+
+TEST(sustained_alerts_validate_arguments) {
+    BreakRuntimeMetricsHistory *h = make_history(2u, 4u);
+    const BreakRuntimeMetricAlertRule good[] = {
+        {"q.depth", BREAK_RUNTIME_METRIC_ALERT_ABOVE, 5u}};
+    const BreakRuntimeMetricAlertRule bad[] = {{NULL, BREAK_RUNTIME_METRIC_ALERT_ABOVE, 5u}};
+    u32 fired[1];
+    u32 n = 4u;
+    ASSERT_NOT_NULL(h);
+    ASSERT_EQ(break_runtime_metrics_history_evaluate_alerts(NULL, good, 1u, 1u, fired, 1u, &n),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_history_evaluate_alerts(h, good, 1u, 0u, fired, 1u, &n),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_history_evaluate_alerts(h, bad, 1u, 1u, fired, 1u, &n),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_history_evaluate_alerts(h, good, 1u, 1u, fired, 1u, NULL),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(n, 0u);
+    break_runtime_metrics_history_destroy(h);
+}
+
+TEST(sustain_longer_than_the_ring_never_fires) {
+    BreakRuntimeMetrics *m = make_metrics(8u);
+    BreakRuntimeMetricsHistory *h = make_history(2u, 4u);
+    const BreakRuntimeMetricAlertRule rules[] = {
+        {"q.depth", BREAK_RUNTIME_METRIC_ALERT_ABOVE, 5u}};
+    u32 fired[1];
+    u32 n = 9u;
+    ASSERT_NOT_NULL(m);
+    ASSERT_NOT_NULL(h);
+    record_depth(m, h, 9u, 1u);
+    record_depth(m, h, 9u, 2u);
+    record_depth(m, h, 9u, 3u);
+    ASSERT_EQ(break_runtime_metrics_history_evaluate_alerts(h, rules, 1u, 2u, fired, 1u, &n),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(n, 1u);
+    ASSERT_EQ(break_runtime_metrics_history_evaluate_alerts(h, rules, 1u, 3u, fired, 1u, &n),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(n, 0u); /* only 2 frames retained: a 3-frame window is unproven */
+    break_runtime_metrics_history_destroy(h);
+    break_runtime_metrics_destroy(m);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(create_validates_config_and_defaults);
     RUN_TEST(counter_adds_accumulate_and_saturate);
@@ -448,4 +533,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(history_records_frames_newest_first_and_evicts_oldest);
     RUN_TEST(history_rejects_non_increasing_ticks_and_wide_snapshots);
     RUN_TEST(history_frame_reports_required_count_when_too_small);
+    RUN_TEST(sustained_alerts_require_every_recent_frame_to_fire);
+    RUN_TEST(sustained_alerts_validate_arguments);
+    RUN_TEST(sustain_longer_than_the_ring_never_fires);
 TEST_MAIN_END()

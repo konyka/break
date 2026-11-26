@@ -428,3 +428,49 @@ BreakRuntimeError break_runtime_metrics_history_stats(
     out_stats->frames = history->frames;
     return BREAK_RUNTIME_OK;
 }
+
+static bool metrics_history_rule_sustained(const BreakRuntimeMetricsHistory *history,
+                                           const BreakRuntimeMetricAlertRule *rule,
+                                           u32 sustain) {
+    if (history->frames < sustain) return false;
+    for (u32 age = 0u; age < sustain; ++age) {
+        u32 slot = (history->head + history->depth - 1u - age) % history->depth;
+        if (!metrics_alert_fires(&history->samples[(usize)slot * history->width],
+                                 history->counts[slot], rule))
+            return false;
+    }
+    return true;
+}
+
+BreakRuntimeError break_runtime_metrics_history_evaluate_alerts(
+    const BreakRuntimeMetricsHistory *history,
+    const BreakRuntimeMetricAlertRule *rules,
+    u32 rule_count,
+    u32 sustain,
+    u32 *fired,
+    u32 fired_capacity,
+    u32 *out_count) {
+    u32 required = 0u;
+    u32 written = 0u;
+    if (!out_count) return BREAK_RUNTIME_INVALID;
+    *out_count = 0u;
+    if (!history || sustain == 0u || sustain > BREAK_RUNTIME_METRICS_HISTORY_MAX_DEPTH ||
+        (!rules && rule_count != 0u) || (!fired && fired_capacity != 0u) ||
+        rule_count > BREAK_RUNTIME_METRICS_MAX_CAPACITY)
+        return BREAK_RUNTIME_INVALID;
+    for (u32 r = 0u; r < rule_count; ++r) {
+        if (!rules[r].name || (rules[r].op != BREAK_RUNTIME_METRIC_ALERT_ABOVE &&
+                               rules[r].op != BREAK_RUNTIME_METRIC_ALERT_BELOW))
+            return BREAK_RUNTIME_INVALID;
+    }
+    for (u32 r = 0u; r < rule_count; ++r)
+        if (metrics_history_rule_sustained(history, &rules[r], sustain)) required++;
+    if (required > fired_capacity) {
+        *out_count = required;
+        return BREAK_RUNTIME_OVERLOAD;
+    }
+    for (u32 r = 0u; r < rule_count; ++r)
+        if (metrics_history_rule_sustained(history, &rules[r], sustain)) fired[written++] = r;
+    *out_count = written;
+    return BREAK_RUNTIME_OK;
+}
