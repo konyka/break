@@ -14170,3 +14170,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：`test_runtime_metrics.c` 新增 2 用例（1/2/3 帧窗口增量与 tick 差、满环 span=深度 STALE、缺 name、gauge 与参数校验）。先以未声明函数编译失败为 RED。三项变异判红：去掉 gauge 拒绝、tick 差改为最新 tick、`span >= frames` 放宽为 `>`（后者初次存活，补满环用例后判红）。
 - **验证**：`test_runtime_metrics` 25/25（normal/ASan+UBSan/TSan 均 25/25）。
 - **边界**：仍无远程传输与告警投递；不做多帧平均、分位数与降采样。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。本收据提交自身的远端工作流结果不在此预写。
+
+## 指标采集端严格解码（指标协议：BRKM1 文本的不可信输入解析）（2026-11-26）
+
+- **实现**：`runtime_metrics` 新增 `break_runtime_metrics_decode(text, len, out, capacity, out_count)`（`engine/src/runtime/runtime_metrics.{c,h}`）：`encode` 的逆，按长度解析不可信字节；版本标签、kind、单空格、规范十进制（无符号/无前导零/不溢出 UINT64_MAX）、LF 行尾、无空行、无重复 name、行数上限逐项严格校验，任何违规整体 INVALID 且不写输出；容量不足 OVERLOAD 报所需行数。设计见 `docs/design/runtime_metrics.md` 第 19 节。
+- **TDD 与变异**：`test_runtime_metrics.c` 新增 3 用例（encode→decode 逐项 round-trip 含 UINT64_MAX、15 类畸形输入外加内嵌 NUL 逐条整体拒绝且不写输出、边界值与容量不足/格式错误优先）。先以未声明函数编译失败为 RED。三项变异判红：去掉前导零校验、去掉溢出校验、去掉重复 name 校验。
+- **验证**：`test_runtime_metrics` 28/28（normal/ASan+UBSan/TSan 均 28/28）。
+- **边界**：仍无把字节送到采集器的传输，也无告警投递。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。本收据提交自身的远端工作流结果不在此预写。

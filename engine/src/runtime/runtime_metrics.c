@@ -539,3 +539,96 @@ BreakRuntimeError break_runtime_metrics_history_delta(
     if (out_ticks) *out_ticks = history->ticks[newest_slot] - history->ticks[older_slot];
     return BREAK_RUNTIME_OK;
 }
+
+typedef struct RuntimeMetricsLine {
+    const char *name;
+    usize name_len;
+    BreakRuntimeMetricKind kind;
+    u64 value;
+} RuntimeMetricsLine;
+
+/* Parses one line starting at text[*pos]; advances *pos past its LF. */
+static bool metrics_decode_line(const char *text, usize len, usize *pos,
+                                RuntimeMetricsLine *line) {
+    static const char kTag[] = "BRKM1 ";
+    usize p = *pos;
+    usize start;
+    usize digits;
+    u64 value = 0u;
+    if (len - p < sizeof(kTag) - 1u || memcmp(text + p, kTag, sizeof(kTag) - 1u) != 0)
+        return false;
+    p += sizeof(kTag) - 1u;
+    start = p;
+    while (p < len && (unsigned char)text[p] > ' ') p++;
+    line->name = text + start;
+    line->name_len = p - start;
+    if (line->name_len == 0u || line->name_len >= BREAK_RUNTIME_METRICS_NAME_CAPACITY ||
+        p >= len || text[p] != ' ')
+        return false;
+    p++;
+    if (len - p >= 8u && memcmp(text + p, "counter ", 8u) == 0) {
+        line->kind = BREAK_RUNTIME_METRIC_COUNTER;
+        p += 8u;
+    } else if (len - p >= 6u && memcmp(text + p, "gauge ", 6u) == 0) {
+        line->kind = BREAK_RUNTIME_METRIC_GAUGE;
+        p += 6u;
+    } else {
+        return false;
+    }
+    start = p;
+    while (p < len && text[p] >= '0' && text[p] <= '9') {
+        u64 d = (u64)(text[p] - '0');
+        if (value > (UINT64_MAX - d) / 10u) return false;
+        value = value * 10u + d;
+        p++;
+    }
+    digits = p - start;
+    if (digits == 0u || (digits > 1u && text[start] == '0')) return false;
+    if (p >= len || text[p] != '\n') return false;
+    line->value = value;
+    *pos = p + 1u;
+    return true;
+}
+
+BreakRuntimeError break_runtime_metrics_decode(
+    const char *text,
+    usize len,
+    BreakRuntimeMetricSample *out,
+    u32 capacity,
+    u32 *out_count) {
+    usize pos = 0u;
+    u32 count = 0u;
+    if (!out_count) return BREAK_RUNTIME_INVALID;
+    *out_count = 0u;
+    if ((!text && len != 0u) || (!out && capacity != 0u)) return BREAK_RUNTIME_INVALID;
+    while (pos < len) {
+        RuntimeMetricsLine line;
+        usize prev = 0u;
+        if (count == BREAK_RUNTIME_METRICS_MAX_CAPACITY) return BREAK_RUNTIME_INVALID;
+        if (!metrics_decode_line(text, len, &pos, &line)) return BREAK_RUNTIME_INVALID;
+        /* Earlier lines already parsed cleanly; re-walk them for duplicates. */
+        for (u32 j = 0u; j < count; ++j) {
+            RuntimeMetricsLine other;
+            (void)metrics_decode_line(text, len, &prev, &other);
+            if (other.name_len == line.name_len &&
+                memcmp(other.name, line.name, line.name_len) == 0)
+                return BREAK_RUNTIME_INVALID;
+        }
+        count++;
+    }
+    if (count > capacity) {
+        *out_count = count;
+        return BREAK_RUNTIME_OVERLOAD;
+    }
+    pos = 0u;
+    for (u32 i = 0u; i < count; ++i) {
+        RuntimeMetricsLine line;
+        (void)metrics_decode_line(text, len, &pos, &line);
+        memcpy(out[i].name, line.name, line.name_len);
+        out[i].name[line.name_len] = '\0';
+        out[i].kind = line.kind;
+        out[i].value = line.value;
+    }
+    *out_count = count;
+    return BREAK_RUNTIME_OK;
+}

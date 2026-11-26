@@ -55,7 +55,7 @@
 
 ## 7. 边界
 
-本块只交付进程内注册表与文本编码。远程传输（把编码推给采集器）仍未实现（阈值告警求值见第 14 节，有界历史采样见第 15 节，计数器窗口增量见第 18 节）；指标值的语义绑定（哪些子系统注册哪些 name）由各消费者在后续切片接线，本库不预置任何业务 name。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。
+本块只交付进程内注册表与文本编码。远程传输（把编码推给采集器）仍未实现，采集端的严格解码见第 19 节（阈值告警求值见第 14 节，有界历史采样见第 15 节，计数器窗口增量见第 18 节）；指标值的语义绑定（哪些子系统注册哪些 name）由各消费者在后续切片接线，本库不预置任何业务 name。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。
 
 ## 8. 子系统接线：Bus 聚合导出（第一处 name 绑定）
 
@@ -134,3 +134,12 @@
 - `STALE`：保留帧不足 `span + 1`（环满时 `span` 等于深度会回绕到最新帧本身，故同样 STALE）、任一帧缺该 name、旧帧不是 counter 或旧值大于新值（不可比）。
 - `INVALID`：history/name/out_delta 为 NULL、`span` 为 0、最新帧中该 name 是 GAUGE（gauge 可下降，差值不是增长）。
 - 任何错误不写输出；与历史环同线程。不做多帧平均、分位数或降采样。
+
+## 19. 采集端严格解码
+
+`break_runtime_metrics_decode(text, len, out, capacity, out_count)` 是 `encode` 的逆，供远程采集器解析**不可信**字节；纯函数，任意线程。`text` 按长度读取，不要求 NUL 结尾。
+
+- 每行必须严格为 `BRKM1 <name> <counter|gauge> <value>\n`：name 同注册表规则（1..47 字节、无 ≤0x20 字节）；value 为规范十进制（无符号、无前导零，"0" 除外），不超过 `UINT64_MAX`；单空格分隔、仅 LF 行尾（CR 非法）、无空行、无重复 name、行数不超过 `BREAK_RUNTIME_METRICS_MAX_CAPACITY`。内嵌 NUL 因不属于合法 name 字节而被拒。
+- 任何违规 → 整体 `INVALID`，`*out_count = 0`，`out` 不写；合法输入但 `capacity` 不足 → `OVERLOAD` 并报所需行数，`out` 不写。格式错误优先于容量不足。
+- 空输入合法（0 行）。round-trip：`decode(encode(snapshot))` 与 `snapshot` 逐项相等。
+- 不含传输本身：把字节从被测进程送到采集器（socket、HTTP 等）仍未实现。

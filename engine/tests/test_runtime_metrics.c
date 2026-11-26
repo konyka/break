@@ -643,6 +643,93 @@ TEST(history_delta_rejects_gauges_and_bad_arguments) {
     break_runtime_metrics_destroy(m);
 }
 
+static BreakRuntimeError decode_text(const char *text, BreakRuntimeMetricSample *out, u32 cap,
+                                     u32 *n) {
+    return break_runtime_metrics_decode(text, strlen(text), out, cap, n);
+}
+
+TEST(decode_round_trips_the_encoding) {
+    BreakRuntimeMetrics *m = make_metrics(8u);
+    BreakRuntimeMetricSample snap[8];
+    BreakRuntimeMetricSample back[8];
+    char buf[256];
+    usize len = 0u;
+    u32 count = 0u;
+    u32 n = 0u;
+    ASSERT_NOT_NULL(m);
+    ASSERT_EQ(break_runtime_metrics_add(m, "net.sent", BREAK_RUNTIME_METRIC_COUNTER, UINT64_MAX),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_set(m, "q.depth", BREAK_RUNTIME_METRIC_GAUGE, 0u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_snapshot(m, snap, 8u, &count), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_encode(m, buf, sizeof buf, &len), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_decode(buf, len, back, 8u, &n), BREAK_RUNTIME_OK);
+    ASSERT_EQ(n, count);
+    for (u32 i = 0u; i < n; ++i) {
+        ASSERT_STR_EQ(back[i].name, snap[i].name);
+        ASSERT_EQ(back[i].kind, snap[i].kind);
+        ASSERT_EQ(back[i].value, snap[i].value);
+    }
+    ASSERT_EQ(break_runtime_metrics_decode("", 0u, back, 8u, &n), BREAK_RUNTIME_OK);
+    ASSERT_EQ(n, 0u);
+    ASSERT_EQ(break_runtime_metrics_decode(NULL, 0u, NULL, 0u, &n), BREAK_RUNTIME_OK);
+    ASSERT_EQ(n, 0u);
+    break_runtime_metrics_destroy(m);
+}
+
+TEST(decode_rejects_malformed_input_as_a_whole) {
+    static const char *const bad[] = {
+        "BRKM1 a counter 1",                       /* missing final newline */
+        "BRKM2 a counter 1\n",                     /* wrong version tag */
+        "BRKM1 a timer 1\n",                       /* unknown kind */
+        "BRKM1 a counter\n",                       /* missing value */
+        "BRKM1 a counter 1 2\n",                   /* trailing field */
+        "BRKM1  a counter 1\n",                    /* empty name (double space) */
+        "BRKM1 a counter -1\n",                    /* sign */
+        "BRKM1 a counter +1\n",                    /* sign */
+        "BRKM1 a counter 01\n",                    /* non-canonical leading zero */
+        "BRKM1 a counter 1x\n",                    /* junk digit */
+        "BRKM1 a counter 18446744073709551616\n",  /* UINT64_MAX + 1 */
+        "BRKM1 a counter 1\r\n",                   /* CR is not part of the format */
+        "BRKM1 a counter 1\nBRKM1 a gauge 2\n",    /* duplicate name */
+        "BRKM1 a counter 1\n\n",                   /* blank line */
+        "BRKM1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa counter 1\n", /* 48-char name */
+    };
+    BreakRuntimeMetricSample out[4];
+    u32 n = 0u;
+    for (usize i = 0u; i < sizeof bad / sizeof bad[0]; ++i) {
+        n = 7u;
+        out[0].value = 42u;
+        ASSERT_EQ(decode_text(bad[i], out, 4u, &n), BREAK_RUNTIME_INVALID);
+        ASSERT_EQ(n, 0u);
+        ASSERT_EQ(out[0].value, 42u); /* nothing written */
+    }
+    ASSERT_EQ(break_runtime_metrics_decode("BRKM1 a\0 counter 1\n", 20u, out, 4u, &n),
+              BREAK_RUNTIME_INVALID); /* embedded NUL */
+}
+
+TEST(decode_accepts_boundary_values_and_reports_required_count) {
+    BreakRuntimeMetricSample out[2];
+    u32 n = 0u;
+    ASSERT_EQ(decode_text("BRKM1 a counter 18446744073709551615\nBRKM1 b gauge 0\n", out, 2u,
+                          &n),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(n, 2u);
+    ASSERT_EQ(out[0].value, UINT64_MAX);
+    ASSERT_EQ(out[0].kind, BREAK_RUNTIME_METRIC_COUNTER);
+    ASSERT_EQ(out[1].value, 0u);
+    ASSERT_EQ(out[1].kind, BREAK_RUNTIME_METRIC_GAUGE);
+    ASSERT_EQ(decode_text("BRKM1 a counter 1\nBRKM1 b gauge 2\nBRKM1 c gauge 3\n", out, 2u,
+                          &n),
+              BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(n, 3u);
+    ASSERT_EQ(decode_text("BRKM1 a counter 1\nBRKM1 b gauge 2\nBRKM1 c gauge\n", out, 2u, &n),
+              BREAK_RUNTIME_INVALID); /* malformed wins over too small */
+    ASSERT_EQ(break_runtime_metrics_decode("x", 1u, out, 2u, NULL), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_decode(NULL, 1u, out, 2u, &n), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_decode("", 0u, NULL, 2u, &n), BREAK_RUNTIME_INVALID);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(create_validates_config_and_defaults);
     RUN_TEST(counter_adds_accumulate_and_saturate);
@@ -669,4 +756,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(alert_edges_validate_arguments);
     RUN_TEST(history_delta_measures_counter_growth_over_a_window);
     RUN_TEST(history_delta_rejects_gauges_and_bad_arguments);
+    RUN_TEST(decode_round_trips_the_encoding);
+    RUN_TEST(decode_rejects_malformed_input_as_a_whole);
+    RUN_TEST(decode_accepts_boundary_values_and_reports_required_count);
 TEST_MAIN_END()

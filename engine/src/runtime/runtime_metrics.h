@@ -271,3 +271,21 @@ BreakRuntimeError break_runtime_metrics_history_delta(
     u32 span,
     u64 *out_delta,
     u64 *out_ticks);
+
+/* Strict decoder for the break_runtime_metrics_encode() text, for a remote
+ * collector reading untrusted bytes. `text` is `len` bytes (no NUL needed).
+ * Every line must be exactly `BRKM1 <name> <counter|gauge> <value>\n`: name
+ * per the registry rules (1..47 bytes, no byte <= 0x20), value canonical
+ * unsigned decimal (no sign, no leading zero unless "0") within UINT64_MAX,
+ * single spaces, LF line ends, no blank line, no duplicate name, at most
+ * BREAK_RUNTIME_METRICS_MAX_CAPACITY lines. Any violation -> INVALID for the
+ * whole input with *out_count = 0 and `out` untouched; a valid input with
+ * more lines than `capacity` -> OVERLOAD with *out_count = required count and
+ * `out` untouched. INVALID also on NULL out_count, NULL text with non-zero
+ * len, or NULL out with non-zero capacity. Pure; any thread. */
+BreakRuntimeError break_runtime_metrics_decode(
+    const char *text,
+    usize len,
+    BreakRuntimeMetricSample *out,
+    u32 capacity,
+    u32 *out_count);
