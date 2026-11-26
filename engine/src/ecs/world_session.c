@@ -859,6 +859,33 @@ BreakNetSendResult break_world_session_publish(BreakWorldSession *session,
     return world_session_resume_attempt(session, state);
 }
 
+BreakNetSendResult break_world_session_publish_filtered(
+    BreakWorldSession *session, BreakConnectionKey connection, World *world,
+    u64 tick, BreakWorldSnapshotEntityFilter keep, void *keep_user)
+{
+    size_t slot;
+    BreakWorldSessionConnection *state;
+    BreakWorldSnapshot *full;
+    BreakWorldSnapshot *target;
+    if (!keep) return break_world_session_publish(session, connection, world, tick);
+    if (!session || !session->reactor) return BREAK_NET_SEND_CLOSED;
+    slot = world_session_connection_index(session, connection);
+    if (slot == session->max_connections) return BREAK_NET_SEND_CLOSED;
+    state = &session->connections[slot];
+    if (state->attempt.active) return world_session_resume_attempt(session, state);
+    if (!world) return BREAK_NET_SEND_INVALID;
+    full = break_world_snapshot_build(world, session->schemas, tick);
+    if (!full) return BREAK_NET_SEND_INVALID;
+    target = break_world_snapshot_filter(full, keep, keep_user);
+    break_world_snapshot_release(full);
+    if (!target) return BREAK_NET_SEND_INVALID;
+    if (!world_session_build_attempt_from_snapshot(session, state, target,
+                                                   session->level_generation, false)) {
+        return BREAK_NET_SEND_INVALID;
+    }
+    return world_session_resume_attempt(session, state);
+}
+
 BreakNetSendResult break_world_session_publish_snapshot(
     BreakWorldSession *session, BreakConnectionKey connection,
     BreakWorldSnapshot *target, u64 level_generation)

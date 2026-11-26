@@ -1146,3 +1146,9 @@ authority handoff 和默认全局公平调度仍未交付。正常断连顺序�
 契约与 `runtime_profiler` 同构：`add`/`set` 可任意线程调用、短互斥 leaf 锁、不分配不回调；counter 溢出饱和到 `UINT64_MAX`（计数，不回绕）；槽满 → `OVERLOAD`（计数，不扰动既有槽）；kind 不符 → `INVALID`；关闭后 → `CLOSED` 但快照仍可读；`snapshot`/`encode` 仅拥有线程（非拥有线程 `REJECTED`）。TDD 10 个用例（含饱和、kind 不符、name 校验、槽满、缓冲不足回报所需长度、关闭语义、跨线程 REJECTED），两项变异（去掉饱和、owner 检查恒真）实际判红；normal/ASan+UBSan/TSan 各 10/10，`runtime_core` 目标契约与 facade/bus/io/reload/mainloop 套件全绿。
 
 仍未交付：远程传输（把编码推给采集端）、历史采样/时间序列、聚合窗口与告警规则，以及各子系统把自身计数接线到该注册表的具体 name 绑定。权威 simulation 合并、inbound apply、预测/回滚、共享 live World、跨 World 持久身份、AOI、完整资产链、可靠每 epoch 广播仍未交付。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。
+
+## 第 17 节补充（2026-11-26）：World session 按连接 AOI 过滤发布已交付（库级）
+
+`break_world_session_publish_filtered` 让 world session 可按连接的谓词裁剪 snapshot 后再走 full/delta 链，每个连接的 baseline 都是自己的过滤视图。这只关闭库级 session 层的缺口：Publication 共享 fan-out、Runtime adapter 与 core_app `--world-replication` 尚未使用它，生产路径仍向每个连接发送完整 World。
+
+仍未交付：AOI scope 到谓词的接线与 `BreakNetEntityId` 对应、权威 simulation 合并、inbound apply、预测回滚、共享 live World、完整资产链、可靠每 epoch 广播。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变；本节不预写远端结果。

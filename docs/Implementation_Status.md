@@ -14226,3 +14226,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 远端 CI `45810910174` 结论 **success**：25 success、3 条件 skip（Steam Deck、Proton、`lane-gpu-runtime-windows-d3d12`），0 失败；四条 macOS lane 与 `Linux arm64 cross-build + QEMU tests (GCC)` 均 success（`test_runtime_metrics_push_http` 随 QEMU 运行）。
 - 独立的 windows-d3d12 工作流 `45810910158` success。
 - 边界同两切片收据。
+
+## World session 按连接 AOI 过滤发布（2026-11-26）
+
+- **实现**：`break_world_session_publish_filtered`（`engine/src/ecs/world_session.{h,c}`）：构建权威 snapshot 后用 `break_world_snapshot_filter` 按该连接的谓词裁剪，再进入既有 attempt/delta 链；连接的 history 与 confirmed baseline 是自己的过滤视图。`keep == NULL` 等同 `break_world_session_publish`，已有未完成 attempt 时只续发。设计见 `docs/design/ecs_snapshot_replication_aoi.md`「World session 的按连接 AOI 过滤发布」。
+- **TDD 与变异**：`test_world_session_recovery` 新增 4 例（范围内实体、NULL 谓词、两连接各自谓词、范围变化后的 full→delta 链）。先以 `break_world_session_publish_filtered` 未定义引用链接失败为 RED。四项变异判红：忽略过滤、非 NULL 谓词走未过滤发布、NULL 谓词返回 INVALID、过滤发布强制 full。
+- **验证**：`test_world_session_recovery` 27/27、`test_world_session` 15/15、`test_world_snapshot_filter` 5/5（normal/ASan+UBSan 含 leak 检测）；`test_world_session_recovery`、`test_world_session` 在 TSan 下 27/27、15/15；`ctest -L "ecs|replication|session|runtime_core"` 34/34。Snowflake 树固定在 pin `4ab761fc`（本机以 `git worktree` 重建）。完整 Vulkan/OpenGL 全量未重跑。
+- **边界**：Publication 共享 fan-out、Runtime adapter 与 core_app `--world-replication` 尚未使用该函数，生产路径仍向每个连接发送完整 World；AOI scope 到谓词的生成、`BreakNetEntityId` 与 Entity 的对应不在本切片。本收据提交自身的远端工作流结果不在此预写。

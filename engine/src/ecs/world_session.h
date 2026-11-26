@@ -112,6 +112,16 @@ bool break_world_session_handle_control(BreakConnectionKey connection,
 BreakNetSendResult break_world_session_publish(BreakWorldSession *session,
                                                BreakConnectionKey connection,
                                                World *world, u64 tick);
+/* Like break_world_session_publish, but culls the built snapshot to this
+ * connection's AOI scope before it enters the attempt/delta chain: `keep` is
+ * called once per entity of the full snapshot (snapshot order, this thread)
+ * and only admitted entities reach the connection. The connection's history
+ * and confirmed baseline are its own filtered views, so deltas stay correct
+ * per connection; a NULL `keep` behaves like break_world_session_publish. An
+ * active attempt resumes without rebuilding or refiltering. */
+BreakNetSendResult break_world_session_publish_filtered(
+    BreakWorldSession *session, BreakConnectionKey connection, World *world,
+    u64 tick, BreakWorldSnapshotEntityFilter keep, void *keep_user);
 /* Borrows an immutable target and lets this connection's attempt/history retain
  * it. An active attempt resumes without inspecting target or level_generation. */
 BreakNetSendResult break_world_session_publish_snapshot(

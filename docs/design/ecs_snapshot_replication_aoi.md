@@ -367,3 +367,13 @@ World 的 `Entity{index, generation}` 只在所属 World 内有效，随 World �
 验证：`test_world_snapshot_filter` 5/5（normal/ASan+UBSan/TSan），覆盖只保留被接纳实体及其字节且原 snapshot 释放后视图仍有效、视图 hash/id 与直接 build 同一组实体一致、空客户端经 baseline 与 enter 两个 delta 后与目标视图 hash 相同、真实 AOI 球形 witness 驱动裁剪、空视图与 NULL 参数。四项变异判红：忽略谓词、tick 偏移、字节偏移错误、id 与 hash 脱钩。`test_ecs_replication` 35/35 不变。arm64 QEMU lane 已加入该测试。
 
 边界：本节只交付裁剪原语；尚未接入 `BreakWorldSnapshotPublication`、world session 的逐连接 delta 链或 core_app 的 `--world-replication`，所以生产路径仍向每个连接发送完整 World。AOI 的实体 id 与 World Entity 的对应由调用方决定（测试中用 `index | generation << 32`）。本节不预写远端结果。
+
+## 补充（2026-11-26）：World session 的按连接 AOI 过滤发布
+
+`break_world_session_publish_filtered(session, connection, world, tick, keep, keep_user)`（`engine/src/ecs/world_session.{h,c}`）是 `break_world_session_publish` 的 AOI 版本：先对权威 World 构建完整 snapshot，再用 `break_world_snapshot_filter` 按该连接的谓词裁剪，把裁剪后的视图交给原有的 attempt/delta 链。该连接的 history 与 confirmed baseline 保存的就是它自己的过滤视图，所以 delta 的 base 与 target 都在同一连接的可见范围内；实体进入范围表现为新增，离开范围表现为删除，各连接互不影响。
+
+行为约束：`keep` 为 NULL 时与 `break_world_session_publish` 完全相同；已有未完成 attempt 时只续发，不重建也不重新过滤（与未过滤版本一致）；中间的完整 snapshot 在过滤后立即释放，过滤视图的所有权交给 attempt，失败路径由 `world_session_build_attempt_from_snapshot` 统一释放。谓词在调用线程上按 snapshot 顺序逐实体调用一次。
+
+验证：`test_world_session_recovery` 27/27（原 23 例，新增 4 例；normal/ASan+UBSan 含 leak 检测/TSan 均 27/27），新增用例覆盖：只发送范围内实体且远端重建的 snapshot id 等于过滤视图 id、`keep == NULL` 等同未过滤发布、两个连接使用不同谓词时各自收到不同视图、范围变化后同一连接先收到 full 再收到以自身过滤视图为 base 的 delta 且远端重建结果与目标视图一致。四项变异判红：忽略过滤、非 NULL 谓词也走未过滤发布、NULL 谓词返回 INVALID、过滤发布强制 full。`ctest -L "ecs|replication|session|runtime_core"` 34/34。
+
+边界：只关闭库级 world session 的逐连接过滤发布。`BreakWorldSnapshotPublication` 的共享 target fan-out、Runtime adapter 的 direct notice 路径与 core_app `--world-replication` 仍向每个连接发送完整 World，没有接入该函数；如何从 `break_aoi_compute` 的 scope 生成谓词、`BreakNetEntityId` 与 World Entity 的对应、以及 ACK 与范围变化之间的 baseline 复用，由后续切片接入。权威 simulation 合并、inbound apply、预测回滚、共享 live World 仍未实现。本节不预写远端结果。
