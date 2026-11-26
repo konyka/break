@@ -447,3 +447,20 @@ calloc 置零后才进入逐条填充；build 的清理则是在**实体数组�
 
 修复：`snapshot_destroy` 在遍历前检查 `entities` 非空。修复后同一扫描在 ASan（含 leak 检测）
 下 6/6 通过，无泄漏。
+
+## 复查记录（2026-11-26）：同类清理缺陷的横向排查
+
+修复 `snapshot_destroy` 的 NULL 解引用后，横向排查了 `break_ecs_replication` 其余分配点是否有
+同一模式（count 在其数组分配之前被赋值、且 destroy 用 count 驱动遍历内层指针）：
+
+- `world_delta_wire.c`：`records` 在使用前分配，失败即返回；`break_world_delta_wire_clear`
+  只做平坦 `free(records)`，无 count 驱动的内层遍历。安全。
+- `net_entity_map.c`：`capacity` 在 `slots` 分配成功**之后**才赋值，失败路径只 `free(map)`。
+  是正确顺序（恰与崩溃点相反）。安全。
+- `world_delta.c`：两个并行数组无条件 `free`（`free(NULL)` 合法），`break_world_delta_release`
+  平坦释放，无 count 驱动内层遍历。安全。
+- `world_snapshot_publication.c`：单一结构体分配，失败只 `free` 自身。安全。
+
+结论：该崩溃模式仅存在于 `world_snapshot.c` 的两段式结构（entity 数组与其内层 component 数组），
+build 与 filter 共用 `snapshot_destroy`，两处已由同一个 `entities != NULL` 守卫覆盖。不是跨模块
+的系统性缺陷。
