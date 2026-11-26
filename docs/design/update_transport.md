@@ -132,3 +132,23 @@ Mutations that turn it red: the server ignoring Range, the client ignoring the p
 修改 CI 前的干净 Ubuntu 容器七项全部通过：`break_manifest_tool OK`、21/44/72、两个契约以及 `break_update_e2e OK`。这验证 QEMU 中 arm64 目标二进制的签名 manifest、A/B 状态、TLS、Range/断点续传、篡改与无 CA 拒绝；HTTP 72 项还覆盖代理认证、SPKI 钉扎、CRL 和 OCSP stapling。没有放宽或过滤任何用例。
 
 本结果仍是选定测试的模拟证据，不是全量 arm64 CTest、GPU 或物理设备验证，也不代表生产更新服务、HTTP/2、https 代理、主动 OCSP responder 或发布二进制接入由此交付。
+
+## 响应头解析器的 fuzz（2026-11-27）
+
+`parse_head`（`engine/src/net_http/break_http.c`）解析不可信服务器返回的状态行和头部，update、崩溃上传和
+metrics 推送的每个响应都要经过它。它是 static 函数，此前只能通过脚本化 socket 服务器的单元测试间接触达，
+没有变异 fuzz。
+
+新增 `engine/tests/fuzz_http_head.c`。它直接 `#include` `break_http.c` 以调用 static 函数（沿用
+`test_audio.c` / `test_pad_linux_feedback.c` 的做法），自己链接 OpenSSL，而不是链接 `break_http` 库，
+否则会出现重复符号。种子有五个：200、206 带 Content-Range、1.0 的 204、404 带 identity 编码、206 带
+`/*` 总长。变异包括字节翻转、插入语法字节、删除、原地复制片段（用于触达 64 头上限和重复头拒绝）、截尾。
+每个输入都复制到大小恰好的堆缓冲，越界读会被 ASan 抓到。不变量：不越界；被接受的头部 status 在
+100..599 之间，Content-Range 满足 first <= last；同一输入解析两次，结论和字段一致。
+`HTTP_HEAD_LIBFUZZER=1` 时导出给 libFuzzer。注册为 `fuzz_http_head_smoke`（种子 73），并加入 CI 的三处
+fuzz 构建列表。
+
+验证：种子 73 跑 200000 次（接受 27197 次）、种子 107 跑 100000 次（接受 13439 次），ASan+UBSan+leak
+全程 clean。负向对照：删掉 `\r\n\r\n` 结尾检查后，fuzzer 立即在 `break_http.c:624` 报
+heap-buffer-overflow。这说明后面的扫描循环依赖这项检查来保证不越界，fuzzer 能发现它被去掉。
+`test_break_http` 72/72，`build-current-vk` fuzz lane 21/21。

@@ -14391,3 +14391,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **缺口**：`break_update_manifest_parse`（更新客户端在验签前解析不可信 manifest 文本）只有单元测试，没有变异 fuzz。它按 pass 1 的计数分配 chunk 数组和名字 arena，再由 pass 2 不加检查地填充。
 - **实现**：新增 `engine/tests/fuzz_update_manifest.c`，以零签名 golden manifest 为种子。不变量：不越界、不改入参；被接受的 manifest 中所有访问器都在边界内（`chunk_at` 在 count 以下成功、在 count 处失败，名字与 channel/platform 可读）。注册 `fuzz_update_manifest_smoke`（种子 71），加入 CI 的三处 fuzz 构建列表；仅在 `TARGET break_update` 时构建。
 - **验证**：种子 71×200000、种子 103×100000 在 ASan+UBSan+leak 下 clean；负向对照（`chunk_at` 边界差一）触发 `break_update.c:414` 的 heap-buffer-overflow。`test_break_update` 21/21；fuzz lane 20/20。本提交自身的远端工作流结果不在此预写。
+
+## HTTP 响应头解析器的 fuzz 目标（2026-11-27）
+
+- **缺口**：`break_http` 的 static 函数 `parse_head` 解析不可信服务器响应头，此前只有脚本化 socket 单元测试，没有变异 fuzz。
+- **实现**：新增 `engine/tests/fuzz_http_head.c`，直接包含 `break_http.c` 以调用 static 函数，自行链接 OpenSSL。用五个合法响应头做种子，输入放在大小恰好的堆缓冲里。不变量：不越界；接受的 status 在 100..599；Content-Range 满足 first<=last；解析结果确定。注册为 `fuzz_http_head_smoke`（种子 73），加入 CI 三处 fuzz 构建列表；仅在 `TARGET break_http` 存在时构建。
+- **验证**：种子 73 跑 200000 次、种子 107 跑 100000 次，ASan+UBSan+leak clean。负向对照：去掉 `\r\n\r\n` 结尾检查后触发 `break_http.c:624` heap-buffer-overflow。`test_break_http` 72/72，fuzz lane 21/21。本提交自身在远端工作流上的结果不在这里预先写明。

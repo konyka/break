@@ -8509,6 +8509,19 @@ endif()
         target_link_libraries(fuzz_update_manifest PRIVATE break_update)
     endif()
 
+    # Mutation fuzzer for break_http's static response-head parser
+    # (parse_head), which reads untrusted server bytes on every update,
+    # crash-upload and metrics response. It includes break_http.c directly to
+    # reach the static function, so it links OpenSSL itself rather than the
+    # break_http library (which would duplicate every symbol).
+    if(TARGET break_http)
+        add_executable(fuzz_http_head EXCLUDE_FROM_ALL tests/fuzz_http_head.c)
+        set_property(TARGET fuzz_http_head PROPERTY C_STANDARD 11)
+        target_include_directories(fuzz_http_head PRIVATE ${TEST_INCLUDE_DIRS}
+            ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_link_libraries(fuzz_http_head PRIVATE OpenSSL::SSL OpenSSL::Crypto pthread)
+    endif()
+
     # Mutation fuzzer for break_crash_cluster_parse, the parser for the
     # persisted "break-crash-stats v1" statistics file. It fills fixed-size
     # buffers then demands the input be exactly canonical; the fuzzer builds its
@@ -8594,6 +8607,10 @@ endif()
         if(TARGET fuzz_update_manifest)
             add_test(NAME fuzz_update_manifest_smoke COMMAND fuzz_update_manifest 2000 71)
             set_tests_properties(fuzz_update_manifest_smoke PROPERTIES LABELS "fuzz")
+        endif()
+        if(TARGET fuzz_http_head)
+            add_test(NAME fuzz_http_head_smoke COMMAND fuzz_http_head 2000 73)
+            set_tests_properties(fuzz_http_head_smoke PROPERTIES LABELS "fuzz")
         endif()
         # Checked-in wire samples, one per file; the name prefix is the expected
         # decode outcome. Regenerate with `fuzz_core_app_network --emit-corpus <dir>`.
