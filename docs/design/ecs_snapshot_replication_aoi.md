@@ -414,3 +414,23 @@ TSan 均 31/31）：过滤发布回传视图 id/tick（≠ 共享 target）、NU
 
 边界：仅库级原语与回传；Runtime adapter 改用它对账、core_app 启用过滤仍由后续切片按
 `runtime_world_aoi_integration.md` 实施。本节不预写远端结果。
+
+## 复查记录（2026-11-26）：过滤实现的两处可疑点经核实不是缺陷
+
+对已推送的 `break_world_snapshot_filter` 做了一次针对性复查，重点是「测试只走顺利路径」这类
+盲区（同日在重试队列排空里确实发现过这种缺陷）。两处最初判断为可疑，核实后都不是缺陷，
+记录在此以免后来者重复怀疑或「修」掉正确代码：
+
+1. **中途失败的清理路径**：失败分支调用 `snapshot_destroy(view)`，而 `view->entity_count`
+   此时已被设为最终的 `kept_count`，但只填充了 `slot` 个条目。`snapshot_destroy` 会一直循环到
+   `entity_count` 去 `free(entities[i].components)`。看似会释放未初始化指针——但
+   `view->entities` 由 **calloc** 分配，未填充条目的 `components` 为 NULL，`free(NULL)` 合法。
+   不是缺陷；这条依赖 calloc，改成 malloc 就会变成真缺陷，所以不要改那次分配。
+2. **谓词返回不一致**：两趟遍历之间若 `keep` 对同一实体给出不同答案，计数与拷贝循环可能
+   不一致。实际实现第一趟把结果记进 `kept[]` 数组，第二趟只读 `kept[i]` 而不再调用 `keep`，
+   所以谓词每个实体恰好被调用一次，不一致的谓词无法让两趟脱钩。这是正确结构。
+
+**确实存在的覆盖缺口**：`engine/src/ecs/world_snapshot.c` 没有分配失败注入钩子（仓库其他
+模块如 `test_editor_doc`、`test_break_lua_value` 有），因此上述清理路径与其余 OOM 分支
+**从未被测试执行过**，只经过人工阅读。要关闭它需要给 snapshot 加注入钩子，属于独立切片，
+本次不做，如实记为未验证而不是声称安全。
