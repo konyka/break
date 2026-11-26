@@ -256,21 +256,32 @@ if(validate EQUAL -1 OR checkout EQUAL -1 OR validate GREATER checkout)
 endif()
 
 # The arm64 lane installs arm64 graphics development packages on a runner that
-# already carries amd64 mesa. Ubuntu's ports archive can publish a newer
-# libelf1t64 than the amd64 archive, and multiarch then refuses to install
-# mesa-libgallium:arm64. The lane must pin the arm64 libelf1t64 to the amd64
-# version it already has before asking for libgl-dev:arm64 et al.
+# already carries amd64 mesa. The image's amd64 libelf1t64 can be an older point
+# release than the one the ports archive still serves, and multiarch then refuses
+# mesa-libgallium:arm64. Pinning arm64 to the image's amd64 version fails once
+# ports drops that version (2026-11-26: image 0.190-1.1ubuntu0.1, ports only
+# ...0.2). The lane must take the version from the arm64 candidate, install both
+# architectures at that version, and do so before libgl-dev:arm64 et al.
 extract_job("lane-cross-aarch64-linux" aarch64_block)
-string(FIND "${aarch64_block}" "apt-get install -y --no-install-recommends \\\n" aarch64_install)
-string(FIND "${aarch64_block}" "libelf1t64:arm64=" aarch64_pin)
-if(aarch64_install EQUAL -1)
-    fail("arm64 lane must keep its single no-install-recommends install")
+string(FIND "${aarch64_block}" "apt-cache policy libelf1t64:arm64" aarch64_candidate)
+string(FIND "${aarch64_block}" "\"libelf1t64=\${elf_version}\"" aarch64_pin_amd64)
+string(FIND "${aarch64_block}" "\"libelf1t64:arm64=\${elf_version}\"" aarch64_pin_arm64)
+string(FIND "${aarch64_block}" "libgl-dev:arm64" aarch64_graphics)
+string(FIND "${aarch64_block}" "dpkg-query -W -f='\${Version}' libelf1t64" aarch64_image_pin)
+if(aarch64_candidate EQUAL -1)
+    fail("arm64 lane must take the libelf1t64 version from the arm64 candidate")
 endif()
-if(aarch64_pin EQUAL -1)
-    fail("arm64 lane must pin libelf1t64:arm64 to the installed amd64 version")
+if(aarch64_pin_amd64 EQUAL -1 OR aarch64_pin_arm64 EQUAL -1)
+    fail("arm64 lane must install libelf1t64 on both architectures at the candidate version")
 endif()
-if(aarch64_pin GREATER aarch64_install)
-    fail("arm64 libelf1t64 pin must precede the graphics development install")
+if(NOT aarch64_image_pin EQUAL -1)
+    fail("arm64 lane must not pin libelf1t64 to the image's installed amd64 version")
+endif()
+if(aarch64_graphics EQUAL -1)
+    fail("arm64 lane must still install libgl-dev:arm64")
+endif()
+if(aarch64_candidate GREATER aarch64_pin_arm64 OR aarch64_pin_arm64 GREATER aarch64_graphics)
+    fail("arm64 libelf1t64 alignment must precede the graphics development install")
 endif()
 
 get_property(failure_lines GLOBAL PROPERTY CI_EXECUTION_CONTRACT_FAILURES)

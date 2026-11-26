@@ -1118,3 +1118,13 @@ authority handoff 和默认全局公平调度仍未交付。正常断连顺序�
 - **权威 simulation 合并 / inbound apply 到权威 World**：仍未实现；收到对端快照仍只进每连接 diagnostic World，与权威 World 无关。
 - **预测/回滚、共享 live World、跨 World 持久身份、AOI 裁剪、自动换级、完整资产链、可靠每 epoch 广播、指标协议与远程采集、告警**：仍未实现。
 - **生产 level rebaseline 策略**：publication 接受更高 level（lease 自带 level），但"何时换级"仍由外部首 tick 锁定，不是自动策略。
+
+## 第 17 节补充（2026-11-26）：arm64 lane 的 libelf1t64 固定随 ports 版本漂移再次失效
+
+`lane-cross-aarch64-linux` 的依赖安装步骤在 CI run `45767205442` 失败（该 run 其余 24 条 success、3 条条件 skip）。原因是 runner 镜像预装的 amd64 `libelf1t64` 为 `0.190-1.1ubuntu0.1`，而 arm64 ports 归档只保留 `0.190-1.1ubuntu0.2`；旧步骤把 arm64 固定到“镜像已装的 amd64 版本”，apt 报 `Version '0.190-1.1ubuntu0.1' for 'libelf1t64:arm64' was not found`（exit 100），后续配置、构建与 QEMU 测试全部跳过。此前记录的“arm64 可安装性已修复”只在当时的归档版本组合下成立，这是真实回归，不是偶发 flake。
+
+修复改为取 `apt-cache policy libelf1t64:arm64` 的 candidate 版本，并把 amd64 与 arm64 两侧一并固定到该版本，且在图形开发包安装之前完成；`test_ci_execution_semantics` 的契约同步改为断言此顺序，并禁止再出现“按镜像已装版本固定”的写法。反向核验：只还原旧 workflow、保留新契约时，契约按预期失败。
+
+证据：在 `ubuntu:24.04` 容器中先装 amd64 `libelf1t64 0.190-1.1ubuntu0.1`、再加 arm64 ports 源，旧逻辑复现同一 exit 100，新 step 文本（从 `ci.yml` 原样提取）exit 0，两侧 `libelf1t64` 均为 `0.190-1.1ubuntu0.2`，`mesa-libgallium:arm64` 与 `aarch64-linux-gnu-gcc` 可用。这只证明安装步骤；QEMU 套件在真实 runner 上的结果以后续远端 CI 为准。
+
+能力边界不变：权威 simulation 合并、inbound apply、预测/回滚、共享 live World、AOI 裁剪、自动换级、完整资产链、指标协议与远程采集、告警仍未交付。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。

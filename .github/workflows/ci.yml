@@ -242,17 +242,16 @@ jobs:
           EOF
           sudo dpkg --add-architecture arm64
           sudo apt-get update
-          # The runner image already carries amd64 mesa, and Ubuntu's ports
-          # archive can publish a newer libelf1t64 than the amd64 archive.
-          # Multiarch then refuses mesa-libgallium:arm64. Align the arm64
-          # libelf1t64 with the amd64 version the image already has; if the
-          # amd64 side has none, install the candidate on both sides first.
-          amd64_elf=$(dpkg-query -W -f='${Version}' libelf1t64 2>/dev/null || true)
-          if [ -z "${amd64_elf}" ]; then
-            sudo apt-get install -y --no-install-recommends libelf1t64
-            amd64_elf=$(dpkg-query -W -f='${Version}' libelf1t64)
-          fi
-          sudo apt-get install -y --no-install-recommends "libelf1t64:arm64=${amd64_elf}"
+          # The runner image already carries amd64 mesa, and its libelf1t64 can
+          # be an older point release than the one the ports archive still
+          # serves. Multiarch then refuses mesa-libgallium:arm64, and pinning
+          # arm64 to the image's amd64 version fails once ports drops it.
+          # Align both architectures to the version the arm64 archive offers,
+          # which the amd64 archive carries as well.
+          elf_version=$(apt-cache policy libelf1t64:arm64 | awk '/Candidate:/ {print $2}')
+          test -n "${elf_version}" && test "${elf_version}" != "(none)"
+          sudo apt-get install -y --no-install-recommends \
+            "libelf1t64=${elf_version}" "libelf1t64:arm64=${elf_version}"
           sudo apt-get install -y --no-install-recommends \
             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu ninja-build \
             pkg-config python3 file libwayland-dev wayland-protocols \
