@@ -9214,11 +9214,13 @@ endif()
     set_tests_properties(test_break_prediction_wire PROPERTIES LABELS "headless;network")
 
     # test_break_prediction_world: prediction bound to one entity component in
-    # an ECS World, plus the server's authoritative step
+    # an ECS World, the server's authoritative step, and reconciliation from a
+    # replicated mirror World fed by snapshot deltas
     # (docs/design/client_prediction.md section 9).
     add_executable(test_break_prediction_world tests/test_break_prediction_world.c
-        src/network/break_prediction.c src/network/break_prediction_world.c src/ecs/ecs.c src/core/log.c)
+        src/network/break_prediction.c src/network/break_prediction_world.c)
     target_include_directories(test_break_prediction_world PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_break_prediction_world PRIVATE break_ecs_replication)
     add_test(NAME test_break_prediction_world COMMAND test_break_prediction_world)
     set_tests_properties(test_break_prediction_world PROPERTIES LABELS "headless;network;ecs")
 

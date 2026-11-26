@@ -196,8 +196,23 @@
 - `build-current-vk` 非 fuzz 全量 465/465，fuzz 24/24。
 - Windows 实机 MSVC 全量构建通过，本测试 9/9，相关测试 25/25。
 
+### 9.1 从复制镜像 World 校正
+
+客户端收到的服务端状态通常是 `break_world_session_drain` 应用到镜像 World 的增量。`break_prediction_world_reconcile_from_world(pw, mirror, mirror_entity, tick, report)` 读取镜像 World 里对应实体的同一个组件，把它作为 `tick` 的服务端状态进行校正，`tick` 取已应用增量的目标 tick。它只读镜像，不写镜像。镜像实体不存在、没有该组件，或组件大小与绑定不同时返回 INVALID。
+
+**预测不能写进镜像 World。** 增量只能应用到与其基准快照完全相同的 World 上（`world_matches_snapshot` 逐字节比较）。预测值一旦写进镜像，服务端的下一个增量就会因 `BREAK_DELTA_BASE_MISMATCH` 应用失败。因此客户端要用两个 World：镜像 World 只接收增量，表现 World 绑定预测。两边的实体编号可以不同，调用时分别传入。
+
+**测试**（`test_break_prediction_world` 增加 3 例，共 12 例，先以链接失败为 RED）：
+- 端到端：服务端 World 逐 tick 推进，第 20 tick 自行移动实体。每隔随机若干 tick，用 `break_world_snapshot_build` 和 `break_world_delta_diff` 产生增量，客户端应用到镜像 World，再从镜像校正表现 World。期间至少有一次误预测，最后表现 World、镜像 World 和服务端三者相等。状态与基准相同时，增量返回 `BREAK_DELTA_ALREADY_APPLIED`，测试也接受这种情况。
+- 反例：把预测绑定到镜像 World 本身，下一个增量返回 `BREAK_DELTA_BASE_MISMATCH`。这条测试把上面的限制固定下来。
+- 镜像实体校验：没有组件、组件大小不同、镜像为 NULL、实体已销毁，都返回 INVALID 且 report 清零；镜像实体编号与绑定实体不同时也能正确校正。
+
+**变异**：8 项，7 项判红。存活的是去掉 `!state` 检查：此时 NULL 的 state 交给 `break_prediction_reconcile`，同样返回 INVALID，属于等价变异。检查仍保留，因为后面的大小比较要读 `component_sizes`。
+
+**验证**：normal、ASan+UBSan、TSan 下 12/12；`build-current-vk` 非 fuzz 465/465，fuzz 24/24；Windows 实机 MSVC 全量构建通过，本测试 12/12，相关测试 25/25。
+
 仍未交付：
-- 接到 `break_ecs_replication` 的快照/增量流，由它产生预测快照。
-- 在 `core_app` 中启用。
+- 在 `core_app` 中启用：同时创建镜像 World 与表现 World，把预测输入经 `break_prediction_session` 发送。
+- 预测之外，表现 World 中其他远端实体的同步，由调用方结合 `break_snapshot_interp` 完成。
 
 本提交自身的远端工作流结果不在此预写。

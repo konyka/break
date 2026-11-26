@@ -61,6 +61,20 @@ BreakPredictionResult break_prediction_world_reconcile(BreakPredictionWorld *pw,
                                                        const void *state,
                                                        BreakPredictionReconcile *report);
 
+/* Reconciles from a replicated mirror World: the server's state for `tick`
+ * is `mirror_entity`'s bound component in `mirror` (for example the World
+ * break_world_session_drain applies deltas to, with `tick` the applied
+ * delta's target tick). Only reads `mirror`. INVALID when the mirror entity
+ * does not exist, lacks the component or has it at a different size;
+ * otherwise as break_prediction_world_reconcile.
+ *
+ * The mirror must not be the World the prediction writes to: a delta
+ * applies only to a World equal to its base snapshot, so a predicted value
+ * in the mirror makes the next delta fail with BREAK_DELTA_BASE_MISMATCH. */
+BreakPredictionResult break_prediction_world_reconcile_from_world(
+    BreakPredictionWorld *pw, World *mirror, Entity mirror_entity, u64 tick,
+    BreakPredictionReconcile *report);
+
 /* The owned predictor, for pending inputs (resending), ticks and stats.
  * Advancing it directly bypasses the component write-back. */
 const BreakPrediction *break_prediction_world_predictor(const BreakPredictionWorld *pw);

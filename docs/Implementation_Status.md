@@ -14494,3 +14494,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：`test_break_prediction_world` 9 例，先以链接失败为 RED，含客户端、服务端两个 World 在丢失和迟到快照下收敛的测试。27 项变异中 26 项判红，1 项为等价变异（理由见设计文档）。
 - **验证**：normal/ASan+UBSan/TSan 9/9；`build-current-vk` 非 fuzz 465/465，fuzz 24/24；Windows 实机 MSVC 全量构建通过，相关测试 25/25。
 - **仍未交付**：接入 `break_ecs_replication` 的快照流，以及在 `core_app` 中启用。本提交自身的远端工作流结果不在此预写。
+
+## 预测从复制镜像 World 校正（2026-11-27）
+
+- **缺口**：上一条把「接入 `break_ecs_replication` 的快照流」列为未交付。
+- **实现**：`break_prediction_world_reconcile_from_world` 读取镜像 World 中实体的组件，作为服务端在某个 tick 的状态来校正预测，只读镜像。镜像 World 只能接收增量：预测写进镜像后，下一个增量会因 `BREAK_DELTA_BASE_MISMATCH` 应用失败，所以客户端要分开镜像 World 和表现 World。设计见 `docs/design/client_prediction.md` 9.1 节。
+- **TDD 与变异**：`test_break_prediction_world` 增至 12 例，先以链接失败为 RED。新增端到端增量测试、写入镜像的反例和镜像实体校验。8 项变异中 7 项判红，1 项为等价变异。
+- **验证**：normal/ASan+UBSan/TSan 12/12；`build-current-vk` 非 fuzz 465/465，fuzz 24/24；Windows 实机 MSVC 全量构建通过，相关测试 25/25。
+- **仍未交付**：在 `core_app` 中启用。本提交自身的远端工作流结果不在此预写。

@@ -4,6 +4,9 @@
 #include "test_framework.h"
 
 #include <ecs/ecs.h>
+#include <ecs/replication_schema.h>
+#include <ecs/world_delta.h>
+#include <ecs/world_snapshot.h>
 #include <network/break_prediction_world.h>
 
 #include <string.h>
@@ -385,6 +388,188 @@ TEST(client_and_server_worlds_converge_through_lossy_late_snapshots) {
     world_destroy(sw);
 }
 
+static BreakComponentSchemaRegistry *body_schemas(void) {
+    BreakComponentSchemaRegistry *schemas = break_schema_registry_create();
+    BreakComponentSchema schema;
+    memset(&schema, 0, sizeof schema);
+    schema.component_id = kBody;
+    schema.version = 1u;
+    schema.size = sizeof(Body);
+    schema.alignment = _Alignof(Body);
+    schema.flags = BREAK_SCHEMA_FLAG_DETERMINISTIC_POD | BREAK_SCHEMA_FLAG_RAW_BYTES;
+    if (break_schema_register(schemas, &schema) != BREAK_SCHEMA_OK) {
+        break_schema_registry_destroy(schemas);
+        return NULL;
+    }
+    return schemas;
+}
+
+static World *body_only_world(void) {
+    World *w = world_create();
+    world_register_component(w, kBody, (u32)sizeof(Body));
+    return w;
+}
+
+/* The server steps its World and publishes snapshot deltas; the client
+ * applies them to a mirror World and reconciles its prediction, which lives
+ * in a separate presentation World, from the mirror. Deltas are dropped at
+ * random; a later delta from the client's mirror state still applies. */
+TEST(deltas_applied_to_a_mirror_world_correct_the_presentation_world) {
+    StepCtx cctx = {0u, 0u, 0};
+    StepCtx sctx = {0u, 0u, 0};
+    BreakComponentSchemaRegistry *schemas = body_schemas();
+    World *server = body_only_world();
+    World *mirror = body_only_world();
+    World *view = body_only_world();
+    Entity se = spawn(server, 0, 0);
+    Entity me = spawn(mirror, 0, 0);
+    Entity ve = spawn(view, 0, 0);
+    BreakPredictionWorldConfig cfg = client_config(view, ve, &cctx);
+    BreakPredictionWorld *pw = NULL;
+    BreakWorldSnapshot *mirror_base;
+    u32 seed = 777u;
+    u32 applied = 0u;
+    u32 already = 0u;
+    u32 corrected = 0u;
+    ASSERT_NOT_NULL(schemas);
+    ASSERT_EQ(me.index, se.index);
+    ASSERT_EQ(me.generation, se.generation);
+    mirror_base = break_world_snapshot_build(server, schemas, 10u);
+    ASSERT_NOT_NULL(mirror_base);
+    cfg.capacity = 64u;
+    ASSERT_EQ(break_prediction_world_create(&cfg, &pw), BREAK_PREDICTION_OK);
+    for (u64 t = 11u; t <= 50u; ++t) {
+        Push in;
+        seed = seed * 1103515245u + 12345u;
+        in.accel = (i32)((seed >> 16) % 5u) - 2;
+        ASSERT_EQ(break_prediction_world_apply_input(pw, t, &in), BREAK_PREDICTION_OK);
+        ASSERT_EQ(break_prediction_world_step_authoritative(server, se, kBody, body_step, &sctx, &in),
+                  BREAK_PREDICTION_OK);
+        if (t == 20u) ((Body *)world_get_component(server, se, kBody))->pos -= 40;
+        if (((seed >> 9) & 1u) == 0u || t == 50u) {
+            BreakWorldSnapshot *target = break_world_snapshot_build(server, schemas, t);
+            BreakWorldDelta *delta;
+            BreakPredictionReconcile rep;
+            BreakDeltaApplyResult r;
+            ASSERT_NOT_NULL(target);
+            delta = break_world_delta_diff(mirror_base, target);
+            ASSERT_NOT_NULL(delta);
+            r = break_world_delta_apply(mirror, delta);
+            /* a state equal to the base (velocity 0 for a while) is already applied */
+            ASSERT_TRUE(r == BREAK_DELTA_OK || r == BREAK_DELTA_ALREADY_APPLIED);
+            if (r == BREAK_DELTA_ALREADY_APPLIED) already++;
+            applied++;
+            ASSERT_EQ(break_prediction_world_reconcile_from_world(pw, mirror, me, t, &rep),
+                      BREAK_PREDICTION_OK);
+            if (rep.mispredicted) corrected++;
+            break_world_delta_release(delta);
+            break_world_snapshot_release(mirror_base);
+            mirror_base = target;
+        }
+    }
+    ASSERT_TRUE(applied >= 5u);
+    ASSERT_TRUE(already < applied);
+    ASSERT_TRUE(corrected >= 1u);
+    {
+        Body mine = body_in(view, ve);
+        Body theirs = body_in(server, se);
+        Body mirrored = body_in(mirror, me);
+        ASSERT_EQ(mine.pos, theirs.pos);
+        ASSERT_EQ(mine.vel, theirs.vel);
+        ASSERT_EQ(mirrored.pos, theirs.pos);
+    }
+    break_world_snapshot_release(mirror_base);
+    break_prediction_world_destroy(pw);
+    world_destroy(view);
+    world_destroy(mirror);
+    world_destroy(server);
+    break_schema_registry_destroy(schemas);
+}
+
+/* Binding the prediction to the mirror itself is the mistake the header
+ * warns about: the predicted value makes the mirror differ from the delta
+ * base, so the server's next delta no longer applies. */
+TEST(predicting_into_the_mirror_breaks_delta_application) {
+    StepCtx cctx = {0u, 0u, 0};
+    BreakComponentSchemaRegistry *schemas = body_schemas();
+    World *server = body_only_world();
+    World *mirror = body_only_world();
+    Entity se = spawn(server, 0, 0);
+    Entity me = spawn(mirror, 0, 0);
+    BreakPredictionWorldConfig cfg = client_config(mirror, me, &cctx);
+    BreakPredictionWorld *pw = NULL;
+    BreakWorldSnapshot *base = break_world_snapshot_build(server, schemas, 10u);
+    BreakWorldSnapshot *target;
+    BreakWorldDelta *delta;
+    Push in = {1};
+    ASSERT_EQ(break_prediction_world_create(&cfg, &pw), BREAK_PREDICTION_OK);
+    ASSERT_EQ(break_prediction_world_apply_input(pw, 11u, &in), BREAK_PREDICTION_OK);
+    ((Body *)world_get_component(server, se, kBody))->pos = 9;
+    target = break_world_snapshot_build(server, schemas, 11u);
+    delta = break_world_delta_diff(base, target);
+    ASSERT_NOT_NULL(delta);
+    ASSERT_EQ(break_world_delta_apply(mirror, delta), BREAK_DELTA_BASE_MISMATCH);
+    break_world_delta_release(delta);
+    break_world_snapshot_release(target);
+    break_world_snapshot_release(base);
+    break_prediction_world_destroy(pw);
+    world_destroy(mirror);
+    world_destroy(server);
+    break_schema_registry_destroy(schemas);
+}
+
+TEST(reconcile_from_world_validates_the_mirror_entity) {
+    StepCtx ctx = {0u, 0u, 0};
+    World *view = make_world();
+    World *mirror = make_world();
+    Entity ve = spawn(view, 0, 0);
+    Entity me = spawn(mirror, 4, 0);
+    Entity bare = world_create_entity(mirror);
+    Entity wrong_size = world_create_entity(mirror);
+    BreakPredictionWorldConfig cfg = client_config(view, ve, &ctx);
+    BreakPredictionWorld *pw = NULL;
+    BreakPredictionReconcile rep;
+    World *other_sizes = world_create();
+    Entity os;
+    world_register_component(other_sizes, kBody, 4u);
+    os = world_create_entity(other_sizes);
+    ASSERT_NOT_NULL(world_add_component(other_sizes, os, kBody));
+    ASSERT_NOT_NULL(world_add_component(mirror, wrong_size, kOther));
+    ASSERT_EQ(break_prediction_world_create(&cfg, &pw), BREAK_PREDICTION_OK);
+    memset(&rep, 0xab, sizeof rep);
+    ASSERT_EQ(break_prediction_world_reconcile_from_world(pw, mirror, bare, 11u, &rep),
+              BREAK_PREDICTION_INVALID);
+    ASSERT_EQ(rep.replayed, 0u);
+    ASSERT_EQ(break_prediction_world_reconcile_from_world(pw, other_sizes, os, 11u, NULL),
+              BREAK_PREDICTION_INVALID);
+    ASSERT_EQ(break_prediction_world_reconcile_from_world(pw, NULL, me, 11u, NULL),
+              BREAK_PREDICTION_INVALID);
+    memset(&rep, 0xab, sizeof rep);
+    ASSERT_EQ(break_prediction_world_reconcile_from_world(NULL, mirror, me, 11u, &rep),
+              BREAK_PREDICTION_INVALID);
+    ASSERT_EQ(rep.acknowledged, 0u);
+    ASSERT_EQ(break_prediction_confirmed_tick(break_prediction_world_predictor(pw)), 10u);
+    ASSERT_EQ(break_prediction_world_reconcile_from_world(pw, mirror, me, 11u, &rep),
+              BREAK_PREDICTION_OK);
+    ASSERT_TRUE(rep.resync);
+    ASSERT_EQ(body_in(view, ve).pos, 4);
+    ASSERT_EQ(body_in(mirror, me).pos, 4);
+    {
+        Entity later = spawn(mirror, 8, 0); /* a different index than the bound entity */
+        ASSERT_TRUE(later.index != ve.index);
+        ASSERT_EQ(break_prediction_world_reconcile_from_world(pw, mirror, later, 12u, NULL),
+                  BREAK_PREDICTION_OK);
+        ASSERT_EQ(body_in(view, ve).pos, 8);
+    }
+    world_destroy_entity(mirror, me);
+    ASSERT_EQ(break_prediction_world_reconcile_from_world(pw, mirror, me, 13u, NULL),
+              BREAK_PREDICTION_INVALID);
+    break_prediction_world_destroy(pw);
+    world_destroy(other_sizes);
+    world_destroy(mirror);
+    world_destroy(view);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(the_component_follows_the_prediction_as_inputs_run);
     RUN_TEST(a_correction_rewrites_the_component_with_the_replayed_state);
@@ -395,4 +580,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(a_component_of_the_largest_state_size_is_accepted_on_both_sides);
     RUN_TEST(the_server_steps_the_authoritative_component);
     RUN_TEST(client_and_server_worlds_converge_through_lossy_late_snapshots);
+    RUN_TEST(deltas_applied_to_a_mirror_world_correct_the_presentation_world);
+    RUN_TEST(predicting_into_the_mirror_breaks_delta_application);
+    RUN_TEST(reconcile_from_world_validates_the_mirror_entity);
 TEST_MAIN_END()

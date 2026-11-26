@@ -92,6 +92,18 @@ BreakPredictionResult break_prediction_world_reconcile(BreakPredictionWorld *pw,
     return r;
 }
 
+BreakPredictionResult break_prediction_world_reconcile_from_world(
+    BreakPredictionWorld *pw, World *mirror, Entity mirror_entity, u64 tick,
+    BreakPredictionReconcile *report) {
+    const void *state;
+    if (report) memset(report, 0, sizeof *report);
+    if (!pw || !mirror) return BREAK_PREDICTION_INVALID;
+    state = world_get_component(mirror, mirror_entity, pw->component);
+    if (!state || mirror->component_sizes[pw->component] != pw->size)
+        return BREAK_PREDICTION_INVALID;
+    return break_prediction_world_reconcile(pw, tick, state, report);
+}
+
 const BreakPrediction *break_prediction_world_predictor(const BreakPredictionWorld *pw) {
     return pw ? pw->prediction : NULL;
 }
