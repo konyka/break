@@ -279,6 +279,25 @@ BreakRuntimeError break_runtime_reload_stats(
     BreakRuntimeReload *reload,
     BreakRuntimeReloadStats *out_stats);
 
+struct BreakRuntimeMetrics; /* runtime_metrics.h */
+
+/* Mirrors the reload coordinator's observability counters into `metrics` as
+ * GAUGES named "<prefix>.requested", ".merged", ".events_notified",
+ * ".events_coalesced", ".event_overloads", ".events_deferred", ".committed",
+ * ".failed_keep_old", ".cancelled", ".timed_out", ".oom", ".request_overloads",
+ * ".commit_overloads", ".closed_rejects", ".stale_rejects", ".stale_drops",
+ * ".active", ".high_water". Gauges (not counters) so re-exporting the same
+ * cumulative counters is idempotent. `prefix` must be non-empty and short
+ * enough that the longest name "<prefix>.events_coalesced" fits the metric-name
+ * budget; an over-long prefix surfaces the INVALID that
+ * break_runtime_metrics_set returns. Any set error stops the export. INVALID on
+ * a NULL argument or NULL/empty prefix. The metrics registry must be owned by
+ * the calling thread. */
+BreakRuntimeError break_runtime_reload_export_metrics(
+    BreakRuntimeReload *reload,
+    struct BreakRuntimeMetrics *metrics,
+    const char *prefix);
+
 /* Diagnostic names ("LOADING", ...); never NULL, unknown values map to
  * "UNKNOWN". Pure string conversion, no allocation. */
 const char *break_runtime_reload_state_name(BreakRuntimeReloadState state);

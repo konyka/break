@@ -2,6 +2,7 @@
 #include "test_fork.h"
 #include <runtime/runtime_reload.h>
 #include <runtime/runtime_message.h>
+#include <runtime/runtime_metrics.h>
 #include <runtime/runtime_profiler.h>
 #include <runtime/runtime_thread.h>
 #include <runtime/runtime_test_hooks.h>
@@ -2303,7 +2304,74 @@ TEST(profiler_collect_owner_enforced)
     break_runtime_profiler_destroy(profiler);
 }
 
+static u64 reload_metric_of(BreakRuntimeMetrics *m, const char *name)
+{
+    BreakRuntimeMetricSample out[32];
+    u32 n = 0u, i;
+    if (break_runtime_metrics_snapshot(m, out, 32u, &n) != BREAK_RUNTIME_OK) return UINT64_MAX;
+    for (i = 0u; i < n; i++)
+        if (strcmp(out[i].name, name) == 0) return out[i].value;
+    return UINT64_MAX;
+}
+
+TEST(reload_export_metrics_mirrors_counters_as_idempotent_gauges)
+{
+    VFS *vfs = fixture_setup();
+    BreakRuntimeReload *reload = NULL;
+    BreakRuntimeReloadConfig config;
+    BreakRuntimeMetrics *m = NULL;
+    BreakRuntimeMetricSample out[32];
+    BreakRuntimeReloadStats stats;
+    u32 count = 0u, n = 0u;
+    ASSERT_NOT_NULL(vfs);
+
+    probe_reset();
+    break_runtime_test_reload_set_gates(1u, 0u);
+    config = probe_config(vfs);
+    ASSERT_EQ(break_runtime_reload_create(&config, &reload), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_create(NULL, &m), BREAK_RUNTIME_OK);
+
+    for (u32 i = 0; i < 3u; i++) {
+        ASSERT_EQ(break_runtime_reload_notify_file_event(reload, "good.bin"), BREAK_RUNTIME_OK);
+    }
+    ASSERT_EQ(break_runtime_reload_pump_events(reload, 8u, &count), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_stats(reload, &stats), BREAK_RUNTIME_OK);
+
+    ASSERT_EQ(break_runtime_reload_export_metrics(NULL, m, "reload"), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_reload_export_metrics(reload, NULL, "reload"), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_reload_export_metrics(reload, m, NULL), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_reload_export_metrics(reload, m, ""), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_reload_export_metrics(reload, m, "reload"), BREAK_RUNTIME_OK);
+    ASSERT_EQ(reload_metric_of(m, "reload.requested"), stats.requested);
+    ASSERT_EQ(reload_metric_of(m, "reload.events_notified"), stats.events_notified);
+    ASSERT_EQ(reload_metric_of(m, "reload.events_coalesced"), stats.events_coalesced);
+    ASSERT_EQ(reload_metric_of(m, "reload.active"), (u64)stats.active);
+    ASSERT_EQ(reload_metric_of(m, "reload.high_water"), (u64)stats.high_water);
+    ASSERT_EQ(break_runtime_metrics_snapshot(m, out, 32u, &n), BREAK_RUNTIME_OK);
+    ASSERT_EQ(n, 18u);
+
+    /* idempotent re-export: gauges, no slot or value growth */
+    ASSERT_EQ(break_runtime_reload_export_metrics(reload, m, "reload"), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_snapshot(m, out, 32u, &n), BREAK_RUNTIME_OK);
+    ASSERT_EQ(n, 18u);
+    ASSERT_EQ(reload_metric_of(m, "reload.requested"), stats.requested);
+
+    {
+        char longp[48];
+        memset(longp, 'p', sizeof longp);
+        longp[sizeof longp - 1u] = '\0';
+        ASSERT_EQ(break_runtime_reload_export_metrics(reload, m, longp), BREAK_RUNTIME_INVALID);
+    }
+
+    break_runtime_metrics_destroy(m);
+    break_runtime_test_reload_set_gates(0u, 0u);
+    ASSERT_EQ(break_runtime_reload_shutdown(reload, 2000u), BREAK_RUNTIME_OK);
+    break_runtime_reload_destroy(reload);
+    vfs_destroy(vfs);
+}
+
 TEST_MAIN_BEGIN()
+    RUN_TEST(reload_export_metrics_mirrors_counters_as_idempotent_gauges);
     RUN_TEST(reload_create_validation_and_oom);
     RUN_TEST(reload_request_validation);
     RUN_TEST(reload_enum_ordinals_and_names);

@@ -88,3 +88,8 @@
 ## 11. 子系统接线：World Session 适配器计数导出（按前缀）
 
 `break_runtime_world_session_export_metrics(adapter, metrics, prefix)`（`runtime_world_session.h`）把 Runtime World Session 适配器的观测计数按 `prefix` 写入注册表为 11 个 GAUGE：`<prefix>.submitted`、`.drained`、`.applied`、`.rejected`、`.stale_rejected`、`.transport_overloads`、`.queued`、`.publish_overloads`、`.publish_terminal`、`.control_pending`、`.publish_pending`（后两个 Boolean 作 0/1 gauge）。单调 `next_sequence` 是身份而非指标，不导出。与 queue/task 同构：gauge 幂等、按前缀多实例、过长 prefix 由注册表 name 校验回 INVALID、取 stats 快照（任意线程）后进注册表 leaf 锁。Bus（§8）、Queue（§9）、Task（§10）、World Session（§11）为前四处子系统 name 绑定。这不改变第 7 节边界。
+
+
+## 12. 子系统接线：Reload 协调器计数导出（按前缀）
+
+`break_runtime_reload_export_metrics(reload, metrics, prefix)`（`runtime_reload.h`）把热重载协调器的 18 个观测计数按 `prefix` 写入注册表为 GAUGE：`<prefix>.requested`、`.merged`、`.events_notified`、`.events_coalesced`、`.event_overloads`、`.events_deferred`、`.committed`、`.failed_keep_old`、`.cancelled`、`.timed_out`、`.oom`、`.request_overloads`、`.commit_overloads`、`.closed_rejects`、`.stale_rejects`、`.stale_drops`、`.active`、`.high_water`。与前几处同构：gauge 幂等、按前缀多实例、过长 prefix 由注册表 name 校验回 INVALID、取 stats 快照后进注册表 leaf 锁。Bus（§8）、Queue（§9）、Task（§10）、World Session（§11）、Reload（§12）为前五处子系统 name 绑定。这不改变第 7 节边界。

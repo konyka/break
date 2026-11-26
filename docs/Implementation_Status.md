@@ -14097,3 +14097,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：`test_runtime_world_session.c` 新增 1 用例（open 一条连接 + 一个 stale rebaseline 后导出 11 gauge 对齐 stats()、再导出幂等含值不增、NULL/空/过长 prefix 的 INVALID）。两项变异判红：改 counter+add（幂等值翻倍）、吞掉 set 错误（过长 prefix 的 INVALID）。
 - **验证**：`test_runtime_world_session` 57/57（normal/ASan+UBSan/TSan 均 57/57）；`test_runtime_world_session_target_contract`、`test_runtime_bus`、`test_runtime_facade`、`test_runtime_metrics` 全绿。
 - **边界**：指标协议边界不变——仍无远程传输、历史采样与告警；bus/queue/task/world-session 为前四处子系统绑定。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。本收据提交自身的远端工作流结果不在此预写。
+
+
+## Reload 协调器计数导出到指标注册表（指标协议：第五处子系统 name 绑定）（2026-11-26）
+
+- **实现**：`runtime_reload` 新增 `break_runtime_reload_export_metrics(reload, metrics, prefix)`（`engine/src/runtime/runtime_reload.{c,h}`），把热重载协调器 18 个观测计数按 `prefix` 写为 GAUGE（requested/merged/events_notified/events_coalesced/event_overloads/events_deferred/committed/failed_keep_old/cancelled/timed_out/oom/request_overloads/commit_overloads/closed_rejects/stale_rejects/stale_drops/active/high_water）。与 queue/task/world-session 同构：gauge 幂等、多前缀并存、取 stats 快照后进注册表 leaf 锁、过长 prefix 回 INVALID。设计见 `docs/design/runtime_metrics.md` 第 12 节。
+- **TDD 与变异**：`test_runtime_reload.c` 新增 1 用例（3 次 notify 合并 + pump 成 1 request 后导出 18 gauge 对齐 stats()、再导出幂等含值不增、NULL/空/过长 prefix 的 INVALID；teardown 用 set_gates(0,0)+shutdown 再 destroy）。两项变异判红：改 counter+add（幂等值翻倍）、吞掉 set 错误（过长 prefix 的 INVALID）。
+- **验证**：`test_runtime_reload` 35/35（normal/ASan+UBSan/TSan 均 35/35）；`test_runtime_metrics`、`test_runtime_core_target_contract`、`test_runtime_facade`、`test_runtime_bus` 全绿。
+- **边界**：指标协议边界不变——仍无远程传输、历史采样与告警；bus/queue/task/world-session/reload 为前五处子系统绑定。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。本收据提交自身的远端工作流结果不在此预写。
