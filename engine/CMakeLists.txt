@@ -9213,6 +9213,17 @@ endif()
     add_test(NAME test_break_lag_compensation COMMAND test_break_lag_compensation)
     set_tests_properties(test_break_lag_compensation PROPERTIES LABELS "headless;network")
 
+    # test_break_snapshot_interp: remote-entity snapshot interpolation
+    # (docs/design/client_prediction.md section 6).
+    add_executable(test_break_snapshot_interp tests/test_break_snapshot_interp.c
+        src/network/break_snapshot_interp.c)
+    target_include_directories(test_break_snapshot_interp PRIVATE ${TEST_INCLUDE_DIRS})
+    if(UNIX)
+        target_link_libraries(test_break_snapshot_interp PRIVATE m)
+    endif()
+    add_test(NAME test_break_snapshot_interp COMMAND test_break_snapshot_interp)
+    set_tests_properties(test_break_snapshot_interp PROPERTIES LABELS "headless;network")
+
     # test_filewatch_backend: platform-agnostic backend selection policy.
     add_executable(test_filewatch_backend tests/test_filewatch_backend.c
         src/platform/filewatch_backend.c)

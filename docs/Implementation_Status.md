@@ -14465,3 +14465,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **实现**：新增 `engine/src/network/break_lag_compensation.{h,c}`。服务端每个 tick 记录实体包围盒，保留有限的历史；`raycast` 在客户端报告的视图 tick 上做射线命中判定，返回最近的命中（距离相同取较小 id，可跳过开枪者）。视图 tick 超前或早于 `max_rewind_ticks` 时返回 REJECTED，视图 tick 时不存在的实体打不中；翻转或非有限的包围盒、非有限的射线参数都被拒绝。设计见 `docs/design/lag_compensation.md`。
 - **TDD 与变异**：`test_break_lag_compensation` 10 例，先以链接失败为 RED，含与暴力参考实现比较的随机性质测试。32 项变异中 29 项判红，3 项等价（理由见设计文档）。
 - **验证**：normal/ASan+UBSan/TSan 10/10；Windows 实机 MSVC 10/10；`build-current-vk` 非 fuzz 463/463，fuzz 24/24。本提交自身的远端工作流结果不在此预写。
+
+## 远端实体的快照插值（2026-11-27）
+
+- **缺口**：`client_prediction.md` 第 4 节把插值与平滑列为未交付。
+- **实现**：新增 `engine/src/network/break_snapshot_interp.{h,c}`。每个远端实体保存最多 32 个按 tick 排序的快照；在渲染 tick 前后两个快照之间做位置线性插值和朝向 slerp（取较短弧）；超过最新快照时按最后一段速度外推，外推有上限；间隔超过上限的两个快照不混合（传送）。乱序、重复、过旧的快照分别排序、忽略、拒绝，四元数在输入时归一化。设计见 `docs/design/client_prediction.md` 第 6 节。
+- **TDD 与变异**：`test_break_snapshot_interp` 12 例，先以链接失败为 RED，含 200 tick 丢包乱序的随机性质测试。31 项变异全部判红或通过删除无效特判消除，理由见设计文档。
+- **验证**：normal/ASan+UBSan/TSan 12/12；Windows 实机 MSVC 12/12；`build-current-vk` 非 fuzz 464/464，fuzz 24/24。本提交自身的远端工作流结果不在此预写。
