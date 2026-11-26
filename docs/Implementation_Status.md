@@ -14300,3 +14300,24 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：`test_runtime_metrics` 新增 3 例，先以 `stats.queued != 1` 失败为 RED。四项变异判红：忽略配置开关、与最旧一条比较、跳过长度检查、跳过字节比较。
 - **验证**：`test_runtime_metrics` 42/42（normal/ASan+UBSan 含 leak 检测/TSan 均 42/42）；`build-current-vk` 全量 CTest 463/463、0 失败。
 - **边界**：不做全局去重（需哈希索引且会改变 FIFO 语义）、批量合并、压缩、持久化；HTTP 推送仍仅 POSIX。本收据提交自身的远端工作流结果不在此预写。
+
+## AOI 与指标切片的远端收据（2026-11-26 汇总）
+
+本节记录本批 14 个提交（`f75d479e`..`bcdd95f0`）截至记录时实际取得的远端结论，不预写未完成项。
+
+- **`1cc7f4c6`（AOI 过滤发布 + scope 适配器收据提交）**：主 CI run `45830294193` **success**，
+  **25 success、3 条件 skip、0 failed**；三项 skip 为既有条件通道（Steam Deck 实机基准、
+  proton 参考通道、`lane-gpu-runtime-windows-d3d12`），不计执行通过。该 run 覆盖
+  `f75d479e`(publish_filtered)、`6a16139e`(scope_keep) 与本提交的全部代码。
+- **`f75d479e`**、**`6a16139e`**：各自的 CI run 结论为 failure，但非成功项全是 **steps=0 的
+  cancelled**（macOS Redis / macOS Snowflake / macOS Cocoa+MoltenVK / iOS build-only），
+  即等待 macOS/iOS runner 容量而从未进入执行的基础设施取消；其余分别为 24 与 22 success、
+  3 条件 skip、0 真实失败。详见上文两条单独收据。后续 `1cc7f4c6` 的全绿 run 覆盖同一代码。
+- **windows-d3d12 独立工作流**：`f75d479e`、`6a16139e`、`1cc7f4c6`、`23045a82`、`c51ccac3`、
+  `836bcc2d`、`162ba659`、`8aacfc87`、`f72e9a6d`、`84f37eb0` 全部 **success**。
+- **proton-d3d12（兼容参考通道）**：`6a16139e`、`1cc7f4c6`、`c51ccac3`、`162ba659`、
+  `8aacfc87`、`84f37eb0` 全部 success；contract 退出码 77 仅表示兼容通道，不是 GPU 验收。
+- **仍未取得远端结论**：`8c966dcf`（重试队列）、`44365115`（文档对账）、`de40ff8f`（排空
+  循环）、`bcdd95f0`（重复折叠）的主 CI 仍在 runner 队列中排队未启动，windows-d3d12 部分
+  in_progress。这四项的本地证据为各自条目所载的 TDD/变异/ASan+UBSan/TSan 与全量 CTest，
+  **不以本地结果替代远端结论**。
