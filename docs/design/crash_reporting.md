@@ -355,3 +355,26 @@ pass 2 就会溢出。此前该解析器有单元测试但无变异 fuzz 目标�
 负向对照把 `bc_valid_hexblob_line` 的 `hex > 2*max_bytes` 上界去掉后，fuzzer 立即以
 `bc_decode_hexblob` 的 heap-buffer-overflow 失败（`break_crash.c:229`），证明该目标确实能捕获
 pass1/pass2 长度不一致导致的溢出。`test_break_crash` 37/37；`build-current-vk` fuzz lane 18/18。
+
+## 崩溃统计文件解析器的 fuzz 与 CI fuzz 列表修正（2026-11-27）
+
+`break_crash_cluster_parse` 是采集端对持久化 "break-crash-stats v1" 统计文件的解析器：读取注册的
+build 列表、去重 seen 哈希和每签名聚类（计数、首末 build、fixed build、regressed、top symbol），填入
+固定大小缓冲（`sig[65]`、`seen[65]`、`symbol[128]`，上限 1024 build / 4096 seen / 4096 签名），
+解析末尾再用 `break_crash_cluster_serialize` 重新序列化、要求输入逐字节等于规范形。此前有单元测试
+但无变异 fuzz。
+
+新增 `engine/tests/fuzz_crash_cluster.c`：因文件含 crypto 派生布局，不手工编码，而用公开 cluster API
+在运行时构造合法种子（两个 build、两个签名、一次 mark_fixed），再做字节翻转/插入/删除/就地加长行
+变异。不变量：parse 不越界、不改入参；被接受的输入必须逐字节等于其 serialize（解析器自己承诺规范形，
+fuzzer 据此检验），且重新解析后再序列化幂等。`CRASH_CLUSTER_LIBFUZZER=1` 可导出到 libFuzzer。
+注册为 `fuzz_crash_cluster_smoke`（种子 67）。
+
+验证：种子 67×200000、种子 103×100000 在 ASan+UBSan+leak 全程 clean（约 2k–4.7k 接受）；负向对照
+去掉解析末尾的规范形校验后，fuzzer 在第 103 次迭代即以「accepted input is not canonical」失败，
+证明该目标确实能检出宽松接受。`test_break_crash_cluster` 26/26；`build-current-vk` fuzz lane 19/19。
+
+顺带修正 CI：`.github/workflows/ci.yml` 的 ASan/UBSan fuzz-smoke 步骤此前在
+`fuzz_break_online_voice fuzz_world_delta_wire` 行尾漏了续行反斜杠，`fuzz_runtime_metrics_decode`
+因此被当成独立的空命令行、从未被该步构建（其 smoke 实为 Not Run）。现补回续行并把三个崩溃 fuzz
+目标（symbols/record/cluster）加入三处构建列表（ASan/UBSan smoke 与两处 libFuzzer 构建行）。

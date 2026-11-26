@@ -14378,3 +14378,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **缺口**：`break_crash_record_parse`（采集端对上传的 "break-crash-v1" 记录文本的两遍解析）此前有单元测试但无变异 fuzz。pass 2 信任 pass 1 的边界把数据填入固定缓冲（stack_window/context_blob/modules/name/build_id），两遍不一致即溢出，属需 fuzz 的典型面。
 - **实现**：新增 `engine/tests/fuzz_crash_record.c`，以 golden 记录为种子，除常规变异外会在换行前就地插入偶发数 KiB 的 hex，使单次迭代即可把 blob 推过 4 KiB 字段上界以压到长度判断。不变量：不越界、不改入参、被接受记录可在 64 KiB 内重序列化并再解析且序列化幂等。注册 `fuzz_crash_record_smoke`（种子 61）进三处 fuzz 列表，`CRASH_RECORD_LIBFUZZER` 可导出到 libFuzzer；链接 `break_crash` + `platform_fs` + `break_version`，仅在 `TARGET break_crash` 时构建。
 - **验证**：种子 61×200000、种子 101×100000 在 ASan+UBSan+leak 全程 clean；负向对照（去掉 `bc_valid_hexblob_line` 的 `hex > 2*max_bytes` 上界）在 fuzzer 下立即触发 `bc_decode_hexblob` 的 heap-buffer-overflow（`break_crash.c:229`），证明目标可检出 pass1/pass2 长度不一致的溢出。`test_break_crash` 37/37；`build-current-vk` fuzz lane 18/18。两项 `test_core_app_*contract` 若在提交前运行会因新源未被 `git archive HEAD` 收录而失败，提交后消失，非回归。本收据提交自身的远端工作流结果不在此预写。
+
+## 崩溃统计文件解析器的 fuzz 目标与 CI fuzz 列表修正（2026-11-27）
+
+- **缺口**：`break_crash_cluster_parse`（采集端对持久化 "break-crash-stats v1" 统计文件的解析）有单元测试但无变异 fuzz；它填固定缓冲后再要求输入逐字节等于规范形，属需 fuzz 的典型面。至此崩溃管线三个不可信解析器（symbols/record/cluster）全部有 fuzz。
+- **实现**：新增 `engine/tests/fuzz_crash_cluster.c`，用公开 cluster API 运行时构造合法种子（含 crypto 派生布局，不手工编码），变异含就地加长行。不变量：不越界、不改入参、被接受输入逐字节等于其 serialize、再解析幂等。注册 `fuzz_crash_cluster_smoke`（种子 67），`CRASH_CLUSTER_LIBFUZZER` 可导出 libFuzzer；仅在 `TARGET break_crash_cluster` 构建。
+- **CI 修正**：`.github/workflows/ci.yml` 的 ASan/UBSan fuzz-smoke 步骤在 `fuzz_world_delta_wire` 行尾漏续行反斜杠，使 `fuzz_runtime_metrics_decode` 从未被该步构建（smoke 实为 Not Run）。补回续行，并把 symbols/record/cluster 三个崩溃 fuzz 目标加入三处 CI 构建列表。
+- **验证**：种子 67×200000、种子 103×100000 在 ASan+UBSan+leak 全程 clean；负向对照（去掉解析末尾规范形校验）在第 103 次迭代即以「not canonical」失败，证明目标可检出宽松接受。`test_break_crash_cluster` 26/26；`build-current-vk` fuzz lane 19/19。两项 `test_core_app_*contract` 若在提交前运行会因新源未入 `git archive HEAD` 失败，提交后消失，非回归。本收据提交自身的远端工作流结果不在此预写。

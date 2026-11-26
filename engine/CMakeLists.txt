@@ -8489,6 +8489,24 @@ endif()
         target_link_libraries(fuzz_crash_record PRIVATE break_crash)
     endif()
 
+    # Mutation fuzzer for break_crash_cluster_parse, the parser for the
+    # persisted "break-crash-stats v1" statistics file. It fills fixed-size
+    # buffers then demands the input be exactly canonical; the fuzzer builds its
+    # seed through the real cluster API and holds parse to that round-trip.
+    if(TARGET break_crash_cluster)
+        add_executable(fuzz_crash_cluster EXCLUDE_FROM_ALL tests/fuzz_crash_cluster.c
+            src/platform/platform_fs.c src/core/break_version.c)
+        set_property(TARGET fuzz_crash_cluster PROPERTY C_STANDARD 11)
+        target_include_directories(fuzz_crash_cluster PRIVATE ${TEST_INCLUDE_DIRS})
+        if(ENGINE_PLATFORM STREQUAL "linux")
+            target_compile_definitions(fuzz_crash_cluster PRIVATE
+                ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+        elseif(ENGINE_PLATFORM STREQUAL "windows")
+            target_compile_definitions(fuzz_crash_cluster PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        endif()
+        target_link_libraries(fuzz_crash_cluster PRIVATE break_crash_cluster)
+    endif()
+
     # Mutation fuzzer for the editor remote session wire path (ids 4..21):
     # mutated envelopes -> the real break_net codec -> the real session
     # manager -> the real editor_remote.c handlers on a live headless shell
@@ -8548,6 +8566,10 @@ endif()
         if(TARGET fuzz_crash_record)
             add_test(NAME fuzz_crash_record_smoke COMMAND fuzz_crash_record 2000 61)
             set_tests_properties(fuzz_crash_record_smoke PROPERTIES LABELS "fuzz")
+        endif()
+        if(TARGET fuzz_crash_cluster)
+            add_test(NAME fuzz_crash_cluster_smoke COMMAND fuzz_crash_cluster 2000 67)
+            set_tests_properties(fuzz_crash_cluster_smoke PROPERTIES LABELS "fuzz")
         endif()
         # Checked-in wire samples, one per file; the name prefix is the expected
         # decode outcome. Regenerate with `fuzz_core_app_network --emit-corpus <dir>`.
