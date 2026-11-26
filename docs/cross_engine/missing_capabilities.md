@@ -1097,3 +1097,9 @@ authority handoff 和默认全局公平调度仍未交付。正常断连顺序�
 `038ffcac` 已在远端 CI `45721079110`（25 success、3 条件 skip、0 failed）、windows-d3d12 `45721079010` 与 Proton `45723273130` 上通过；本地 OpenGL 480/480、Vulkan 482/482 与三树 50/50 亦通过。
 
 这仍只关闭进程内只读的发布进度视图。指标协议与远程采集、告警，以及共享 live World、权威 simulation 合并、跨 World 持久身份、AOI 裁剪、自动换级、完整资产链、inbound completion 映射和可靠每 epoch 广播都未交付；`continuation_pending` 含 Session `attempt_pending`，`observed_publication_epoch == 0` 也不代表从未 drain，两者都不能当作 `pending()==0` 的证据。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。
+
+### 第 17 节补充（2026-11-26）：诊断测试拆分不改变能力边界
+
+诊断快照用例已拆成三个独立用例并补上槽位复用后的升序断言，`test_runtime_world_session` 52/52，双后端完整 CTest 与远端 CI `45725560238`、windows-d3d12 `45725560433` 均通过；这只是测试可定位性的提升，不新增生产行为。
+
+能力边界不变：指标协议与远程采集、告警，以及共享 live World、权威 simulation 合并、跨 World 持久身份、AOI 裁剪、自动换级、完整资产链、inbound completion 映射与可靠每 epoch 广播仍未交付。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。

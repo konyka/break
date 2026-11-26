@@ -13996,3 +13996,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 本地最终 HEAD：`test_runtime_world_session` **50/50**，normal、ASan+UBSan（显式 `detect_leaks=1`）与 TSan 三树通过且无 race；完整未过滤 CTest OpenGL **480 注册、480 通过、0 失败**（rc=0），Vulkan **482 注册、482 通过、0 失败**（rc=0）；命名 STAGE=4 与 Wayland 文档合同通过。
 - 远端 CI `45721079110` **25 success、3 条件 skip、0 cancelled、0 failed**；windows-d3d12 `45721079010` success；Proton `45723273130` success，上游 run-id=`45721079010`，device/pipeline contract 均为 77（仅兼容通道）。
 - 验收边界：`continuation_pending` 是最近一次 drain 末尾重算的标志，判据含 Session `attempt_pending`，不能单独代表 adapter 欠账；`observed_publication_epoch == 0` 不等于“从未 drain”（rebaseline 与空/关闭 publication 都会归零）；摘要与逐连接快照都不查询 Session，不能替代 `pending()==0`。指标协议与远程采集、告警，以及共享 live World、权威 simulation 合并、跨 World 持久身份、AOI、自动换级、资产链与可靠每 epoch 广播仍未交付。本收据提交自身的工作流结果不在此预写。
+
+## 诊断快照测试拆分与槽位复用覆盖（2026-11-26）
+
+- **改动**：把 `connection_snapshots_report_per_connection_state` 巨型用例拆成 `connection_snapshots_capacity_order_and_read_only`、`connection_snapshots_publication_state_is_read_only`、`connection_snapshots_reset_on_close_and_rebaseline` 三个独立用例，早期失败不再掩盖后续场景；并新增「关闭 slot 0 后新连接落回空槽、结果仍按 slot 升序」的断言。纯测试改动，生产代码未变。
+- **验证**：`test_runtime_world_session` 由 50 增至 **52/52**，normal、ASan+UBSan（显式 `detect_leaks=1`）与 TSan 三树通过，TSan 无 race；完整未过滤 CTest OpenGL **480/480**、Vulkan **482/482**，均 rc=0；命名 STAGE=4 与 Wayland 文档合同通过。
+- **远端**：CI `45725560238` **25 success、3 条件 skip、0 cancelled、0 failed**；windows-d3d12 `45725560433` success。本次未改协议或图形路径，Proton D3D12 兼容 lane 未触发，不作为本切片的验收项。
+- **边界**：仅提升测试可定位性与覆盖率，不改变任何已记录的能力缺口（指标协议与远程采集、告警、共享 live World、权威 simulation 合并、跨 World 持久身份、AOI、自动换级、资产链、inbound completion 映射与可靠每 epoch 广播均仍开放）；既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。本收据提交自身的工作流结果不在此预写。
