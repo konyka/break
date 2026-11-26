@@ -814,6 +814,7 @@ add_library(break_ecs_replication STATIC
     src/ecs/world_snapshot_publication.c
     src/ecs/world_delta.c
     src/ecs/world_delta_wire.c
+    src/ecs/net_entity_map.c
     src/core/log.c)
 set_property(TARGET break_ecs_replication PROPERTY C_STANDARD 11)
 target_include_directories(break_ecs_replication PUBLIC
@@ -6123,6 +6124,7 @@ endif()
         src/ecs/world_snapshot_publication.c
         src/ecs/world_delta.c
         src/ecs/world_delta_wire.c
+        src/ecs/net_entity_map.c
         src/network/break_aoi.c
         src/core/log.c
         tests/break_world_delta_test_hooks.c)
@@ -6150,6 +6152,13 @@ endif()
     endif()
     target_link_libraries(test_ecs_replication PRIVATE break_ecs_replication_test)
     add_test(NAME test_ecs_replication COMMAND test_ecs_replication)
+
+    add_executable(test_net_entity_map tests/test_net_entity_map.c)
+    target_include_directories(test_net_entity_map PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_net_entity_map PRIVATE break_ecs_replication)
+    add_test(NAME test_net_entity_map COMMAND test_net_entity_map)
+    set_tests_properties(test_net_entity_map PROPERTIES
+        TIMEOUT 20 LABELS "headless;ecs;replication")
 
     add_executable(test_world_delta_wire tests/test_world_delta_wire.c)
     target_include_directories(test_world_delta_wire PRIVATE ${TEST_INCLUDE_DIRS})

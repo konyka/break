@@ -14205,3 +14205,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 远端 CI `45808036662` 结论 **success**：25 success、3 条件 skip（Steam Deck、Proton、`lane-gpu-runtime-windows-d3d12`），0 失败；四条 macOS lane、`Linux arm64 cross-build + QEMU tests (GCC)`、三条 Windows headless lane 均 success。
 - 独立的 windows-d3d12 工作流 `45808036561` success。
 - 边界同各切片收据。
+
+## 跨 World 持久网络身份映射（2026-11-26）
+
+- **实现**：新增 `engine/src/ecs/net_entity_map.{h,c}`（编入 `break_ecs_replication` 与 `break_ecs_replication_test`）：`BreakNetEntityId`（u64）与 `(world_key, Entity)` 的有界双向映射；本地分配严格递增且永不复用，`adopt` 登记外部 id 并推进分配器，`rebind` 把身份移到另一 World 的 Entity，一一对应冲突为 CONFLICT，满表 OVERLOAD，id 空间耗尽 EXHAUSTED。设计见 `docs/design/ecs_snapshot_replication_aoi.md`「跨 World 持久身份」。
+- **TDD 与变异**：新增 `test_net_entity_map`（8 用例），先以缺失源文件配置失败为 RED。五项变异判红：adopt 不推进分配器（2 用例红）、rebind 不查占用、去掉耗尽检查、admit 不查位置占用、rebind 冲突判定失效。
+- **验证**：`test_net_entity_map` 8/8（normal/ASan+UBSan/TSan 均 8/8）；`ctest -L "ecs|replication"` 21/21；命名规范检查 3/3。arm64 QEMU lane 的构建目标与运行白名单已加入该测试。
+- **边界**：尚未接入 BRWD/aspect 线上格式、World snapshot/delta 与 core_app 换级；权威 simulation 合并、inbound apply、预测回滚、共享 live World、AOI 裁剪仍未实现。本收据提交自身的远端工作流结果不在此预写。

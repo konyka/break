@@ -1884,3 +1884,5 @@ arm64 lane 新增 `test_core_app_network`（25/25）和 `test_core_app_network_o
 - **验证**：`test_core_app_net_transport` 由 36 增至 **44**，覆盖默认关闭、认证门控与 ACK 停等、构建失败计数与恢复、核心 tick 回绕仍单调、legacy 开关、adapter destroy TIMEOUT 后 publication 仍可 acquire、重开后需重新就绪、notice 溢出后下一 tick 恢复。`test_runtime_world_session` 由 52 增至 **56**，`test_world_session_recovery` 由 22 增至 **23**。八项 transport 变异与七项 adapter 变异全部实际判红（其中一个变异等价、一个被编译错误挡住，未计入）。真实进程 `test_core_app_network_world` 与 `test_core_app_network_single_session` 在默认 Runtime 路径下通过。
 
 仍未完成：**权威 simulation 合并、inbound apply 到权威 World、预测/回滚、共享 live World、跨 World 持久身份、AOI 裁剪、自动换级、完整资产链、可靠每 epoch 广播、指标协议与告警**。本项不预写远端或其他平台验收。
+
+更新（2026-11-26）：指标协议与告警已在 `runtime_core` 交付（注册表、六处子系统导出、阈值/持续/边沿告警、历史与窗口增量、严格解码、HTTP 推送与告警投递，见 `docs/design/runtime_metrics.md`）；跨 World 持久身份的映射表已在 `break_ecs_replication` 交付（见 `docs/design/ecs_snapshot_replication_aoi.md`「跨 World 持久身份」），但二者都尚未接入 core_app。其余各项不变。

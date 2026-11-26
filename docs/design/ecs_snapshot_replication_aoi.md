@@ -345,3 +345,15 @@ destroy 现在先 close/退订再判断真实 pending，false 后没有新 ingre
 immutable publication 仍只保留 latest-current：`break_world_snapshot_publication_publish` 以严格单调递增的 `publication_epoch` 替换当前快照，`break_world_snapshot_publication_acquire` 返回独立引用的 lease。loopback 测试先 publish E1，再 publish E2 覆盖 current；随后 `break_world_snapshot_lease_release` 把 lease 的 `snapshot/level_generation/publication_epoch` 清零，而调用方对 E1 的引用释放后，Session 上仍 pending 的 active attempt 继续独立持有 E1，续发字节与 `encode_full(E1)` 逐字节一致且不等于 E2。这坐实了 lease/epoch 与 snapshot id 是三类不同的身份：lease 是短锁引用，`publication_epoch` 是发布代次，snapshot id 是内容标识；adapter 判账用 epoch，wire 续发用 attempt 持有的 snapshot id，不依赖调用方指针寿命。
 
 真实路径是 snapshot build → publication publish → direct notice（`submit_publish_current`）→ owner `drain` → 每连接 `break_world_session_publish_snapshot` → BRWD/BRFG 分片 → AUTH socket；入站侧每连接各自的 remote World 独立 drain，两条入站 S1 不会写进同一个 World。**这里仍然没有实现 AOI、共享 live World 或权威 simulation 合并**：每连接是独立的 outbound 快照流与独立的入站 World，没有可见性裁剪，也没有把多个连接合并到同一权威世界。
+
+## 补充（2026-11-26）：跨 World 持久身份
+
+World 的 `Entity{index, generation}` 只在所属 World 内有效，随 World 一起消失。`engine/src/ecs/net_entity_map.{h,c}`（属于 `break_ecs_replication` 与 `break_ecs_replication_test`）提供跨 World 的网络身份 `BreakNetEntityId`（u64，0 表示无）：对象迁入新 World（换级、cell 交接、重建的 inbound World）时把同一个 id 重新绑定到新 Entity，线上名字不变。
+
+- **分配**：`bind_new(map, world_key, entity, &id)` 从 `first_id` 起严格递增分配，release 后也不复用，因此线上的过期 id 不会指向别的对象。`adopt(map, id, world_key, entity)` 登记别处（如权威端）分配的 id，并把本地分配器推到它之后。分配到 `UINT64_MAX` 之后为 `EXHAUSTED`，失败关闭。
+- **一一对应**：每个 id 只绑定一个 `(world_key, Entity)`，每个 `(world_key, Entity)` 至多一个 id；重复绑定为 `CONFLICT` 且不改变状态。`rebind(map, id, world_key, entity)` 把已有 id 移到新位置，目标已被其他 id 占用为 `CONFLICT`，重绑到当前位置为 `OK`。
+- **查询**：`entity(map, id, &world_key, &entity)` 与 `id(map, world_key, entity, &id)` 双向查找；`world_key` 是调用方选的 u32（例如关卡代际），映射表从不解引用 World。
+- **有界**：最多 `capacity`（≤ 65536）个活绑定，满为 `OVERLOAD`；只在 create 时分配。非线程安全，由拥有 World 的线程（LogicThread）持有。
+- **验证**：`test_net_entity_map` 8/8（normal/ASan+UBSan/TSan），覆盖配置校验、单调不复用、双向查找、跨 World 重绑、冲突、满表与释放、adopt 推进分配器、id 空间耗尽。五项变异判红：adopt 不推进分配器、rebind 不查占用、耗尽检查去掉、admit 不查 `(world_key, Entity)` 占用、rebind 冲突判定失效。arm64 QEMU lane 已加入该测试。
+
+边界：本节只交付身份映射本身。它尚未接入 BRWD/aspect 线上格式、World snapshot/delta 或 core_app 换级路径；权威 simulation 合并、inbound apply、预测回滚、共享 live World 与 AOI 裁剪仍未实现。本节不预写远端结果。
