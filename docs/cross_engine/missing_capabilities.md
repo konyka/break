@@ -1164,3 +1164,40 @@ authority handoff 和默认全局公平调度仍未交付。正常断连顺序�
 `break_world_session_publish_snapshot_filtered` 对共享 immutable target 按连接谓词裁剪出私有视图，支持一份已发布快照 fan-out 给多条连接各带不同 scope，补上了 publication 共享 fan-out 路径所缺的按连接裁剪原语。
 
 仍未交付：core_app `net_world_publish_runtime`/Runtime adapter 调用该原语、`break_aoi_compute`→`BreakNetEntityScope` 的生产组装与启用、权威 simulation 合并、inbound apply、预测回滚、共享 live World。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变；本节不预写远端结果。
+
+## 第 17 节与指标协议的状态对账（2026-11-26 汇总）
+
+上文若干条按时间顺序追加的「仍未交付」列表里，有一部分项目已在随后的切片中交付。历史段落
+保持原样不改写（它们记录的是当时的状态），本节给出当前 `master` 的核对结果，避免读者把
+早期条目当作现状。
+
+**已交付（均有源码、TDD 用例、变异检查与全量 CTest 证据）**：
+
+| 早期列为未交付 | 现状 | 位置 |
+|---|---|---|
+| AOI scope 到谓词的接线、`BreakNetEntityId` 对应 | 已交付 | `break_net_entity_scope_keep` / `BreakNetEntityScope`（`engine/src/ecs/net_entity_map.h`） |
+| 按连接 AOI 裁剪 World 快照 | 已交付 | `break_world_snapshot_filter`（`engine/src/ecs/world_snapshot.h`） |
+| world session 按连接过滤发布（权威 World 现场构建） | 已交付 | `break_world_session_publish_filtered` |
+| Publication 共享 fan-out 的按连接裁剪 | 已交付 | `break_world_session_publish_snapshot_filtered` 及回传身份的 `_id` 变体 |
+| Runtime adapter 调用该原语 | 已交付 | `BreakRuntimeWorldSessionConfig.publish_keep`（默认 NULL，显式 opt-in） |
+| 指标协议：远程传输 | 已交付 | `break_runtime_metrics_push_http`（`runtime_metrics_push_http`，仅 POSIX） |
+| 指标协议：历史采样/时间序列 | 已交付 | `BreakRuntimeMetricsHistory` |
+| 指标协议：聚合窗口与告警规则 | 已交付 | 阈值/持续/边沿求值与 `history_delta` |
+| 指标协议：告警投递 | 已交付 | `break_runtime_metrics_encode_alert_edges` + `push_alerts_http` |
+| 指标协议：子系统 name 绑定 | 已交付 | runtime_core 六个带 stats 的子系统全部导出 |
+| 投递失败的重试 backlog | 已交付 | `BreakRuntimeMetricsRetryQueue`（设计 §22） |
+
+**仍未交付（经本次核对确认）**：
+
+- **权威 simulation 合并 / inbound apply 到权威 World**：入站快照仍只进每连接诊断 World。
+- **预测与回滚**：未实现。
+- **共享 live World**：跨连接共享的是 immutable snapshot，不是可变 `World *`。
+- **完整资产链**、跨 World 资产依赖解析：未实现。
+- **可靠的每 epoch 广播**：当前为非可靠，允许中间 epoch coalesce。
+- **core_app 启用 AOI 过滤**：前置条件未满足（该诊断 World 无位置/空间索引/witness，
+  详见 `docs/design/runtime_world_aoi_integration.md`「core_app 接线的实际结论」），不属于
+  可接线项而非缺实现。
+- **指标协议**：按渠道分队列、去重、批量合并、压缩、磁盘持久化、自动退避计时；HTTP 推送
+  仅 POSIX，无 Windows 实现。
+
+既有 Lua/TSan 进程限制、条件 skip 与完整 sanitizer suite 边界不变。本节不预写远端结果。
