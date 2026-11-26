@@ -441,3 +441,39 @@ payload、attempts 与顺序，空队列；容量查询与差一 OVERLOAD；读�
 接受的镜像读入空队列再保存必须逐字节等于输入。种子 79 与 113 各 200000 次在 ASan+UBSan+leak 下
 干净（约 6.7k 接受）。负向对照：去掉条目头边界时 ASan 报 heap-buffer-overflow，去掉尾随字节检查时
 fuzzer 报「not canonical」。normal/ASan+UBSan/TSan 74/74；`build-current-vk` fuzz lane 22/22。
+
+## 34. 按渠道分队列的重试路由
+
+一个重试队列只服务一个目的地。若把指标快照和告警边沿放进同一个队列，`/metrics` 采集端宕机时，
+停在队首的快照会挡住排在后面的告警：`retry_drain` 在第一次未达上限的失败处停下，告警只能跟着等。
+告警恰恰是采集端出问题时最需要送达的数据。
+
+`BreakRuntimeMetricsRetryRouter` 为每个渠道各持有一个队列，每个渠道有自己的 `send` 回调、`user`、
+每次排空的发送上限 `max_sends`、放弃上限 `max_attempts` 和退避参数 `backoff`。
+`break_runtime_metrics_retry_router_drain(router, now_us, out)` 按渠道顺序对每个队列调用第 31 节的
+`retry_drain_timed`，把各渠道的计数累加到 `out`。
+
+- **互不阻塞**：某个渠道失败、仍在退避期内或返回错误，都不影响其他渠道在同一次调用中排空。渠道
+  返回的错误在所有渠道都处理完之后才报告，返回第一个错误。
+- **各用各的策略**：退避和放弃上限按渠道生效。例如告警用短退避、永不放弃，指标快照用长退避、
+  超过次数后丢弃。`out->deferred_channels` 统计本次队首尚未到期的渠道数。
+- **最早到期**：`router_next_due` 返回所有非空渠道中最早的截止时间（0 表示有渠道立即可发），
+  所有渠道都为空时为 `STALE`，调用方据此决定睡多久。
+- **配置先整体校验**：`channel_count` 为 1..8（`BREAK_RUNTIME_METRICS_RETRY_MAX_CHANNELS`），每个渠道
+  须有 `send`、`max_sends >= 1`，退避与队列参数按 `drain_timed` 和 `retry_create` 的规则校验。任一渠道
+  非法都返回 INVALID 且 `*out = NULL`，不会留下建了一半的路由。配置被复制，调用方的数组不必长期保留。
+- **下标越界即拒绝**：`router_enqueue` 与 `router_stats` 对不小于 `channel_count` 的渠道下标返回
+  INVALID，不做截断。其余规则（所有权线程、发送回调中不得入队）与底层队列相同。
+
+验证：`test_runtime_metrics` 新增 8 例（共 82 例），先以未声明类型编译失败为 RED：各渠道的 payload
+只到本渠道的回调且保持顺序；一个渠道持续失败时其他渠道在同一次调用中排空完积压；各渠道按自己的退避与
+放弃上限；`next_due` 取最小值、全空为 STALE；渠道返回错误时后续渠道照常排空并在最后报告；恰好 8 个
+渠道可用、越界下标被拒、9 个渠道创建失败；配置与调用参数校验。19 项变异判红，其中 3 项（入队下标差一、
+渠道上限差一、`stats` 不查下标）只在 ASan 下以越界访问判红。1 项等价变异：把「渠道错误留到最后报告」
+改成「立即返回」不改变可观察行为，因为 `drain_timed` 只在该渠道自身正在发送时返回 REJECTED，而路由按
+顺序逐个排空，处理下一个渠道时不存在这种状态。
+
+`test_runtime_metrics_push_http` 新增 1 例真实 socket 集成测试：两个回环假采集端，`/metrics` 回 503、
+`/alerts` 回 200，先入队指标快照再入队告警。一次 `router_drain` 后告警以 `text/x-break-alerts` 送达
+`/alerts`，快照仍留在指标渠道等待下次到期。把路由改成所有渠道共用一个队列时，该用例失败。
+normal/ASan+UBSan/TSan 下 82/82 与 11/11；`build-current-vk` 非 fuzz 全量 462/462，fuzz 22/22。

@@ -389,6 +389,99 @@ TEST(a_failed_push_is_parked_and_a_later_drain_delivers_it) {
     break_runtime_metrics_destroy(m);
 }
 
+/* Per-channel delivery over real sockets: a channel's send POSTs its parked
+ * body to its own endpoint path on its own collector. */
+typedef struct {
+    int port;
+    const char *path;
+    const char *content_type;
+    u32 sends;
+} ChannelPost;
+
+static BreakRuntimeError channel_post(void *user, const void *bytes, usize len) {
+    ChannelPost *p = (ChannelPost *)user;
+    char url[128];
+    u8 resp[64];
+    usize resp_len = 0u;
+    int status = 0;
+    BreakHttpConfig cfg;
+    p->sends++;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.io_timeout_ms = 3000u;
+    snprintf(url, sizeof(url), "http://127.0.0.1:%d%s", p->port, p->path);
+    return break_http_post(&cfg, url, bytes, len, p->content_type, resp, sizeof(resp), &resp_len,
+                           &status) == BHTTP_OK &&
+                   status == 200
+               ? BREAK_RUNTIME_OK
+               : BREAK_RUNTIME_FAILED;
+}
+
+TEST(a_dead_metrics_collector_does_not_hold_back_alert_delivery) {
+    static Fake metrics_down;
+    static Fake alerts_up;
+    BreakRuntimeMetricsRetryChannelConfig ch[2];
+    BreakRuntimeMetricsRetryRouterConfig cfg;
+    BreakRuntimeMetricsRetryRouter *r = NULL;
+    BreakRuntimeMetricsRetryRouterResult res;
+    BreakRuntimeMetricsRetryStats st;
+    ChannelPost mp, ap;
+    int mport = 0, aport = 0;
+    static const char kMetricsBody[] = "BRKM1 net.sent counter 7\n";
+    static const char kAlertBody[] = "BRKA1 raised q.depth above 5\n";
+    memset(ch, 0, sizeof(ch));
+    ch[0].queue.capacity = 4u;
+    ch[0].queue.max_payload_bytes = 256u;
+    ch[0].send = channel_post;
+    ch[0].user = &mp;
+    ch[0].max_sends = 4u;
+    ch[0].backoff.base_us = 1000u;
+    ch[0].backoff.max_us = 1000u;
+    ch[1] = ch[0];
+    ch[1].user = &ap;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.channels = ch;
+    cfg.channel_count = 2u;
+    ASSERT_EQ(break_runtime_metrics_retry_router_create(&cfg, &r), BREAK_RUNTIME_OK);
+
+    ASSERT_TRUE(fake_start(&metrics_down,
+                           "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n"
+                           "Connection: close\r\n\r\n",
+                           &mport));
+    ASSERT_TRUE(fake_start(&alerts_up, OK200, &aport));
+    mp.port = mport;
+    mp.path = "/metrics";
+    mp.content_type = BREAK_RUNTIME_METRICS_PUSH_HTTP_CONTENT_TYPE;
+    mp.sends = 0u;
+    ap.port = aport;
+    ap.path = "/alerts";
+    ap.content_type = BREAK_RUNTIME_METRICS_PUSH_HTTP_ALERTS_CONTENT_TYPE;
+    ap.sends = 0u;
+    /* The metrics snapshot is enqueued first. With one shared FIFO it would
+     * sit at the head and the alert behind it would wait for the collector. */
+    ASSERT_EQ(break_runtime_metrics_retry_router_enqueue(r, 0u, kMetricsBody, strlen(kMetricsBody)),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_router_enqueue(r, 1u, kAlertBody, strlen(kAlertBody)),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_router_drain(r, 0u, &res), BREAK_RUNTIME_OK);
+    fake_stop(&metrics_down);
+    fake_stop(&alerts_up);
+    ASSERT_EQ(mp.sends, 1u);
+    ASSERT_EQ(ap.sends, 1u);
+    ASSERT_EQ(res.delivered, 1u);
+    ASSERT_EQ(res.failed, 1u);
+    /* The alert reached its own endpoint with its own content type... */
+    ASSERT_NOT_NULL(strstr(alerts_up.got, "POST /alerts HTTP/1.1\r\n"));
+    ASSERT_NOT_NULL(strstr(alerts_up.got, "text/x-break-alerts"));
+    ASSERT_NOT_NULL(strstr(alerts_up.got, kAlertBody));
+    /* ...while the metrics snapshot stays parked for its next due time. */
+    ASSERT_NOT_NULL(strstr(metrics_down.got, "POST /metrics HTTP/1.1\r\n"));
+    ASSERT_EQ(break_runtime_metrics_retry_router_stats(r, 0u, &st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(st.queued, 1u);
+    ASSERT_EQ(break_runtime_metrics_retry_router_stats(r, 1u, &st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(st.queued, 0u);
+    break_runtime_metrics_retry_router_destroy(r);
+}
+
 TEST_MAIN_BEGIN()
     signal(SIGPIPE, SIG_IGN);
     RUN_TEST(a_200_answer_is_ok_and_the_body_decodes_to_the_snapshot);
@@ -401,4 +494,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(all_steady_edges_send_nothing_and_succeed);
     RUN_TEST(alert_delivery_failures_and_local_refusals);
     RUN_TEST(a_failed_push_is_parked_and_a_later_drain_delivers_it);
+    RUN_TEST(a_dead_metrics_collector_does_not_hold_back_alert_delivery);
 TEST_MAIN_END()

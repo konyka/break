@@ -587,6 +587,80 @@ BreakRuntimeError break_runtime_metrics_retry_load(
     usize len,
     u32 *out_loaded);
 
+/* Per-channel retry router (design: docs/design/runtime_metrics.md section 34).
+ *
+ * One retry queue serves one destination. Putting metrics snapshots and alert
+ * transitions in the same queue would let a dead /metrics collector hold the
+ * FIFO head and starve /alerts. The router keeps one queue per channel, each
+ * with its own send callback, attempt limit and backoff, and drains all of
+ * them in one call: a failure or a pending backoff on one channel never stops
+ * another. Ownership, threading and reentrancy are those of the queues it
+ * owns (owner-thread only; no enqueue from inside a send callback). */
+typedef struct BreakRuntimeMetricsRetryRouter BreakRuntimeMetricsRetryRouter; /* opaque */
+
+#define BREAK_RUNTIME_METRICS_RETRY_MAX_CHANNELS 8u
+
+typedef struct BreakRuntimeMetricsRetryChannelConfig {
+    BreakRuntimeMetricsRetryConfig queue; /* validated as by retry_create */
+    BreakRuntimeMetricsRetrySendFn send;  /* required */
+    void *user;                           /* passed to send */
+    u32 max_sends;                        /* per drain; >= 1 */
+    u32 max_attempts;                     /* 0 = never give up */
+    BreakRuntimeMetricsRetryBackoff backoff; /* validated as by drain_timed */
+} BreakRuntimeMetricsRetryChannelConfig;
+
+typedef struct BreakRuntimeMetricsRetryRouterConfig {
+    const BreakRuntimeMetricsRetryChannelConfig *channels;
+    u32 channel_count; /* 1..BREAK_RUNTIME_METRICS_RETRY_MAX_CHANNELS */
+} BreakRuntimeMetricsRetryRouterConfig;
+
+typedef struct BreakRuntimeMetricsRetryRouterResult {
+    u32 delivered;         /* summed over channels */
+    u32 abandoned;
+    u32 failed;
+    u32 deferred_channels; /* channels whose head was not yet due */
+} BreakRuntimeMetricsRetryRouterResult;
+
+/* Validates every channel (send set, max_sends >= 1, the backoff and queue
+ * rules of drain_timed and retry_create) before allocating anything. INVALID
+ * with *out = NULL on any bad channel, a NULL config/out/channels, or a
+ * channel_count of 0 or above the maximum; OOM on allocation failure. The
+ * configuration is copied; the caller's array need not outlive the call. */
+BreakRuntimeError break_runtime_metrics_retry_router_create(
+    const BreakRuntimeMetricsRetryRouterConfig *config,
+    BreakRuntimeMetricsRetryRouter **out);
+void break_runtime_metrics_retry_router_destroy(BreakRuntimeMetricsRetryRouter *router);
+
+/* Enqueues into channel `channel` with the queue's rules. INVALID on NULL
+ * router or a channel index not below channel_count; otherwise returns what
+ * retry_enqueue returns for that channel's queue. */
+BreakRuntimeError break_runtime_metrics_retry_router_enqueue(
+    BreakRuntimeMetricsRetryRouter *router,
+    u32 channel,
+    const void *bytes,
+    usize len);
+
+/* Runs drain_timed on every channel at `now_us`, in channel order, and sums
+ * the per-channel counts into *out_result. A channel's error is reported only
+ * after every channel has been drained, so one channel cannot stop another;
+ * the first such error is returned. INVALID on NULL router/out_result. */
+BreakRuntimeError break_runtime_metrics_retry_router_drain(
+    BreakRuntimeMetricsRetryRouter *router,
+    u64 now_us,
+    BreakRuntimeMetricsRetryRouterResult *out_result);
+
+/* The earliest head deadline across all non-empty channels (0 = some channel
+ * is due now). STALE when every channel is empty. INVALID on NULL args. */
+BreakRuntimeError break_runtime_metrics_retry_router_next_due(
+    BreakRuntimeMetricsRetryRouter *router,
+    u64 *out_due_us);
+
+/* Counters of channel `channel`'s queue. INVALID on NULL args or a bad index. */
+BreakRuntimeError break_runtime_metrics_retry_router_stats(
+    BreakRuntimeMetricsRetryRouter *router,
+    u32 channel,
+    BreakRuntimeMetricsRetryStats *out_stats);
+
 /* The head entry's backoff deadline in *out_due_us (0 = due now), so an owner
  * can sleep until then instead of polling. STALE when the queue is empty (no
  * output written). INVALID on NULL arguments; REJECTED off the owner thread. */

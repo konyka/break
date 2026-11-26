@@ -1922,6 +1922,327 @@ TEST(retry_load_is_refused_from_inside_a_drain_callback) {
     break_runtime_metrics_retry_destroy(src);
 }
 
+/* Per-channel retry router. Each FakeSender is one collector endpoint. */
+static BreakRuntimeMetricsRetryRouter *make_router(FakeSender *metrics, FakeSender *alerts,
+                                                   u32 metrics_max_attempts) {
+    BreakRuntimeMetricsRetryChannelConfig ch[2];
+    BreakRuntimeMetricsRetryRouterConfig cfg;
+    BreakRuntimeMetricsRetryRouter *r = NULL;
+    memset(ch, 0, sizeof(ch));
+    memset(&cfg, 0, sizeof(cfg));
+    ch[0].queue.capacity = 4u;
+    ch[0].queue.max_payload_bytes = 32u;
+    ch[0].send = fake_send;
+    ch[0].user = metrics;
+    ch[0].max_sends = 8u;
+    ch[0].max_attempts = metrics_max_attempts;
+    ch[0].backoff.base_us = 100u;
+    ch[0].backoff.max_us = 1000u;
+    ch[1] = ch[0];
+    ch[1].user = alerts;
+    ch[1].max_attempts = 0u;
+    ch[1].backoff.base_us = 10u;
+    ch[1].backoff.max_us = 10u;
+    cfg.channels = ch;
+    cfg.channel_count = 2u;
+    return break_runtime_metrics_retry_router_create(&cfg, &r) == BREAK_RUNTIME_OK ? r : NULL;
+}
+
+TEST(router_routes_each_payload_to_its_own_channel_queue) {
+    FakeSender m, a;
+    BreakRuntimeMetricsRetryRouter *r;
+    BreakRuntimeMetricsRetryRouterResult res;
+    BreakRuntimeMetricsRetryStats st;
+    memset(&m, 0, sizeof(m));
+    memset(&a, 0, sizeof(a));
+    r = make_router(&m, &a, 0u);
+    ASSERT_NOT_NULL(r);
+    ASSERT_EQ(break_runtime_metrics_retry_router_enqueue(r, 0u, "m1", 2u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_router_enqueue(r, 1u, "a1", 2u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_router_enqueue(r, 0u, "m2", 2u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_router_stats(r, 0u, &st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(st.queued, 2u);
+    ASSERT_EQ(break_runtime_metrics_retry_router_stats(r, 1u, &st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(st.queued, 1u);
+    ASSERT_EQ(break_runtime_metrics_retry_router_drain(r, 0u, &res), BREAK_RUNTIME_OK);
+    /* Each channel's payloads reach only that channel's sender, in order. */
+    ASSERT_EQ(m.calls, 2u);
+    ASSERT_STR_EQ(m.seen[0], "m1");
+    ASSERT_STR_EQ(m.seen[1], "m2");
+    ASSERT_EQ(a.calls, 1u);
+    ASSERT_STR_EQ(a.seen[0], "a1");
+    ASSERT_EQ(res.delivered, 3u);
+    ASSERT_EQ(res.failed, 0u);
+    ASSERT_EQ(res.deferred_channels, 0u);
+    break_runtime_metrics_retry_router_destroy(r);
+}
+
+TEST(router_a_failing_channel_does_not_block_the_others) {
+    FakeSender m, a;
+    BreakRuntimeMetricsRetryRouter *r;
+    BreakRuntimeMetricsRetryRouterResult res;
+    BreakRuntimeMetricsRetryStats st;
+    memset(&m, 0, sizeof(m));
+    memset(&a, 0, sizeof(a));
+    m.always_fail = true; /* the metrics collector is down */
+    r = make_router(&m, &a, 0u);
+    ASSERT_NOT_NULL(r);
+    ASSERT_EQ(break_runtime_metrics_retry_router_enqueue(r, 0u, "m1", 2u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_router_enqueue(r, 0u, "m2", 2u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_router_enqueue(r, 1u, "a1", 2u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_router_enqueue(r, 1u, "a2", 2u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_router_drain(r, 0u, &res), BREAK_RUNTIME_OK);
+    /* The dead channel stops after one failed try; the healthy one still
+     * delivers its whole backlog in the same call. */
+    ASSERT_EQ(m.calls, 1u);
+    ASSERT_EQ(a.calls, 2u);
+    ASSERT_EQ(res.delivered, 2u);
+    ASSERT_EQ(res.failed, 1u);
+    ASSERT_EQ(break_runtime_metrics_retry_router_stats(r, 0u, &st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(st.queued, 2u);
+    ASSERT_EQ(break_runtime_metrics_retry_router_stats(r, 1u, &st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(st.queued, 0u);
+    /* New alerts keep flowing while metrics stays down. */
+    ASSERT_EQ(break_runtime_metrics_retry_router_enqueue(r, 1u, "a3", 2u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_router_drain(r, 50u, &res), BREAK_RUNTIME_OK);
+    ASSERT_EQ(a.calls, 3u);
+    ASSERT_STR_EQ(a.seen[2], "a3");
+    /* metrics is still inside its 100 us backoff, so it was not retried. */
+    ASSERT_EQ(m.calls, 1u);
+    ASSERT_EQ(res.deferred_channels, 1u);
+    break_runtime_metrics_retry_router_destroy(r);
+}
+
+TEST(router_applies_each_channels_own_backoff_and_attempt_limit) {
+    FakeSender m, a;
+    BreakRuntimeMetricsRetryRouter *r;
+    BreakRuntimeMetricsRetryRouterResult res;
+    BreakRuntimeMetricsRetryStats st;
+    memset(&m, 0, sizeof(m));
+    memset(&a, 0, sizeof(a));
+    m.always_fail = true;
+    a.always_fail = true;
+    r = make_router(&m, &a, 2u); /* metrics gives up after 2 attempts */
+    ASSERT_NOT_NULL(r);
+    ASSERT_EQ(break_runtime_metrics_retry_router_enqueue(r, 0u, "m1", 2u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_router_enqueue(r, 1u, "a1", 2u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_router_drain(r, 0u, &res), BREAK_RUNTIME_OK);
+    ASSERT_EQ(m.calls, 1u);
+    ASSERT_EQ(a.calls, 1u);
+    /* At t=10 only alerts (10 us backoff) is due; metrics (100 us) is not. */
+    ASSERT_EQ(break_runtime_metrics_retry_router_drain(r, 10u, &res), BREAK_RUNTIME_OK);
+    ASSERT_EQ(m.calls, 1u);
+    ASSERT_EQ(a.calls, 2u);
+    ASSERT_EQ(res.deferred_channels, 1u);
+    /* At t=100 metrics retries and hits its own limit; alerts never gives up. */
+    ASSERT_EQ(break_runtime_metrics_retry_router_drain(r, 100u, &res), BREAK_RUNTIME_OK);
+    ASSERT_EQ(m.calls, 2u);
+    ASSERT_EQ(res.abandoned, 1u);
+    ASSERT_EQ(break_runtime_metrics_retry_router_stats(r, 0u, &st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(st.queued, 0u);
+    ASSERT_EQ(break_runtime_metrics_retry_router_stats(r, 1u, &st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(st.queued, 1u);
+    break_runtime_metrics_retry_router_destroy(r);
+}
+
+TEST(router_reports_the_earliest_due_channel) {
+    FakeSender m, a;
+    BreakRuntimeMetricsRetryRouter *r;
+    BreakRuntimeMetricsRetryRouterResult res;
+    u64 due = 0u;
+    memset(&m, 0, sizeof(m));
+    memset(&a, 0, sizeof(a));
+    m.always_fail = true;
+    a.always_fail = true;
+    r = make_router(&m, &a, 0u);
+    ASSERT_NOT_NULL(r);
+    /* Nothing queued anywhere: nothing is due. */
+    ASSERT_EQ(break_runtime_metrics_retry_router_next_due(r, &due), BREAK_RUNTIME_STALE);
+    ASSERT_EQ(break_runtime_metrics_retry_router_enqueue(r, 0u, "m1", 2u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_router_enqueue(r, 1u, "a1", 2u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_router_next_due(r, &due), BREAK_RUNTIME_OK);
+    ASSERT_EQ(due, 0u);
+    ASSERT_EQ(break_runtime_metrics_retry_router_drain(r, 1000u, &res), BREAK_RUNTIME_OK);
+    /* metrics is due at 1100, alerts at 1010: the router reports the minimum,
+     * so an owner can sleep exactly until the next channel needs work. */
+    ASSERT_EQ(break_runtime_metrics_retry_router_next_due(r, &due), BREAK_RUNTIME_OK);
+    ASSERT_EQ(due, 1010u);
+    break_runtime_metrics_retry_router_destroy(r);
+}
+
+/* A send that re-enters the router's drain. The inner drain reaches this
+ * channel's queue while its outer drain still holds a borrowed slot, so that
+ * queue reports REJECTED; the other channel is idle and drains normally. */
+static BreakRuntimeMetricsRetryRouter *g_router_reentry;
+static BreakRuntimeError g_router_inner;
+static u32 g_router_inner_calls;
+
+static BreakRuntimeError router_reentrant_send(void *user, const void *bytes, usize len) {
+    BreakRuntimeMetricsRetryRouterResult inner;
+    (void)user;
+    (void)bytes;
+    (void)len;
+    if (g_router_inner_calls++ == 0u)
+        g_router_inner = break_runtime_metrics_retry_router_drain(g_router_reentry, 0u, &inner);
+    return BREAK_RUNTIME_OK;
+}
+
+TEST(router_reports_a_channel_error_without_skipping_later_channels) {
+    FakeSender later;
+    BreakRuntimeMetricsRetryChannelConfig ch[2];
+    BreakRuntimeMetricsRetryRouterConfig cfg;
+    BreakRuntimeMetricsRetryRouter *r = NULL;
+    BreakRuntimeMetricsRetryRouterResult res;
+    memset(&later, 0, sizeof(later));
+    memset(ch, 0, sizeof(ch));
+    ch[0].queue.capacity = 2u;
+    ch[0].queue.max_payload_bytes = 8u;
+    ch[0].send = router_reentrant_send;
+    ch[0].max_sends = 1u;
+    ch[0].backoff.base_us = 1u;
+    ch[0].backoff.max_us = 1u;
+    ch[1] = ch[0];
+    ch[1].send = fake_send;
+    ch[1].user = &later;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.channels = ch;
+    cfg.channel_count = 2u;
+    ASSERT_EQ(break_runtime_metrics_retry_router_create(&cfg, &r), BREAK_RUNTIME_OK);
+    g_router_reentry = r;
+    g_router_inner = BREAK_RUNTIME_OK;
+    g_router_inner_calls = 0u;
+    ASSERT_EQ(break_runtime_metrics_retry_router_enqueue(r, 0u, "a", 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_router_enqueue(r, 1u, "b", 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_router_drain(r, 0u, &res), BREAK_RUNTIME_OK);
+    /* Inside the callback: channel 0 is mid-send and refuses, yet channel 1
+     * is still drained by that same inner call, and the refusal is reported
+     * once every channel has had its turn. */
+    ASSERT_EQ(g_router_inner, BREAK_RUNTIME_REJECTED);
+    ASSERT_EQ(later.calls, 1u);
+    ASSERT_STR_EQ(later.seen[0], "b");
+    g_router_reentry = NULL;
+    break_runtime_metrics_retry_router_destroy(r);
+}
+
+TEST(router_accepts_exactly_the_maximum_channel_count) {
+    FakeSender f;
+    BreakRuntimeMetricsRetryChannelConfig ch[BREAK_RUNTIME_METRICS_RETRY_MAX_CHANNELS + 1u];
+    BreakRuntimeMetricsRetryRouterConfig cfg;
+    BreakRuntimeMetricsRetryRouter *r = NULL;
+    BreakRuntimeMetricsRetryStats st;
+    memset(&f, 0, sizeof(f));
+    memset(ch, 0, sizeof(ch));
+    for (u32 i = 0u; i <= BREAK_RUNTIME_METRICS_RETRY_MAX_CHANNELS; ++i) {
+        ch[i].queue.capacity = 1u;
+        ch[i].queue.max_payload_bytes = 4u;
+        ch[i].send = fake_send;
+        ch[i].user = &f;
+        ch[i].max_sends = 1u;
+        ch[i].backoff.base_us = 1u;
+        ch[i].backoff.max_us = 1u;
+    }
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.channels = ch;
+    cfg.channel_count = BREAK_RUNTIME_METRICS_RETRY_MAX_CHANNELS;
+    ASSERT_EQ(break_runtime_metrics_retry_router_create(&cfg, &r), BREAK_RUNTIME_OK);
+    /* The last configured channel is usable; one past it is refused by both
+     * enqueue and stats, so neither can index outside the channel table. */
+    ASSERT_EQ(break_runtime_metrics_retry_router_enqueue(
+                  r, BREAK_RUNTIME_METRICS_RETRY_MAX_CHANNELS - 1u, "x", 1u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_router_enqueue(r, BREAK_RUNTIME_METRICS_RETRY_MAX_CHANNELS,
+                                                         "x", 1u),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_retry_router_stats(r, BREAK_RUNTIME_METRICS_RETRY_MAX_CHANNELS,
+                                                       &st),
+              BREAK_RUNTIME_INVALID);
+    break_runtime_metrics_retry_router_destroy(r);
+    r = NULL;
+    cfg.channel_count = BREAK_RUNTIME_METRICS_RETRY_MAX_CHANNELS + 1u;
+    ASSERT_EQ(break_runtime_metrics_retry_router_create(&cfg, &r), BREAK_RUNTIME_INVALID);
+    ASSERT_TRUE(r == NULL);
+}
+
+TEST(router_validates_its_configuration) {
+    FakeSender f;
+    BreakRuntimeMetricsRetryChannelConfig ch[2];
+    BreakRuntimeMetricsRetryRouterConfig cfg;
+    BreakRuntimeMetricsRetryRouter *r = (BreakRuntimeMetricsRetryRouter *)&f;
+    memset(&f, 0, sizeof(f));
+    memset(ch, 0, sizeof(ch));
+    ch[0].queue.capacity = 2u;
+    ch[0].queue.max_payload_bytes = 8u;
+    ch[0].send = fake_send;
+    ch[0].user = &f;
+    ch[0].max_sends = 1u;
+    ch[0].backoff.base_us = 1u;
+    ch[0].backoff.max_us = 1u;
+    ch[1] = ch[0];
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.channels = ch;
+    cfg.channel_count = 2u;
+    ASSERT_EQ(break_runtime_metrics_retry_router_create(NULL, &r), BREAK_RUNTIME_INVALID);
+    ASSERT_TRUE(r == NULL);
+    ASSERT_EQ(break_runtime_metrics_retry_router_create(&cfg, NULL), BREAK_RUNTIME_INVALID);
+    cfg.channel_count = 0u;
+    ASSERT_EQ(break_runtime_metrics_retry_router_create(&cfg, &r), BREAK_RUNTIME_INVALID);
+    cfg.channel_count = BREAK_RUNTIME_METRICS_RETRY_MAX_CHANNELS + 1u;
+    ASSERT_EQ(break_runtime_metrics_retry_router_create(&cfg, &r), BREAK_RUNTIME_INVALID);
+    cfg.channel_count = 2u;
+    cfg.channels = NULL;
+    ASSERT_EQ(break_runtime_metrics_retry_router_create(&cfg, &r), BREAK_RUNTIME_INVALID);
+    cfg.channels = ch;
+    ch[1].send = NULL;
+    ASSERT_EQ(break_runtime_metrics_retry_router_create(&cfg, &r), BREAK_RUNTIME_INVALID);
+    ch[1].send = fake_send;
+    ch[1].max_sends = 0u;
+    ASSERT_EQ(break_runtime_metrics_retry_router_create(&cfg, &r), BREAK_RUNTIME_INVALID);
+    ch[1].max_sends = 1u;
+    ch[1].backoff.base_us = 0u;
+    ASSERT_EQ(break_runtime_metrics_retry_router_create(&cfg, &r), BREAK_RUNTIME_INVALID);
+    ch[1].backoff.base_us = 5u; /* max_us (1) below base_us */
+    ASSERT_EQ(break_runtime_metrics_retry_router_create(&cfg, &r), BREAK_RUNTIME_INVALID);
+    ch[1].backoff.base_us = 1u;
+    ch[1].queue.capacity = 0u; /* a bad queue config in the second channel */
+    ASSERT_EQ(break_runtime_metrics_retry_router_create(&cfg, &r), BREAK_RUNTIME_INVALID);
+    ASSERT_TRUE(r == NULL);
+    ch[1].queue.capacity = 2u;
+    ASSERT_EQ(break_runtime_metrics_retry_router_create(&cfg, &r), BREAK_RUNTIME_OK);
+    ASSERT_NOT_NULL(r);
+    break_runtime_metrics_retry_router_destroy(r);
+    break_runtime_metrics_retry_router_destroy(NULL);
+}
+
+TEST(router_validates_call_arguments) {
+    FakeSender m, a;
+    BreakRuntimeMetricsRetryRouter *r;
+    BreakRuntimeMetricsRetryRouterResult res;
+    BreakRuntimeMetricsRetryStats st;
+    u64 due = 0u;
+    memset(&m, 0, sizeof(m));
+    memset(&a, 0, sizeof(a));
+    r = make_router(&m, &a, 0u);
+    ASSERT_NOT_NULL(r);
+    /* A channel index outside the configured set is refused, not clamped. */
+    ASSERT_EQ(break_runtime_metrics_retry_router_enqueue(r, 2u, "x", 1u), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_retry_router_stats(r, 2u, &st), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_retry_router_enqueue(NULL, 0u, "x", 1u),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_retry_router_enqueue(r, 0u, NULL, 1u), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_retry_router_drain(NULL, 0u, &res), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_retry_router_drain(r, 0u, NULL), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_retry_router_stats(NULL, 0u, &st), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_retry_router_stats(r, 0u, NULL), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_retry_router_next_due(NULL, &due), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_retry_router_next_due(r, NULL), BREAK_RUNTIME_INVALID);
+    /* A payload larger than the channel's slot is the queue's INVALID. */
+    ASSERT_EQ(break_runtime_metrics_retry_router_enqueue(
+                  r, 0u, "0123456789012345678901234567890123", 34u),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(m.calls + a.calls, 0u);
+    break_runtime_metrics_retry_router_destroy(r);
+}
+
 TEST(retry_persist_validates_arguments_and_ownership_rules) {
     BreakRuntimeMetricsRetryQueue *q = make_retry(2u, 8u);
     u8 blob[64];
@@ -2371,4 +2692,12 @@ TEST_MAIN_BEGIN()
     RUN_TEST(retry_load_restores_repeats_even_into_a_coalescing_queue);
     RUN_TEST(retry_load_is_refused_from_inside_a_drain_callback);
     RUN_TEST(retry_persist_validates_arguments_and_ownership_rules);
+    RUN_TEST(router_routes_each_payload_to_its_own_channel_queue);
+    RUN_TEST(router_a_failing_channel_does_not_block_the_others);
+    RUN_TEST(router_applies_each_channels_own_backoff_and_attempt_limit);
+    RUN_TEST(router_reports_the_earliest_due_channel);
+    RUN_TEST(router_reports_a_channel_error_without_skipping_later_channels);
+    RUN_TEST(router_accepts_exactly_the_maximum_channel_count);
+    RUN_TEST(router_validates_its_configuration);
+    RUN_TEST(router_validates_call_arguments);
 TEST_MAIN_END()

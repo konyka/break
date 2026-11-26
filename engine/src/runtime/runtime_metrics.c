@@ -1157,6 +1157,122 @@ BreakRuntimeError break_runtime_metrics_retry_next_due(
     return BREAK_RUNTIME_OK;
 }
 
+/* Per-channel retry router (design section 34): one queue per destination so
+ * a stalled channel cannot hold another channel's FIFO head. */
+typedef struct RetryRouterChannel {
+    BreakRuntimeMetricsRetryQueue *queue;
+    BreakRuntimeMetricsRetrySendFn send;
+    void *user;
+    u32 max_sends;
+    u32 max_attempts;
+    BreakRuntimeMetricsRetryBackoff backoff;
+} RetryRouterChannel;
+
+struct BreakRuntimeMetricsRetryRouter {
+    u32 count;
+    RetryRouterChannel channels[BREAK_RUNTIME_METRICS_RETRY_MAX_CHANNELS];
+};
+
+void break_runtime_metrics_retry_router_destroy(BreakRuntimeMetricsRetryRouter *router) {
+    if (!router) return;
+    for (u32 i = 0u; i < router->count; ++i)
+        break_runtime_metrics_retry_destroy(router->channels[i].queue);
+    free(router);
+}
+
+BreakRuntimeError break_runtime_metrics_retry_router_create(
+    const BreakRuntimeMetricsRetryRouterConfig *config,
+    BreakRuntimeMetricsRetryRouter **out) {
+    BreakRuntimeMetricsRetryRouter *router;
+    if (!out) return BREAK_RUNTIME_INVALID;
+    *out = NULL;
+    if (!config || !config->channels || config->channel_count == 0u ||
+        config->channel_count > BREAK_RUNTIME_METRICS_RETRY_MAX_CHANNELS)
+        return BREAK_RUNTIME_INVALID;
+    /* Validate every channel before allocating, so a bad later channel never
+     * leaves earlier queues half built. Queue sizing is checked by
+     * retry_create below, which also runs before anything is kept. */
+    for (u32 i = 0u; i < config->channel_count; ++i) {
+        const BreakRuntimeMetricsRetryChannelConfig *c = &config->channels[i];
+        if (!c->send || c->max_sends == 0u) return BREAK_RUNTIME_INVALID;
+        if (c->backoff.base_us == 0u || c->backoff.max_us < c->backoff.base_us)
+            return BREAK_RUNTIME_INVALID;
+    }
+    router = (BreakRuntimeMetricsRetryRouter *)calloc(1u, sizeof(*router));
+    if (!router) return BREAK_RUNTIME_OOM;
+    for (u32 i = 0u; i < config->channel_count; ++i) {
+        const BreakRuntimeMetricsRetryChannelConfig *c = &config->channels[i];
+        RetryRouterChannel *ch = &router->channels[i];
+        BreakRuntimeError err = break_runtime_metrics_retry_create(&c->queue, &ch->queue);
+        if (err != BREAK_RUNTIME_OK) {
+            break_runtime_metrics_retry_router_destroy(router);
+            return err;
+        }
+        router->count = i + 1u;
+        ch->send = c->send;
+        ch->user = c->user;
+        ch->max_sends = c->max_sends;
+        ch->max_attempts = c->max_attempts;
+        ch->backoff = c->backoff;
+    }
+    *out = router;
+    return BREAK_RUNTIME_OK;
+}
+
+BreakRuntimeError break_runtime_metrics_retry_router_enqueue(
+    BreakRuntimeMetricsRetryRouter *router, u32 channel, const void *bytes, usize len) {
+    if (!router || channel >= router->count) return BREAK_RUNTIME_INVALID;
+    return break_runtime_metrics_retry_enqueue(router->channels[channel].queue, bytes, len);
+}
+
+BreakRuntimeError break_runtime_metrics_retry_router_drain(
+    BreakRuntimeMetricsRetryRouter *router, u64 now_us,
+    BreakRuntimeMetricsRetryRouterResult *out_result) {
+    BreakRuntimeError first = BREAK_RUNTIME_OK;
+    if (!router || !out_result) return BREAK_RUNTIME_INVALID;
+    memset(out_result, 0, sizeof(*out_result));
+    for (u32 i = 0u; i < router->count; ++i) {
+        RetryRouterChannel *ch = &router->channels[i];
+        BreakRuntimeMetricsRetryDrainResult r;
+        BreakRuntimeError err =
+            break_runtime_metrics_retry_drain_timed(ch->queue, ch->send, ch->user, ch->max_sends,
+                                                    ch->max_attempts, &ch->backoff, now_us, &r);
+        if (err != BREAK_RUNTIME_OK) {
+            if (first == BREAK_RUNTIME_OK) first = err;
+            continue; /* report later; never stop the remaining channels */
+        }
+        out_result->delivered += r.delivered;
+        out_result->abandoned += r.abandoned;
+        out_result->failed += r.failed;
+        out_result->deferred_channels += r.deferred;
+    }
+    return first;
+}
+
+BreakRuntimeError break_runtime_metrics_retry_router_next_due(
+    BreakRuntimeMetricsRetryRouter *router, u64 *out_due_us) {
+    bool any = false;
+    u64 earliest = UINT64_MAX;
+    if (!router || !out_due_us) return BREAK_RUNTIME_INVALID;
+    for (u32 i = 0u; i < router->count; ++i) {
+        u64 due = 0u;
+        BreakRuntimeError err = break_runtime_metrics_retry_next_due(router->channels[i].queue, &due);
+        if (err == BREAK_RUNTIME_STALE) continue;
+        if (err != BREAK_RUNTIME_OK) return err;
+        if (!any || due < earliest) earliest = due;
+        any = true;
+    }
+    if (!any) return BREAK_RUNTIME_STALE;
+    *out_due_us = earliest;
+    return BREAK_RUNTIME_OK;
+}
+
+BreakRuntimeError break_runtime_metrics_retry_router_stats(
+    BreakRuntimeMetricsRetryRouter *router, u32 channel, BreakRuntimeMetricsRetryStats *out_stats) {
+    if (!router || !out_stats || channel >= router->count) return BREAK_RUNTIME_INVALID;
+    return break_runtime_metrics_retry_stats(router->channels[channel].queue, out_stats);
+}
+
 /* Save image: "BRKR1", u32 count, then per entry u32 attempts, u32 len and the
  * payload, then a CRC-32 (ISO-HDLC, reflected 0xEDB88320) of all prior bytes.
  * Integers are little-endian. */

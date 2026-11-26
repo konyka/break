@@ -14419,3 +14419,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：`test_runtime_metrics` 新增 9 例，先以未声明函数编译失败为 RED。17 项变异判红：首轮有 6 项存活（魔数、尾随字节、长度 0、drain 中 load、恢复时折叠、恢复后未还原折叠），补测试后全部判红；其中两项边界变异只在 ASan 下判红。1 项等价变异（payload 长度越过尾部）的理由见设计文档。
 - **fuzz**：新增 `fuzz_runtime_metrics_retry_load`（种子 79，进 CI 三处 fuzz 构建列表）。种子 79 与 113 各 200000 次在 ASan+UBSan+leak 下干净；负向对照分别以 heap-buffer-overflow 和「not canonical」判红。
 - **验证**：`test_runtime_metrics` 74/74（normal/ASan+UBSan 含 leak 检测/TSan）；`build-current-vk` fuzz lane 22/22；非 fuzz 全量 462 项中 460 项通过，余下两项 `test_core_app_*contract` 因新 fuzz 源文件尚未提交而无法从 `git archive HEAD` 配置，提交后复跑。本提交自身的远端工作流结果不在此预写。
+
+## 指标重试的按渠道分队列（2026-11-27）
+
+- **缺口**：`missing_capabilities.md` 对账列表把「按渠道分队列」列为指标协议未交付项。指标快照与告警若共用一个重试队列，`/metrics` 采集端宕机时，队首的快照会挡住其后的告警。
+- **实现**：新增 `BreakRuntimeMetricsRetryRouter` 及 `_create`/`_destroy`/`_enqueue`/`_drain`/`_next_due`/`_stats`，最多 8 个渠道，每个渠道独立的队列、`send` 回调、发送上限、放弃上限和退避。`router_drain` 对每个渠道运行 `retry_drain_timed`，一个渠道失败、退避或出错都不阻止其他渠道；错误在所有渠道处理完后报告。`router_next_due` 取各渠道最早的截止时间。配置先整体校验，越界渠道下标被拒。设计见 `docs/design/runtime_metrics.md` 第 34 节；对账列表同步移除「按渠道分队列」。
+- **TDD 与变异**：`test_runtime_metrics` 新增 8 例，先以未声明类型编译失败为 RED。19 项变异判红；首轮 5 项存活，补「渠道出错不跳过后续渠道」「恰好 8 个渠道」两例后判红，其中 3 项越界变异只在 ASan 下判红。1 项等价变异的理由见设计文档。
+- **集成**：`test_runtime_metrics_push_http` 新增真实 socket 用例：`/metrics` 回 503、`/alerts` 回 200，一次排空后告警送达而快照留在队列。改成共用一个队列时该用例失败。
+- **验证**：normal/ASan+UBSan（含 leak 检测）/TSan 下 `test_runtime_metrics` 82/82、`test_runtime_metrics_push_http` 11/11；`build-current-vk` 非 fuzz 全量 CTest 462/462，fuzz lane 22/22。本提交自身的远端工作流结果不在此预写。
