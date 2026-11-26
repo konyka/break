@@ -17,6 +17,12 @@
 
 typedef struct CoreAppNetTransport CoreAppNetTransport;
 
+/* Epochs the reliable World log (world_reliable_publish) keeps. */
+#define CORE_APP_NET_WORLD_LOG_CAPACITY 32u
+/* Unacknowledged reliable World packets per connection, kept below the World
+ * session's default history limit of 8 entries. */
+#define CORE_APP_NET_WORLD_RELIABLE_IN_FLIGHT 4u
+
 typedef struct CoreAppNetTransportConfig {
     const char *bind;      /* "HOST:PORT"; PORT 0 picks an ephemeral port */
     const char *tls_cert;  /* PEM server certificate */
@@ -30,6 +36,13 @@ typedef struct CoreAppNetTransportConfig {
     /* World replication publishes through the Runtime adapter by default; true
      * restores the per-slot legacy publish for fallback diagnosis. */
     bool world_use_legacy_publish;
+    /* Reliable per-epoch World publishing: every tick's snapshot goes into a
+     * BreakWorldSnapshotLog and each connection receives all of them in
+     * order (break_world_session_publish_from_log) instead of only the
+     * latest. A connection more than CORE_APP_NET_WORLD_LOG_CAPACITY epochs
+     * behind is evicted and gets a full packet next. Requires
+     * world_replication; takes precedence over world_use_legacy_publish. */
+    bool world_reliable_publish;
     /* Each connection drives one server-owned body through prediction input
      * batches and receives prediction snapshots (core_app_network.h
      * "Prediction channel"). The body is not a level entity. */
@@ -148,6 +161,11 @@ typedef struct CoreAppNetWorldTestView {
     u64 publish_rejected;
     u64 notice_overloads;
     u64 level_rebaselines;
+    bool reliable;
+    u64 reliable_published;
+    u64 reliable_evictions;
+    u64 reliable_backlog_max;
+    u32 reliable_readers;
 } CoreAppNetWorldTestView;
 
 typedef struct CoreAppNetConnectionTestView {
@@ -193,6 +211,9 @@ void core_app_net_transport_world_close_for_test(CoreAppNetTransport *transport,
 void core_app_net_transport_world_disconnect_for_test(CoreAppNetTransport *transport, u64 key);
 int core_app_net_transport_world_slot_for_test(CoreAppNetTransport *transport, u64 key);
 void core_app_net_transport_world_drain_for_test(CoreAppNetTransport *transport, u64 now_ms);
+/* Runs only the reliable World publish step of a tick at `tick`, without
+ * stepping the reactor, so a test can keep the outbound queue full. */
+void core_app_net_transport_world_reliable_tick_for_test(CoreAppNetTransport *transport, u32 tick);
 /* Makes the next Runtime-path snapshot build fail once. */
 void core_app_net_transport_world_fail_next_build_for_test(CoreAppNetTransport *transport);
 /* Test-only (test_core_app_net_transport): the live reactor, or NULL. */

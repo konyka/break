@@ -511,7 +511,7 @@ build 与 filter 共用 `snapshot_destroy`，两处已由同一个 `entities != 
 - **续发优先**：连接上有活动 attempt（之前 OVERLOAD）时，先续发它；在它完成之前不读取新的 epoch，所以不会有 epoch 被它挡住而跳过。续发的 attempt 自己记着它携带的 epoch（`BreakWorldSessionAttempt.log_epoch`），OVERLOAD 和 SENT 时都报告这个 epoch。由 `publish_snapshot` 等其他调用发起的 attempt，报告的 epoch 为 0。
 - **发送**：下一个 epoch 经 `break_world_session_publish_snapshot` 发出，即在 ACK 建立基线前发 full，之后发 delta。
 - **只在 attempt 建立后消费**：日志新增 `break_world_snapshot_log_peek`/`_advance`，先 peek、后 advance。只有返回 OK 或 OVERLOAD（attempt 已存在）时才 advance。包构建失败（例如超过包大小上限）返回 INVALID，同一个 epoch 下次还会提供，不会丢失。`advance` 只接受该读者的下一个 epoch；如果 peek 之后读者被驱逐，`advance` 拒绝，读者必须重新 peek 并处理 LAGGED。
-- **LAGGED**：读者被驱逐，中间的 epoch 已经丢失，delta 链断了。此时把连接标为 force_full，下一个包发 full，内容为最旧的保留 epoch；之后恢复 delta。
+- **LAGGED**：读者被驱逐，中间的 epoch 已经丢失，delta 链断了。此时把连接标为 force_full，下一个包发 full，内容为**最新**的保留 epoch，较旧的保留 epoch 被跳过；之后恢复 delta。最初实现发的是最旧的保留 epoch，core_app 接线测试发现：这样读者恢复后仍然落后整整一个日志的长度，很快又会被驱逐。因此改为跳到最新。
 - 返回值：SENT、IDLE（已是最新）、OVERLOAD、CLOSED（未知连接、会话关闭或 reactor 已停止）、INVALID。
 
 **测试**：
@@ -542,7 +542,7 @@ build 与 filter 共用 `snapshot_destroy`，两处已由同一个 `entities != 
 - `build-current-vk` 非 fuzz 466/466，fuzz 24/24。
 - Windows 实机 MSVC 全量构建通过，相关测试 22/22。Windows 未开 Snowflake，World session 不在其中编译。
 
-仍未完成：Runtime adapter 和 core_app 的发布路径改用日志。
+core_app 的接线见 `docs/design/core_app_integration.md` 2026-11-27「可靠的 World 发布 `--world-reliable`」。Runtime adapter 的发布路径仍使用 coalesce 的 publication。
 
 本提交自身的远端工作流结果不在此预写。
 

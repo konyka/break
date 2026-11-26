@@ -5682,6 +5682,19 @@ endif()
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_network.cmake)
         set_tests_properties(test_core_app_network_world PROPERTIES
             LABELS "network;snowflake;core_app;world" TIMEOUT 180)
+        add_test(NAME test_core_app_network_world_reliable
+            COMMAND ${CMAKE_COMMAND}
+                -DMODE=world_reliable
+                -DCORE_APP=$<TARGET_FILE:core_app>
+                -DNET_CLIENT=$<TARGET_FILE:test_core_app_net_client>
+                -DASSET_DIR=${CMAKE_CURRENT_SOURCE_DIR}/assets/core_app
+                -DSCENARIO=${CMAKE_CURRENT_SOURCE_DIR}/tests/data/core_app_network_loopback.scenario
+                -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/core_app_network_world_reliable
+                -DTLS_CERT=${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl/snow_test_cert.pem
+                -DTLS_KEY=${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl/snow_test_key.pem
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core_app_network.cmake)
+        set_tests_properties(test_core_app_network_world_reliable PROPERTIES
+            LABELS "network;snowflake;core_app;world" TIMEOUT 180)
         add_test(NAME test_core_app_network_prediction
             COMMAND ${CMAKE_COMMAND}
                 -DMODE=prediction

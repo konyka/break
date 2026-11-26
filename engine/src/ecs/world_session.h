@@ -161,8 +161,9 @@ BreakNetSendResult break_world_session_publish_snapshot_filtered_id(
  * - The next epoch goes through break_world_session_publish_snapshot: full
  *   until an ACK establishes a baseline, then deltas.
  * - LAGGED (the reader was evicted from the log) forces the next packet to
- *   be full, because the epochs in between are gone; then the oldest
- *   retained epoch is sent.
+ *   be full, because the epochs in between are gone. The full carries the
+ *   newest epoch; the older retained ones are skipped, since resuming from
+ *   the oldest would leave the reader a whole log behind.
  * - The epoch is consumed (break_world_snapshot_log_advance) only once an
  *   attempt exists; when the packet cannot be built (INVALID) the same epoch
  *   is offered again on the next call.

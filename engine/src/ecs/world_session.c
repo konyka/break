@@ -986,11 +986,26 @@ BreakWorldSessionLogResult break_world_session_publish_from_log(
             *out_epoch = epoch;
         return world_session_log_result(result);
     }
-    read = break_world_snapshot_log_peek(log, reader, &lease);
-    if (read == BREAK_WORLD_SNAPSHOT_LOG_LAGGED) {
-        /* the epochs in between are gone: the delta chain is broken */
-        state->force_full = true;
+    for (bool skip = false;;) {
         read = break_world_snapshot_log_peek(log, reader, &lease);
+        if (read == BREAK_WORLD_SNAPSHOT_LOG_LAGGED) {
+            /* The epochs in between are gone, so the delta chain is broken and
+             * the next packet is full. A full of the newest epoch is the new
+             * baseline: sending older retained epochs first would leave the
+             * reader a whole log behind and get it evicted again. */
+            state->force_full = true;
+            skip = true;
+            continue;
+        }
+        if (read != BREAK_WORLD_SNAPSHOT_LOG_OK || !skip ||
+            break_world_snapshot_log_backlog(log, reader) <= 1u) {
+            break;
+        }
+        {
+            u64 skipped = lease.epoch;
+            break_world_snapshot_log_lease_release(&lease);
+            (void)break_world_snapshot_log_advance(log, reader, skipped);
+        }
     }
     if (read == BREAK_WORLD_SNAPSHOT_LOG_EMPTY) return BREAK_WORLD_SESSION_LOG_IDLE;
     if (read != BREAK_WORLD_SNAPSHOT_LOG_OK) return BREAK_WORLD_SESSION_LOG_INVALID;

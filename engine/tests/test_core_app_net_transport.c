@@ -640,8 +640,10 @@ static bool world_fixture_start_with(AspectTransportFixture *fixture, const char
                                      bool world_enabled, bool aspect_enabled) {
     const char *fixtures = CORE_APP_TEST_STR(CORE_APP_TEST_SSL_FIXTURE_DIR);
     const bool legacy = fixture->config.world_use_legacy_publish;
+    const bool reliable = fixture->config.world_reliable_publish;
     memset(fixture, 0, sizeof(*fixture));
     fixture->config.world_use_legacy_publish = legacy;
+    fixture->config.world_reliable_publish = reliable;
     snprintf(fixture->cert, sizeof(fixture->cert), "%s/snow_test_cert.pem", fixtures);
     snprintf(fixture->key, sizeof(fixture->key), "%s/snow_test_key.pem", fixtures);
     test_tmp(fixture->port_file, sizeof(fixture->port_file), name);
@@ -2839,6 +2841,381 @@ TEST(world_publication_level_resyncs_from_session_after_foreign_rebaseline) {
     aspect_fixture_dispose(&fixture);
 }
 
+/* Collects every complete World attempt queued for `key`, in send order.
+ * Fragments of one attempt are queued back to back, so a new delta_id
+ * starts a new reassembly. Messages for other keys or ids are dropped. */
+static usize world_collect_attempts(AspectTransportFixture *fixture, BreakConnectionKey key,
+                                    WorldAttempt *out, usize capacity) {
+    CoreAppNetWorldTestView view;
+    BreakReplicationReassembler *reassembler = NULL;
+    u64 stream_epoch;
+    u64 current = 0u;
+    usize count = 0u;
+    if (!core_app_net_transport_world_for_test(fixture->transport, &view) || !view.created) return 0u;
+    stream_epoch = break_world_session_stream_epoch(1u, break_schema_hash(view.schemas),
+                                                    view.level_generation);
+    for (;;) {
+        BreakConnectionKey outbound_key = 0u;
+        BreakNetOwnedMessage outbound;
+        BreakReplicationFragment fragment;
+        u8 *payload = NULL;
+        usize payload_size = 0u;
+        if (break_net_reactor_poll_outbound_for_test(fixture->reactor, &outbound_key,
+                                                     &outbound) != BREAK_NET_EVENT_OK) {
+            break;
+        }
+        if (outbound_key != key || outbound.message_id != BREAK_NET_MESSAGE_ID_WORLD_DELTA ||
+            break_replication_wire_decode(outbound.data, outbound.size, &fragment) !=
+                BREAK_REPLICATION_FRAGMENT_OK) {
+            break_net_message_release(&outbound);
+            continue;
+        }
+        if (!reassembler || fragment.delta_id != current) {
+            break_replication_reassembler_destroy(reassembler);
+            reassembler = break_replication_reassembler_create(stream_epoch);
+            current = fragment.delta_id;
+        }
+        if (reassembler &&
+            break_replication_reassembler_push(reassembler, &fragment, &payload, &payload_size) ==
+                BREAK_REPLICATION_REASSEMBLY_COMPLETE) {
+            BreakWorldDeltaWire decoded;
+            if (count < capacity &&
+                break_world_delta_wire_decode(payload, payload_size, &decoded) ==
+                    BREAK_WORLD_DELTA_WIRE_OK) {
+                out[count].delta_id = fragment.delta_id;
+                out[count].kind = decoded.kind;
+                out[count].base_snapshot_id = decoded.base_snapshot_id;
+                out[count].target_snapshot_id = decoded.target_snapshot_id;
+                out[count].target_tick = decoded.target_tick;
+                count++;
+                break_world_delta_wire_clear(&decoded);
+            }
+            break_replication_reassembly_free(payload);
+        }
+        break_net_message_release(&outbound);
+    }
+    break_replication_reassembler_destroy(reassembler);
+    return count;
+}
+
+static void world_fill_queue(AspectTransportFixture *fixture, BreakConnectionKey key) {
+    for (usize i = 0u; i < BREAK_NET_OUTBOUND_QUEUE_CAPACITY; ++i) {
+        if (break_net_reactor_send(fixture->reactor, key, BREAK_NET_MESSAGE_ID_PING, 1u, "x", 1u) !=
+            BREAK_NET_SEND_OK) {
+            break;
+        }
+    }
+}
+
+static bool world_reliable_start_with_world(AspectTransportFixture *fixture, const char *name,
+                                            bool world_enabled) {
+    memset(fixture, 0, sizeof(*fixture));
+    fixture->config.world_reliable_publish = true;
+    return world_fixture_start_with(fixture, name, world_enabled, false);
+}
+
+static bool world_reliable_start(AspectTransportFixture *fixture, const char *name) {
+    return world_reliable_start_with_world(fixture, name, true);
+}
+
+/* With --world-reliable every tick's World state reaches the peer: an ACKed
+ * connection gets one delta per tick, in tick order, none coalesced. */
+TEST(world_reliable_publish_sends_every_tick_in_order) {
+    AspectTransportFixture fixture;
+    CoreAppNetWorldTestView view;
+    WorldAttempt attempt;
+    const BreakConnectionKey key = 0x9501u;
+    u64 last_tick = 0u;
+    ASSERT_TRUE(world_reliable_start(&fixture, "core_app_world_reliable_order.port"));
+    ASSERT_TRUE(world_fixture_open(&fixture, key));
+    ASSERT_TRUE(world_fixture_welcome(&fixture, key));
+    world_clear_outbound(&fixture);
+    world_fixture_tick_with_index(&fixture, 50u);
+    ASSERT_TRUE(world_collect_attempt(&fixture, key, NULL, 0u, &attempt));
+    ASSERT_EQ(attempt.kind, BREAK_WORLD_DELTA_WIRE_FULL);
+    last_tick = attempt.target_tick;
+    ASSERT_TRUE(world_send_control(&fixture, key, BREAK_WORLD_SESSION_CONTROL_ACK, &attempt));
+    for (u32 i = 0u; i < 5u; ++i) {
+        world_fixture_tick_with_index(&fixture, 51u + i);
+        ASSERT_TRUE(world_collect_attempt(&fixture, key, NULL, 0u, &attempt));
+        ASSERT_EQ(attempt.kind, BREAK_WORLD_DELTA_WIRE_DELTA);
+        ASSERT_EQ(attempt.target_tick, last_tick + 1u);
+        last_tick = attempt.target_tick;
+        ASSERT_TRUE(world_send_control(&fixture, key, BREAK_WORLD_SESSION_CONTROL_ACK, &attempt));
+    }
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    /* measured before sending: the tick just published, and nothing older */
+    ASSERT_EQ(view.reliable_backlog_max, 1u);
+    /* every tick since the level started, including the two before the peer was ready */
+    ASSERT_EQ(view.reliable_published, 8u);
+    ASSERT_EQ(view.terminal_errors, 0u);
+    ASSERT_TRUE(transport_fixture_destroy(&fixture));
+    ASSERT_TRUE(trace_contains(fixture.trace, "event=network_world_stats"));
+    ASSERT_TRUE(trace_contains(fixture.trace, " reliable=1 "));
+    aspect_fixture_dispose(&fixture);
+}
+
+/* While the transport is full, ticks queue in the log instead of being
+ * coalesced; once it drains the peer receives each of them, in tick order
+ * and without a gap, before newer ones. */
+TEST(world_reliable_publish_catches_up_after_overload_without_skipping) {
+    AspectTransportFixture fixture;
+    CoreAppNetWorldTestView view;
+    WorldAttempt attempts[32];
+    WorldAttempt first;
+    const BreakConnectionKey key = 0x9502u;
+    u64 last_tick;
+    usize received = 0u;
+    ASSERT_TRUE(world_reliable_start(&fixture, "core_app_world_reliable_overload.port"));
+    ASSERT_TRUE(world_fixture_open(&fixture, key));
+    ASSERT_TRUE(world_fixture_welcome(&fixture, key));
+    world_clear_outbound(&fixture);
+    world_fixture_tick_with_index(&fixture, 60u);
+    ASSERT_TRUE(world_collect_attempt(&fixture, key, NULL, 0u, &first));
+    ASSERT_TRUE(world_send_control(&fixture, key, BREAK_WORLD_SESSION_CONTROL_ACK, &first));
+    last_tick = first.target_tick;
+    world_fill_queue(&fixture, key);
+    for (u32 i = 1u; i <= 3u; ++i) {
+        fixture.tick++;
+        core_app_net_transport_world_reliable_tick_for_test(fixture.transport, fixture.tick);
+    }
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    /* the first of the three is an attempt stuck behind the pings; two wait in the log */
+    ASSERT_EQ(view.reliable_backlog_max, 2u);
+    world_clear_outbound(&fixture); /* only pings were queued: nothing of the World is lost */
+    for (u32 round = 0u; round < 4u; ++round) {
+        usize got;
+        world_fixture_tick_with_index(&fixture, 70u + round);
+        got = world_collect_attempts(&fixture, key, attempts + received,
+                                     sizeof(attempts) / sizeof(attempts[0]) - received);
+        ASSERT_TRUE(got <= CORE_APP_NET_WORLD_RELIABLE_IN_FLIGHT);
+        for (usize i = 0u; i < got; ++i) {
+            ASSERT_EQ(attempts[received + i].kind, BREAK_WORLD_DELTA_WIRE_DELTA);
+            ASSERT_EQ(attempts[received + i].target_tick, last_tick + 1u);
+            last_tick = attempts[received + i].target_tick;
+        }
+        received += got;
+        /* ACKing the newest one confirms everything before it */
+        if (got != 0u) {
+            ASSERT_TRUE(world_send_control(&fixture, key, BREAK_WORLD_SESSION_CONTROL_ACK,
+                                           &attempts[received - 1u]));
+        }
+    }
+    /* ticks 2..8 (seven epochs), one per core tick, none skipped */
+    ASSERT_EQ(received, 7u);
+    ASSERT_EQ(last_tick, first.target_tick + 7u);
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    ASSERT_EQ(view.terminal_errors, 0u);
+    ASSERT_EQ(view.reliable_evictions, 0u);
+    ASSERT_TRUE(transport_fixture_destroy(&fixture));
+    aspect_fixture_dispose(&fixture);
+}
+
+/* A connection that falls further behind than the log holds is evicted, so
+ * it never blocks publishing. Its next packet after the pending one is full
+ * (the chain broke), and deltas resume after that. */
+TEST(world_reliable_publish_evicts_a_stalled_connection_and_resends_full) {
+    AspectTransportFixture fixture;
+    CoreAppNetWorldTestView view;
+    WorldAttempt attempts[64];
+    WorldAttempt first;
+    const BreakConnectionKey key = 0x9503u;
+    usize got;
+    usize full_at = 0u;
+    ASSERT_TRUE(world_reliable_start(&fixture, "core_app_world_reliable_evict.port"));
+    ASSERT_TRUE(world_fixture_open(&fixture, key));
+    ASSERT_TRUE(world_fixture_welcome(&fixture, key));
+    world_clear_outbound(&fixture);
+    world_fixture_tick_with_index(&fixture, 80u);
+    ASSERT_TRUE(world_collect_attempt(&fixture, key, NULL, 0u, &first));
+    ASSERT_TRUE(world_send_control(&fixture, key, BREAK_WORLD_SESSION_CONTROL_ACK, &first));
+    world_fill_queue(&fixture, key);
+    for (u32 i = 0u; i < CORE_APP_NET_WORLD_LOG_CAPACITY + 4u; ++i) {
+        fixture.tick++;
+        core_app_net_transport_world_reliable_tick_for_test(fixture.transport, fixture.tick);
+    }
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    ASSERT_EQ(view.reliable_evictions, 1u);
+    world_clear_outbound(&fixture);
+    world_fixture_tick_with_index(&fixture, 200u);
+    got = world_collect_attempts(&fixture, key, attempts, sizeof(attempts) / sizeof(attempts[0]));
+    /* the pending delta is resumed, then one full; nothing more until it is ACKed */
+    ASSERT_EQ(got, 2u);
+    ASSERT_EQ(attempts[0].kind, BREAK_WORLD_DELTA_WIRE_DELTA);
+    for (usize i = 1u; i < got; ++i) {
+        if (attempts[i].kind == BREAK_WORLD_DELTA_WIRE_FULL) {
+            full_at = i;
+            break;
+        }
+    }
+    ASSERT_EQ(full_at, 1u);
+    world_fixture_tick_with_index(&fixture, 199u);
+    ASSERT_EQ(world_outbound_deltas_for(&fixture, key), 0u); /* waiting for the full's ACK */
+    ASSERT_TRUE(world_send_control(&fixture, key, BREAK_WORLD_SESSION_CONTROL_ACK,
+                                   &attempts[got - 1u]));
+    {
+        WorldAttempt after[8];
+        usize more;
+        world_fixture_tick_with_index(&fixture, 201u);
+        more = world_collect_attempts(&fixture, key, after, sizeof(after) / sizeof(after[0]));
+        ASSERT_TRUE(more >= 1u);
+        /* a delta chain on the ACKed full, still without a gap */
+        for (usize k = 0u; k < more; ++k) {
+            const WorldAttempt *prev = k == 0u ? &attempts[got - 1u] : &after[k - 1u];
+            ASSERT_EQ(after[k].kind, BREAK_WORLD_DELTA_WIRE_DELTA);
+            ASSERT_EQ(after[k].base_snapshot_id, prev->target_snapshot_id);
+            ASSERT_EQ(after[k].target_tick, prev->target_tick + 1u);
+        }
+    }
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    ASSERT_EQ(view.reliable_evictions, 1u);
+    ASSERT_TRUE(transport_fixture_destroy(&fixture));
+    aspect_fixture_dispose(&fixture);
+}
+
+/* Before any ACK only the first full is in flight: further ticks wait in the
+ * log, because a second full would replace the history the ACK refers to. */
+TEST(world_reliable_publish_holds_after_an_unacked_full) {
+    AspectTransportFixture fixture;
+    CoreAppNetWorldTestView view;
+    WorldAttempt attempts[8];
+    const BreakConnectionKey key = 0x9504u;
+    usize got;
+    ASSERT_TRUE(world_reliable_start(&fixture, "core_app_world_reliable_hold.port"));
+    ASSERT_TRUE(world_fixture_open(&fixture, key));
+    ASSERT_TRUE(world_fixture_welcome(&fixture, key));
+    world_clear_outbound(&fixture);
+    /* each tick steps the reactor, which drops what is queued here, so
+     * collect after every tick */
+    world_fixture_tick_with_index(&fixture, 90u);
+    got = world_collect_attempts(&fixture, key, attempts, 8u);
+    ASSERT_EQ(got, 1u);
+    ASSERT_EQ(attempts[0].kind, BREAK_WORLD_DELTA_WIRE_FULL);
+    world_fixture_tick_with_index(&fixture, 91u);
+    ASSERT_EQ(world_collect_attempts(&fixture, key, attempts + 1, 7u), 0u);
+    world_fixture_tick_with_index(&fixture, 92u);
+    ASSERT_EQ(world_collect_attempts(&fixture, key, attempts + 1, 7u), 0u);
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    ASSERT_EQ(view.reliable_backlog_max, 2u); /* 91 and 92 wait behind the unACKed full */
+    ASSERT_TRUE(world_send_control(&fixture, key, BREAK_WORLD_SESSION_CONTROL_ACK, &attempts[0]));
+    world_fixture_tick_with_index(&fixture, 93u);
+    got = world_collect_attempts(&fixture, key, attempts, 8u);
+    /* the two that waited, then the new tick, as one delta chain */
+    ASSERT_EQ(got, 3u);
+    for (usize i = 0u; i < got; ++i) ASSERT_EQ(attempts[i].kind, BREAK_WORLD_DELTA_WIRE_DELTA);
+    ASSERT_TRUE(transport_fixture_destroy(&fixture));
+    aspect_fixture_dispose(&fixture);
+}
+
+/* With a baseline, at most CORE_APP_NET_WORLD_RELIABLE_IN_FLIGHT deltas are
+ * unACKed at once; the rest wait in the log, and one ACK releases them. */
+TEST(world_reliable_publish_caps_unacked_deltas) {
+    AspectTransportFixture fixture;
+    WorldAttempt attempts[16];
+    WorldAttempt first;
+    const BreakConnectionKey key = 0x9505u;
+    usize got;
+    ASSERT_TRUE(world_reliable_start(&fixture, "core_app_world_reliable_cap.port"));
+    ASSERT_TRUE(world_fixture_open(&fixture, key));
+    ASSERT_TRUE(world_fixture_welcome(&fixture, key));
+    world_clear_outbound(&fixture);
+    world_fixture_tick_with_index(&fixture, 100u);
+    ASSERT_TRUE(world_collect_attempt(&fixture, key, NULL, 0u, &first));
+    ASSERT_TRUE(world_send_control(&fixture, key, BREAK_WORLD_SESSION_CONTROL_ACK, &first));
+    got = 0u;
+    for (u32 i = 0u; i < CORE_APP_NET_WORLD_RELIABLE_IN_FLIGHT + 3u; ++i) {
+        world_fixture_tick_with_index(&fixture, 101u + i);
+        got += world_collect_attempts(&fixture, key, attempts + got, 16u - got);
+    }
+    ASSERT_EQ(got, (usize)CORE_APP_NET_WORLD_RELIABLE_IN_FLIGHT);
+    ASSERT_TRUE(world_send_control(&fixture, key, BREAK_WORLD_SESSION_CONTROL_ACK,
+                                   &attempts[got - 1u]));
+    world_fixture_tick_with_index(&fixture, 120u);
+    got = world_collect_attempts(&fixture, key, attempts, 16u);
+    ASSERT_EQ(got, 4u); /* the three that waited and the new tick */
+    ASSERT_TRUE(transport_fixture_destroy(&fixture));
+    aspect_fixture_dispose(&fixture);
+}
+
+/* A closed connection releases its log reader, so a new connection in the
+ * same slot starts fresh and the counters reflect real publishes. */
+TEST(world_reliable_publish_releases_the_reader_on_close) {
+    AspectTransportFixture fixture;
+    CoreAppNetWorldTestView view;
+    WorldAttempt attempt;
+    const BreakConnectionKey key = 0x9506u;
+    const BreakConnectionKey next = 0x9507u;
+    ASSERT_TRUE(world_reliable_start(&fixture, "core_app_world_reliable_close.port"));
+    ASSERT_TRUE(world_fixture_open(&fixture, key));
+    ASSERT_TRUE(world_fixture_welcome(&fixture, key));
+    world_clear_outbound(&fixture);
+    world_fixture_tick_with_index(&fixture, 130u);
+    ASSERT_TRUE(world_collect_attempt(&fixture, key, NULL, 0u, &attempt));
+    core_app_net_transport_world_disconnect_for_test(fixture.transport, key);
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    ASSERT_EQ(view.reliable_readers, 0u);
+    ASSERT_TRUE(world_fixture_open(&fixture, next));
+    ASSERT_TRUE(world_fixture_welcome(&fixture, next));
+    world_clear_outbound(&fixture);
+    world_fixture_tick_with_index(&fixture, 131u);
+    ASSERT_TRUE(world_collect_attempt(&fixture, next, NULL, 0u, &attempt));
+    ASSERT_EQ(attempt.kind, BREAK_WORLD_DELTA_WIRE_FULL);
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    ASSERT_EQ(view.reliable_readers, 1u);
+    ASSERT_TRUE(view.reliable_published >= 2u);
+    ASSERT_EQ(view.reliable_published, (u64)fixture.tick);
+    ASSERT_TRUE(transport_fixture_destroy(&fixture));
+    aspect_fixture_dispose(&fixture);
+}
+
+/* --world-reliable without World replication enables nothing. */
+TEST(world_reliable_publish_needs_world_replication) {
+    AspectTransportFixture fixture;
+    CoreAppNetWorldTestView view;
+    ASSERT_TRUE(world_reliable_start_with_world(&fixture, "core_app_world_reliable_nowr.port",
+                                                false));
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    ASSERT_FALSE(view.reliable);
+    ASSERT_TRUE(transport_fixture_destroy(&fixture));
+    ASSERT_FALSE(trace_contains(fixture.trace, "event=network_world_stats"));
+    aspect_fixture_dispose(&fixture);
+}
+
+/* A level reload restarts core ticks; the log needs increasing ticks, so the
+ * reliable path keeps its own tick strictly increasing and keeps publishing. */
+TEST(world_reliable_publish_survives_a_restarted_tick) {
+    AspectTransportFixture fixture;
+    CoreAppNetWorldTestView view;
+    const BreakConnectionKey key = 0x9508u;
+    u64 before;
+    ASSERT_TRUE(world_reliable_start(&fixture, "core_app_world_reliable_restart.port"));
+    ASSERT_TRUE(world_fixture_open(&fixture, key));
+    ASSERT_TRUE(world_fixture_welcome(&fixture, key));
+    fixture.tick = 40u;
+    world_fixture_tick_with_index(&fixture, 140u);
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    before = view.reliable_published;
+    fixture.tick = 0u;
+    world_fixture_tick_with_index(&fixture, 141u);
+    world_fixture_tick_with_index(&fixture, 142u);
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    ASSERT_EQ(view.reliable_published, before + 2u);
+    ASSERT_TRUE(transport_fixture_destroy(&fixture));
+    aspect_fixture_dispose(&fixture);
+}
+
+/* The default path is unchanged: no log, and the trace says reliable=0. */
+TEST(world_reliable_publish_is_off_by_default) {
+    AspectTransportFixture fixture;
+    CoreAppNetWorldTestView view;
+    ASSERT_TRUE(world_fixture_start(&fixture, "core_app_world_reliable_off.port", true, false));
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    ASSERT_FALSE(view.reliable);
+    ASSERT_TRUE(transport_fixture_destroy(&fixture));
+    ASSERT_TRUE(trace_contains(fixture.trace, " reliable=0 "));
+    aspect_fixture_dispose(&fixture);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(destroy_reports_stop_timeout_and_keeps_the_reactor);
     RUN_TEST(voice_frame_counts_invalid_and_skipped_frames);
@@ -2887,4 +3264,13 @@ TEST_MAIN_BEGIN()
     RUN_TEST(world_publication_level_advance_rebaselines_and_republishes_full);
     RUN_TEST(world_publication_level_advance_resumes_after_submit_overload);
     RUN_TEST(world_publication_level_resyncs_from_session_after_foreign_rebaseline);
+    RUN_TEST(world_reliable_publish_sends_every_tick_in_order);
+    RUN_TEST(world_reliable_publish_catches_up_after_overload_without_skipping);
+    RUN_TEST(world_reliable_publish_evicts_a_stalled_connection_and_resends_full);
+    RUN_TEST(world_reliable_publish_holds_after_an_unacked_full);
+    RUN_TEST(world_reliable_publish_caps_unacked_deltas);
+    RUN_TEST(world_reliable_publish_releases_the_reader_on_close);
+    RUN_TEST(world_reliable_publish_needs_world_replication);
+    RUN_TEST(world_reliable_publish_survives_a_restarted_tick);
+    RUN_TEST(world_reliable_publish_is_off_by_default);
 TEST_MAIN_END()

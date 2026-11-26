@@ -14535,3 +14535,14 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **验证**：ASan+UBSan/TSan 下 10/10、37/37；Snowflake ASan 构建相关标签 40/40；`build-current-vk` 非 fuzz 466/466，fuzz 24/24；Windows 实机 MSVC 全量构建通过，相关测试 22/22。
 - **仍未完成**：Runtime adapter 和 core_app 发布路径接入。本提交自身的远端工作流结果不在此预写。
 
+## core_app 可靠的 World 发布 `--world-reliable`（2026-11-27）
+
+- **实现**：开启 `core_app --network ... --world-replication --world-reliable` 后，每个 tick 的 World 快照写入 32 槽日志，每个连接按序收到全部 tick。有两条发送节流规则：full 未被 ACK 时暂停；未 ACK 的包最多 4 个。被驱逐的连接下一个包发最新 epoch 的 full。trace 中新增 reliable 相关字段。设计见 `docs/design/core_app_integration.md` 2026-11-27 补充。
+- **连带修复**：`break_world_session_publish_from_log` 驱逐后的 full 改为携带最新 epoch，否则读者恢复后仍落后整个日志，很快会再次被驱逐。
+- **TDD 与变异**：
+  - `test_core_app_net_transport` 增至 56 例。
+  - 新增真实 TLS loopback `test_core_app_network_world_reliable`：连续 60 个包，full=1、delta=59、无间断、链不断，联网 trace 与离线 trace 相同。
+  - target contract 新增对两条错误信息的检查。
+  - 变异检查中，初轮存活项已补测试；等价项理由见设计文档。
+- **验证**：联网构建 `-R test_core_app` 56/56；`build-current-vk` 非 fuzz 466/466，fuzz 24/24；ASan/TSan 下相关测试 8/8；Windows 实机 MSVC 全量构建通过，相关测试 63/63。本提交自身的远端工作流结果不在此预写。
+

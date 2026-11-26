@@ -56,6 +56,7 @@ static void print_help(void) {
          "  --voice-relay\n"
          "  --aspect-replication\n"
          "  --world-replication\n"
+         "  --world-reliable\n"
          "  --prediction\n"
 #endif
          "  --help");
@@ -333,6 +334,9 @@ static int core_app_main(int argc, char **argv) {
         } else if (strcmp(argv[i], "--world-replication") == 0) {
             net_config.world_replication = true;
             net_option_seen = true;
+        } else if (strcmp(argv[i], "--world-reliable") == 0) {
+            net_config.world_reliable_publish = true;
+            net_option_seen = true;
         } else if (strcmp(argv[i], "--prediction") == 0) {
             net_config.prediction = true;
             net_option_seen = true;
@@ -379,6 +383,8 @@ static int core_app_main(int argc, char **argv) {
 #if CORE_APP_NET_TRANSPORT
     if (net_option_seen && !config.network)
         return cli_error("network options require --network");
+    if (net_config.world_reliable_publish && !net_config.world_replication)
+        return cli_error("--world-reliable requires --world-replication");
     if (config.network) {
         char host[64];
         u16 port = 0u;

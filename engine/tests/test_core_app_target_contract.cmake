@@ -223,6 +223,16 @@ if(NETWORK_ENABLED AND NETWORK_TRANSPORT)
     if(NOT help_out MATCHES "--world-replication")
         record_error("help does not list --world-replication: ${help_out}")
     endif()
+    expect_exit(world_reliable_without_network 2 --world-reliable)
+    expect_last_error(world_reliable_without_network "network options require --network")
+    expect_exit(world_reliable_without_world_replication 2 --network --world-reliable
+        --bind 127.0.0.1:0 --tls-cert c.pem --tls-key k.pem --psk-env CORE_APP_CONTRACT_PSK
+        --port-file port.txt)
+    expect_last_error(world_reliable_without_world_replication
+        "--world-reliable requires --world-replication")
+    if(NOT help_out MATCHES "--world-reliable")
+        record_error("help does not list --world-reliable: ${help_out}")
+    endif()
     expect_exit(prediction_without_network 2 --prediction)
     expect_last_error(prediction_without_network "network options require --network")
     if(NOT help_out MATCHES "--prediction")

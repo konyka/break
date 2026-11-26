@@ -60,6 +60,10 @@
 # decode. Every server snapshot (0x400d) must equal the peer's own state
 # for that tick, and the networked trace must equal the offline one.
 #
+# MODE=world_reliable: --world-replication --world-reliable server. The peer
+# ACKs each World packet and checks 60 consecutive target ticks: no tick may
+# be skipped and each delta builds on the previous target.
+#
 # MODE=offline: the same scenario twice without --network must give
 # byte-identical traces with no network line. In a build without the
 # transport, nm must find no break_net_/break_session_/snow_/Snow symbol.
@@ -201,7 +205,7 @@ if(NOT MODE STREQUAL "loopback" AND NOT MODE STREQUAL "late_auth" AND NOT MODE S
    AND NOT MODE STREQUAL "voice_relay" AND NOT MODE STREQUAL "voice_relay_off"
    AND NOT MODE STREQUAL "voice_mute" AND NOT MODE STREQUAL "voice_flood"
    AND NOT MODE STREQUAL "single" AND NOT MODE STREQUAL "aspect" AND NOT MODE STREQUAL "world"
-   AND NOT MODE STREQUAL "prediction")
+   AND NOT MODE STREQUAL "prediction" AND NOT MODE STREQUAL "world_reliable")
     message(FATAL_ERROR "unknown MODE=${MODE}")
 endif()
 foreach(var NET_CLIENT TLS_CERT TLS_KEY)
@@ -234,6 +238,8 @@ elseif(MODE STREQUAL "world")
     set(client_mode world)
 elseif(MODE STREQUAL "prediction")
     set(client_mode prediction)
+elseif(MODE STREQUAL "world_reliable")
+    set(client_mode world-reliable)
 endif()
 set(relay_args "")
 if(MODE STREQUAL "voice_relay" OR MODE STREQUAL "voice_mute" OR MODE STREQUAL "voice_flood")
@@ -246,6 +252,8 @@ endif()
 set(world_args "")
 if(MODE STREQUAL "world")
     set(world_args --world-replication)
+elseif(MODE STREQUAL "world_reliable")
+    set(world_args --world-replication --world-reliable)
 endif()
 set(prediction_args "")
 if(MODE STREQUAL "prediction")
@@ -419,7 +427,36 @@ endforeach()
 if(NOT MODE STREQUAL "aspect" AND trace MATCHES "event=network_aspect_stats")
     message(FATAL_ERROR "default-off run emitted aspect statistics")
 endif()
-if(NOT MODE STREQUAL "world" AND trace MATCHES "event=network_world_stats")
+if(MODE STREQUAL "world_reliable")
+    stat_value("${stats}" authenticated authenticated)
+    if(NOT authenticated EQUAL 1)
+        message(FATAL_ERROR "only the World peer connects in MODE=world_reliable: ${stats}")
+    endif()
+    if(NOT trace MATCHES "COREAPPTRACE version=1 event=network_world_stats[^\n]*")
+        message(FATAL_ERROR "the enabled server did not report network_world_stats")
+    endif()
+    set(world_stats "${CMAKE_MATCH_0}")
+    message(STATUS "${world_stats}")
+    foreach(pair opened=1 closed=1 reliable=1)
+        if(NOT world_stats MATCHES " ${pair}( |$)")
+            message(FATAL_ERROR "expected ${pair}: ${world_stats}")
+        endif()
+    endforeach()
+    expect_at_least("${world_stats}" reliable_published 60)
+    if(NOT report MATCHES "world_reliable packets=60 full=([0-9]+) delta=([0-9]+) gaps=0 broken_chain=0\n")
+        message(FATAL_ERROR "reliable World peer saw a gap or a broken chain:\n${report}")
+    endif()
+    run_offline(offline)
+    read_core_lines("${WORK_DIR}/network.trace" networked)
+    read_core_lines("${WORK_DIR}/offline.trace" offline)
+    if(NOT networked STREQUAL offline)
+        message(FATAL_ERROR "reliable World publishing changed the non-network trace")
+    endif()
+    message(STATUS "core_app reliable World replication loopback contract passed")
+    return()
+endif()
+if(NOT MODE STREQUAL "world" AND NOT MODE STREQUAL "world_reliable" AND
+   trace MATCHES "event=network_world_stats")
     message(FATAL_ERROR "default-off run emitted World statistics")
 endif()
 if(NOT MODE STREQUAL "prediction" AND trace MATCHES "event=network_prediction_stats")

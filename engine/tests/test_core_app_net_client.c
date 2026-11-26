@@ -12,10 +12,12 @@
  * peers; "voice-flood" runs the two rate-limit peers; "aspect" exchanges
  * BRFG/BRA1 packets with the optional aspect transport; "world" exchanges
  * BRWD/BRWC packets with the optional World transport; "prediction" sends
- * prediction input batches and checks the server's snapshots.
+ * prediction input batches and checks the server's snapshots; "world-reliable"
+ * checks that a --world-reliable server sends every tick in order.
  *
  * Usage: test_core_app_net_client PORT_FILE REPORT_FILE
- *        [late-auth|voice|voice-relay|voice-mute|voice-flood|single|aspect|world|prediction]
+ *        [late-auth|voice|voice-relay|voice-mute|voice-flood|single|aspect|world|prediction|
+ *         world-reliable]
  *        [--trace PATH]
  * The PSK is read from CORE_APP_TEST_PSK (64 hex digits). With --trace the
  * peer writes its own core_app-format trace: one
@@ -1849,6 +1851,119 @@ static void scenario_prediction(void) {
     break_prediction_destroy(p);
 }
 
+/* Reliable World peer (MODE=world_reliable, server --world-reliable). Every
+ * World packet is reassembled by delta_id and ACKed at once, then the next
+ * one is read. Its decoded target tick must be exactly one more than the
+ * previous packet's: the reliable path never coalesces a tick. Deltas must
+ * build on the previous target. The server runs ticks much faster than the
+ * peer reads, so ticks queue in its log; backpressure and eviction are
+ * covered by test_core_app_net_transport. */
+#define NET_CLIENT_RELIABLE_PACKETS 60u
+
+static bool reliable_next_packet(NetClient *c, u64 epoch, WorldAttempt *out, u64 *out_level,
+                                 u32 timeout_ms) {
+    BreakReplicationReassembler *reassembler = NULL;
+    u64 current = 0u;
+    u64 deadline = now_ms() + timeout_ms;
+    bool done = false;
+    memset(out, 0, sizeof(*out));
+    while (!done && now_ms() < deadline) {
+        BreakNetEnvelope env;
+        BreakReplicationFragment fragment;
+        u8 *payload = NULL;
+        usize payload_size = 0u;
+        int got = client_recv(c, &env, (u32)(deadline - now_ms()) + 1u);
+        if (got < 0) break;
+        if (got == 0 || env.message_id != BREAK_NET_MESSAGE_ID_WORLD_DELTA) continue;
+        if (break_replication_wire_decode(env.payload, env.payload_size, &fragment) !=
+            BREAK_REPLICATION_FRAGMENT_OK) {
+            break;
+        }
+        if (!reassembler || fragment.delta_id != current) {
+            break_replication_reassembler_destroy(reassembler);
+            reassembler = break_replication_reassembler_create(epoch);
+            current = fragment.delta_id;
+            if (!reassembler) break;
+        }
+        if (break_replication_reassembler_push(reassembler, &fragment, &payload, &payload_size) ==
+            BREAK_REPLICATION_REASSEMBLY_COMPLETE) {
+            BreakWorldDeltaWire decoded;
+            if (break_world_delta_wire_decode(payload, payload_size, &decoded) ==
+                BREAK_WORLD_DELTA_WIRE_OK) {
+                out->delta_id = fragment.delta_id;
+                out->kind = decoded.kind;
+                out->base_snapshot_id = decoded.base_snapshot_id;
+                out->target_snapshot_id = decoded.target_snapshot_id;
+                out->target_tick = decoded.target_tick;
+                *out_level = decoded.level_generation;
+                break_world_delta_wire_clear(&decoded);
+                done = true;
+            }
+            break_replication_reassembly_free(payload);
+        }
+    }
+    break_replication_reassembler_destroy(reassembler);
+    return done;
+}
+
+static void scenario_world_reliable(void) {
+    NetClient a;
+    WorldPeer peer;
+    CoreAppSnapshot snapshot;
+    WorldAttempt previous;
+    u32 packets = 0u;
+    u32 full = 0u;
+    u32 delta = 0u;
+    u32 gaps = 0u;
+    u32 broken_chain = 0u;
+    bool ok;
+    memset(&peer, 0, sizeof(peer));
+    memset(&previous, 0, sizeof(previous));
+    check(client_open(&a), "world_reliable_tls_challenge");
+    check(client_auth(&a, g_psk), "world_reliable_auth_sent");
+    ok = g_failures == 0 && client_next_snapshot(&a, &snapshot, 15000u) == 1;
+    check(ok, "world_reliable_received_snapshot");
+    if (ok) {
+        ok = world_peer_init(&peer, snapshot.level_generation);
+        check(ok, "world_reliable_local_session");
+    }
+    while (ok && packets < NET_CLIENT_RELIABLE_PACKETS) {
+        WorldAttempt attempt;
+        u64 level = 0u;
+        if (!reliable_next_packet(&a, peer.epoch, &attempt, &level, 10000u)) {
+            fprintf(g_report, "world_reliable stalled after packets=%u last_tick=%llu kind=%d\n",
+                    packets, (unsigned long long)previous.target_tick, (int)previous.kind);
+            ok = false;
+            break;
+        }
+        /* ACK at the level the server stamped on the packet */
+        peer.level_generation = level;
+        if (packets != 0u) {
+            if (attempt.target_tick != previous.target_tick + 1u) gaps++;
+            if (attempt.kind == BREAK_WORLD_DELTA_WIRE_DELTA &&
+                attempt.base_snapshot_id != previous.target_snapshot_id) {
+                broken_chain++;
+            }
+        }
+        if (attempt.kind == BREAK_WORLD_DELTA_WIRE_FULL) full++; else delta++;
+        packets++;
+        previous = attempt;
+        if (!world_send_control(&a, &peer, BREAK_WORLD_SESSION_CONTROL_ACK, &attempt)) {
+            ok = false;
+            break;
+        }
+    }
+    check(ok && packets == NET_CLIENT_RELIABLE_PACKETS, "world_reliable_received_every_packet");
+    check(gaps == 0u, "world_reliable_no_tick_skipped");
+    check(broken_chain == 0u, "world_reliable_deltas_chain_on_previous_target");
+    check(delta > 0u, "world_reliable_deltas_after_ack");
+    check_welcome(&a, "worldreliable");
+    fprintf(g_report, "world_reliable packets=%u full=%u delta=%u gaps=%u broken_chain=%u\n",
+            packets, full, delta, gaps, broken_chain);
+    client_close(&a);
+    world_peer_dispose(&peer);
+}
+
 static void scenario_authenticated(void) {
     NetClient a;
     CoreAppSnapshot first, later, forged;
@@ -2478,6 +2593,7 @@ int main(int argc, char **argv) {
     bool aspect = argc == 4 && strcmp(argv[3], "aspect") == 0;
     bool world = argc == 4 && strcmp(argv[3], "world") == 0;
     bool prediction = argc == 4 && strcmp(argv[3], "prediction") == 0;
+    bool world_reliable = argc == 4 && strcmp(argv[3], "world-reliable") == 0;
     const char *trace_path = NULL;
     /* --trace PATH may follow the arguments above */
     for (int i = 3; i + 1 < argc; ++i) {
@@ -2497,10 +2613,11 @@ int main(int argc, char **argv) {
         aspect = argc > 4 && strcmp(argv[3], "aspect") == 0;
         world = argc > 4 && strcmp(argv[3], "world") == 0;
         prediction = argc > 4 && strcmp(argv[3], "prediction") == 0;
+        world_reliable = argc > 4 && strcmp(argv[3], "world-reliable") == 0;
     } else if (argc != 3 && !late_auth && !voice && !voice_relay && !voice_mute &&
-               !voice_flood && !single && !aspect && !world && !prediction) {
+               !voice_flood && !single && !aspect && !world && !prediction && !world_reliable) {
         fprintf(stderr, "usage: test_core_app_net_client PORT_FILE REPORT_FILE"
-                        " [late-auth|voice|voice-relay|voice-mute|voice-flood|single|aspect|world|prediction]"
+                        " [late-auth|voice|voice-relay|voice-mute|voice-flood|single|aspect|world|prediction|world-reliable]"
                         " [--trace PATH]\n");
         return 2;
     }
@@ -2533,6 +2650,8 @@ int main(int argc, char **argv) {
         scenario_world();
     } else if (g_failures == 0 && prediction) {
         scenario_prediction();
+    } else if (g_failures == 0 && world_reliable) {
+        scenario_world_reliable();
     } else if (g_failures == 0) {
         scenario_authenticated();
         scenario_unauthenticated();

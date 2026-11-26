@@ -1934,3 +1934,51 @@ arm64 lane 新增 `test_core_app_network`（25/25）和 `test_core_app_network_o
 
 本提交自身的远端工作流结果不在此预写。
 
+## 补充（2026-11-27）：可靠的 World 发布 `--world-reliable`
+
+- **配置**：`core_app --network ... --world-replication --world-reliable`，默认关闭。缺少 `--network` 时走既有 network-option 错误；缺少 `--world-replication` 时报 `--world-reliable requires --world-replication`。开启后优先于 `world_use_legacy_publish`。`--help` 列出该选项。
+- **行为**（`core_app_net_transport.c` 的 `net_world_publish_reliable`）：
+  - 每个 tick 都构建权威 World 的快照，写入 `BreakWorldSnapshotLog`。日志容量为 `CORE_APP_NET_WORLD_LOG_CAPACITY` = 32，并开启驱逐慢读者。日志要求 tick 严格递增，所以关卡重载、core tick 回到较小值时，发布用的 tick 仍保持递增。
+  - 连接第一次就绪（已认证、已欢迎）时成为读者，从下一个 epoch 开始，所以它的第一个包本来就是 full。
+  - 每个就绪连接用 `break_world_session_publish_from_log` 依次发送尚未发送的 epoch，每个 tick 最多 32 个。
+  - 连接关闭时移除读者。
+- **两条发送节流规则**，都在 world session 的语义下才必要：
+  - **full 未 ACK 时暂停**：full 会替换 session 历史，之后对更早 full 的 ACK 就匹配不上了。所以在没有确认基线、历史里已有一个包时，不再发送。
+  - **未 ACK 的包最多 `CORE_APP_NET_WORLD_RELIABLE_IN_FLIGHT` = 4 个**：session 默认历史上限是 8 条，超过会回退到 full，同样打断链。
+
+  暂停期间 epoch 留在日志里。暂停超过日志容量的连接会被驱逐，下一个包发最新 epoch 的 full。
+- **trace**：`network_world_stats` 追加 reliable、reliable_published、reliable_evictions、reliable_backlog_max 四个字段。关闭时 reliable=0。
+
+**测试**：
+- `test_core_app_net_transport` 新增 9 例，共 56 例：
+  - 已 ACK 时每个 tick 发一个 delta，tick 连续。
+  - 传输队列满时 tick 留在日志里，清空后按序补发。
+  - 长期卡住的连接被驱逐一次：随后续发挂起的 delta，再发一个 full；在 full 被 ACK 前不再发送，ACK 后恢复无间断的 delta 链。
+  - 未 ACK 的 full 期间暂停发送。
+  - 未 ACK 的 delta 数量上限。
+  - 关闭时释放读者，同一槽位的新连接从 full 开始。
+  - 没有 World 复制时不启用。
+  - tick 回绕后继续发布。
+  - 默认关闭。
+- `test_core_app_target_contract` 检查两条错误信息和 `--help`。
+- 新增真实 TLS loopback `test_core_app_network_world_reliable`（MODE=world_reliable）：对端逐包 ACK，连续收到 60 个包，结果为 full=1、delta=59、gaps=0、broken_chain=0，即每个包的目标 tick 恰好比上一个大 1，每个 delta 都以上一个目标为基准。联网 trace 与离线 trace 相同。
+- 连带修复（`break_world_session_publish_from_log`）：驱逐后的 full 改为携带最新 epoch。`test_world_session_recovery` 相应更新，仍为 37/37。
+
+**变异**：
+- 传输层 15 项：
+  - 12 项判红，1 项编译失败。
+  - 初轮存活的 in-flight 上限、full 等待 ACK、发布计数、关闭时移除读者、tick 递增，都已补测试后判红。
+  - 1 项等价，检查已删除：「挂起的 attempt 不受节流」。该 attempt 发起时两项检查都已通过，而 ACK 只会让历史变短。
+  - 1 项等价：`config.world_reliable` 同时要求 `world_replication`。没有 World 复制时不会创建 World 状态，路径本来就不会运行；保留它是为了让 trace 不报告 reliable=1。
+- `publish_from_log` 跳到最新：4 项中 3 项判红，1 项编译失败。
+
+**验证**：
+- 联网构建 `-R test_core_app` 56/56。
+- Windows 实机 MSVC 全量构建通过，相关测试 63/63。Windows 构建未开联网 core_app。
+- `build-current-vk` 非 fuzz 466/466，fuzz 24/24。
+- ASan+UBSan 与 TSan 下，`test_world_snapshot_log`、`test_world_session*`、`test_break_prediction*` 均为 8/8。
+
+仍未完成：Runtime adapter 的发布路径改用日志；权威 simulation 合并。
+
+本提交自身的远端工作流结果不在此预写。
+

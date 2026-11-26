@@ -190,6 +190,9 @@ typedef struct CoreAppNetWorldStats {
     u64 publish_rejected;
     u64 notice_overloads;
     u64 level_rebaselines;
+    u64 reliable_published;
+    u64 reliable_refused;
+    u64 reliable_backlog_max;
 } CoreAppNetWorldStats;
 
 typedef struct CoreAppNetRelayFrame {
@@ -282,6 +285,10 @@ struct CoreAppNetTransport {
     BreakWorldSnapshotPublication *world_publication;
     bool world_use_legacy_publish;
     bool world_fail_next_build;
+    bool world_reliable;
+    BreakWorldSnapshotLog *world_log;
+    BreakWorldSnapshotReaderId world_log_readers[CORE_APP_NET_MAX_CONNECTIONS];
+    bool world_log_reader_open[CORE_APP_NET_MAX_CONNECTIONS];
     u64 world_publish_tick;
     BreakRuntimeCoordinator *world_coordinator;
     bool world_adapter_abandoned;
@@ -718,6 +725,16 @@ static bool net_world_create(CoreAppNetTransport *t) {
         config.schema_hash = break_schema_hash(t->world_schemas);
         t->world_publication = break_world_snapshot_publication_create(&config);
     }
+    if (t->world_reliable) {
+        BreakWorldSnapshotLogConfig config;
+        memset(&config, 0, sizeof(config));
+        config.schema_hash = break_schema_hash(t->world_schemas);
+        config.capacity = CORE_APP_NET_WORLD_LOG_CAPACITY;
+        config.max_readers = CORE_APP_NET_MAX_CONNECTIONS;
+        config.evict_slow_readers = true; /* a stalled peer must not stop the others */
+        t->world_log = break_world_snapshot_log_create(&config);
+        if (!t->world_log) return false;
+    }
     return t->world_publication != NULL;
 }
 
@@ -1020,6 +1037,10 @@ static void net_world_close(CoreAppNetTransport *t, u32 slot) {
     world_destroy(t->world_diagnostics[slot]);
     t->world_diagnostics[slot] = NULL;
     net_world_clear_control_state(t, slot);
+    if (t->world_log_reader_open[slot]) {
+        (void)break_world_snapshot_log_remove_reader(t->world_log, t->world_log_readers[slot]);
+        t->world_log_reader_open[slot] = false;
+    }
 }
 
 static void net_release_slot(CoreAppNetTransport *t, u32 slot, bool close_connection) {
@@ -1054,6 +1075,9 @@ static void net_world_destroy(CoreAppNetTransport *t) {
         t->world_publication = NULL;
     }
     t->world_publish_tick = 0u;
+    break_world_snapshot_log_destroy(t->world_log);
+    t->world_log = NULL;
+    memset(t->world_log_reader_open, 0, sizeof(t->world_log_reader_open));
     break_world_session_destroy(t->world_session);
     world_destroy(t->world_authoritative);
     break_schema_registry_destroy(t->world_schemas);
@@ -1210,6 +1234,81 @@ static void net_world_publish_runtime(CoreAppNetTransport *t) {
         BreakRuntimeError result = net_world_adapter_drain(t);
         if (result != BREAK_RUNTIME_OK && result != BREAK_RUNTIME_OVERLOAD) {
             t->world_stats.terminal_errors++;
+        }
+    }
+    outbound_after = break_net_reactor_outbound_count(t->reactor);
+    if (outbound_after >= outbound_before) {
+        t->world_stats.sent_fragments += outbound_after - outbound_before;
+    }
+}
+
+/* Reliable path (--world-reliable). Every tick's snapshot goes into the log
+ * (a FULL log cannot happen: slow readers are evicted), then each ready
+ * connection sends what its reader has not sent yet, in order. A connection
+ * becomes a reader when it is first ready, so it starts at the next epoch and
+ * its first packet is full anyway. Sending pauses while a full waits for its
+ * ACK and while CORE_APP_NET_WORLD_RELIABLE_IN_FLIGHT packets are unACKed;
+ * the epochs wait in the log meanwhile, and a connection that stays paused
+ * for more than the log holds is evicted (its next packet is full). */
+static void net_world_publish_reliable(CoreAppNetTransport *t) {
+    u64 tick;
+    BreakWorldSnapshot *snapshot;
+    usize outbound_before;
+    usize outbound_after;
+    if (!t->world_log || !t->world_level_initialized) return;
+    outbound_before = break_net_reactor_outbound_count(t->reactor);
+    for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
+        if (t->world_open[i] && net_slot_sendable(t, i) && !t->world_log_reader_open[i]) {
+            t->world_log_reader_open[i] =
+                break_world_snapshot_log_add_reader(t->world_log, &t->world_log_readers[i]);
+        }
+    }
+    tick = (u64)t->current_tick > t->world_publish_tick ? (u64)t->current_tick
+                                                        : t->world_publish_tick + 1u;
+    snapshot = t->world_fail_next_build
+                   ? NULL
+                   : break_world_snapshot_build(t->world_authoritative, t->world_schemas, tick);
+    t->world_fail_next_build = false;
+    if (!snapshot) {
+        t->world_stats.snapshot_build_failures++;
+    } else {
+        if (break_world_snapshot_log_publish(t->world_log, snapshot, NULL) ==
+            BREAK_WORLD_SNAPSHOT_LOG_OK) {
+            t->world_publish_tick = tick;
+            t->world_stats.reliable_published++;
+        } else {
+            t->world_stats.reliable_refused++;
+        }
+        break_world_snapshot_release(snapshot);
+    }
+    for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
+        u64 backlog;
+        if (!t->world_log_reader_open[i] || !t->world_open[i] || !net_slot_sendable(t, i)) continue;
+        backlog = break_world_snapshot_log_backlog(t->world_log, t->world_log_readers[i]);
+        if (backlog > t->world_stats.reliable_backlog_max)
+            t->world_stats.reliable_backlog_max = backlog;
+        for (u32 sent = 0u; sent < CORE_APP_NET_WORLD_LOG_CAPACITY; ++sent) {
+            BreakWorldSessionSenderState state;
+            BreakWorldSessionLogResult result;
+            if (!break_world_session_sender_state(t->world_session, t->keys[i], &state)) break;
+            /* A pending attempt was started when both checks passed, and ACKs
+             * only shrink the history, so the checks pass again for it. */
+            if (!state.force_full) {
+                /* A full replaces the session history, so an ACK for an
+                 * earlier full no longer matches: wait for the in-flight
+                 * full's ACK before sending more. */
+                if (state.history_count != 0u && state.confirmed_snapshot_id == 0u) break;
+                /* stay below the session history limit, whose overflow would
+                 * fall back to a full and break the chain the same way */
+                if (state.history_count >= CORE_APP_NET_WORLD_RELIABLE_IN_FLIGHT) break;
+            }
+            result = break_world_session_publish_from_log(
+                t->world_session, t->keys[i], t->world_log, t->world_log_readers[i],
+                t->world_level_generation, NULL);
+            if (result == BREAK_WORLD_SESSION_LOG_SENT) continue;
+            if (result != BREAK_WORLD_SESSION_LOG_IDLE && result != BREAK_WORLD_SESSION_LOG_OVERLOAD)
+                t->world_stats.terminal_errors++;
+            break;
         }
     }
     outbound_after = break_net_reactor_outbound_count(t->reactor);
@@ -2149,7 +2248,9 @@ static void net_tick(void *user, u32 tick, u64 level_generation,
     net_aspect_tick_drain(t, now_ms);
     net_world_tick_drain(t, now_ms);
     if (t->producing && break_net_reactor_event_queue_empty(t->reactor)) {
-        if (t->world_use_legacy_publish) {
+        if (t->world_reliable) {
+            net_world_publish_reliable(t);
+        } else if (t->world_use_legacy_publish) {
             for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
                 if (t->world_open[i] && net_slot_sendable(t, i)) {
                     (void)net_world_publish_slot(t, i);
@@ -2235,6 +2336,13 @@ static void net_trace_prediction_stats(CoreAppNetTransport *t) {
     net_trace(t, line);
 }
 
+static u64 net_world_reliable_evictions(const CoreAppNetTransport *t) {
+    BreakWorldSnapshotLogStats stats;
+    if (!t->world_log) return 0u;
+    break_world_snapshot_log_stats(t->world_log, &stats);
+    return stats.evicted_readers;
+}
+
 static void net_trace_world_stats(CoreAppNetTransport *t) {
     BreakWorldSessionStats world;
     char line[512];
@@ -2244,12 +2352,15 @@ static void net_trace_world_stats(CoreAppNetTransport *t) {
              "COREAPPTRACE version=1 event=network_world_stats opened=%" PRIu64
              " closed=%" PRIu64 " applied=%zu need_full=%zu rejected=%zu"
              " full_publishes=%zu delta_publishes=%zu sent_fragments=%" PRIu64
-             " queue_depth=%zu dropped=%" PRIu64 "\n",
+             " queue_depth=%zu dropped=%" PRIu64 " reliable=%d reliable_published=%" PRIu64
+             " reliable_evictions=%" PRIu64 " reliable_backlog_max=%" PRIu64 "\n",
              t->world_stats.opened, t->world_stats.closed, world.applied_packets,
              world.need_full_packets, world.rejected_packets, world.published_full_packets,
              world.published_delta_packets, t->world_stats.sent_fragments,
              world.bridge.completion_count,
-             t->world_stats.terminal_errors + world.bridge.dropped_completions);
+             t->world_stats.terminal_errors + world.bridge.dropped_completions,
+             t->world_reliable ? 1 : 0, t->world_stats.reliable_published,
+             net_world_reliable_evictions(t), t->world_stats.reliable_backlog_max);
     net_trace(t, line);
 }
 
@@ -2426,6 +2537,7 @@ CoreAppNetTransport *core_app_net_transport_create(const CoreAppNetTransportConf
     t->aspect_replication = config->aspect_replication;
     t->world_replication = config->world_replication;
     t->world_use_legacy_publish = config->world_use_legacy_publish;
+    t->world_reliable = config->world_replication && config->world_reliable_publish;
     t->prediction = config->prediction;
     return t;
 }
@@ -2562,6 +2674,15 @@ bool core_app_net_transport_world_for_test(CoreAppNetTransport *transport,
     out->publish_rejected = transport->world_stats.publish_rejected;
     out->notice_overloads = transport->world_stats.notice_overloads;
     out->level_rebaselines = transport->world_stats.level_rebaselines;
+    out->reliable = transport->world_reliable;
+    out->reliable_published = transport->world_stats.reliable_published;
+    out->reliable_evictions = net_world_reliable_evictions(transport);
+    out->reliable_backlog_max = transport->world_stats.reliable_backlog_max;
+    if (transport->world_log) {
+        BreakWorldSnapshotLogStats log_stats;
+        break_world_snapshot_log_stats(transport->world_log, &log_stats);
+        out->reliable_readers = log_stats.readers;
+    }
     for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
         if (transport->world_open[i]) out->open_count++;
         if (transport->world_diagnostics[i]) out->diagnostic = transport->world_diagnostics[i];
@@ -2629,6 +2750,12 @@ World *core_app_net_transport_world_reopen_for_test(CoreAppNetTransport *transpo
 
 void core_app_net_transport_world_drain_for_test(CoreAppNetTransport *transport, u64 now_ms) {
     net_world_tick_drain(transport, now_ms);
+}
+
+void core_app_net_transport_world_reliable_tick_for_test(CoreAppNetTransport *transport, u32 tick) {
+    if (!transport) return;
+    transport->current_tick = tick;
+    net_world_publish_reliable(transport);
 }
 
 void core_app_net_transport_world_fail_next_build_for_test(CoreAppNetTransport *transport) {

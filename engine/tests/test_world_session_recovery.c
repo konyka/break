@@ -2486,24 +2486,30 @@ TEST(world_session_publish_from_log_sends_full_after_lagged)
     ASSERT_TRUE(ack_attempt(&fixture, &attempt));
     clear_attempt(&attempt);
     for (u32 i = 0u; i < 4u; ++i) ASSERT_TRUE(log_publish_value(&fixture, log, 2u + i, 11u + i));
-    /* epochs 2 and 3 were evicted before A read them */
-    ASSERT_EQ(break_world_session_publish_from_log(fixture.session, 11u, log, ra, TEST_LEVEL,
-                                                   &epoch),
-              BREAK_WORLD_SESSION_LOG_SENT);
-    ASSERT_EQ(epoch, 4u);
-    ASSERT_TRUE(collect_attempt_for_connection(&fixture, 11u, &attempt));
-    ASSERT_EQ(attempt.kind, BREAK_WORLD_DELTA_WIRE_FULL);
-    ASSERT_EQ(attempt.target_tick, 13u);
-    ASSERT_TRUE(ack_attempt(&fixture, &attempt));
-    clear_attempt(&attempt);
-    /* back on a contiguous chain: a delta again */
+    /* epochs 2 and 3 were evicted before A read them; 4 and 5 are retained.
+     * The full skips 4 and carries the newest, 5. */
     ASSERT_EQ(break_world_session_publish_from_log(fixture.session, 11u, log, ra, TEST_LEVEL,
                                                    &epoch),
               BREAK_WORLD_SESSION_LOG_SENT);
     ASSERT_EQ(epoch, 5u);
     ASSERT_TRUE(collect_attempt_for_connection(&fixture, 11u, &attempt));
+    ASSERT_EQ(attempt.kind, BREAK_WORLD_DELTA_WIRE_FULL);
+    ASSERT_EQ(attempt.target_tick, 14u);
+    ASSERT_TRUE(ack_attempt(&fixture, &attempt));
+    clear_attempt(&attempt);
+    ASSERT_EQ(break_world_snapshot_log_backlog(log, ra), 0u);
+    ASSERT_EQ(break_world_session_publish_from_log(fixture.session, 11u, log, ra, TEST_LEVEL,
+                                                   &epoch),
+              BREAK_WORLD_SESSION_LOG_IDLE);
+    /* back on a contiguous chain: a delta again */
+    ASSERT_TRUE(log_publish_value(&fixture, log, 9u, 15u));
+    ASSERT_EQ(break_world_session_publish_from_log(fixture.session, 11u, log, ra, TEST_LEVEL,
+                                                   &epoch),
+              BREAK_WORLD_SESSION_LOG_SENT);
+    ASSERT_EQ(epoch, 6u);
+    ASSERT_TRUE(collect_attempt_for_connection(&fixture, 11u, &attempt));
     ASSERT_EQ(attempt.kind, BREAK_WORLD_DELTA_WIRE_DELTA);
-    ASSERT_EQ(attempt.base_tick, 13u);
+    ASSERT_EQ(attempt.base_tick, 14u);
     clear_attempt(&attempt);
     break_world_snapshot_log_destroy(log);
     fixture_dispose(&fixture);
