@@ -335,3 +335,12 @@ MoltenVK 初轮 staging 因 Homebrew 顶层 include 符号链接失败，改用�
 托管 Windows 成功与本机 `test_scene_serial` 单例失败并存；本机根因仍未定位，本机全套不称通过。
 
 以上结果全部属于 `7fdcdfe318f43ce4f8620f0e455be795bb66e87b`。**本收据文档提交本身还会触发新的主 CI、windows-d3d12 和 Proton**，待实际核验后再记录，不预写成功或 run-id。
+
+### 2026-11-27 Windows fuzz 构建列表修复（W1 实机）
+
+- **问题**：主 CI 从 `58aaa364` 起每次都失败在 Windows + MSVC 和 Windows + MinGW GCC 的「Build fuzz targets」步骤，报 `ninja: error: unknown target 'fuzz_crash_symbols'`。原因是两处 Windows 构建列表加入了只在 Linux 定义的目标：`break_crash_symbolize` 只在 `UNIX AND NOT APPLE` 下构建，因此 `fuzz_crash_symbols`、依赖它的 `fuzz_crash_cluster` 在 Windows 上都不存在；`break_http` 只在 `NOT WIN32` 下构建，因此 `fuzz_http_head` 也不存在。其余 Linux 作业不受影响。
+- **修复**：两处 Windows 单行列表去掉这三个目标，Linux ASan 作业的多行列表保持不变。目标清单以 Windows 主机上 `ninja -t targets all` 的实际输出核对：修复后的 17 个目标全部存在。
+- **W1 实机结果**（源码 `2ab9674e` 加本修复，`vcvars64` + Ninja + `cl`，配置同 CI）：构建 0 错误，17 个 fuzz 目标构建通过，`ctest -L fuzz` 20/20。headless 选择 445 项中 443 项通过，两项失败都来自主机环境：
+  - `test_platform_win32_runtime`：`OpenClipboard failed`，与问题 1 相同（ToDesk 占用剪贴板）。
+  - `test_rhi_backend_selection`：解压后的新源码树里没有 Agility SDK（`D3D12Core.dll missing`）。主机不能访问 nuget.org，把已有的 `E:\d3d12-agility-1.619.6.nupkg` 解压到 `engine/external/d3d12/agility` 后单独复跑，1/1 通过。CI 作业先执行 `fetch_d3d12_agility_sdk.cmake`，不受影响。
+- 本提交自身的远端工作流结果不在此预写。
