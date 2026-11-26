@@ -180,6 +180,9 @@ typedef struct CoreAppNetWorldStats {
     u64 closed;
     u64 sent_fragments;
     u64 terminal_errors;
+    u64 snapshot_build_failures;
+    u64 publish_rejected;
+    u64 notice_overloads;
 } CoreAppNetWorldStats;
 
 typedef struct CoreAppNetRelayFrame {
@@ -269,6 +272,10 @@ struct CoreAppNetTransport {
     World *world_diagnostics[CORE_APP_NET_MAX_CONNECTIONS];
     BreakWorldSession *world_session;
     BreakRuntimeWorldSession *world_adapter;
+    BreakWorldSnapshotPublication *world_publication;
+    bool world_use_legacy_publish;
+    bool world_fail_next_build;
+    u64 world_publish_tick;
     BreakRuntimeCoordinator *world_coordinator;
     bool world_adapter_abandoned;
     Entity world_objects[CORE_APP_WORLD_OBJECT_COUNT];
@@ -691,7 +698,14 @@ static bool net_world_create(CoreAppNetTransport *t) {
         }
     }
     t->world_session = net_world_session_create(t, 0u);
-    return t->world_session != NULL;
+    if (!t->world_session) return false;
+    {
+        BreakWorldSnapshotPublicationConfig config;
+        memset(&config, 0, sizeof(config));
+        config.schema_hash = break_schema_hash(t->world_schemas);
+        t->world_publication = break_world_snapshot_publication_create(&config);
+    }
+    return t->world_publication != NULL;
 }
 
 static void net_world_adapter_on_destroy(void *user_data) {
@@ -722,6 +736,9 @@ BreakRuntimeError core_app_net_transport_world_adapter_register(
     config.bus = bus;
     config.subscriber_name = "core_app.world";
     config.max_connections = CORE_APP_NET_MAX_CONNECTIONS;
+    config.publication = transport->world_publication;
+    config.publish_requires_ready = true;
+    config.publish_waits_for_ack = true;
     adapter = break_runtime_world_session_create(&config);
     if (!adapter) return BREAK_RUNTIME_OOM;
     memset(&lifecycle, 0, sizeof(lifecycle));
@@ -742,6 +759,11 @@ BreakRuntimeError core_app_net_transport_world_adapter_register(
 BreakRuntimeWorldSession *core_app_net_transport_world_adapter(
     CoreAppNetTransport *transport) {
     return transport ? transport->world_adapter : NULL;
+}
+
+BreakWorldSnapshotPublication *core_app_net_transport_world_publication(
+    const CoreAppNetTransport *transport) {
+    return transport ? transport->world_publication : NULL;
 }
 
 BreakRuntimeError core_app_net_transport_world_submit(
@@ -954,6 +976,12 @@ static void net_world_close_all(CoreAppNetTransport *t) {
 
 static void net_world_destroy(CoreAppNetTransport *t) {
     net_world_close_all(t);
+    if (t->world_publication) {
+        break_world_snapshot_publication_close(t->world_publication);
+        break_world_snapshot_publication_destroy(t->world_publication);
+        t->world_publication = NULL;
+    }
+    t->world_publish_tick = 0u;
     break_world_session_destroy(t->world_session);
     world_destroy(t->world_authoritative);
     break_schema_registry_destroy(t->world_schemas);
@@ -1041,6 +1069,80 @@ static BreakNetSendResult net_world_publish_slot(CoreAppNetTransport *t, u32 slo
         t->world_stats.terminal_errors++;
     }
     return result;
+}
+
+static bool net_slot_sendable(const CoreAppNetTransport *t, u32 i);
+
+/* Runtime publish path. Readiness mirrors net_slot_sendable() so only
+ * authenticated, welcomed peers receive World packets; the adapter applies
+ * the legacy stop-and-wait rule itself. A snapshot is built only when some
+ * ready slot can take a new target, and its tick is kept strictly increasing
+ * because a level reload may restart core ticks. */
+static void net_world_publish_runtime(CoreAppNetTransport *t) {
+    bool wants_target = false;
+    usize outbound_before;
+    usize outbound_after;
+    if (!t->world_adapter || !t->world_publication || !t->world_level_initialized) return;
+    /* Fragments leave the reactor while the adapter drains below, so the legacy
+     * counter is sampled around the whole path, not just the publish call. */
+    outbound_before = break_net_reactor_outbound_count(t->reactor);
+    for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
+        BreakWorldSessionSenderState state;
+        bool ready;
+        if (!t->world_open[i]) continue;
+        ready = net_slot_sendable(t, i);
+        if (break_runtime_world_session_set_publish_ready(
+                t->world_adapter, t->keys[i], t->world_connection_epochs[i], ready) !=
+            BREAK_RUNTIME_OK) {
+            continue;
+        }
+        if (ready && break_world_session_sender_state(t->world_session, t->keys[i], &state) &&
+            !state.attempt_pending && (state.history_count == 0u || state.force_full)) {
+            wants_target = true;
+        }
+    }
+    if (wants_target) {
+        u64 tick = (u64)t->current_tick > t->world_publish_tick ? (u64)t->current_tick
+                                                                : t->world_publish_tick + 1u;
+        BreakWorldSnapshot *snapshot =
+            t->world_fail_next_build
+                ? NULL
+                : break_world_snapshot_build(t->world_authoritative, t->world_schemas, tick);
+        t->world_fail_next_build = false;
+        if (!snapshot) {
+            t->world_stats.snapshot_build_failures++;
+        } else {
+            bool published = break_world_snapshot_publication_publish(
+                t->world_publication, snapshot, t->world_level_generation);
+            break_world_snapshot_release(snapshot);
+            if (!published) {
+                t->world_stats.publish_rejected++;
+            } else {
+                BreakRuntimeWorldPublishCurrentNotice notice;
+                BreakRuntimeError result;
+                t->world_publish_tick = tick;
+                memset(&notice, 0, sizeof(notice));
+                notice.level_generation = t->world_level_generation;
+                result = break_runtime_world_session_submit_publish_current(t->world_adapter,
+                                                                            &notice, 0u);
+                if (result == BREAK_RUNTIME_OVERLOAD) {
+                    t->world_stats.notice_overloads++;
+                } else if (result != BREAK_RUNTIME_OK) {
+                    t->world_stats.terminal_errors++;
+                }
+            }
+        }
+    }
+    if (break_runtime_world_session_pending(t->world_adapter) != 0u) {
+        BreakRuntimeError result = net_world_adapter_drain(t);
+        if (result != BREAK_RUNTIME_OK && result != BREAK_RUNTIME_OVERLOAD) {
+            t->world_stats.terminal_errors++;
+        }
+    }
+    outbound_after = break_net_reactor_outbound_count(t->reactor);
+    if (outbound_after >= outbound_before) {
+        t->world_stats.sent_fragments += outbound_after - outbound_before;
+    }
 }
 
 static void net_world_tick_drain(CoreAppNetTransport *t, u64 now_ms) {
@@ -1892,10 +1994,14 @@ static void net_tick(void *user, u32 tick, u64 level_generation,
     net_aspect_tick_drain(t, now_ms);
     net_world_tick_drain(t, now_ms);
     if (t->producing && break_net_reactor_event_queue_empty(t->reactor)) {
-        for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
-            if (t->world_open[i] && net_slot_sendable(t, i)) {
-                (void)net_world_publish_slot(t, i);
+        if (t->world_use_legacy_publish) {
+            for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
+                if (t->world_open[i] && net_slot_sendable(t, i)) {
+                    (void)net_world_publish_slot(t, i);
+                }
             }
+        } else {
+            net_world_publish_runtime(t);
         }
     }
     for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
@@ -2144,6 +2250,7 @@ CoreAppNetTransport *core_app_net_transport_create(const CoreAppNetTransportConf
     t->voice_relay = config->voice_relay;
     t->aspect_replication = config->aspect_replication;
     t->world_replication = config->world_replication;
+    t->world_use_legacy_publish = config->world_use_legacy_publish;
     return t;
 }
 
@@ -2275,6 +2382,9 @@ bool core_app_net_transport_world_for_test(CoreAppNetTransport *transport,
     out->closed = transport->world_stats.closed;
     out->sent_fragments = transport->world_stats.sent_fragments;
     out->terminal_errors = transport->world_stats.terminal_errors;
+    out->snapshot_build_failures = transport->world_stats.snapshot_build_failures;
+    out->publish_rejected = transport->world_stats.publish_rejected;
+    out->notice_overloads = transport->world_stats.notice_overloads;
     for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
         if (transport->world_open[i]) out->open_count++;
         if (transport->world_diagnostics[i]) out->diagnostic = transport->world_diagnostics[i];
@@ -2342,6 +2452,10 @@ World *core_app_net_transport_world_reopen_for_test(CoreAppNetTransport *transpo
 
 void core_app_net_transport_world_drain_for_test(CoreAppNetTransport *transport, u64 now_ms) {
     net_world_tick_drain(transport, now_ms);
+}
+
+void core_app_net_transport_world_fail_next_build_for_test(CoreAppNetTransport *transport) {
+    if (transport) transport->world_fail_next_build = true;
 }
 
 BreakNetReactor *core_app_net_transport_reactor_for_test(CoreAppNetTransport *transport) {

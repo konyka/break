@@ -27,6 +27,9 @@ typedef struct CoreAppNetTransportConfig {
     bool voice_relay;      /* forward accepted peer voice to every other peer */
     bool aspect_replication;
     bool world_replication;
+    /* World replication publishes through the Runtime adapter by default; true
+     * restores the per-slot legacy publish for fallback diagnosis. */
+    bool world_use_legacy_publish;
 } CoreAppNetTransportConfig;
 
 /* Validates the configuration shape (every field present, bind parses).
@@ -77,6 +80,11 @@ BreakRuntimeError core_app_net_transport_world_adapter_register(
     BreakRuntimeCoordinator *coordinator);
 BreakRuntimeWorldSession *core_app_net_transport_world_adapter(
     CoreAppNetTransport *transport);
+/* The publication the adapter fans out from: owned by the transport, created
+ * with the World state and destroyed only after the adapter. NULL while World
+ * replication is off or not started. */
+BreakWorldSnapshotPublication *core_app_net_transport_world_publication(
+    const CoreAppNetTransport *transport);
 BreakRuntimeError core_app_net_transport_world_submit(
     CoreAppNetTransport *transport,
     const BreakRuntimeWorldCommand *command, u64 correlation_id);
@@ -132,6 +140,9 @@ typedef struct CoreAppNetWorldTestView {
     u64 closed;
     u64 sent_fragments;
     u64 terminal_errors;
+    u64 snapshot_build_failures;
+    u64 publish_rejected;
+    u64 notice_overloads;
 } CoreAppNetWorldTestView;
 
 typedef struct CoreAppNetConnectionTestView {
@@ -177,6 +188,8 @@ void core_app_net_transport_world_close_for_test(CoreAppNetTransport *transport,
 void core_app_net_transport_world_disconnect_for_test(CoreAppNetTransport *transport, u64 key);
 int core_app_net_transport_world_slot_for_test(CoreAppNetTransport *transport, u64 key);
 void core_app_net_transport_world_drain_for_test(CoreAppNetTransport *transport, u64 now_ms);
+/* Makes the next Runtime-path snapshot build fail once. */
+void core_app_net_transport_world_fail_next_build_for_test(CoreAppNetTransport *transport);
 /* Test-only (test_core_app_net_transport): the live reactor, or NULL. */
 BreakNetReactor *core_app_net_transport_reactor_for_test(CoreAppNetTransport *transport);
 /* Test-only: after the step that blocked the stop has returned, stops and

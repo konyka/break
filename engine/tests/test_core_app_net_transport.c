@@ -636,10 +636,12 @@ typedef struct WorldAttempt {
     u64 target_tick;
 } WorldAttempt;
 
-static bool world_fixture_start(AspectTransportFixture *fixture, const char *name,
-                                bool world_enabled, bool aspect_enabled) {
+static bool world_fixture_start_with(AspectTransportFixture *fixture, const char *name,
+                                     bool world_enabled, bool aspect_enabled) {
     const char *fixtures = CORE_APP_TEST_STR(CORE_APP_TEST_SSL_FIXTURE_DIR);
+    const bool legacy = fixture->config.world_use_legacy_publish;
     memset(fixture, 0, sizeof(*fixture));
+    fixture->config.world_use_legacy_publish = legacy;
     snprintf(fixture->cert, sizeof(fixture->cert), "%s/snow_test_cert.pem", fixtures);
     snprintf(fixture->key, sizeof(fixture->key), "%s/snow_test_key.pem", fixtures);
     test_tmp(fixture->port_file, sizeof(fixture->port_file), name);
@@ -675,6 +677,12 @@ static bool world_fixture_start(AspectTransportFixture *fixture, const char *nam
     }
     fixture->reactor = core_app_net_transport_reactor_for_test(fixture->transport);
     return fixture->reactor != NULL;
+}
+
+static bool world_fixture_start(AspectTransportFixture *fixture, const char *name,
+                                bool world_enabled, bool aspect_enabled) {
+    memset(fixture, 0, sizeof(*fixture));
+    return world_fixture_start_with(fixture, name, world_enabled, aspect_enabled);
 }
 
 static bool transport_fixture_destroy(AspectTransportFixture *fixture) {
@@ -2342,6 +2350,249 @@ TEST(world_transport_destroy_releases_enabled_state) {
     aspect_fixture_dispose(&fixture);
 }
 
+static void world_fixture_tick_with_index(AspectTransportFixture *fixture, u32 index) {
+    const CoreAppSnapshotEntity entities[2] = {
+        {index, 3u, 1.5f, -2.0f, 3.25f, 11u},
+        {8u, 4u, -4.0f, 5.5f, 6.0f, 22u},
+    };
+    fixture->tick++;
+    fixture->hooks.tick(fixture->hooks.user, fixture->tick, 9u, entities, 2u, 0u);
+}
+
+static bool world_fixture_welcome(AspectTransportFixture *fixture, BreakConnectionKey key) {
+    CoreAppNetConnectionTestView connection;
+    int slot = core_app_net_transport_world_slot_for_test(fixture->transport, key);
+    if (slot < 0 || !core_app_net_transport_authenticate_for_test(fixture->transport, key)) {
+        return false;
+    }
+    world_fixture_tick(fixture);
+    return core_app_net_transport_connection_for_test(fixture->transport, (u32)slot,
+                                                      &connection) &&
+           connection.authenticated;
+}
+
+static usize world_outbound_deltas_for(AspectTransportFixture *fixture, BreakConnectionKey key) {
+    BreakConnectionKey outbound_key = 0u;
+    BreakNetOwnedMessage message;
+    usize count = 0u;
+    while (break_net_reactor_poll_outbound_for_test(fixture->reactor, &outbound_key, &message) ==
+           BREAK_NET_EVENT_OK) {
+        if (outbound_key == key && message.message_id == BREAK_NET_MESSAGE_ID_WORLD_DELTA) {
+            count++;
+        }
+        break_net_message_release(&message);
+    }
+    return count;
+}
+
+TEST(world_publication_default_off_creates_nothing) {
+    AspectTransportFixture fixture;
+    CoreAppNetWorldTestView world;
+    ASSERT_TRUE(world_fixture_start(&fixture, "core_app_world_publication_off.port", false,
+                                    false));
+    ASSERT_TRUE(core_app_net_transport_world_publication(fixture.transport) == NULL);
+    world_fixture_tick(&fixture);
+    ASSERT_TRUE(core_app_net_transport_world_publication(fixture.transport) == NULL);
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &world));
+    ASSERT_EQ(world.snapshot_build_failures, 0u);
+    ASSERT_EQ(world.publish_rejected, 0u);
+    ASSERT_EQ(world.notice_overloads, 0u);
+    ASSERT_TRUE(core_app_net_transport_world_publication(NULL) == NULL);
+    ASSERT_TRUE(transport_fixture_destroy(&fixture));
+    aspect_fixture_dispose(&fixture);
+}
+
+TEST(world_publication_runtime_path_gates_on_auth_and_waits_for_ack) {
+    AspectTransportFixture fixture;
+    CoreAppNetWorldTestView view;
+    BreakRuntimeWorldSession *adapter;
+    BreakWorldSnapshotPublication *publication;
+    BreakRuntimeWorldPublishProgress progress;
+    BreakRuntimeWorldConnectionSnapshot snapshot;
+    BreakWorldSessionStats stats;
+    WorldAttempt initial;
+    WorldAttempt delta;
+    BreakWorldSnapshotLease lease;
+    const BreakConnectionKey key = 0x940au;
+
+    ASSERT_TRUE(world_fixture_start(&fixture, "core_app_world_publication_on.port", true, false));
+    publication = core_app_net_transport_world_publication(fixture.transport);
+    ASSERT_NOT_NULL(publication);
+    adapter = core_app_net_transport_world_adapter(fixture.transport);
+    ASSERT_NOT_NULL(adapter);
+    ASSERT_TRUE(world_fixture_open(&fixture, key));
+    ASSERT_EQ(break_runtime_world_session_connection_snapshots(adapter, &snapshot, 1u), 1u);
+    ASSERT_FALSE(snapshot.publish_ready);
+
+    world_fixture_tick(&fixture);
+    ASSERT_EQ(world_outbound_deltas_for(&fixture, key), 0u);
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    break_world_session_stats(view.session, &stats);
+    ASSERT_EQ(stats.published_full_packets, 0u);
+
+    ASSERT_TRUE(world_fixture_welcome(&fixture, key));
+    world_clear_outbound(&fixture);
+    world_fixture_tick(&fixture);
+    ASSERT_TRUE(world_collect_attempt(&fixture, key, NULL, 0u, &initial));
+    ASSERT_EQ(initial.kind, BREAK_WORLD_DELTA_WIRE_FULL);
+    ASSERT_EQ(initial.delta_id, 1u);
+    ASSERT_EQ(break_runtime_world_session_connection_snapshots(adapter, &snapshot, 1u), 1u);
+    ASSERT_TRUE(snapshot.publish_ready);
+    ASSERT_NEQ(snapshot.completed_publication_epoch, 0u);
+    ASSERT_EQ(break_world_snapshot_publication_acquire(publication, &lease),
+              BREAK_WORLD_SNAPSHOT_ACQUIRE_OK);
+    ASSERT_EQ(lease.publication_epoch, snapshot.completed_publication_epoch);
+    ASSERT_EQ(lease.level_generation, 9u);
+    ASSERT_EQ(break_world_snapshot_id(lease.snapshot), initial.target_snapshot_id);
+    break_world_snapshot_lease_release(&lease);
+
+    world_fixture_tick_with_index(&fixture, 99u);
+    world_fixture_tick_with_index(&fixture, 100u);
+    ASSERT_EQ(world_outbound_deltas_for(&fixture, key), 0u);
+    ASSERT_TRUE(break_runtime_world_session_publish_progress(adapter, &progress));
+    ASSERT_EQ(progress.dirty_connections, 0u);
+    ASSERT_FALSE(progress.continuation_pending);
+
+    ASSERT_TRUE(world_send_control(&fixture, key, BREAK_WORLD_SESSION_CONTROL_ACK, &initial));
+    world_fixture_tick_with_index(&fixture, 101u);
+    ASSERT_TRUE(world_collect_attempt(&fixture, key, NULL, 0u, &delta));
+    ASSERT_EQ(delta.kind, BREAK_WORLD_DELTA_WIRE_DELTA);
+    ASSERT_EQ(delta.delta_id, 2u);
+    ASSERT_EQ(delta.base_snapshot_id, initial.target_snapshot_id);
+
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    break_world_session_stats(view.session, &stats);
+    ASSERT_EQ(stats.published_full_packets, 1u);
+    ASSERT_EQ(stats.published_delta_packets, 1u);
+    ASSERT_EQ(view.snapshot_build_failures, 0u);
+    ASSERT_EQ(view.publish_rejected, 0u);
+    ASSERT_EQ(view.notice_overloads, 0u);
+    ASSERT_EQ(view.terminal_errors, 0u);
+    ASSERT_TRUE(transport_fixture_destroy(&fixture));
+    ASSERT_TRUE(core_app_net_transport_world_publication(fixture.transport) == NULL);
+    aspect_fixture_dispose(&fixture);
+}
+
+TEST(world_publication_snapshot_build_failure_counts_and_recovers) {
+    AspectTransportFixture fixture;
+    CoreAppNetWorldTestView view;
+    WorldAttempt initial;
+    const BreakConnectionKey key = 0x940bu;
+    ASSERT_TRUE(world_fixture_start(&fixture, "core_app_world_publication_fail.port", true,
+                                    false));
+    ASSERT_TRUE(world_fixture_open(&fixture, key));
+    ASSERT_TRUE(world_fixture_welcome(&fixture, key));
+    world_clear_outbound(&fixture);
+    core_app_net_transport_world_fail_next_build_for_test(fixture.transport);
+    world_fixture_tick(&fixture);
+    ASSERT_EQ(world_outbound_deltas_for(&fixture, key), 0u);
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    ASSERT_EQ(view.snapshot_build_failures, 1u);
+    ASSERT_EQ(view.publish_rejected, 0u);
+    world_fixture_tick(&fixture);
+    ASSERT_TRUE(world_collect_attempt(&fixture, key, NULL, 0u, &initial));
+    ASSERT_EQ(initial.kind, BREAK_WORLD_DELTA_WIRE_FULL);
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    ASSERT_EQ(view.snapshot_build_failures, 1u);
+    ASSERT_TRUE(transport_fixture_destroy(&fixture));
+    aspect_fixture_dispose(&fixture);
+}
+
+TEST(world_publication_restarted_tick_keeps_publishing) {
+    AspectTransportFixture fixture;
+    CoreAppNetWorldTestView view;
+    WorldAttempt initial;
+    WorldAttempt next;
+    const BreakConnectionKey key = 0x940cu;
+    ASSERT_TRUE(world_fixture_start(&fixture, "core_app_world_publication_tick.port", true,
+                                    false));
+    ASSERT_TRUE(world_fixture_open(&fixture, key));
+    ASSERT_TRUE(world_fixture_welcome(&fixture, key));
+    world_clear_outbound(&fixture);
+    fixture.tick = 40u;
+    world_fixture_tick(&fixture);
+    ASSERT_TRUE(world_collect_attempt(&fixture, key, NULL, 0u, &initial));
+    ASSERT_EQ(initial.target_tick, 41u);
+    ASSERT_TRUE(world_send_control(&fixture, key, BREAK_WORLD_SESSION_CONTROL_ACK, &initial));
+    fixture.tick = 0u;
+    world_fixture_tick_with_index(&fixture, 55u);
+    ASSERT_TRUE(world_collect_attempt(&fixture, key, NULL, 0u, &next));
+    ASSERT_EQ(next.kind, BREAK_WORLD_DELTA_WIRE_DELTA);
+    ASSERT_EQ(next.target_tick, 42u);
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    ASSERT_EQ(view.publish_rejected, 0u);
+    ASSERT_TRUE(transport_fixture_destroy(&fixture));
+    aspect_fixture_dispose(&fixture);
+}
+
+TEST(world_publication_legacy_switch_skips_runtime_notice) {
+    AspectTransportFixture fixture;
+    CoreAppNetWorldTestView view;
+    BreakRuntimeWorldPublishProgress progress;
+    BreakRuntimeWorldSessionStats stats;
+    WorldAttempt initial;
+    const BreakConnectionKey key = 0x940du;
+    memset(&fixture, 0, sizeof(fixture));
+    fixture.config.world_use_legacy_publish = true;
+    ASSERT_TRUE(world_fixture_start_with(&fixture, "core_app_world_publication_legacy.port",
+                                         true, false));
+    ASSERT_TRUE(world_fixture_open(&fixture, key));
+    ASSERT_TRUE(world_fixture_welcome(&fixture, key));
+    world_clear_outbound(&fixture);
+    world_fixture_tick(&fixture);
+    ASSERT_TRUE(world_collect_attempt(&fixture, key, NULL, 0u, &initial));
+    ASSERT_EQ(initial.kind, BREAK_WORLD_DELTA_WIRE_FULL);
+    ASSERT_TRUE(break_runtime_world_session_publish_progress(
+        core_app_net_transport_world_adapter(fixture.transport), &progress));
+    ASSERT_EQ(progress.observed_publication_epoch, 0u);
+    break_runtime_world_session_stats(core_app_net_transport_world_adapter(fixture.transport),
+                                      &stats);
+    ASSERT_FALSE(stats.publish_pending);
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    ASSERT_EQ(view.terminal_errors, 0u);
+    ASSERT_TRUE(transport_fixture_destroy(&fixture));
+    aspect_fixture_dispose(&fixture);
+}
+
+TEST(world_publication_survives_adapter_destroy_timeout) {
+    AspectTransportFixture fixture;
+    CoreAppNetWorldTestView view;
+    BreakWorldSnapshotPublication *publication;
+    BreakWorldSnapshotLease lease;
+    BreakWorldSnapshot *snapshot;
+    const BreakConnectionKey key = 0x940eu;
+    ASSERT_TRUE(world_fixture_start(&fixture, "core_app_world_publication_timeout.port", true,
+                                    false));
+    ASSERT_TRUE(world_fixture_open(&fixture, key));
+    ASSERT_TRUE(world_fixture_welcome(&fixture, key));
+    world_fixture_tick(&fixture);
+    publication = core_app_net_transport_world_publication(fixture.transport);
+    ASSERT_NOT_NULL(publication);
+    ASSERT_TRUE(core_app_net_transport_world_for_test(fixture.transport, &view));
+    snapshot = break_world_snapshot_build(view.authoritative, view.schemas, 20u);
+    ASSERT_NOT_NULL(snapshot);
+    ASSERT_TRUE(world_queue_full(&fixture, key, snapshot, 74u));
+    for (usize i = 0u; i < BREAK_NET_OUTBOUND_QUEUE_CAPACITY; ++i) {
+        (void)break_net_reactor_send(fixture.reactor, key, BREAK_NET_MESSAGE_ID_PING, 1u, "x",
+                                     1u);
+    }
+    core_app_net_transport_world_drain_for_test(fixture.transport, 20u);
+    ASSERT_EQ(fixture.hooks.destroy(fixture.hooks.user), BREAK_RUNTIME_TIMEOUT);
+    ASSERT_TRUE(core_app_net_transport_world_publication(fixture.transport) == publication);
+    ASSERT_EQ(break_world_snapshot_publication_acquire(publication, &lease),
+              BREAK_WORLD_SNAPSHOT_ACQUIRE_OK);
+    break_world_snapshot_lease_release(&lease);
+    world_clear_outbound(&fixture);
+    ASSERT_EQ(fixture.hooks.destroy(fixture.hooks.user), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(core_app_net_transport_world_publication(fixture.transport) == NULL);
+    break_world_snapshot_release(snapshot);
+    break_runtime_coordinator_destroy(fixture.world_coordinator);
+    fixture.world_coordinator = NULL;
+    break_runtime_bus_destroy(fixture.world_bus);
+    fixture.world_bus = NULL;
+    aspect_fixture_dispose(&fixture);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(destroy_reports_stop_timeout_and_keeps_the_reactor);
     RUN_TEST(voice_frame_counts_invalid_and_skipped_frames);
@@ -2379,4 +2630,10 @@ TEST_MAIN_BEGIN()
     RUN_TEST(world_adapter_failed_rollback_drains_before_network_destroy);
     RUN_TEST(world_adapter_destroy_clears_pointer_before_network_timeout);
     RUN_TEST(world_transport_destroy_releases_enabled_state);
+    RUN_TEST(world_publication_default_off_creates_nothing);
+    RUN_TEST(world_publication_runtime_path_gates_on_auth_and_waits_for_ack);
+    RUN_TEST(world_publication_snapshot_build_failure_counts_and_recovers);
+    RUN_TEST(world_publication_restarted_tick_keeps_publishing);
+    RUN_TEST(world_publication_legacy_switch_skips_runtime_notice);
+    RUN_TEST(world_publication_survives_adapter_destroy_timeout);
 TEST_MAIN_END()
