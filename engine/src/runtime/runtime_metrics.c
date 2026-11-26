@@ -770,6 +770,147 @@ BreakRuntimeError break_runtime_metrics_decode(
     return BREAK_RUNTIME_OK;
 }
 
+/* LZ77 codec (design section 35). Greedy matching through a hash of the next
+ * four bytes, one candidate per bucket. Two passes keep compress free of an
+ * output-size guess: the first only measures, the second writes, and both
+ * walk the identical token sequence. */
+#define LZ_MIN_MATCH 4u
+#define LZ_MAX_MATCH (0x7Fu + LZ_MIN_MATCH) /* 131 */
+#define LZ_MAX_LITERAL 128u
+#define LZ_WINDOW 65535u
+#define LZ_HASH_BITS 15u
+#define LZ_HEADER 9u
+static const u8 k_lz_magic[5] = {'B', 'R', 'K', 'Z', '1'};
+
+static u32 lz_hash(const u8 *p) {
+    u32 v = (u32)p[0] | ((u32)p[1] << 8) | ((u32)p[2] << 16) | ((u32)p[3] << 24);
+    return (v * 2654435761u) >> (32u - LZ_HASH_BITS);
+}
+
+/* Emits pending literals [lit_start, lit_start + lit_len) in runs of at most
+ * LZ_MAX_LITERAL. With out == NULL only the size is accumulated. */
+static void lz_flush_literals(const u8 *in, usize lit_start, usize lit_len, u8 *out, usize *at) {
+    while (lit_len != 0u) {
+        usize run = lit_len < LZ_MAX_LITERAL ? lit_len : LZ_MAX_LITERAL;
+        if (out) {
+            out[*at] = (u8)(run - 1u);
+            memcpy(out + *at + 1u, in + lit_start, run);
+        }
+        *at += 1u + run;
+        lit_start += run;
+        lit_len -= run;
+    }
+}
+
+static usize lz_encode(const u8 *in, usize len, u32 *table, u8 *out) {
+    usize at = LZ_HEADER;
+    usize pos = 0u;
+    usize lit_start = 0u;
+    for (u32 i = 0u; i < (1u << LZ_HASH_BITS); ++i) table[i] = UINT32_MAX;
+    if (out) {
+        memcpy(out, k_lz_magic, sizeof k_lz_magic);
+        out[5] = (u8)len;
+        out[6] = (u8)(len >> 8);
+        out[7] = (u8)(len >> 16);
+        out[8] = (u8)(len >> 24);
+    }
+    while (pos + LZ_MIN_MATCH <= len) {
+        u32 h = lz_hash(in + pos);
+        u32 cand = table[h];
+        usize match = 0u;
+        table[h] = (u32)pos;
+        if (cand != UINT32_MAX && pos - cand <= LZ_WINDOW &&
+            memcmp(in + cand, in + pos, LZ_MIN_MATCH) == 0) {
+            usize limit = len - pos < LZ_MAX_MATCH ? len - pos : LZ_MAX_MATCH;
+            match = LZ_MIN_MATCH;
+            while (match < limit && in[cand + match] == in[pos + match]) ++match;
+        }
+        if (match < LZ_MIN_MATCH) {
+            ++pos;
+            continue;
+        }
+        lz_flush_literals(in, lit_start, pos - lit_start, out, &at);
+        if (out) {
+            usize dist = pos - cand;
+            out[at] = (u8)(0x80u | (match - LZ_MIN_MATCH));
+            out[at + 1u] = (u8)dist;
+            out[at + 2u] = (u8)(dist >> 8);
+        }
+        at += 3u;
+        pos += match;
+        lit_start = pos;
+    }
+    lz_flush_literals(in, lit_start, len - lit_start, out, &at);
+    return at;
+}
+
+BreakRuntimeError break_runtime_metrics_compress(const void *in, usize len, void *out,
+                                                 usize capacity, usize *out_len) {
+    u32 *table;
+    usize need;
+    if (!out_len) return BREAK_RUNTIME_INVALID;
+    *out_len = 0u;
+    if ((!in && len != 0u) || (!out && capacity != 0u)) return BREAK_RUNTIME_INVALID;
+    if (len > BREAK_RUNTIME_METRICS_COMPRESS_MAX_INPUT) return BREAK_RUNTIME_INVALID;
+    table = (u32 *)malloc(sizeof(u32) << LZ_HASH_BITS);
+    if (!table) return BREAK_RUNTIME_OOM;
+    need = lz_encode((const u8 *)in, len, table, NULL);
+    *out_len = need;
+    if (capacity < need) {
+        free(table);
+        return BREAK_RUNTIME_OVERLOAD;
+    }
+    (void)lz_encode((const u8 *)in, len, table, (u8 *)out);
+    free(table);
+    return BREAK_RUNTIME_OK;
+}
+
+BreakRuntimeError break_runtime_metrics_decompress(const void *in, usize len, void *out,
+                                                   usize capacity, usize *out_len) {
+    const u8 *p = (const u8 *)in;
+    u8 *o = (u8 *)out;
+    usize want;
+    usize at = LZ_HEADER;
+    usize produced = 0u;
+    if (!out_len) return BREAK_RUNTIME_INVALID;
+    *out_len = 0u;
+    if (!in || (!out && capacity != 0u)) return BREAK_RUNTIME_INVALID;
+    if (len < LZ_HEADER || memcmp(p, k_lz_magic, sizeof k_lz_magic) != 0)
+        return BREAK_RUNTIME_INVALID;
+    want = (usize)p[5] | ((usize)p[6] << 8) | ((usize)p[7] << 16) | ((usize)p[8] << 24);
+    if (want > BREAK_RUNTIME_METRICS_COMPRESS_MAX_INPUT) return BREAK_RUNTIME_INVALID;
+    if (want > capacity) {
+        *out_len = want;
+        return BREAK_RUNTIME_OVERLOAD;
+    }
+    while (produced < want) {
+        u8 c;
+        if (at >= len) return BREAK_RUNTIME_INVALID; /* stream ends early */
+        c = p[at++];
+        if (c < 0x80u) {
+            usize run = (usize)c + 1u;
+            if (len - at < run || want - produced < run) return BREAK_RUNTIME_INVALID;
+            memcpy(o + produced, p + at, run);
+            at += run;
+            produced += run;
+        } else {
+            usize run = (usize)(c & 0x7Fu) + LZ_MIN_MATCH;
+            usize dist;
+            if (len - at < 2u) return BREAK_RUNTIME_INVALID;
+            dist = (usize)p[at] | ((usize)p[at + 1u] << 8);
+            at += 2u;
+            if (dist == 0u || dist > produced || want - produced < run)
+                return BREAK_RUNTIME_INVALID;
+            /* Byte by byte: the source may overlap the bytes being written. */
+            for (usize k = 0u; k < run; ++k) o[produced + k] = o[produced - dist + k];
+            produced += run;
+        }
+    }
+    if (at != len) return BREAK_RUNTIME_INVALID; /* trailing bytes */
+    *out_len = produced;
+    return BREAK_RUNTIME_OK;
+}
+
 BreakRuntimeError break_runtime_metrics_merge(const void *const *docs, const usize *lens,
                                               u32 count, char *out, usize capacity,
                                               usize *out_len) {

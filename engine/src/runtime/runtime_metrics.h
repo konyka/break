@@ -337,6 +337,43 @@ BreakRuntimeError break_runtime_metrics_history_aggregate_alert_edges(
     BreakRuntimeMetricAlertEdge *edges,
     u32 edge_capacity);
 
+/* Compression for encoded documents (design: docs/design/runtime_metrics.md
+ * section 35). A self-contained LZ77 byte codec, so runtime_core takes no new
+ * library dependency. BRKM1 text repeats its "BRKM1 " prefix, its kind and
+ * long shared name prefixes on every line, which is exactly what LZ77 removes.
+ *
+ * Stream: "BRKZ1", a little-endian u32 original length, then tokens until the
+ * output reaches that length. A control byte c < 0x80 is a literal run: the
+ * next c + 1 bytes are copied. A control byte c >= 0x80 is a match: copy
+ * (c & 0x7F) + 4 bytes starting a little-endian u16 distance (1..65535) back
+ * in the output already produced; the copy may overlap itself, which is how a
+ * run of one byte is expressed. The codec is not tied to the BRKM1 grammar and
+ * works on any bytes. Pure; any thread. */
+#define BREAK_RUNTIME_METRICS_COMPRESS_MAX_INPUT (16u * 1024u * 1024u)
+/* Worst-case stream size for `n` input bytes: header plus one control byte
+ * per 128 literals. compress never needs more than this. */
+#define BREAK_RUNTIME_METRICS_COMPRESS_BOUND(n) (9u + (n) + ((n) + 127u) / 128u)
+
+/* Compresses `len` bytes. OVERLOAD when `capacity` is below the stream size:
+ * *out_len gets the exact size and nothing is written. INVALID on NULL
+ * out_len, NULL in with non-zero len, NULL out with non-zero capacity, or len
+ * above BREAK_RUNTIME_METRICS_COMPRESS_MAX_INPUT. OOM if the match index
+ * cannot be allocated. */
+BreakRuntimeError break_runtime_metrics_compress(const void *in, usize len, void *out,
+                                                 usize capacity, usize *out_len);
+
+/* Decompresses a stream, which is untrusted input. The original length is
+ * read from the header first: a stream claiming more than `capacity` bytes is
+ * OVERLOAD with *out_len set to that length and nothing written. Any
+ * malformation (bad magic, short header, claimed length above
+ * BREAK_RUNTIME_METRICS_COMPRESS_MAX_INPUT, a truncated token, a distance of 0
+ * or past the output so far, a token that runs past the claimed length, or
+ * trailing bytes) is INVALID with *out_len = 0. On INVALID, bytes already
+ * written to `out` are not meaningful. Also INVALID on NULL out_len, NULL in,
+ * or NULL out with non-zero capacity. */
+BreakRuntimeError break_runtime_metrics_decompress(const void *in, usize len, void *out,
+                                                   usize capacity, usize *out_len);
+
 #define BREAK_RUNTIME_METRICS_MERGE_MAX_DOCUMENTS 64u
 
 /* Batch merge: folds `count` encoded documents (each in the

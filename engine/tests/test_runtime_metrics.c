@@ -1922,6 +1922,286 @@ TEST(retry_load_is_refused_from_inside_a_drain_callback) {
     break_runtime_metrics_retry_destroy(src);
 }
 
+/* Compression (design section 35). Stream: "BRKZ1", u32 LE original length,
+ * then tokens. A control byte c < 0x80 is a literal run of c + 1 bytes that
+ * follow; c >= 0x80 is a match of (c & 0x7F) + 4 bytes copied from a u16 LE
+ * distance (1..65535) back in the output. */
+static usize compress_into(const void *in, usize len, u8 *out, usize cap) {
+    usize n = 0u;
+    return break_runtime_metrics_compress(in, len, out, cap, &n) == BREAK_RUNTIME_OK ? n : 0u;
+}
+
+TEST(compress_round_trips_an_encoded_registry_and_shrinks_it) {
+    BreakRuntimeMetrics *m = make_metrics(64u);
+    static char text[8192];
+    static u8 packed[8192];
+    static char back[8192];
+    usize text_len = 0u;
+    usize packed_len;
+    usize back_len = 0u;
+    char name[32];
+    ASSERT_NOT_NULL(m);
+    for (u32 i = 0u; i < 48u; ++i) {
+        snprintf(name, sizeof name, "subsystem.queue%u.depth", i);
+        ASSERT_EQ(break_runtime_metrics_set(m, name, BREAK_RUNTIME_METRIC_GAUGE, i * 7u),
+                  BREAK_RUNTIME_OK);
+    }
+    ASSERT_EQ(break_runtime_metrics_encode(m, text, sizeof text, &text_len), BREAK_RUNTIME_OK);
+    packed_len = compress_into(text, text_len, packed, sizeof packed);
+    ASSERT_TRUE(packed_len > 0u);
+    /* BRKM1 lines repeat their prefix, kind and much of each name, so the
+     * stream must come out well under half the size. */
+    ASSERT_TRUE(packed_len * 2u < text_len);
+    ASSERT_EQ(break_runtime_metrics_decompress(packed, packed_len, back, sizeof back, &back_len),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(back_len, text_len);
+    ASSERT_TRUE(memcmp(back, text, text_len) == 0);
+    break_runtime_metrics_destroy(m);
+}
+
+TEST(compress_handles_incompressible_and_highly_repetitive_input) {
+    static u8 noise[5000];
+    static u8 packed[6000];
+    static u8 back[70000];
+    static u8 run[66000];
+    usize back_len = 0u;
+    usize packed_len;
+    u32 s = 0x12345678u;
+    for (usize i = 0u; i < sizeof noise; ++i) {
+        s = s * 1103515245u + 12345u;
+        noise[i] = (u8)(s >> 23);
+    }
+    packed_len = compress_into(noise, sizeof noise, packed, sizeof packed);
+    ASSERT_TRUE(packed_len > 0u);
+    /* Worst case is bounded: one control byte per 128 literals plus the
+     * header, so random data never balloons. */
+    ASSERT_TRUE(packed_len <= BREAK_RUNTIME_METRICS_COMPRESS_BOUND(sizeof noise));
+    ASSERT_EQ(break_runtime_metrics_decompress(packed, packed_len, back, sizeof back, &back_len),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(back_len, sizeof noise);
+    ASSERT_TRUE(memcmp(back, noise, sizeof noise) == 0);
+    /* A long run of one byte, longer than the 64 KiB match window. Matches
+     * overlap their own output, which is how a run is copied. */
+    memset(run, 'z', sizeof run);
+    run[sizeof run - 1u] = '!';
+    packed_len = compress_into(run, sizeof run, packed, sizeof packed);
+    ASSERT_TRUE(packed_len > 0u);
+    /* One match token covers at most 131 bytes in 3 bytes, so the best this
+     * format can do is about 66000 / 131 * 3 = 1512 bytes plus a few literals.
+     * The bound proves matches are found and chained, not merely emitted. */
+    ASSERT_TRUE(packed_len < 1600u);
+    ASSERT_EQ(break_runtime_metrics_decompress(packed, packed_len, back, sizeof back, &back_len),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(back_len, sizeof run);
+    ASSERT_TRUE(memcmp(back, run, sizeof run) == 0);
+    /* Empty input is a header-only stream. */
+    packed_len = compress_into("", 0u, packed, sizeof packed);
+    ASSERT_EQ(packed_len, 9u);
+    ASSERT_EQ(break_runtime_metrics_decompress(packed, packed_len, back, sizeof back, &back_len),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(back_len, 0u);
+}
+
+TEST(compress_and_decompress_report_the_required_size) {
+    static const char text[] = "BRKM1 a counter 1\nBRKM1 a.b counter 1\nBRKM1 a.b.c counter 1\n";
+    u8 packed[256];
+    char back[256];
+    usize need = 0u;
+    usize got = 0u;
+    usize packed_len;
+    /* Compress: OVERLOAD with the exact size, and nothing written past it. */
+    ASSERT_EQ(break_runtime_metrics_compress(text, sizeof text - 1u, NULL, 0u, &need),
+              BREAK_RUNTIME_OVERLOAD);
+    ASSERT_TRUE(need > 9u);
+    memset(packed, 0xA5, sizeof packed);
+    ASSERT_EQ(break_runtime_metrics_compress(text, sizeof text - 1u, packed, need - 1u, &got),
+              BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(got, need);
+    for (usize i = need - 1u; i < sizeof packed; ++i) ASSERT_EQ(packed[i], 0xA5u);
+    ASSERT_EQ(break_runtime_metrics_compress(text, sizeof text - 1u, packed, need, &got),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(got, need);
+    packed_len = got;
+    /* Decompress: the size comes from the header, before any byte is copied. */
+    ASSERT_EQ(break_runtime_metrics_decompress(packed, packed_len, NULL, 0u, &need),
+              BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(need, sizeof text - 1u);
+    memset(back, 0x5A, sizeof back);
+    ASSERT_EQ(break_runtime_metrics_decompress(packed, packed_len, back, need - 1u, &got),
+              BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(got, need);
+    ASSERT_EQ((u8)back[0], 0x5Au);
+    ASSERT_EQ(break_runtime_metrics_decompress(packed, packed_len, back, need, &got),
+              BREAK_RUNTIME_OK);
+    ASSERT_TRUE(memcmp(back, text, need) == 0);
+}
+
+TEST(decompress_accepts_hand_built_streams_at_the_limits) {
+    /* "ab" as literals, then a 6-byte match at distance 2 (overlapping). */
+    static const u8 overlap[] = {'B', 'R', 'K', 'Z', '1', 8, 0, 0, 0,
+                                 0x01, 'a', 'b', 0x82, 2, 0};
+    /* A single 128-byte literal run, the longest one control byte allows. */
+    static u8 longlit[9 + 1 + 128];
+    /* A 131-byte match, the longest one control byte allows. */
+    static const u8 longmatch[] = {'B', 'R', 'K', 'Z', '1', 132, 0, 0, 0,
+                                   0x00, 'q', 0xFF, 1, 0};
+    char out[256];
+    usize n = 0u;
+    ASSERT_EQ(break_runtime_metrics_decompress(overlap, sizeof overlap, out, sizeof out, &n),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(n, 8u);
+    ASSERT_TRUE(memcmp(out, "abababab", 8u) == 0);
+    memcpy(longlit, "BRKZ1", 5u);
+    longlit[5] = 128u;
+    longlit[6] = longlit[7] = longlit[8] = 0u;
+    longlit[9] = 0x7Fu;
+    for (u32 i = 0u; i < 128u; ++i) longlit[10u + i] = (u8)('A' + i % 26u);
+    ASSERT_EQ(break_runtime_metrics_decompress(longlit, sizeof longlit, out, sizeof out, &n),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(n, 128u);
+    ASSERT_EQ(out[127], (char)('A' + 127u % 26u));
+    ASSERT_EQ(break_runtime_metrics_decompress(longmatch, sizeof longmatch, out, sizeof out, &n),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(n, 132u);
+    for (u32 i = 0u; i < 132u; ++i) ASSERT_EQ(out[i], 'q');
+}
+
+TEST(decompress_rejects_malformed_streams) {
+    static const u8 good[] = {'B', 'R', 'K', 'Z', '1', 8, 0, 0, 0, 0x01, 'a', 'b', 0x82, 2, 0};
+    struct {
+        const char *why;
+        u8 bytes[24];
+        usize len;
+    } bad[] = {
+        {"bad magic", {'B', 'R', 'K', 'Z', '2', 0, 0, 0, 0}, 9u},
+        {"short header", {'B', 'R', 'K', 'Z', '1', 0, 0, 0}, 8u},
+        {"distance 0", {'B', 'R', 'K', 'Z', '1', 5, 0, 0, 0, 0x00, 'a', 0x80, 0, 0}, 14u},
+        {"distance past output", {'B', 'R', 'K', 'Z', '1', 5, 0, 0, 0, 0x00, 'a', 0x80, 2, 0}, 14u},
+        {"match before any output", {'B', 'R', 'K', 'Z', '1', 4, 0, 0, 0, 0x80, 1, 0}, 12u},
+        {"truncated literal", {'B', 'R', 'K', 'Z', '1', 3, 0, 0, 0, 0x02, 'a', 'b'}, 12u},
+        {"truncated distance", {'B', 'R', 'K', 'Z', '1', 5, 0, 0, 0, 0x00, 'a', 0x80, 1}, 13u},
+        {"output longer than header", {'B', 'R', 'K', 'Z', '1', 1, 0, 0, 0, 0x01, 'a', 'b'}, 12u},
+        {"output shorter than header", {'B', 'R', 'K', 'Z', '1', 3, 0, 0, 0, 0x01, 'a', 'b'}, 12u},
+        {"match overruns header", {'B', 'R', 'K', 'Z', '1', 3, 0, 0, 0, 0x00, 'a', 0x80, 1, 0}, 14u},
+        {"length over the cap", {'B', 'R', 'K', 'Z', '1', 0, 0, 0, 0x7F}, 9u},
+    };
+    char out[64];
+    usize n = 0u;
+    ASSERT_EQ(break_runtime_metrics_decompress(good, sizeof good, out, sizeof out, &n),
+              BREAK_RUNTIME_OK);
+    for (usize i = 0u; i < sizeof bad / sizeof bad[0]; ++i) {
+        n = 77u;
+        memset(out, 0x33, sizeof out);
+        if (break_runtime_metrics_decompress(bad[i].bytes, bad[i].len, out, sizeof out, &n) !=
+            BREAK_RUNTIME_INVALID) {
+            fprintf(stderr, "    accepted: %s\n", bad[i].why);
+            ASSERT_TRUE(false);
+        }
+        ASSERT_EQ(n, 0u);
+    }
+    /* Every truncation of a valid stream is refused. Each cut is copied into
+     * its own exact-size heap block, so reading one byte past the cut (a
+     * literal that runs off the end, a half-read distance, a control byte the
+     * stream does not have) is an out-of-bounds read under ASan. */
+    for (usize cut = 0u; cut < sizeof good; ++cut) {
+        u8 *exact = (u8 *)malloc(cut ? cut : 1u);
+        ASSERT_NOT_NULL(exact);
+        memcpy(exact, good, cut);
+        ASSERT_EQ(break_runtime_metrics_decompress(exact, cut, out, sizeof out, &n),
+                  BREAK_RUNTIME_INVALID);
+        free(exact);
+    }
+    /* A valid stream followed by one more byte. */
+    {
+        u8 *longer = (u8 *)malloc(sizeof good + 1u);
+        ASSERT_NOT_NULL(longer);
+        memcpy(longer, good, sizeof good);
+        longer[sizeof good] = 0x00u;
+        ASSERT_EQ(break_runtime_metrics_decompress(longer, sizeof good + 1u, out, sizeof out, &n),
+                  BREAK_RUNTIME_INVALID);
+        free(longer);
+    }
+    /* A literal run that claims more bytes than the stream holds, with a
+     * header length large enough that only the input bound can stop it. */
+    {
+        static const u8 shape[] = {'B', 'R', 'K', 'Z', '1', 64, 0, 0, 0, 0x3F, 'a', 'b'};
+        u8 *exact = (u8 *)malloc(sizeof shape);
+        ASSERT_NOT_NULL(exact);
+        memcpy(exact, shape, sizeof shape);
+        ASSERT_EQ(break_runtime_metrics_decompress(exact, sizeof shape, out, sizeof out, &n),
+                  BREAK_RUNTIME_INVALID);
+        free(exact);
+    }
+}
+
+TEST(compress_never_reaches_further_back_than_the_window) {
+    /* A distinctive 200-byte block, then 70000 bytes that never repeat it,
+     * then the block again. The second copy is more than 65535 bytes after
+     * the first, so it cannot be a match: a u16 distance would wrap and point
+     * at the wrong bytes. */
+    enum { k_block = 200, k_gap = 70000, k_total = k_block * 2 + k_gap };
+    static u8 in[k_total];
+    static u8 packed[BREAK_RUNTIME_METRICS_COMPRESS_BOUND(k_total)];
+    static u8 back[k_total];
+    usize packed_len;
+    usize n = 0u;
+    u32 s = 0xC0FFEEu;
+    for (usize i = 0u; i < k_block; ++i) in[i] = (u8)('a' + i % 26u);
+    for (usize i = k_block; i < k_block + k_gap; ++i) {
+        s = s * 1664525u + 1013904223u;
+        in[i] = (u8)(0x80u | (s >> 25)); /* high bytes never occur in the block */
+    }
+    memcpy(in + k_block + k_gap, in, k_block);
+    packed_len = compress_into(in, sizeof in, packed, sizeof packed);
+    ASSERT_TRUE(packed_len > 0u);
+    ASSERT_EQ(break_runtime_metrics_decompress(packed, packed_len, back, sizeof back, &n),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(n, sizeof in);
+    ASSERT_TRUE(memcmp(back, in, sizeof in) == 0);
+}
+
+TEST(compress_writes_the_full_32_bit_length) {
+    /* 16 MiB + 1 is above the input cap, so the largest legal input is used:
+     * its length has a non-zero top byte (0x01000000), which a header that
+     * dropped the high byte would store as 0. */
+    const usize len = BREAK_RUNTIME_METRICS_COMPRESS_MAX_INPUT;
+    u8 *in = (u8 *)malloc(len);
+    u8 *packed = (u8 *)malloc(BREAK_RUNTIME_METRICS_COMPRESS_BOUND(len));
+    u8 *back = (u8 *)malloc(len);
+    usize packed_len = 0u;
+    usize n = 0u;
+    ASSERT_NOT_NULL(in);
+    ASSERT_NOT_NULL(packed);
+    ASSERT_NOT_NULL(back);
+    memset(in, 'x', len);
+    ASSERT_EQ(break_runtime_metrics_compress(in, len, packed, BREAK_RUNTIME_METRICS_COMPRESS_BOUND(len),
+                                             &packed_len),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(packed[8], 0x01u);
+    ASSERT_EQ(break_runtime_metrics_decompress(packed, packed_len, back, len, &n), BREAK_RUNTIME_OK);
+    ASSERT_EQ(n, len);
+    ASSERT_TRUE(memcmp(back, in, len) == 0);
+    free(back);
+    free(packed);
+    free(in);
+}
+
+TEST(compression_validates_arguments) {
+    u8 buf[32];
+    usize n = 0u;
+    ASSERT_EQ(break_runtime_metrics_compress("a", 1u, buf, sizeof buf, NULL), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_compress(NULL, 1u, buf, sizeof buf, &n), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_compress("a", 1u, NULL, 8u, &n), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_compress("a", BREAK_RUNTIME_METRICS_COMPRESS_MAX_INPUT + 1u,
+                                             buf, sizeof buf, &n),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_decompress(buf, 9u, buf, sizeof buf, NULL),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_decompress(NULL, 9u, buf, sizeof buf, &n),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_decompress(buf, 9u, NULL, 8u, &n), BREAK_RUNTIME_INVALID);
+}
+
 /* Per-channel retry router. Each FakeSender is one collector endpoint. */
 static BreakRuntimeMetricsRetryRouter *make_router(FakeSender *metrics, FakeSender *alerts,
                                                    u32 metrics_max_attempts) {
@@ -2692,6 +2972,14 @@ TEST_MAIN_BEGIN()
     RUN_TEST(retry_load_restores_repeats_even_into_a_coalescing_queue);
     RUN_TEST(retry_load_is_refused_from_inside_a_drain_callback);
     RUN_TEST(retry_persist_validates_arguments_and_ownership_rules);
+    RUN_TEST(compress_round_trips_an_encoded_registry_and_shrinks_it);
+    RUN_TEST(compress_handles_incompressible_and_highly_repetitive_input);
+    RUN_TEST(compress_and_decompress_report_the_required_size);
+    RUN_TEST(decompress_accepts_hand_built_streams_at_the_limits);
+    RUN_TEST(decompress_rejects_malformed_streams);
+    RUN_TEST(compress_never_reaches_further_back_than_the_window);
+    RUN_TEST(compress_writes_the_full_32_bit_length);
+    RUN_TEST(compression_validates_arguments);
     RUN_TEST(router_routes_each_payload_to_its_own_channel_queue);
     RUN_TEST(router_a_failing_channel_does_not_block_the_others);
     RUN_TEST(router_applies_each_channels_own_backoff_and_attempt_limit);

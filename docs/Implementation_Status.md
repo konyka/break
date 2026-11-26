@@ -14427,3 +14427,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：`test_runtime_metrics` 新增 8 例，先以未声明类型编译失败为 RED。19 项变异判红；首轮 5 项存活，补「渠道出错不跳过后续渠道」「恰好 8 个渠道」两例后判红，其中 3 项越界变异只在 ASan 下判红。1 项等价变异的理由见设计文档。
 - **集成**：`test_runtime_metrics_push_http` 新增真实 socket 用例：`/metrics` 回 503、`/alerts` 回 200，一次排空后告警送达而快照留在队列。改成共用一个队列时该用例失败。
 - **验证**：normal/ASan+UBSan（含 leak 检测）/TSan 下 `test_runtime_metrics` 82/82、`test_runtime_metrics_push_http` 11/11；`build-current-vk` 非 fuzz 全量 CTest 462/462，fuzz lane 22/22。本提交自身的远端工作流结果不在此预写。
+
+## 指标编码文档的压缩（2026-11-27）
+
+- **缺口**：`missing_capabilities.md` 对账列表把「压缩」列为指标协议未交付项。BRKM1 文本每行重复前缀、kind 与公共名字前缀，推送和重试镜像都携带这些冗余。
+- **实现**：新增 `break_runtime_metrics_compress` 与 `break_runtime_metrics_decompress`，自包含 LZ77 编解码器，流格式为 `"BRKZ1"` + u32 原始长度 + 字面量/匹配 token（匹配 4..131 字节，距离 1..65535）。最坏膨胀为 `9 + n + ceil(n/128)`，输入上限 16 MiB。解压把输入当作不可信数据，任何畸形都返回 INVALID 且不报告输出。`runtime_core` 不新增依赖。设计见 `docs/design/runtime_metrics.md` 第 35 节；对账列表同步移除「压缩」。
+- **TDD 与变异**：`test_runtime_metrics` 新增 8 例，先以未声明函数编译失败为 RED。20 项变异判红；首轮 6 项存活，补测试后全部判红，其中 3 项只在 ASan 下判红。无等价变异。
+- **fuzz**：新增 `fuzz_runtime_metrics_decompress`（种子 83，进 CI 三处 fuzz 构建列表）。种子 83 与 113 各 200000 次在 ASan+UBSan+leak 下干净；5 项负向对照均判红，其中尾随字节一项是补上「接受的流长度恰好」不变量后才判红。
+- **验证**：`test_runtime_metrics` 90/90（normal/ASan+UBSan/TSan）；`build-current-vk` fuzz lane 23/23；非 fuzz 全量 462 项中 460 项通过，余下两项 `test_core_app_*contract` 因新 fuzz 源文件尚未提交而无法从 `git archive HEAD` 配置，提交后复跑。本提交自身的远端工作流结果不在此预写。
