@@ -14020,3 +14020,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 远端 CI `45767205442` **24 success、3 条件 skip、1 failure**；唯一 failure 为 `Linux arm64 cross-build + QEMU tests (GCC)`，在 Configure 之前的「安装主机与 arm64 构建依赖」步骤约 14s 内 apt 失败——与本切片代码无关（未改构建系统、工具链或 arm64 路径；同一作业在父提交 `3e067e25` 为 success），但并非瞬时故障：根因是 runner 镜像的 amd64 `libelf1t64` 为 `0.190-1.1ubuntu0.1`，而 arm64 ports 只剩 `...0.2`，旧步骤的版本固定随之失效，已由 `81496367` 修复（见下一节）。令牌仅有 Actions 读权限，无法 rerun。
 - `windows-d3d12` `45767205395` success（Windows + D3D12 Debug layer, WARP floor）。Proton `45768874216` success，上游 run-id=`45767205395`，device_contract=77、pipeline_contract=77（仅兼容通道）。
 - 验收边界：`sent_fragments` 在 Runtime 路径上是整条路径的 reactor 出站增量（含同一 drain 的控制重试），非精确分片数；做相等断言的 world_stats 计数与 legacy 相同。`world_level_generation` 首 tick 锁定，自动换级接入时须同步更新否则发布持续被拒。权威 simulation 合并、inbound apply 到权威 World、预测/回滚、共享 live World、跨 World 持久身份、AOI、自动换级、完整资产链、可靠每 epoch 广播、指标协议与告警仍未交付。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。
+
+## arm64 lane libelf1t64 版本对齐修复的远端收据（2026-11-26）
+
+- 推送 `d5b929b4..81496367`（fast-forward），提交 `fix(ci): align arm64 libelf1t64 to the ports archive version`：arm64 lane 改为取 `apt-cache policy libelf1t64:arm64` 的 candidate 版本并同时固定 amd64/arm64 两侧；`test_ci_execution_semantics` 契约同步改写，本地通过，还原旧 workflow 时契约按预期失败；容器复现确证旧逻辑 exit 100、新步骤 exit 0。
+- 远端 CI `45771901328` **completed success：25 success、3 条件 skip、0 failed**（28 个 job）。`Linux arm64 cross-build + QEMU tests (GCC)` 由上一提交 run `45767205442` 的 failure（安装步骤 exit 100）转为 **success**：安装依赖、Configure、构建 arm64 目标、对象架构确认、QEMU 选定测试各步均 success。
+- `windows-d3d12` run `45771901287` **success**（Windows + D3D12 Debug layer, WARP floor）。3 条 skip 为 Steam Deck 真机基准、Proton 兼容参考通道与 `lane-gpu-runtime-windows-d3d12`（无 GPU runner 的条件 skip）。
+- 边界：本切片只修复 CI 依赖安装随 ports 版本漂移而破的问题；权威 simulation 合并、inbound apply、预测/回滚、共享 live World、AOI、自动换级、完整资产链、指标协议与告警仍未交付。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。
