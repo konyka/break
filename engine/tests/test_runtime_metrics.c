@@ -578,6 +578,71 @@ TEST(alert_edges_validate_arguments) {
     break_runtime_metrics_history_destroy(h);
 }
 
+TEST(history_delta_measures_counter_growth_over_a_window) {
+    BreakRuntimeMetrics *m = make_metrics(8u);
+    BreakRuntimeMetricsHistory *h = make_history(4u, 4u);
+    u64 delta = 99u;
+    u64 ticks = 99u;
+    ASSERT_NOT_NULL(m);
+    ASSERT_NOT_NULL(h);
+    ASSERT_EQ(break_runtime_metrics_add(m, "net.sent", BREAK_RUNTIME_METRIC_COUNTER, 5u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_history_record(h, m, 10u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_history_delta(h, "net.sent", 1u, &delta, &ticks),
+              BREAK_RUNTIME_STALE); /* one frame: no window yet */
+    ASSERT_EQ(break_runtime_metrics_add(m, "net.sent", BREAK_RUNTIME_METRIC_COUNTER, 7u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_history_record(h, m, 15u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_add(m, "net.sent", BREAK_RUNTIME_METRIC_COUNTER, 3u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_history_record(h, m, 30u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_history_delta(h, "net.sent", 1u, &delta, &ticks),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(delta, 3u);
+    ASSERT_EQ(ticks, 15u);
+    ASSERT_EQ(break_runtime_metrics_history_delta(h, "net.sent", 2u, &delta, &ticks),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(delta, 10u);
+    ASSERT_EQ(ticks, 20u);
+    ASSERT_EQ(break_runtime_metrics_history_delta(h, "net.sent", 3u, &delta, &ticks),
+              BREAK_RUNTIME_STALE);
+    ASSERT_EQ(break_runtime_metrics_history_delta(h, "missing", 1u, &delta, &ticks),
+              BREAK_RUNTIME_STALE);
+    ASSERT_EQ(break_runtime_metrics_add(m, "net.sent", BREAK_RUNTIME_METRIC_COUNTER, 1u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_history_record(h, m, 31u), BREAK_RUNTIME_OK);
+    /* Full ring of depth 4: a span of 4 would wrap onto the newest frame. */
+    ASSERT_EQ(break_runtime_metrics_history_delta(h, "net.sent", 3u, &delta, &ticks),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(delta, 11u);
+    ASSERT_EQ(break_runtime_metrics_history_delta(h, "net.sent", 4u, &delta, &ticks),
+              BREAK_RUNTIME_STALE);
+    break_runtime_metrics_history_destroy(h);
+    break_runtime_metrics_destroy(m);
+}
+
+TEST(history_delta_rejects_gauges_and_bad_arguments) {
+    BreakRuntimeMetrics *m = make_metrics(8u);
+    BreakRuntimeMetricsHistory *h = make_history(4u, 4u);
+    u64 delta = 0u;
+    ASSERT_NOT_NULL(m);
+    ASSERT_NOT_NULL(h);
+    record_depth(m, h, 9u, 1u);
+    record_depth(m, h, 3u, 2u);
+    ASSERT_EQ(break_runtime_metrics_history_delta(h, "q.depth", 1u, &delta, NULL),
+              BREAK_RUNTIME_INVALID); /* a gauge can fall: a delta is meaningless */
+    ASSERT_EQ(break_runtime_metrics_history_delta(NULL, "q.depth", 1u, &delta, NULL),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_history_delta(h, NULL, 1u, &delta, NULL),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_history_delta(h, "q.depth", 0u, &delta, NULL),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_history_delta(h, "q.depth", 1u, NULL, NULL),
+              BREAK_RUNTIME_INVALID);
+    break_runtime_metrics_history_destroy(h);
+    break_runtime_metrics_destroy(m);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(create_validates_config_and_defaults);
     RUN_TEST(counter_adds_accumulate_and_saturate);
@@ -602,4 +667,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(sustain_longer_than_the_ring_never_fires);
     RUN_TEST(alert_edges_report_raise_and_clear_between_consecutive_windows);
     RUN_TEST(alert_edges_validate_arguments);
+    RUN_TEST(history_delta_measures_counter_growth_over_a_window);
+    RUN_TEST(history_delta_rejects_gauges_and_bad_arguments);
 TEST_MAIN_END()

@@ -14163,3 +14163,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：`test_runtime_metrics.c` 新增 2 用例（RAISED→STEADY→CLEARED→STEADY 的完整序列、参数校验含 sustain 不小于深度与输出不足）。先以未定义类型编译失败为 RED。三项变异判红：上一窗口恒视为不触发、RAISED/CLEARED 互换、`sustain >= depth` 放宽为 `>`。另一项“去掉窗口偏移的帧数守卫”存活，经分析为等价变异（`sustain < depth` 约束下越界 age 只落在未写入、样本数为 0 的槽，规则必不触发），守卫作防御保留。
 - **验证**：`test_runtime_metrics` 23/23（normal/ASan+UBSan/TSan 均 23/23）。
 - **边界**：仍无远程传输、聚合窗口与告警投递。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。本收据提交自身的远端工作流结果不在此预写。
+
+## 指标计数器窗口增量（指标协议：聚合窗口与速率原语）（2026-11-26）
+
+- **实现**：`runtime_metrics` 新增 `break_runtime_metrics_history_delta(history, name, span, out_delta, out_ticks)`（`engine/src/runtime/runtime_metrics.{c,h}`）：返回 COUNTER 在 `span` 帧窗口内的增长与 tick 差，调用方据此算速率；帧不足（含满环回绕）/缺 name/旧值大于新值回 STALE，gauge 与参数错误回 INVALID，错误不写输出。设计见 `docs/design/runtime_metrics.md` 第 18 节。
+- **TDD 与变异**：`test_runtime_metrics.c` 新增 2 用例（1/2/3 帧窗口增量与 tick 差、满环 span=深度 STALE、缺 name、gauge 与参数校验）。先以未声明函数编译失败为 RED。三项变异判红：去掉 gauge 拒绝、tick 差改为最新 tick、`span >= frames` 放宽为 `>`（后者初次存活，补满环用例后判红）。
+- **验证**：`test_runtime_metrics` 25/25（normal/ASan+UBSan/TSan 均 25/25）。
+- **边界**：仍无远程传输与告警投递；不做多帧平均、分位数与降采样。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。本收据提交自身的远端工作流结果不在此预写。

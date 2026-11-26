@@ -257,3 +257,17 @@ BreakRuntimeError break_runtime_metrics_history_alert_edges(
     u32 sustain,
     BreakRuntimeMetricAlertEdge *edges,
     u32 edge_capacity);
+
+/* Growth of the COUNTER `name` between the frame `span` steps back and the
+ * newest frame: *out_delta = newest - older, *out_ticks (may be NULL) = the
+ * tick distance, so a caller derives a rate without floating point here.
+ * STALE when fewer than `span` + 1 frames are retained or `name` is absent
+ * from either frame. INVALID on NULL history/name/out_delta, `span` of 0, or
+ * when `name` is a GAUGE (a gauge can fall, so its delta is not growth).
+ * Outputs are untouched on any error. Same thread as the history. */
+BreakRuntimeError break_runtime_metrics_history_delta(
+    const BreakRuntimeMetricsHistory *history,
+    const char *name,
+    u32 span,
+    u64 *out_delta,
+    u64 *out_ticks);

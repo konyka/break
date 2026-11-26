@@ -503,3 +503,39 @@ BreakRuntimeError break_runtime_metrics_history_alert_edges(
     }
     return BREAK_RUNTIME_OK;
 }
+
+static const BreakRuntimeMetricSample *metrics_history_find(
+    const BreakRuntimeMetricsHistory *history, u32 age, const char *name) {
+    u32 slot = (history->head + history->depth - 1u - age) % history->depth;
+    const BreakRuntimeMetricSample *frame = &history->samples[(usize)slot * history->width];
+    for (u32 i = 0u; i < history->counts[slot]; ++i)
+        if (strcmp(frame[i].name, name) == 0) return &frame[i];
+    return NULL;
+}
+
+BreakRuntimeError break_runtime_metrics_history_delta(
+    const BreakRuntimeMetricsHistory *history,
+    const char *name,
+    u32 span,
+    u64 *out_delta,
+    u64 *out_ticks) {
+    const BreakRuntimeMetricSample *newest;
+    const BreakRuntimeMetricSample *older;
+    u32 newest_slot;
+    u32 older_slot;
+    if (!history || !name || span == 0u || !out_delta) return BREAK_RUNTIME_INVALID;
+    if (history->frames == 0u) return BREAK_RUNTIME_STALE;
+    newest = metrics_history_find(history, 0u, name);
+    if (newest && newest->kind != BREAK_RUNTIME_METRIC_COUNTER) return BREAK_RUNTIME_INVALID;
+    if (span >= history->frames || !newest) return BREAK_RUNTIME_STALE;
+    older = metrics_history_find(history, span, name);
+    /* Slots are never removed and a counter only grows (saturating), so a
+     * kind change or a decrease means the frames are not comparable. */
+    if (!older || older->kind != BREAK_RUNTIME_METRIC_COUNTER || older->value > newest->value)
+        return BREAK_RUNTIME_STALE;
+    newest_slot = (history->head + history->depth - 1u) % history->depth;
+    older_slot = (history->head + history->depth - 1u - span) % history->depth;
+    *out_delta = newest->value - older->value;
+    if (out_ticks) *out_ticks = history->ticks[newest_slot] - history->ticks[older_slot];
+    return BREAK_RUNTIME_OK;
+}

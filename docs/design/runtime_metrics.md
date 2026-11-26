@@ -55,7 +55,7 @@
 
 ## 7. 边界
 
-本块只交付进程内注册表与文本编码。远程传输（把编码推给采集器）与聚合窗口仍未实现（阈值告警求值见第 14 节，有界历史采样见第 15 节）；指标值的语义绑定（哪些子系统注册哪些 name）由各消费者在后续切片接线，本库不预置任何业务 name。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。
+本块只交付进程内注册表与文本编码。远程传输（把编码推给采集器）仍未实现（阈值告警求值见第 14 节，有界历史采样见第 15 节，计数器窗口增量见第 18 节）；指标值的语义绑定（哪些子系统注册哪些 name）由各消费者在后续切片接线，本库不预置任何业务 name。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。
 
 ## 8. 子系统接线：Bus 聚合导出（第一处 name 绑定）
 
@@ -126,3 +126,11 @@
 
 - `sustain` 必须小于历史深度（`INVALID` 否则），保证环满后上一窗口仍可证实；其余校验同第 16 节。`edge_capacity < rule_count` → `OVERLOAD`。任何错误都不写 `edges`。
 - 无状态：调用方每记录一帧调用一次，即可对每次转变恰好得到一次边沿；漏调会漏掉中间转变。告警投递（把边沿推给通知渠道）仍未实现。
+
+## 18. 计数器窗口增量（速率）
+
+`break_runtime_metrics_history_delta(history, name, span, out_delta, out_ticks)` 返回 COUNTER `name` 在第 `span` 旧帧与最新帧之间的增长：`*out_delta = 最新值 - 旧值`，`*out_ticks`（可为 NULL）为两帧 tick 差。调用方用二者自行算速率，本库不引入浮点。
+
+- `STALE`：保留帧不足 `span + 1`（环满时 `span` 等于深度会回绕到最新帧本身，故同样 STALE）、任一帧缺该 name、旧帧不是 counter 或旧值大于新值（不可比）。
+- `INVALID`：history/name/out_delta 为 NULL、`span` 为 0、最新帧中该 name 是 GAUGE（gauge 可下降，差值不是增长）。
+- 任何错误不写输出；与历史环同线程。不做多帧平均、分位数或降采样。
