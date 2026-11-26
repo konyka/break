@@ -17,7 +17,8 @@
  *
  * Decoders accept exactly one encoding: wrong magic or version, a non-zero
  * reserved field, a size other than the receiver's configured size, a count
- * of 0 or above the limit, a tick that would overflow, a short buffer or a
+ * of 0 or above the limit, a batch larger than
+ * BREAK_PREDICTION_WIRE_MAX_INPUT_MESSAGE, a tick that would overflow, a short buffer or a
  * trailing byte are all INVALID, and the output is zeroed. Decoded byte
  * pointers point into the input buffer.
  *
@@ -37,6 +38,10 @@ extern "C" {
 
 #define BREAK_PREDICTION_WIRE_VERSION 1u
 #define BREAK_PREDICTION_WIRE_MAX_BATCH 32u
+/* A batch never exceeds this many bytes, header included, so it fits one
+ * break_net envelope (64 KiB payload). With large inputs this caps the count
+ * below BREAK_PREDICTION_WIRE_MAX_BATCH: 4096-byte inputs go 15 at a time. */
+#define BREAK_PREDICTION_WIRE_MAX_INPUT_MESSAGE (64u * 1024u)
 #define BREAK_PREDICTION_WIRE_INPUT_HEADER 16u
 #define BREAK_PREDICTION_WIRE_SNAPSHOT_HEADER 20u
 #define BREAK_PREDICTION_WIRE_INPUT_SIZE(count, input_size) \
@@ -57,9 +62,10 @@ typedef struct BreakPredictionSnapshot {
     const u8 *state;
 } BreakPredictionSnapshot;
 
-/* Encodes the oldest BREAK_PREDICTION_WIRE_MAX_BATCH (or fewer) of the
- * predictor's pending inputs, oldest first: the server applies inputs in tick
- * order, so the newest wait for a later batch when more are pending. With no
+/* Encodes the oldest pending inputs, oldest first, as many as fit both
+ * BREAK_PREDICTION_WIRE_MAX_BATCH and BREAK_PREDICTION_WIRE_MAX_INPUT_MESSAGE:
+ * the server applies inputs in tick order, so the newest wait for a later
+ * batch when more are pending. With no
  * pending input *out_len is 0 and nothing is written. FULL when `capacity`
  * is too small: *out_len gets the size and nothing is written. INVALID on
  * NULL. */

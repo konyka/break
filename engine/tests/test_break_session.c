@@ -17,6 +17,7 @@
 #include <network/break_online_session.h>
 #include <network/break_online_voice.h>
 #include <physics/physics_sync.h>
+#include <network/break_prediction_wire.h>
 #ifdef BREAK_ENABLE_CRYPTO
 #include <crypto/break_crypto.h>
 #endif
@@ -1040,9 +1041,9 @@ TEST(break_session_registry_has_physics_sync_messages)
     ASSERT_EQ(correction->phase, BREAK_NET_MESSAGE_PHASE_AUTHENTICATED);
     ASSERT_EQ(correction->duplicate_policy, BREAK_NET_DUPLICATE_IDEMPOTENT);
 #ifdef BREAK_ENABLE_CRYPTO
-    ASSERT_EQ(registry->count, 32u);
+    ASSERT_EQ(registry->count, 34u);
 #else
-    ASSERT_EQ(registry->count, 31u);
+    ASSERT_EQ(registry->count, 33u);
 #endif
     {
         const BreakNetMessageDefinition *replication = break_net_message_registry_lookup(
@@ -1076,6 +1077,52 @@ TEST(break_session_registry_has_physics_sync_messages)
         ASSERT_EQ(control->payload_limit, (size_t)BREAK_NET_MAX_PAYLOAD_SIZE);
         ASSERT_EQ(control->phase, BREAK_NET_MESSAGE_PHASE_AUTHENTICATED);
         ASSERT_EQ(control->duplicate_policy, BREAK_NET_DUPLICATE_IDEMPOTENT);
+    }
+    {
+        /* Prediction (network/break_prediction_wire.h): a client input batch
+         * and a server snapshot. The limits are the largest messages the
+         * decoders can accept, so the envelope refuses anything larger
+         * before the decoder sees it. */
+        const BreakNetMessageDefinition *inputs = break_net_message_registry_lookup(
+            registry, BREAK_NET_MESSAGE_ID_PREDICTION_INPUT);
+        const BreakNetMessageDefinition *snap = break_net_message_registry_lookup(
+            registry, BREAK_NET_MESSAGE_ID_PREDICTION_SNAPSHOT);
+        uint8_t big[BREAK_NET_ENVELOPE_HEADER_SIZE + BREAK_NET_PREDICTION_INPUT_MAX_PAYLOAD + 1u];
+        uint8_t body[BREAK_NET_PREDICTION_INPUT_MAX_PAYLOAD + 1u];
+        BreakNetEnvelope in_env = {0};
+        size_t n = 0u;
+        ASSERT_EQ(BREAK_NET_MESSAGE_ID_PREDICTION_INPUT, 0x400cu);
+        ASSERT_EQ(BREAK_NET_MESSAGE_ID_PREDICTION_SNAPSHOT, 0x400du);
+        ASSERT_NOT_NULL(inputs);
+        ASSERT_NOT_NULL(snap);
+        ASSERT_EQ(BREAK_NET_PREDICTION_INPUT_MAX_PAYLOAD,
+                  (size_t)BREAK_PREDICTION_WIRE_MAX_INPUT_MESSAGE);
+        ASSERT_EQ(BREAK_NET_PREDICTION_SNAPSHOT_MAX_PAYLOAD,
+                  (size_t)BREAK_PREDICTION_WIRE_SNAPSHOT_SIZE(BREAK_PREDICTION_MAX_STATE_BYTES));
+        ASSERT_TRUE(BREAK_NET_PREDICTION_INPUT_MAX_PAYLOAD <= BREAK_NET_MAX_PAYLOAD_SIZE);
+        ASSERT_TRUE(BREAK_NET_PREDICTION_SNAPSHOT_MAX_PAYLOAD <= BREAK_NET_MAX_PAYLOAD_SIZE);
+        ASSERT_EQ(inputs->payload_limit, (size_t)BREAK_NET_PREDICTION_INPUT_MAX_PAYLOAD);
+        ASSERT_EQ(snap->payload_limit, (size_t)BREAK_NET_PREDICTION_SNAPSHOT_MAX_PAYLOAD);
+        ASSERT_EQ(inputs->minimum_version, 1u);
+        ASSERT_EQ(inputs->maximum_version, 1u);
+        ASSERT_EQ(snap->minimum_version, 1u);
+        ASSERT_EQ(snap->maximum_version, 1u);
+        ASSERT_EQ(inputs->phase, BREAK_NET_MESSAGE_PHASE_AUTHENTICATED);
+        ASSERT_EQ(snap->phase, BREAK_NET_MESSAGE_PHASE_AUTHENTICATED);
+        /* batches overlap and resend by design; the inbox de-duplicates */
+        ASSERT_EQ(inputs->duplicate_policy, BREAK_NET_DUPLICATE_IDEMPOTENT);
+        ASSERT_EQ(snap->duplicate_policy, BREAK_NET_DUPLICATE_IDEMPOTENT);
+        memset(body, 0, sizeof body);
+        in_env.protocol_version = BREAK_NET_PROTOCOL_VERSION;
+        in_env.message_id = BREAK_NET_MESSAGE_ID_PREDICTION_INPUT;
+        in_env.sequence = 1u;
+        in_env.payload = body;
+        in_env.payload_size = BREAK_NET_PREDICTION_INPUT_MAX_PAYLOAD;
+        ASSERT_EQ(break_net_envelope_encode(&in_env, big, sizeof big, &n),
+                  BREAK_NET_ENVELOPE_OK);
+        in_env.payload_size = BREAK_NET_PREDICTION_INPUT_MAX_PAYLOAD + 1u;
+        ASSERT_EQ(break_net_envelope_encode(&in_env, big, sizeof big, &n),
+                  BREAK_NET_ENVELOPE_OVER_LIMIT);
     }
     {
         const BreakNetMessageDefinition *voice = break_net_message_registry_lookup(

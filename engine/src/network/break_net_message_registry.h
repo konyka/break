@@ -57,6 +57,16 @@ extern "C" {
  * Both are AUTHENTICATED only and bounded by the global payload cap. */
 #define BREAK_NET_MESSAGE_ID_WORLD_DELTA 0x400au
 #define BREAK_NET_MESSAGE_ID_WORLD_CONTROL 0x400bu
+/* Client prediction (network/break_prediction_wire.h), AUTHENTICATED only:
+ * a client input batch ("BRPI", peer to server) and a server snapshot
+ * ("BRPS", server to peer). Each limit is the largest message the decoder
+ * can accept (a 64 KiB batch; a 16 KiB state), so the envelope refuses
+ * anything larger first. Batches overlap by design, so
+ * duplicates are idempotent; the server-side inbox applies each input once. */
+#define BREAK_NET_MESSAGE_ID_PREDICTION_INPUT 0x400cu
+#define BREAK_NET_MESSAGE_ID_PREDICTION_SNAPSHOT 0x400du
+#define BREAK_NET_PREDICTION_INPUT_MAX_PAYLOAD (64u * 1024u)
+#define BREAK_NET_PREDICTION_SNAPSHOT_MAX_PAYLOAD (20u + 16u * 1024u)
 #define BREAK_NET_MESSAGE_ID_MAX 65535u
 #define BREAK_NET_REGISTRY_MAX_MESSAGES 64u
 #define BREAK_NET_MAX_PAYLOAD_SIZE (64u * 1024u)

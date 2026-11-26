@@ -14472,3 +14472,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **实现**：新增 `engine/src/network/break_snapshot_interp.{h,c}`。每个远端实体保存最多 32 个按 tick 排序的快照；在渲染 tick 前后两个快照之间做位置线性插值和朝向 slerp（取较短弧）；超过最新快照时按最后一段速度外推，外推有上限；间隔超过上限的两个快照不混合（传送）。乱序、重复、过旧的快照分别排序、忽略、拒绝，四元数在输入时归一化。设计见 `docs/design/client_prediction.md` 第 6 节。
 - **TDD 与变异**：`test_break_snapshot_interp` 12 例，先以链接失败为 RED，含 200 tick 丢包乱序的随机性质测试。31 项变异全部判红或通过删除无效特判消除，理由见设计文档。
 - **验证**：normal/ASan+UBSan/TSan 12/12；Windows 实机 MSVC 12/12；`build-current-vk` 非 fuzz 464/464，fuzz 24/24。本提交自身的远端工作流结果不在此预写。
+
+## 预测报文登记到 `break_net` 消息注册表（2026-11-27）
+
+- **实现**：新增消息 `BREAK_NET_MESSAGE_ID_PREDICTION_INPUT`（`0x400c`，上限 64 KiB）与 `BREAK_NET_MESSAGE_ID_PREDICTION_SNAPSHOT`（`0x400d`，上限 20 字节 + 16 KiB），均为 v1、AUTHENTICATED、IDEMPOTENT。注册表总数 31/32 变为 33/34。设计见 `docs/design/client_prediction.md` 第 7 节。
+- **修正**：原批次上限（32 个 × 4096 字节）超过信封的 64 KiB 载荷上限。批次总长现在不超过 64 KiB：编码端相应减少个数，解码端拒绝更长的批次。
+- **TDD**：`test_break_session` 先以未声明标识符编译失败为 RED，随后以上限断言失败发现上述问题；`test_break_prediction_wire` 新增大输入批次一例；两项变异判红。
+- **验证**：Snowflake ASan 构建 `test_break_session` 43/43、`-L network` 28/28、`-L "snowflake|editor"` 33/33；`build-current-vk` 非 fuzz 464/464，fuzz 24/24；Windows 实机 MSVC 全量构建通过，相关测试通过。本提交自身的远端工作流结果不在此预写。

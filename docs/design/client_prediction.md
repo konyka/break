@@ -42,7 +42,7 @@
 
 ## 4. 未交付
 
-- 发送通道：wire 格式与服务端输入收件箱见第 5 节，但报文经哪条连接、哪个 message id 发送，仍由调用方决定，没有接入 `break_net` 的消息注册表。
+- 发送通道：两种报文已在 `break_net` 消息注册表中登记（第 7 节），但还没有会话层的收发接线，由调用方用 `break_net_envelope` 封装后发送。
 - 接入 World/ECS：预测器只处理字节块，没有接到 `break_ecs_replication` 或 `core_app`。
 - 插值与平滑：其他实体的快照插值已由 `break_snapshot_interp` 交付（第 6 节）；本地实体在校正后的状态跳变仍立即生效，平滑留给表现层。
 - 服务端的延迟补偿（回溯命中判定）：已由 `break_lag_compensation` 交付，见 `docs/design/lag_compensation.md`。
@@ -113,5 +113,33 @@
 另外 3 项（满缓冲时插入点不前移、丢最旧时不前移、只有一个快照仍外推）在测试中以失败或 ASan 越界判红。
 
 **验证**：normal / ASan+UBSan / TSan 下 12/12；Windows 实机 MSVC（`/W4 /WX`）12/12；`build-current-vk` 非 fuzz 全量 464/464，fuzz 24/24。`test_repo_naming_contract` 首次运行时抓到头文件注释中的禁用词，已改正。
+
+## 7. 在 `break_net` 消息注册表中登记
+
+两种报文登记为 `break_net` 的正式消息，信封层会先按上限拒绝过大的载荷，再交给解码器：
+
+| 消息 | id | 方向 | 版本 | 载荷上限 | 阶段 | 重复策略 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `BREAK_NET_MESSAGE_ID_PREDICTION_INPUT` | `0x400c` | 对端到服务端 | 1..1 | 64 KiB | AUTHENTICATED | IDEMPOTENT |
+| `BREAK_NET_MESSAGE_ID_PREDICTION_SNAPSHOT` | `0x400d` | 服务端到对端 | 1..1 | 20 + 16 KiB | AUTHENTICATED | IDEMPOTENT |
+
+重复策略取 IDEMPOTENT，因为批次按设计会重叠和重发，由服务端的收件箱去重。
+
+**修正一个上限问题**：登记时测试发现，原先的批次上限是 32 个输入，每个最多 4096 字节，合计 131 KiB，超过了信封 64 KiB 的载荷上限，这样的批次根本发不出去。现在批次总长（含头部）上限为 `BREAK_PREDICTION_WIRE_MAX_INPUT_MESSAGE` = 64 KiB：
+- 编码端在 32 个和「能装进 64 KiB 的个数」中取较小者。例如 4096 字节的输入每批 15 个。
+- 解码端拒绝超过 64 KiB 的批次，即使数量和长度一致也拒绝。
+
+注册表的上限与这个值一致，所以信封层和解码器对「最大的合法批次」给出同一个答案。
+
+**测试**：
+- `test_break_session` 检查两条消息的 id、上限、版本、阶段和重复策略，并检查上限等于解码器能接受的最大报文。信封编码时，恰好等于上限的载荷可以编码，多 1 字节返回 OVER_LIMIT。注册表总数从 31/32 变为 33/34。
+- `test_break_prediction_wire` 新增「大输入的批次装进一个信封」一例：20 个 4096 字节输入每批发 15 个；16 个时数量和长度一致，但超过 64 KiB，被拒绝。
+- 两项变异（编码端不按 64 KiB 截断、解码端不查总长）都判红。
+- `fuzz_prediction_wire` 种子 89 跑 200000 次干净。
+
+**验证**：
+- Snowflake 构建（ASan+UBSan）下 `test_break_session` 43/43，`-L network` 28/28，`-L "snowflake|editor"` 33/33。
+- `build-current-vk` 非 fuzz 全量 464/464，fuzz 24/24。
+- Windows 实机 MSVC 全量构建通过，`test_break_prediction_wire` 10/10，网络、预测、会话、World 相关测试全部通过。
 
 本提交自身的远端工作流结果不在此预写。

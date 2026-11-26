@@ -43,6 +43,11 @@ BreakPredictionResult break_prediction_wire_encode_inputs(const BreakPrediction 
     if (count == 0u) return BREAK_PREDICTION_OK;
     if (count > BREAK_PREDICTION_WIRE_MAX_BATCH) count = BREAK_PREDICTION_WIRE_MAX_BATCH;
     input_size = break_prediction_input_size(p);
+    {
+        u32 fit = (BREAK_PREDICTION_WIRE_MAX_INPUT_MESSAGE - BREAK_PREDICTION_WIRE_INPUT_HEADER) /
+                  input_size;
+        if (count > fit) count = fit;
+    }
     need = BREAK_PREDICTION_WIRE_INPUT_HEADER + (usize)count * input_size;
     *out_len = need;
     if (capacity < need) return BREAK_PREDICTION_FULL;
@@ -80,7 +85,8 @@ BreakPredictionResult break_prediction_wire_decode_inputs(const u8 *in, usize le
     /* Tick 0 is the starting confirmed tick, never an input; the last tick
      * must not wrap. */
     if (first_tick == 0u || first_tick > UINT64_MAX - (count - 1u)) return BREAK_PREDICTION_INVALID;
-    if (len != BREAK_PREDICTION_WIRE_INPUT_HEADER + (usize)count * input_size)
+    if (len != BREAK_PREDICTION_WIRE_INPUT_HEADER + (usize)count * input_size ||
+        len > BREAK_PREDICTION_WIRE_MAX_INPUT_MESSAGE)
         return BREAK_PREDICTION_INVALID;
     out->first_tick = first_tick;
     out->count = count;

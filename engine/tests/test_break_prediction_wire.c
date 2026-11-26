@@ -97,6 +97,52 @@ TEST(a_batch_round_trips_and_sends_the_oldest_when_many_are_pending) {
     break_prediction_destroy(p);
 }
 
+static bool big_step(void *user, const void *state, const void *input, void *out_state) {
+    (void)user;
+    (void)input;
+    memcpy(out_state, state, 8u);
+    return true;
+}
+
+/* Large inputs: a batch stays within one 64 KiB envelope payload, so it holds
+ * fewer than BREAK_PREDICTION_WIRE_MAX_BATCH inputs, and the decoder refuses
+ * a longer batch even when its count and length agree. */
+TEST(a_batch_of_large_inputs_fits_one_envelope_payload) {
+    static u8 input[BREAK_PREDICTION_MAX_INPUT_BYTES];
+    static u8 buf[BREAK_PREDICTION_WIRE_INPUT_SIZE(16u, BREAK_PREDICTION_MAX_INPUT_BYTES)];
+    static const u8 start[8] = {0};
+    BreakPredictionConfig cfg;
+    BreakPrediction *p = NULL;
+    BreakPredictionInputBatch b;
+    usize len = 0u;
+    memset(&cfg, 0, sizeof cfg);
+    cfg.state_size = 8u;
+    cfg.input_size = BREAK_PREDICTION_MAX_INPUT_BYTES;
+    cfg.capacity = 40u;
+    cfg.step = big_step;
+    cfg.initial_state = start;
+    ASSERT_EQ(break_prediction_create(&cfg, &p), BREAK_PREDICTION_OK);
+    for (u32 i = 0u; i < 20u; ++i) {
+        memset(input, (int)i, sizeof input);
+        ASSERT_EQ(break_prediction_apply_input(p, 1u + i, input), BREAK_PREDICTION_OK);
+    }
+    ASSERT_EQ(break_prediction_wire_encode_inputs(p, buf, sizeof buf, &len), BREAK_PREDICTION_OK);
+    ASSERT_EQ(len, (usize)BREAK_PREDICTION_WIRE_INPUT_SIZE(15u, BREAK_PREDICTION_MAX_INPUT_BYTES));
+    ASSERT_TRUE(len <= BREAK_PREDICTION_WIRE_MAX_INPUT_MESSAGE);
+    ASSERT_EQ(buf[5], 15u);
+    ASSERT_EQ(break_prediction_wire_decode_inputs(buf, len, BREAK_PREDICTION_MAX_INPUT_BYTES, &b),
+              BREAK_PREDICTION_OK);
+    ASSERT_EQ(b.inputs[14u * BREAK_PREDICTION_MAX_INPUT_BYTES], 14u);
+    /* 16 such inputs: count and length agree, but the batch is over 64 KiB */
+    memset(buf + len, 15, BREAK_PREDICTION_MAX_INPUT_BYTES);
+    buf[5] = 16u;
+    ASSERT_EQ(break_prediction_wire_decode_inputs(buf, sizeof buf, BREAK_PREDICTION_MAX_INPUT_BYTES,
+                                                  &b),
+              BREAK_PREDICTION_INVALID);
+    ASSERT_TRUE(b.count == 0u && b.inputs == NULL);
+    break_prediction_destroy(p);
+}
+
 TEST(encoding_reports_sizes_and_sends_nothing_without_pending_input) {
     BreakPrediction *p = make(8u);
     const i32 accels[] = {1, 1};
@@ -495,6 +541,7 @@ TEST(a_lossy_loop_converges_to_the_server_state) {
 TEST_MAIN_BEGIN()
     RUN_TEST(an_input_batch_has_the_documented_layout);
     RUN_TEST(a_batch_round_trips_and_sends_the_oldest_when_many_are_pending);
+    RUN_TEST(a_batch_of_large_inputs_fits_one_envelope_payload);
     RUN_TEST(encoding_reports_sizes_and_sends_nothing_without_pending_input);
     RUN_TEST(a_snapshot_has_the_documented_layout_and_round_trips);
     RUN_TEST(malformed_input_batches_are_rejected);
