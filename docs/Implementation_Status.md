@@ -14142,3 +14142,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：`test_runtime_metrics.c` 新增 4 用例（配置校验、最新优先与淘汰、非递增 tick 与过宽快照、帧缓冲不足）。先以未定义类型编译失败为 RED。两项变异判红：去掉 tick 单调校验、取帧忽略 age。
 - **验证**：`test_runtime_metrics` 18/18（normal/ASan+UBSan/TSan 均 18/18）；runtime_core 相关 9 项 ctest 全绿。
 - **边界**：仍无远程传输、聚合窗口、降采样与持久化；告警仍无去抖与投递。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。本收据提交自身的远端工作流结果不在此预写。
+
+## IO facade 计数导出切片的远端收据（2026-11-26）
+
+- 推送 `142aef23..63f8563c`（fast-forward），含 `a753ee12`（IO facade 导出）与上一收据提交 `63f8563c`。
+- 远端 CI `45802354553` 结论 **success**：25 success、3 条件 skip（Steam Deck、Proton、`lane-gpu-runtime-windows-d3d12`），0 失败；两条 macOS lane、`Linux arm64 cross-build + QEMU tests (GCC)`、Windows MinGW headless 均 success。
+- 独立的 windows-d3d12 工作流 `45802354575` success。
+- 边界同该切片收据。
