@@ -14059,3 +14059,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：`test_runtime_bus.c` 新增 2 用例（幂等 gauge 导出含 size/unknown reject 与 kinds/subscribers 计数、再导出不增长、总线前进后 gauge 抬升；以及两槽注册表导出 9 gauge 返回 OVERLOAD）。两项变异判红：改用 counter+add（重复导出二次累加，幂等断言红）、吞掉 set 错误（full-table 断言红）。NULL 参数返回 INVALID。
 - **验证**：`test_runtime_bus` 17/17（normal/ASan+UBSan/TSan 均 17/17，含既有并发 publisher 用例）；`test_runtime_metrics`、`test_runtime_core_target_contract`、facade/io/reload/mainloop/framework 全绿。
 - **边界**：不改变指标协议边界——仍无远程传输、历史采样与告警；仅接入 bus 一个子系统，其它子系统后续各自接线。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。本收据提交自身的远端工作流结果不在此预写。
+
+## Runtime 指标注册表切片的远端收据（2026-11-26）
+
+- 推送 `d88411fd..38a97592`（fast-forward），提交 `feat(runtime): add metrics registry with stable text export`（含评审修复：arm64 QEMU 允许列表、注释精确化、去 const-cast）。
+- 远端 CI `45789757885` **completed success：25 success、3 条件 skip、0 failed**。`Linux arm64 cross-build + QEMU tests (GCC)` success，`test_runtime_metrics` 已随允许列表在 QEMU 下实际运行。3 条 skip 为 Steam Deck 真机基准、Proton 兼容参考通道与 `lane-gpu-runtime-windows-d3d12`。
+- `windows-d3d12` **success**。
+- 边界同本切片收据：远程传输、历史采样/时间序列、聚合与告警规则，以及各子系统 name 绑定仍未交付（bus 绑定见下一节，于后续提交）。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。
