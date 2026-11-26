@@ -142,15 +142,20 @@ core_app 级（`test_core_app_net_transport` / loopback）：
 - **「永不过滤」**（filter 分支短路成未过滤发布）：用例 2 判红（ACK 与实际 attempt 不匹配，
   `confirmed` 无法前进）。注意：初版用例只断言 history 计数与 dirty 标志时该变异存活，
   补上「按各自视图 id ACK」后才判红，已按此加强。
-- **「用 lease 身份而非视图身份对账」**（`same_current`/`after_current` 换回 lease）：当前三个
-  用例**未能判红**。原因是 `attempt_publication_epoch` 的赋值为 `!had_active || after_current`，
-  首次发布 `had_active == false` 即短路，身份比较不参与；要让分歧可观测，需要「同一过滤连接
-  先有上一代 epoch 的未完成 attempt，再发布新一代」的 E1→E2 场景。该用例尚未编写，故这项
-  差异记为**未被覆盖**（不是等价变异）。实现保留视图身份是正确取向，但缺少回归保护。
+- **「用 lease 身份而非视图身份对账」**（`same_current`/`after_current` 换回 lease）：经分析与
+  实测确认为**等价变异**，在 adapter 当前控制流下分歧不可达。两条路径互斥：
+  `had_active == false`（无进行中 attempt）时，`attempt_publication_epoch` 的
+  `!had_active || after_current` 直接短路，身份比较不参与；`had_active == true` 时，
+  `break_world_session_publish_snapshot_filtered_id` 在 `state->attempt.active` 分支提前返回
+  续发结果，回传的 `target_id/target_tick` 取自该 attempt 自身，根本不执行过滤，因此与 lease
+  比较和与回传值比较得到相同结论。曾按 `publish_unknown_old_attempt_does_not_complete_current`
+  的形状写过 E1→E2 过滤用例试图暴露该分歧：正确实现与变异实现的
+  `publish_dirty/completed/attempt_epoch` 探针输出完全相同，证明不可达，该用例已删除而不是
+  留作假阳性保护。实现保留视图身份仍是正确取向（语义更准确，且一旦将来续发路径改为重新过滤
+  就会变得可达），但不为等价变异编造测试。
 
 ## 仍未交付
 
-- 上述 E1→E2 多代 OVERLOAD 场景的过滤回归用例。
 - core_app `net_world_publish_runtime` 尚未设置 `publish_keep`，生产路径仍向每条连接发送完整
   World；`break_aoi_compute` → `BreakNetEntityScope` 的生产组装也未接线。
 - 权威 simulation 合并、inbound apply、预测回滚、共享 live World 不在本切片。

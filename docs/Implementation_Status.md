@@ -14270,6 +14270,6 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 
 - **实现**：`BreakRuntimeWorldSessionConfig` 新增 `publish_keep`/`publish_keep_user_for`/`publish_keep_ctx`（`engine/src/runtime/runtime_world_session.{h,c}`）；`runtime_world_publish_connection` 改用 `break_world_session_publish_snapshot_filtered_id`，attempt 身份对账改用回传的该连接视图 id/tick，publication epoch 仍取自 lease。`publish_keep == NULL` 为默认且行为逐位不变；filter 需要 publication，「只给 user 解析器不给 filter」在 create 时拒绝。设计与实现记录见 `docs/design/runtime_world_aoi_integration.md`。
 - **TDD**：`test_runtime_world_session` 新增 3 例（配置校验、一份共享 target 按 scope fan-out 并以各自视图 id ACK 后 confirmed 才前进、过滤 fanout 的 OVERLOAD 续发按视图身份记账）。
-- **变异**：「永不过滤」判红（初版只断言计数时存活，加强为按各自视图 id ACK 后判红）。「用 lease 身份对账」**未被覆盖**：`attempt_publication_epoch` 在首次发布由 `!had_active` 短路，需要 E1→E2 多代 OVERLOAD 场景才能观测，该用例未写，如实记为缺口而非等价变异。
+- **变异**：「永不过滤」判红（初版只断言计数时存活，加强为按各自视图 id ACK 后判红）。「用 lease 身份对账」经实测确认为**等价变异**：`had_active == false` 时身份比较被 `!had_active` 短路；`had_active == true` 时 `publish_snapshot_filtered_id` 在续发分支提前返回、回传值取自该 attempt 自身而不执行过滤，两种比较结论相同。曾编写 E1→E2 过滤用例尝试暴露，正确实现与变异实现的探针输出一致，故删除该用例而非保留假阳性。详见 `docs/design/runtime_world_aoi_integration.md` 的变异检查一节（该节同时更正了前一条收据中「未被覆盖」的判断）。
 - **验证**：`test_runtime_world_session` 60/60（normal/ASan+UBSan 含 leak 检测/TSan 均 60/60）；`test_world_session_loopback` 10/10、`test_world_session_recovery` 31/31 回归不变。
 - **边界**：core_app 尚未设置 `publish_keep`，生产路径仍发送完整 World；AOI scope 的生产组装未接线。本收据提交自身的远端工作流结果不在此预写。
