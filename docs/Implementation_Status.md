@@ -14156,3 +14156,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：`test_runtime_metrics.c` 新增 3 用例（逐帧窗口与中间回落、参数校验、sustain 大于环深度永不触发）。先以未声明函数编译失败为 RED。两项变异判红：只看最新一帧、去掉帧数不足检查（后者初次存活，补“sustain 大于环深度”用例后判红）。
 - **验证**：`test_runtime_metrics` 21/21（normal/ASan+UBSan/TSan 均 21/21）。
 - **边界**：仍无远程传输、聚合窗口、恢复通知与告警投递。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。本收据提交自身的远端工作流结果不在此预写。
+
+## 指标告警边沿：触发与恢复（指标协议：持续窗口的转变检测）（2026-11-26）
+
+- **实现**：`runtime_metrics` 新增 `BreakRuntimeMetricAlertEdge{STEADY, RAISED, CLEARED}` 与 `break_runtime_metrics_history_alert_edges(...)`（`engine/src/runtime/runtime_metrics.{c,h}`）：逐规则比较最新帧结尾与早一帧结尾的两个 `sustain` 窗口，输出触发或恢复边沿；帧不足窗口视为不触发；`sustain` 须小于历史深度；错误不写输出。内部把第 16 节的持续判定泛化为带 age 偏移的窗口判定。设计见 `docs/design/runtime_metrics.md` 第 17 节。
+- **TDD 与变异**：`test_runtime_metrics.c` 新增 2 用例（RAISED→STEADY→CLEARED→STEADY 的完整序列、参数校验含 sustain 不小于深度与输出不足）。先以未定义类型编译失败为 RED。三项变异判红：上一窗口恒视为不触发、RAISED/CLEARED 互换、`sustain >= depth` 放宽为 `>`。另一项“去掉窗口偏移的帧数守卫”存活，经分析为等价变异（`sustain < depth` 约束下越界 age 只落在未写入、样本数为 0 的槽，规则必不触发），守卫作防御保留。
+- **验证**：`test_runtime_metrics` 23/23（normal/ASan+UBSan/TSan 均 23/23）。
+- **边界**：仍无远程传输、聚合窗口与告警投递。既有 Lua/TSan、条件 skip 与完整 sanitizer 边界不变。本收据提交自身的远端工作流结果不在此预写。

@@ -232,3 +232,28 @@ BreakRuntimeError break_runtime_metrics_history_evaluate_alerts(
     u32 *fired,
     u32 fired_capacity,
     u32 *out_count);
+
+/* Per-rule transition between the sustained window ending at the newest frame
+ * and the one ending a frame earlier. A window with too few retained frames
+ * counts as not firing, so the first proven window reports RAISED. */
+typedef enum BreakRuntimeMetricAlertEdge {
+    BREAK_RUNTIME_METRIC_ALERT_STEADY = 0,  /* unchanged (firing or not) */
+    BREAK_RUNTIME_METRIC_ALERT_RAISED = 1,  /* began firing at the newest frame */
+    BREAK_RUNTIME_METRIC_ALERT_CLEARED = 2  /* stopped firing at the newest frame */
+} BreakRuntimeMetricAlertEdge;
+
+/* Writes one edge per rule into `edges[0..rule_count)` (rule order). INVALID
+ * on NULL history, `sustain` of 0 or not below the history depth (the
+ * previous window must stay provable once the ring is full), NULL rules/edges
+ * with a non-zero count, a rule with a NULL name or unknown op, or a rule
+ * count above BREAK_RUNTIME_METRICS_MAX_CAPACITY. `edge_capacity` below
+ * `rule_count` -> OVERLOAD. `edges` is untouched on any error. Same thread as
+ * the history; stateless, so a caller wanting each transition exactly once
+ * calls this once per recorded frame. */
+BreakRuntimeError break_runtime_metrics_history_alert_edges(
+    const BreakRuntimeMetricsHistory *history,
+    const BreakRuntimeMetricAlertRule *rules,
+    u32 rule_count,
+    u32 sustain,
+    BreakRuntimeMetricAlertEdge *edges,
+    u32 edge_capacity);

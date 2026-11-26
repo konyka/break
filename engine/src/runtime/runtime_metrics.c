@@ -429,11 +429,13 @@ BreakRuntimeError break_runtime_metrics_history_stats(
     return BREAK_RUNTIME_OK;
 }
 
-static bool metrics_history_rule_sustained(const BreakRuntimeMetricsHistory *history,
-                                           const BreakRuntimeMetricAlertRule *rule,
-                                           u32 sustain) {
-    if (history->frames < sustain) return false;
-    for (u32 age = 0u; age < sustain; ++age) {
+/* True when `rule` fires on each of the `sustain` frames starting `offset`
+ * steps back from the newest. Too few retained frames -> false (unproven). */
+static bool metrics_history_window_fires(const BreakRuntimeMetricsHistory *history,
+                                         const BreakRuntimeMetricAlertRule *rule,
+                                         u32 sustain, u32 offset) {
+    if (history->frames < sustain || history->frames - sustain < offset) return false;
+    for (u32 age = offset; age < offset + sustain; ++age) {
         u32 slot = (history->head + history->depth - 1u - age) % history->depth;
         if (!metrics_alert_fires(&history->samples[(usize)slot * history->width],
                                  history->counts[slot], rule))
@@ -464,13 +466,40 @@ BreakRuntimeError break_runtime_metrics_history_evaluate_alerts(
             return BREAK_RUNTIME_INVALID;
     }
     for (u32 r = 0u; r < rule_count; ++r)
-        if (metrics_history_rule_sustained(history, &rules[r], sustain)) required++;
+        if (metrics_history_window_fires(history, &rules[r], sustain, 0u)) required++;
     if (required > fired_capacity) {
         *out_count = required;
         return BREAK_RUNTIME_OVERLOAD;
     }
     for (u32 r = 0u; r < rule_count; ++r)
-        if (metrics_history_rule_sustained(history, &rules[r], sustain)) fired[written++] = r;
+        if (metrics_history_window_fires(history, &rules[r], sustain, 0u)) fired[written++] = r;
     *out_count = written;
+    return BREAK_RUNTIME_OK;
+}
+
+BreakRuntimeError break_runtime_metrics_history_alert_edges(
+    const BreakRuntimeMetricsHistory *history,
+    const BreakRuntimeMetricAlertRule *rules,
+    u32 rule_count,
+    u32 sustain,
+    BreakRuntimeMetricAlertEdge *edges,
+    u32 edge_capacity) {
+    if (!history || sustain == 0u || sustain >= history->depth ||
+        (!rules && rule_count != 0u) || (!edges && rule_count != 0u) ||
+        rule_count > BREAK_RUNTIME_METRICS_MAX_CAPACITY)
+        return BREAK_RUNTIME_INVALID;
+    for (u32 r = 0u; r < rule_count; ++r) {
+        if (!rules[r].name || (rules[r].op != BREAK_RUNTIME_METRIC_ALERT_ABOVE &&
+                               rules[r].op != BREAK_RUNTIME_METRIC_ALERT_BELOW))
+            return BREAK_RUNTIME_INVALID;
+    }
+    if (edge_capacity < rule_count) return BREAK_RUNTIME_OVERLOAD;
+    for (u32 r = 0u; r < rule_count; ++r) {
+        bool now = metrics_history_window_fires(history, &rules[r], sustain, 0u);
+        bool before = metrics_history_window_fires(history, &rules[r], sustain, 1u);
+        edges[r] = now == before ? BREAK_RUNTIME_METRIC_ALERT_STEADY
+                   : now         ? BREAK_RUNTIME_METRIC_ALERT_RAISED
+                                 : BREAK_RUNTIME_METRIC_ALERT_CLEARED;
+    }
     return BREAK_RUNTIME_OK;
 }

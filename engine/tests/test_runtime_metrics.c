@@ -514,6 +514,70 @@ TEST(sustain_longer_than_the_ring_never_fires) {
     break_runtime_metrics_destroy(m);
 }
 
+TEST(alert_edges_report_raise_and_clear_between_consecutive_windows) {
+    BreakRuntimeMetrics *m = make_metrics(8u);
+    BreakRuntimeMetricsHistory *h = make_history(8u, 4u);
+    const BreakRuntimeMetricAlertRule rules[] = {
+        {"q.depth", BREAK_RUNTIME_METRIC_ALERT_ABOVE, 5u},
+        {"q.depth", BREAK_RUNTIME_METRIC_ALERT_BELOW, 100u},
+    };
+    BreakRuntimeMetricAlertEdge edges[2];
+    ASSERT_NOT_NULL(m);
+    ASSERT_NOT_NULL(h);
+    record_depth(m, h, 9u, 1u);
+    record_depth(m, h, 9u, 2u);
+    /* Window at age 0 is [2,1]; the previous window [1,0] is unproven. */
+    ASSERT_EQ(break_runtime_metrics_history_alert_edges(h, rules, 2u, 2u, edges, 2u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(edges[0], BREAK_RUNTIME_METRIC_ALERT_RAISED);
+    ASSERT_EQ(edges[1], BREAK_RUNTIME_METRIC_ALERT_RAISED);
+    record_depth(m, h, 9u, 3u);
+    ASSERT_EQ(break_runtime_metrics_history_alert_edges(h, rules, 2u, 2u, edges, 2u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(edges[0], BREAK_RUNTIME_METRIC_ALERT_STEADY);
+    ASSERT_EQ(edges[1], BREAK_RUNTIME_METRIC_ALERT_STEADY);
+    record_depth(m, h, 3u, 4u);
+    ASSERT_EQ(break_runtime_metrics_history_alert_edges(h, rules, 2u, 2u, edges, 2u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(edges[0], BREAK_RUNTIME_METRIC_ALERT_CLEARED);
+    ASSERT_EQ(edges[1], BREAK_RUNTIME_METRIC_ALERT_STEADY);
+    record_depth(m, h, 3u, 5u);
+    ASSERT_EQ(break_runtime_metrics_history_alert_edges(h, rules, 2u, 2u, edges, 2u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(edges[0], BREAK_RUNTIME_METRIC_ALERT_STEADY);
+    break_runtime_metrics_history_destroy(h);
+    break_runtime_metrics_destroy(m);
+}
+
+TEST(alert_edges_validate_arguments) {
+    BreakRuntimeMetricsHistory *h = make_history(2u, 4u);
+    const BreakRuntimeMetricAlertRule good[] = {
+        {"q.depth", BREAK_RUNTIME_METRIC_ALERT_ABOVE, 5u},
+        {"q.depth", BREAK_RUNTIME_METRIC_ALERT_BELOW, 5u}};
+    const BreakRuntimeMetricAlertRule bad[] = {{"q.depth", (BreakRuntimeMetricAlertOp)9, 5u}};
+    BreakRuntimeMetricAlertEdge edges[2] = {BREAK_RUNTIME_METRIC_ALERT_RAISED,
+                                            BREAK_RUNTIME_METRIC_ALERT_RAISED};
+    ASSERT_NOT_NULL(h);
+    ASSERT_EQ(break_runtime_metrics_history_alert_edges(NULL, good, 2u, 1u, edges, 2u),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_history_alert_edges(h, good, 2u, 0u, edges, 2u),
+              BREAK_RUNTIME_INVALID);
+    /* depth 2: a sustain of 2 leaves no frame to prove the previous window. */
+    ASSERT_EQ(break_runtime_metrics_history_alert_edges(h, good, 2u, 2u, edges, 2u),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_history_alert_edges(h, bad, 1u, 1u, edges, 2u),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_history_alert_edges(h, good, 2u, 1u, NULL, 2u),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_history_alert_edges(h, good, 2u, 1u, edges, 1u),
+              BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(edges[0], BREAK_RUNTIME_METRIC_ALERT_RAISED); /* untouched on error */
+    ASSERT_EQ(break_runtime_metrics_history_alert_edges(h, good, 2u, 1u, edges, 2u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(edges[0], BREAK_RUNTIME_METRIC_ALERT_STEADY); /* empty ring: nothing fires */
+    break_runtime_metrics_history_destroy(h);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(create_validates_config_and_defaults);
     RUN_TEST(counter_adds_accumulate_and_saturate);
@@ -536,4 +600,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(sustained_alerts_require_every_recent_frame_to_fire);
     RUN_TEST(sustained_alerts_validate_arguments);
     RUN_TEST(sustain_longer_than_the_ring_never_fires);
+    RUN_TEST(alert_edges_report_raise_and_clear_between_consecutive_windows);
+    RUN_TEST(alert_edges_validate_arguments);
 TEST_MAIN_END()
