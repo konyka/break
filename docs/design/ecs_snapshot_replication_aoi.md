@@ -357,3 +357,13 @@ World 的 `Entity{index, generation}` 只在所属 World 内有效，随 World �
 - **验证**：`test_net_entity_map` 8/8（normal/ASan+UBSan/TSan），覆盖配置校验、单调不复用、双向查找、跨 World 重绑、冲突、满表与释放、adopt 推进分配器、id 空间耗尽。五项变异判红：adopt 不推进分配器、rebind 不查占用、耗尽检查去掉、admit 不查 `(world_key, Entity)` 占用、rebind 冲突判定失效。arm64 QEMU lane 已加入该测试。
 
 边界：本节只交付身份映射本身。它尚未接入 BRWD/aspect 线上格式、World snapshot/delta 或 core_app 换级路径；权威 simulation 合并、inbound apply、预测回滚、共享 live World 与 AOI 裁剪仍未实现。本节不预写远端结果。
+
+## 补充（2026-11-26）：按连接的 AOI 快照裁剪
+
+`break_world_snapshot_filter(snapshot, keep, user)`（`engine/src/ecs/world_snapshot.{h,c}`）从一个 immutable snapshot 派生出只含 `keep` 谓词所接纳实体的新 snapshot，并复制这些实体的组件字节；视图不引用原 snapshot，原 snapshot 可先释放。tick 与 schema hash 继承自原 snapshot，hash/id 与 `break_world_snapshot_build` 对同一组实体的计算完全相同（二者共用内部 `snapshot_seal`）。因此过滤视图可以直接进入既有 `break_world_delta_diff`/`apply` 链：两个视图之间的 delta 只描述该连接可见的实体，进入范围的实体作为新增、离开范围的作为删除。
+
+典型接线：对每个连接用 `break_aoi_compute` 得到 scope，传入一个按 scope 判定的谓词得到视图，再以该连接上次 ACK 的视图为 base 做 diff。谓词在调用线程上按 snapshot 顺序逐实体调用一次；NULL snapshot/谓词或分配失败返回 NULL。
+
+验证：`test_world_snapshot_filter` 5/5（normal/ASan+UBSan/TSan），覆盖只保留被接纳实体及其字节且原 snapshot 释放后视图仍有效、视图 hash/id 与直接 build 同一组实体一致、空客户端经 baseline 与 enter 两个 delta 后与目标视图 hash 相同、真实 AOI 球形 witness 驱动裁剪、空视图与 NULL 参数。四项变异判红：忽略谓词、tick 偏移、字节偏移错误、id 与 hash 脱钩。`test_ecs_replication` 35/35 不变。arm64 QEMU lane 已加入该测试。
+
+边界：本节只交付裁剪原语；尚未接入 `BreakWorldSnapshotPublication`、world session 的逐连接 delta 链或 core_app 的 `--world-replication`，所以生产路径仍向每个连接发送完整 World。AOI 的实体 id 与 World Entity 的对应由调用方决定（测试中用 `index | generation << 32`）。本节不预写远端结果。

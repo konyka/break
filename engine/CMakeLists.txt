@@ -6153,6 +6153,13 @@ endif()
     target_link_libraries(test_ecs_replication PRIVATE break_ecs_replication_test)
     add_test(NAME test_ecs_replication COMMAND test_ecs_replication)
 
+    add_executable(test_world_snapshot_filter tests/test_world_snapshot_filter.c)
+    target_include_directories(test_world_snapshot_filter PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_world_snapshot_filter PRIVATE break_ecs_replication_test)
+    add_test(NAME test_world_snapshot_filter COMMAND test_world_snapshot_filter)
+    set_tests_properties(test_world_snapshot_filter PROPERTIES
+        TIMEOUT 20 LABELS "headless;ecs;replication")
+
     add_executable(test_net_entity_map tests/test_net_entity_map.c)
     target_include_directories(test_net_entity_map PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_net_entity_map PRIVATE break_ecs_replication)

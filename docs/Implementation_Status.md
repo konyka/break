@@ -14212,3 +14212,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：新增 `test_net_entity_map`（8 用例），先以缺失源文件配置失败为 RED。五项变异判红：adopt 不推进分配器（2 用例红）、rebind 不查占用、去掉耗尽检查、admit 不查位置占用、rebind 冲突判定失效。
 - **验证**：`test_net_entity_map` 8/8（normal/ASan+UBSan/TSan 均 8/8）；`ctest -L "ecs|replication"` 21/21；命名规范检查 3/3。arm64 QEMU lane 的构建目标与运行白名单已加入该测试。
 - **边界**：尚未接入 BRWD/aspect 线上格式、World snapshot/delta 与 core_app 换级；权威 simulation 合并、inbound apply、预测回滚、共享 live World、AOI 裁剪仍未实现。本收据提交自身的远端工作流结果不在此预写。
+
+## 按连接的 AOI World 快照裁剪原语（2026-11-26）
+
+- **实现**：`world_snapshot` 新增 `break_world_snapshot_filter(snapshot, keep, user)` 与 `BreakWorldSnapshotEntityFilter`（`engine/src/ecs/world_snapshot.{h,c}`）：按谓词派生只含被接纳实体的 immutable snapshot，复制字节、继承 tick 与 schema hash，hash/id 与直接 build 同一组实体一致（build 与 filter 共用新提取的 `snapshot_seal`），因而可直接进入既有 delta diff/apply。设计见 `docs/design/ecs_snapshot_replication_aoi.md`「按连接的 AOI 快照裁剪」。
+- **TDD 与变异**：新增 `test_world_snapshot_filter`（5 用例），先以未声明函数编译失败为 RED。四项变异判红：忽略谓词（5 用例红）、tick 偏移（3 红）、字节偏移错误、id 与 hash 脱钩。
+- **验证**：`test_world_snapshot_filter` 5/5、`test_ecs_replication` 35/35（normal/ASan+UBSan/TSan）；`ctest -L "ecs|replication|core_app"` 在提交后全绿（两项按 git HEAD 归档的合同测试需提交后运行）。arm64 QEMU lane 已加入该测试。
+- **边界**：尚未接入 publication、world session 的逐连接 delta 链与 core_app `--world-replication`，生产路径仍向每个连接发送完整 World。本收据提交自身的远端工作流结果不在此预写。

@@ -80,6 +80,26 @@ static SnapshotEntity *find_entity(BreakWorldSnapshot *snapshot, Entity entity) 
     return NULL;
 }
 
+/* Computes hash and id from tick, schema hash and the entity/component
+ * contents, in stored order. Shared by build and filter so equal contents
+ * always give equal ids. */
+static void snapshot_seal(BreakWorldSnapshot *snapshot) {
+    u64 hash = SNAPSHOT_HASH_OFFSET;
+    hash = hash_bytes(hash, &snapshot->tick, sizeof(snapshot->tick));
+    hash = hash_bytes(hash, &snapshot->schema_hash, sizeof(snapshot->schema_hash));
+    for (usize i = 0u; i < snapshot->entity_count; ++i) {
+        const SnapshotEntity *entity = &snapshot->entities[i];
+        hash = hash_bytes(hash, &entity->entity, sizeof(entity->entity));
+        for (u32 j = 0u; j < entity->component_count; ++j) {
+            const SnapshotComponent *component = &entity->components[j];
+            hash = hash_bytes(hash, &component->component, sizeof(component->component));
+            hash = hash_bytes(hash, snapshot->bytes + component->offset, component->size);
+        }
+    }
+    snapshot->hash = hash;
+    snapshot->id = hash;
+}
+
 BreakWorldSnapshot *break_world_snapshot_build(
     World *world, const BreakComponentSchemaRegistry *schemas, u64 tick) {
     if (!world || !schemas) return NULL;
@@ -158,23 +178,73 @@ BreakWorldSnapshot *break_world_snapshot_build(
         }
     }
 
-    u64 hash = SNAPSHOT_HASH_OFFSET;
-    hash = hash_bytes(hash, &snapshot->tick, sizeof(snapshot->tick));
-    u64 schema_hash = break_schema_hash(schemas);
-    snapshot->schema_hash = schema_hash;
-    hash = hash_bytes(hash, &schema_hash, sizeof(schema_hash));
+    snapshot->schema_hash = break_schema_hash(schemas);
+    snapshot_seal(snapshot);
+    return snapshot;
+}
+
+BreakWorldSnapshot *break_world_snapshot_filter(const BreakWorldSnapshot *snapshot,
+                                                BreakWorldSnapshotEntityFilter keep,
+                                                void *user) {
+    if (!snapshot || !keep) return NULL;
+    bool *kept = calloc(snapshot->entity_count ? snapshot->entity_count : 1u, sizeof(*kept));
+    if (!kept) return NULL;
+    usize kept_count = 0u;
+    usize byte_count = 0u;
     for (usize i = 0u; i < snapshot->entity_count; ++i) {
-        SnapshotEntity *entity = &snapshot->entities[i];
-        hash = hash_bytes(hash, &entity->entity, sizeof(entity->entity));
-        for (u32 j = 0u; j < entity->component_count; ++j) {
-            SnapshotComponent *component = &entity->components[j];
-            hash = hash_bytes(hash, &component->component, sizeof(component->component));
-            hash = hash_bytes(hash, snapshot->bytes + component->offset, component->size);
+        const SnapshotEntity *entity = &snapshot->entities[i];
+        if (!keep(user, snapshot, entity->entity)) continue;
+        kept[i] = true;
+        ++kept_count;
+        for (u32 j = 0u; j < entity->component_count; ++j)
+            byte_count += entity->components[j].size; /* bounded by the source total */
+    }
+
+    BreakWorldSnapshot *view = calloc(1u, sizeof(*view));
+    if (!view) {
+        free(kept);
+        return NULL;
+    }
+    atomic_init(&view->references, 1u);
+    view->tick = snapshot->tick;
+    view->schema_hash = snapshot->schema_hash;
+    view->entity_count = kept_count;
+    view->byte_count = byte_count;
+    view->entities = calloc(kept_count ? kept_count : 1u, sizeof(*view->entities));
+    view->bytes = malloc(byte_count ? byte_count : 1u);
+    if (!view->entities || !view->bytes) {
+        free(kept);
+        snapshot_destroy(view);
+        return NULL;
+    }
+
+    usize slot = 0u;
+    usize byte_offset = 0u;
+    for (usize i = 0u; i < snapshot->entity_count; ++i) {
+        const SnapshotEntity *source = &snapshot->entities[i];
+        if (!kept[i]) continue;
+        SnapshotEntity *stored = &view->entities[slot++];
+        stored->entity = source->entity;
+        if (source->component_count == 0u) continue;
+        stored->components = malloc(source->component_count * sizeof(*stored->components));
+        if (!stored->components) {
+            free(kept);
+            snapshot_destroy(view);
+            return NULL;
+        }
+        stored->component_count = source->component_count;
+        for (u32 j = 0u; j < source->component_count; ++j) {
+            const SnapshotComponent *component = &source->components[j];
+            stored->components[j] =
+                (SnapshotComponent){component->component, byte_offset, component->size};
+            memcpy(view->bytes + byte_offset, snapshot->bytes + component->offset,
+                   component->size);
+            byte_offset += component->size;
         }
     }
-    snapshot->hash = hash;
-    snapshot->id = hash;
-    return snapshot;
+    free(kept);
+    snapshot_seal(view);
+    return view;
 }
 
 void break_world_snapshot_retain(BreakWorldSnapshot *snapshot) {
