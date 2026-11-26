@@ -825,6 +825,7 @@ BreakRuntimeError break_runtime_metrics_encode_alert_edges(
 typedef struct RetryEntry {
     usize len;
     u32 attempts;
+    u64 due_us; /* timed drain: earliest retry time; 0 = due now */
 } RetryEntry;
 
 struct BreakRuntimeMetricsRetryQueue {
@@ -913,6 +914,7 @@ BreakRuntimeError break_runtime_metrics_retry_enqueue(
     memcpy(retry_slot_bytes(queue, slot), bytes, len);
     queue->entries[slot].len = len;
     queue->entries[slot].attempts = 0u;
+    queue->entries[slot].due_us = 0u;
     queue->count++;
     queue->stats.enqueued++;
     queue->stats.queued = queue->count;
@@ -1003,5 +1005,74 @@ BreakRuntimeError break_runtime_metrics_retry_drain(
         }
         break;
     }
+    return BREAK_RUNTIME_OK;
+}
+
+/* Delay before the retry that follows the `attempts`-th failure (attempts >= 1):
+ * min(base * 2^(attempts-1), max), with the shift saturating instead of
+ * wrapping. */
+static u64 retry_backoff_delay(const BreakRuntimeMetricsRetryBackoff *backoff, u32 attempts) {
+    u32 shift = attempts - 1u;
+    u64 delay;
+    if (shift >= 64u || backoff->base_us > (UINT64_MAX >> shift)) {
+        delay = UINT64_MAX;
+    } else {
+        delay = backoff->base_us << shift;
+    }
+    return delay < backoff->max_us ? delay : backoff->max_us;
+}
+
+BreakRuntimeError break_runtime_metrics_retry_drain_timed(
+    BreakRuntimeMetricsRetryQueue *queue, BreakRuntimeMetricsRetrySendFn send, void *user,
+    u32 max_sends, u32 max_attempts, const BreakRuntimeMetricsRetryBackoff *backoff,
+    u64 now_us, BreakRuntimeMetricsRetryDrainResult *out_result) {
+    u32 sends = 0u;
+    if (!queue || !send || !out_result || !backoff || max_sends == 0u) {
+        return BREAK_RUNTIME_INVALID;
+    }
+    if (backoff->base_us == 0u || backoff->max_us < backoff->base_us) {
+        return BREAK_RUNTIME_INVALID;
+    }
+    if (!retry_is_owner(queue)) return BREAK_RUNTIME_REJECTED;
+    if (queue->draining) return BREAK_RUNTIME_REJECTED;
+    memset(out_result, 0, sizeof(*out_result));
+    while (queue->count != 0u && sends < max_sends) {
+        RetryEntry *entry = &queue->entries[queue->head];
+        BreakRuntimeError sent;
+        u64 delay;
+        if (now_us < entry->due_us) {
+            out_result->deferred = 1u;
+            break;
+        }
+        queue->draining = true;
+        sent = send(user, retry_slot_bytes(queue, queue->head), entry->len);
+        queue->draining = false;
+        sends++;
+        if (sent == BREAK_RUNTIME_OK) {
+            retry_pop(queue);
+            out_result->delivered++;
+            continue;
+        }
+        if (entry->attempts != UINT32_MAX) entry->attempts++;
+        queue->stats.attempts++;
+        out_result->failed++;
+        if (max_attempts != 0u && entry->attempts >= max_attempts) {
+            retry_pop(queue);
+            out_result->abandoned++;
+            continue;
+        }
+        delay = retry_backoff_delay(backoff, entry->attempts);
+        entry->due_us = now_us > UINT64_MAX - delay ? UINT64_MAX : now_us + delay;
+        break;
+    }
+    return BREAK_RUNTIME_OK;
+}
+
+BreakRuntimeError break_runtime_metrics_retry_next_due(
+    BreakRuntimeMetricsRetryQueue *queue, u64 *out_due_us) {
+    if (!queue || !out_due_us) return BREAK_RUNTIME_INVALID;
+    if (!retry_is_owner(queue)) return BREAK_RUNTIME_REJECTED;
+    if (queue->count == 0u) return BREAK_RUNTIME_STALE;
+    *out_due_us = queue->entries[queue->head].due_us;
     return BREAK_RUNTIME_OK;
 }

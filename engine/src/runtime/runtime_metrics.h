@@ -468,7 +468,18 @@ typedef struct BreakRuntimeMetricsRetryDrainResult {
     u32 delivered;  /* entries sent and released */
     u32 abandoned;  /* entries released after reaching max_attempts */
     u32 failed;     /* failed sends this call (entry kept, attempt recorded) */
+    u32 deferred;   /* timed drain only: 1 when it stopped at a head not yet due */
 } BreakRuntimeMetricsRetryDrainResult;
+
+/* Exponential backoff for break_runtime_metrics_retry_drain_timed(). After an
+ * entry's n-th failed attempt (n >= 1) its next try is not before
+ * now_us + min(base_us * 2^(n-1), max_us). The shift and the deadline both
+ * saturate, so a long outage can only push the deadline to UINT64_MAX, never
+ * wrap it into the past. Both values are microseconds on the caller's clock. */
+typedef struct BreakRuntimeMetricsRetryBackoff {
+    u64 base_us; /* delay after the first failure; must be > 0 */
+    u64 max_us;  /* cap on every delay; must be >= base_us */
+} BreakRuntimeMetricsRetryBackoff;
 
 /* Runs the peek -> send -> release/record loop from the oldest entry, sending
  * at most `max_sends` payloads. A successful send releases the entry and goes
@@ -491,3 +502,30 @@ BreakRuntimeError break_runtime_metrics_retry_drain(
     u32 max_sends,
     u32 max_attempts,
     BreakRuntimeMetricsRetryDrainResult *out_result);
+
+/* break_runtime_metrics_retry_drain() with automatic backoff timing. Before
+ * each send it checks the head entry's deadline: when now_us is earlier, the
+ * drain stops without sending and reports deferred = 1. A failed send that
+ * keeps its entry sets that entry's deadline from `backoff` (see
+ * BreakRuntimeMetricsRetryBackoff); a fresh entry is due at once. Delivery,
+ * abandonment and reentrancy are exactly as in retry_drain. The deadline is
+ * per entry, so once a failed head is delivered the next entry is tried in the
+ * same call. The untimed retry_drain ignores deadlines entirely. now_us is the
+ * caller's monotonic clock; the library never reads a clock itself. INVALID
+ * also on a NULL backoff, base_us of 0, or max_us below base_us. */
+BreakRuntimeError break_runtime_metrics_retry_drain_timed(
+    BreakRuntimeMetricsRetryQueue *queue,
+    BreakRuntimeMetricsRetrySendFn send,
+    void *user,
+    u32 max_sends,
+    u32 max_attempts,
+    const BreakRuntimeMetricsRetryBackoff *backoff,
+    u64 now_us,
+    BreakRuntimeMetricsRetryDrainResult *out_result);
+
+/* The head entry's backoff deadline in *out_due_us (0 = due now), so an owner
+ * can sleep until then instead of polling. STALE when the queue is empty (no
+ * output written). INVALID on NULL arguments; REJECTED off the owner thread. */
+BreakRuntimeError break_runtime_metrics_retry_next_due(
+    BreakRuntimeMetricsRetryQueue *queue,
+    u64 *out_due_us);

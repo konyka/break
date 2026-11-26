@@ -1175,6 +1175,240 @@ TEST(retry_rejects_enqueue_reentered_from_a_send_callback) {
 }
 
 
+static BreakRuntimeMetricsRetryBackoff backoff_of(u64 base_us, u64 max_us) {
+    BreakRuntimeMetricsRetryBackoff b;
+    memset(&b, 0, sizeof(b));
+    b.base_us = base_us;
+    b.max_us = max_us;
+    return b;
+}
+
+TEST(retry_timed_drain_waits_for_the_exponential_backoff_deadline) {
+    BreakRuntimeMetricsRetryQueue *q = make_retry(4u, 64u);
+    BreakRuntimeMetricsRetryBackoff b = backoff_of(100u, 10000u);
+    BreakRuntimeMetricsRetryDrainResult r;
+    FakeSender f;
+    u64 due = 0u;
+    memset(&f, 0, sizeof(f));
+    f.always_fail = true;
+    ASSERT_NOT_NULL(q);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "a", 1u), BREAK_RUNTIME_OK);
+    /* A fresh entry is due immediately. */
+    ASSERT_EQ(break_runtime_metrics_retry_next_due(q, &due), BREAK_RUNTIME_OK);
+    ASSERT_EQ(due, 0u);
+    /* First failure at t=1000 schedules the retry base_us later. */
+    ASSERT_EQ(break_runtime_metrics_retry_drain_timed(q, fake_send, &f, 8u, 0u, &b, 1000u, &r),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(r.failed, 1u);
+    ASSERT_EQ(f.calls, 1u);
+    ASSERT_EQ(break_runtime_metrics_retry_next_due(q, &due), BREAK_RUNTIME_OK);
+    ASSERT_EQ(due, 1100u);
+    /* Before the deadline the timed drain sends nothing at all. */
+    ASSERT_EQ(break_runtime_metrics_retry_drain_timed(q, fake_send, &f, 8u, 0u, &b, 1099u, &r),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(r.failed + r.delivered + r.abandoned, 0u);
+    ASSERT_EQ(r.deferred, 1u);
+    ASSERT_EQ(f.calls, 1u);
+    /* At the deadline it retries; the second failure doubles the delay. */
+    ASSERT_EQ(break_runtime_metrics_retry_drain_timed(q, fake_send, &f, 8u, 0u, &b, 1100u, &r),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(r.failed, 1u);
+    ASSERT_EQ(f.calls, 2u);
+    ASSERT_EQ(break_runtime_metrics_retry_next_due(q, &due), BREAK_RUNTIME_OK);
+    ASSERT_EQ(due, 1300u);
+    /* Third failure doubles again: 400 us. */
+    ASSERT_EQ(break_runtime_metrics_retry_drain_timed(q, fake_send, &f, 8u, 0u, &b, 1300u, &r),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_next_due(q, &due), BREAK_RUNTIME_OK);
+    ASSERT_EQ(due, 1700u);
+    break_runtime_metrics_retry_destroy(q);
+}
+
+TEST(retry_timed_drain_caps_the_delay_and_resets_it_on_success) {
+    BreakRuntimeMetricsRetryQueue *q = make_retry(4u, 64u);
+    BreakRuntimeMetricsRetryBackoff b = backoff_of(100u, 250u);
+    BreakRuntimeMetricsRetryDrainResult r;
+    FakeSender f;
+    u64 due = 0u;
+    u64 now = 0u;
+    memset(&f, 0, sizeof(f));
+    f.always_fail = true;
+    ASSERT_NOT_NULL(q);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "a", 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "b", 1u), BREAK_RUNTIME_OK);
+    /* Delays 100, 200, then capped at 250 for every later failure. */
+    ASSERT_EQ(break_runtime_metrics_retry_drain_timed(q, fake_send, &f, 8u, 0u, &b, now, &r),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_next_due(q, &due), BREAK_RUNTIME_OK);
+    ASSERT_EQ(due, now + 100u);
+    now = due;
+    ASSERT_EQ(break_runtime_metrics_retry_drain_timed(q, fake_send, &f, 8u, 0u, &b, now, &r),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_next_due(q, &due), BREAK_RUNTIME_OK);
+    ASSERT_EQ(due, now + 200u);
+    now = due;
+    ASSERT_EQ(break_runtime_metrics_retry_drain_timed(q, fake_send, &f, 8u, 0u, &b, now, &r),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_next_due(q, &due), BREAK_RUNTIME_OK);
+    ASSERT_EQ(due, now + 250u);
+    now = due;
+    ASSERT_EQ(break_runtime_metrics_retry_drain_timed(q, fake_send, &f, 8u, 0u, &b, now, &r),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_next_due(q, &due), BREAK_RUNTIME_OK);
+    ASSERT_EQ(due, now + 250u);
+    /* The sender recovers: "a" goes out, and "b" is attempted in the same
+     * drain because the backoff belongs to the failed entry, not the queue. */
+    f.always_fail = false;
+    now = due;
+    ASSERT_EQ(break_runtime_metrics_retry_drain_timed(q, fake_send, &f, 8u, 0u, &b, now, &r),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(r.delivered, 2u);
+    ASSERT_EQ(r.deferred, 0u);
+    /* Empty queue: nothing is due. */
+    ASSERT_EQ(break_runtime_metrics_retry_next_due(q, &due), BREAK_RUNTIME_STALE);
+    break_runtime_metrics_retry_destroy(q);
+}
+
+TEST(retry_timed_drain_does_not_overflow_a_huge_attempt_count) {
+    BreakRuntimeMetricsRetryQueue *q = make_retry(2u, 8u);
+    BreakRuntimeMetricsRetryBackoff b = backoff_of(1000u, UINT64_MAX);
+    BreakRuntimeMetricsRetryDrainResult r;
+    FakeSender f;
+    u64 due = 0u;
+    u64 now = 5u;
+    memset(&f, 0, sizeof(f));
+    f.always_fail = true;
+    ASSERT_NOT_NULL(q);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "a", 1u), BREAK_RUNTIME_OK);
+    /* 80 failures would shift base_us past 64 bits; the delay must saturate
+     * rather than wrap to a small value, and the deadline must not wrap past
+     * UINT64_MAX either. */
+    for (u32 i = 0u; i < 80u; ++i) {
+        ASSERT_EQ(break_runtime_metrics_retry_drain_timed(q, fake_send, &f, 1u, 0u, &b, now, &r),
+                  BREAK_RUNTIME_OK);
+        ASSERT_EQ(break_runtime_metrics_retry_next_due(q, &due), BREAK_RUNTIME_OK);
+        ASSERT_TRUE(due >= now);
+        now = due;
+    }
+    ASSERT_EQ(due, UINT64_MAX);
+    break_runtime_metrics_retry_destroy(q);
+}
+
+TEST(retry_timed_drain_saturates_the_shift_for_a_large_attempt_count) {
+    BreakRuntimeMetricsRetryQueue *q = make_retry(2u, 8u);
+    BreakRuntimeMetricsRetryBackoff b = backoff_of(1000u, UINT64_MAX);
+    BreakRuntimeMetricsRetryDrainResult r;
+    FakeSender f;
+    u64 due = 0u;
+    u32 attempts = 0u;
+    const void *bytes = NULL;
+    usize len = 0u;
+    memset(&f, 0, sizeof(f));
+    f.always_fail = true;
+    ASSERT_NOT_NULL(q);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "a", 1u), BREAK_RUNTIME_OK);
+    /* The untimed drain records attempts without setting a deadline, so the
+     * entry reaches 55 attempts while still being due now. */
+    for (u32 i = 0u; i < 55u; ++i) {
+        ASSERT_EQ(break_runtime_metrics_retry_drain(q, fake_send, &f, 1u, 0u, &r),
+                  BREAK_RUNTIME_OK);
+    }
+    ASSERT_EQ(break_runtime_metrics_retry_peek(q, &bytes, &len, &attempts), BREAK_RUNTIME_OK);
+    ASSERT_EQ(attempts, 55u);
+    /* The 56th failure needs 1000 << 55, which does not fit in 64 bits. It
+     * must saturate to UINT64_MAX, not wrap to a smaller finite delay. */
+    ASSERT_EQ(break_runtime_metrics_retry_drain_timed(q, fake_send, &f, 1u, 0u, &b, 0u, &r),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_next_due(q, &due), BREAK_RUNTIME_OK);
+    ASSERT_EQ(due, UINT64_MAX);
+    break_runtime_metrics_retry_destroy(q);
+}
+
+TEST(retry_reused_slot_starts_with_no_deadline) {
+    BreakRuntimeMetricsRetryQueue *q = make_retry(1u, 8u);
+    BreakRuntimeMetricsRetryBackoff b = backoff_of(1000u, 1000u);
+    BreakRuntimeMetricsRetryDrainResult r;
+    FakeSender f;
+    u64 due = 0u;
+    memset(&f, 0, sizeof(f));
+    f.always_fail = true;
+    ASSERT_NOT_NULL(q);
+    /* With capacity 1 every entry lives in the same slot. */
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "a", 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_drain_timed(q, fake_send, &f, 1u, 0u, &b, 0u, &r),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_next_due(q, &due), BREAK_RUNTIME_OK);
+    ASSERT_EQ(due, 1000u);
+    /* Release it, then enqueue a new payload into the reused slot: the new
+     * entry must be due at once, not inherit the old deadline. */
+    ASSERT_EQ(break_runtime_metrics_retry_release(q), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "b", 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_next_due(q, &due), BREAK_RUNTIME_OK);
+    ASSERT_EQ(due, 0u);
+    /* Same for a full queue that evicts the oldest entry to make room. */
+    ASSERT_EQ(break_runtime_metrics_retry_drain_timed(q, fake_send, &f, 1u, 0u, &b, 0u, &r),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_next_due(q, &due), BREAK_RUNTIME_OK);
+    ASSERT_EQ(due, 1000u);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "c", 1u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_metrics_retry_next_due(q, &due), BREAK_RUNTIME_OK);
+    ASSERT_EQ(due, 0u);
+    break_runtime_metrics_retry_destroy(q);
+}
+
+TEST(retry_timed_drain_validates_arguments) {
+    BreakRuntimeMetricsRetryQueue *q = make_retry(2u, 8u);
+    BreakRuntimeMetricsRetryBackoff b = backoff_of(100u, 1000u);
+    BreakRuntimeMetricsRetryBackoff zero_base = backoff_of(0u, 1000u);
+    BreakRuntimeMetricsRetryBackoff inverted = backoff_of(500u, 100u);
+    BreakRuntimeMetricsRetryDrainResult r;
+    FakeSender f;
+    u64 due = 0u;
+    memset(&f, 0, sizeof(f));
+    ASSERT_NOT_NULL(q);
+    ASSERT_EQ(break_runtime_metrics_retry_drain_timed(NULL, fake_send, &f, 1u, 0u, &b, 0u, &r),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_retry_drain_timed(q, NULL, &f, 1u, 0u, &b, 0u, &r),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_retry_drain_timed(q, fake_send, &f, 0u, 0u, &b, 0u, &r),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_retry_drain_timed(q, fake_send, &f, 1u, 0u, NULL, 0u, &r),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_retry_drain_timed(q, fake_send, &f, 1u, 0u, &b, 0u, NULL),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_retry_drain_timed(q, fake_send, &f, 1u, 0u, &zero_base, 0u,
+                                                      &r),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_retry_drain_timed(q, fake_send, &f, 1u, 0u, &inverted, 0u,
+                                                      &r),
+              BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_retry_next_due(NULL, &due), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_metrics_retry_next_due(q, NULL), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(f.calls, 0u);
+    break_runtime_metrics_retry_destroy(q);
+}
+
+TEST(retry_untimed_drain_ignores_any_backoff_deadline) {
+    BreakRuntimeMetricsRetryQueue *q = make_retry(2u, 8u);
+    BreakRuntimeMetricsRetryBackoff b = backoff_of(1000000u, 1000000u);
+    BreakRuntimeMetricsRetryDrainResult r;
+    FakeSender f;
+    memset(&f, 0, sizeof(f));
+    f.fail_first = 1u;
+    ASSERT_NOT_NULL(q);
+    ASSERT_EQ(break_runtime_metrics_retry_enqueue(q, "a", 1u), BREAK_RUNTIME_OK);
+    /* A timed failure sets a one-second deadline... */
+    ASSERT_EQ(break_runtime_metrics_retry_drain_timed(q, fake_send, &f, 8u, 0u, &b, 0u, &r),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(r.failed, 1u);
+    /* ...but the original untimed drain keeps its contract and sends now. */
+    ASSERT_EQ(break_runtime_metrics_retry_drain(q, fake_send, &f, 8u, 0u, &r), BREAK_RUNTIME_OK);
+    ASSERT_EQ(r.delivered, 1u);
+    ASSERT_EQ(f.calls, 2u);
+    break_runtime_metrics_retry_destroy(q);
+}
+
+
 TEST(history_aggregate_reports_window_min_max_mean) {
     BreakRuntimeMetrics *m = make_metrics(8u);
     BreakRuntimeMetricsHistory *h = make_history(4u, 4u);
@@ -1582,4 +1816,11 @@ TEST_MAIN_BEGIN()
     RUN_TEST(retry_coalescing_compares_only_the_newest_entry);
     RUN_TEST(retry_without_coalescing_keeps_every_repeat);
     RUN_TEST(retry_rejects_enqueue_reentered_from_a_send_callback);
+    RUN_TEST(retry_timed_drain_waits_for_the_exponential_backoff_deadline);
+    RUN_TEST(retry_timed_drain_caps_the_delay_and_resets_it_on_success);
+    RUN_TEST(retry_timed_drain_does_not_overflow_a_huge_attempt_count);
+    RUN_TEST(retry_timed_drain_saturates_the_shift_for_a_large_attempt_count);
+    RUN_TEST(retry_reused_slot_starts_with_no_deadline);
+    RUN_TEST(retry_timed_drain_validates_arguments);
+    RUN_TEST(retry_untimed_drain_ignores_any_backoff_deadline);
 TEST_MAIN_END()

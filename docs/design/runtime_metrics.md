@@ -192,7 +192,7 @@ backlog：调用方持有的定长 FIFO，存放**已编码**的 payload 字节�
 调用方阈值时 `release` 丢弃。队列只保存字节，不关心是 metrics 还是 alerts 编码。
 
 仍不做：按渠道分队列、去重、批量合并、压缩、持久化到磁盘，以及自动退避计时（退避策略由
-调用方的步进节奏决定）。
+调用方的步进节奏决定）。其中去重见第 24 节，自动退避计时见第 31 节。
 
 ## 23. 重试队列的排空循环
 
@@ -342,3 +342,35 @@ rules, rule_count, window, stat, edges, edge_capacity)` 为第 29 节的聚合�
 零规则合法。8/8 变异判红：before 用 offset 0、RAISED/CLEARED 对调、`>=`depth 改 `>`、去掉 stat 校验、
 去掉 OVERLOAD、helper 忽略 offset 下界、helper 从 age 0 起、跳过规则校验（NULL name 经 ASan SEGV 判红）。
 normal/ASan+UBSan/TSan 52/52；`runtime_core` 12/12；`build-current-vk` 非 fuzz 462/462。
+
+## 31. 重试队列的自动退避计时
+
+第 23 节的 `retry_drain` 在第一次未达上限的失败处停下，退避间隔完全取决于调用方多久调用一次。
+采集端长时间不可用时，按固定步进节奏调用会以恒定频率重试，既不放慢也不感知失败次数。
+`break_runtime_metrics_retry_drain_timed(queue, send, user, max_sends, max_attempts, backoff,
+now_us, out)` 在同一循环上加入按条目的指数退避截止时间。
+
+- **截止时间按条目记录**：`RetryEntry` 新增 `due_us`（0 表示立即可发）。某条失败且未达
+  `max_attempts` 时，截止时间设为 `now_us + min(base_us * 2^(n-1), max_us)`，n 是该条累计
+  attempts。新入队的条目，以及复用槽位或淘汰最旧条目后写入的条目，都从 0 开始，不继承旧值。
+- **未到期即停**：每次发送前检查队首；`now_us` 早于其截止时间时不发送，返回 `deferred = 1`。
+  截止时间属于失败的那一条而非整个队列，所以队首一旦投递成功，同一次调用里会继续尝试下一条。
+- **饱和而非回绕**：移位超过 64 位，或 `base_us` 左移后溢出时，延迟饱和为 `UINT64_MAX`；
+  `now_us + delay` 溢出时截止时间饱和为 `UINT64_MAX`。长时间故障只会把截止时间推到最远，
+  不会回绕到过去而引发立即重试。
+- **不读时钟**：`now_us` 由调用方传入单调时钟，库本身不读时钟，所以测试可以精确控制时间。
+  `break_runtime_metrics_retry_next_due` 返回队首的截止时间，调用方可据此睡眠而不是轮询；
+  空队列为 `STALE`。
+- **与原接口的关系**：`retry_drain` 不看截止时间，行为逐位不变；只调用 `retry_drain` 的既有
+  调用方不受影响。两者可混用：`retry_drain` 照常记录 attempts，但不设截止时间。
+- **校验**：NULL `backoff`、`base_us == 0`、`max_us < base_us` 为 INVALID；其余参数、重入保护
+  与非所有者线程行为同 `retry_drain`。
+
+验证：`test_runtime_metrics` 新增 7 例（共 59 例）：截止时间前不发、到期按 100/200/400 递增；
+在 `max_us` 处封顶，恢复后同一次调用投递后续条目；80 次失败后截止时间单调且停在 `UINT64_MAX`；
+55 次 attempts 后 `1000 << 55` 溢出时延迟饱和；容量为 1 时复用槽位与淘汰最旧都不继承截止时间；
+参数校验；`retry_drain` 忽略截止时间。12 项变异判红：去掉截止检查、`<` 改 `<=`、不加倍、不封顶、
+移位差一、去掉移位溢出保护、截止时间回绕、入队不清截止时间、不报告 deferred、允许 `base_us`
+为 0、允许 `max_us < base_us`、`next_due` 读错条目。首轮有两项存活（移位溢出保护、入队清零），
+补两例后判红。normal/ASan+UBSan（含 leak 检测）/TSan 下 59/59，`test_runtime_metrics_push_http`
+10/10；`build-current-vk` 非 fuzz 全量 462/462。

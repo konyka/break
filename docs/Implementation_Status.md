@@ -14397,3 +14397,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **缺口**：`break_http` 的 static 函数 `parse_head` 解析不可信服务器响应头，此前只有脚本化 socket 单元测试，没有变异 fuzz。
 - **实现**：新增 `engine/tests/fuzz_http_head.c`，直接包含 `break_http.c` 以调用 static 函数，自行链接 OpenSSL。用五个合法响应头做种子，输入放在大小恰好的堆缓冲里。不变量：不越界；接受的 status 在 100..599；Content-Range 满足 first<=last；解析结果确定。注册为 `fuzz_http_head_smoke`（种子 73），加入 CI 三处 fuzz 构建列表；仅在 `TARGET break_http` 存在时构建。
 - **验证**：种子 73 跑 200000 次、种子 107 跑 100000 次，ASan+UBSan+leak clean。负向对照：去掉 `\r\n\r\n` 结尾检查后触发 `break_http.c:624` heap-buffer-overflow。`test_break_http` 72/72，fuzz lane 21/21。本提交自身在远端工作流上的结果不在这里预先写明。
+
+## 指标重试队列的自动退避计时（2026-11-27）
+
+- **缺口**：`missing_capabilities.md` 的对账列表把「自动退避计时」列为指标协议未交付项。`retry_drain` 在首次失败处停下，退避间隔只取决于调用方的步进频率，长时间故障下以恒定频率重试。
+- **实现**：新增 `BreakRuntimeMetricsRetryBackoff`（`base_us`、`max_us`）、`break_runtime_metrics_retry_drain_timed` 与 `break_runtime_metrics_retry_next_due`，`DrainResult` 新增 `deferred`。每条记录 `due_us`；失败后截止时间为 `now_us + min(base_us*2^(n-1), max_us)`，移位与加法都饱和到 `UINT64_MAX` 而不回绕。新条目与复用槽位从 0 开始。库不读时钟，`now_us` 由调用方传入。原 `retry_drain` 不看截止时间，行为不变。设计见 `docs/design/runtime_metrics.md` 第 31 节；`missing_capabilities.md` 对账列表同步移除「去重」「自动退避计时」两项。
+- **TDD 与变异**：`test_runtime_metrics` 新增 7 例，先以未知类型编译失败为 RED。12 项变异判红；首轮「去掉移位溢出保护」「入队不清截止时间」存活，补「55 次 attempts 后移位溢出」「容量 1 复用槽位」两例后判红。
+- **验证**：`test_runtime_metrics` 59/59（normal/ASan+UBSan 含 leak 检测/TSan），`test_runtime_metrics_push_http` 10/10；`build-current-vk` 非 fuzz 全量 CTest 462/462。本提交自身的远端工作流结果不在此预写。
