@@ -609,7 +609,7 @@ jobs:
       # The fuzz targets are EXCLUDE_FROM_ALL; without building them the
       # *_smoke tests report Not Run.
       - name: Build fuzz targets
-        run: cmake --build build --target fuzz_scene_serial fuzz_net_packet fuzz_decode_image fuzz_vfs_pak fuzz_asset_gltf fuzz_mycompose_tree fuzz_mycompose_intent fuzz_core_app_checkpoint fuzz_core_app_scenario fuzz_core_app_network fuzz_break_online_voice fuzz_world_delta_wire fuzz_runtime_metrics_decode fuzz_crash_record fuzz_update_manifest fuzz_runtime_metrics_retry_load fuzz_runtime_metrics_decompress --parallel
+        run: cmake --build build --target fuzz_scene_serial fuzz_net_packet fuzz_decode_image fuzz_vfs_pak fuzz_asset_gltf fuzz_mycompose_tree fuzz_mycompose_intent fuzz_core_app_checkpoint fuzz_core_app_scenario fuzz_core_app_network fuzz_break_online_voice fuzz_world_delta_wire fuzz_runtime_metrics_decode fuzz_crash_record fuzz_update_manifest fuzz_http_head fuzz_runtime_metrics_retry_load fuzz_runtime_metrics_decompress --parallel
 
       - name: Test (headless suite)
         env:
@@ -687,7 +687,7 @@ jobs:
         run: cmake --build build --parallel
 
       - name: Build fuzz targets
-        run: cmake --build build --target fuzz_scene_serial fuzz_net_packet fuzz_decode_image fuzz_vfs_pak fuzz_asset_gltf fuzz_mycompose_tree fuzz_mycompose_intent fuzz_core_app_checkpoint fuzz_core_app_scenario fuzz_core_app_network fuzz_break_online_voice fuzz_world_delta_wire fuzz_runtime_metrics_decode fuzz_crash_record fuzz_update_manifest fuzz_runtime_metrics_retry_load fuzz_runtime_metrics_decompress --parallel
+        run: cmake --build build --target fuzz_scene_serial fuzz_net_packet fuzz_decode_image fuzz_vfs_pak fuzz_asset_gltf fuzz_mycompose_tree fuzz_mycompose_intent fuzz_core_app_checkpoint fuzz_core_app_scenario fuzz_core_app_network fuzz_break_online_voice fuzz_world_delta_wire fuzz_runtime_metrics_decode fuzz_crash_record fuzz_update_manifest fuzz_http_head fuzz_runtime_metrics_retry_load fuzz_runtime_metrics_decompress --parallel
 
       - name: Test (headless suite)
         env:

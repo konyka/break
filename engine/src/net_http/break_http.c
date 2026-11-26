@@ -1,7 +1,15 @@
 #if defined(__APPLE__)
 #define _DARWIN_C_SOURCE 1
-#else
+#elif !defined(_WIN32)
 #define _POSIX_C_SOURCE 200809L
+#endif
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+/* winsock2.h must come before anything that pulls in windows.h. */
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #endif
 #include <net_http/break_http.h>
 
@@ -14,24 +22,78 @@
 #include <openssl/ssl.h>
 #include <openssl/x509v3.h>
 
-#include <arpa/inet.h>
 #include <errno.h>
-#include <fcntl.h>
 #include <limits.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+#if defined(_WIN32)
+/* ---------------- Winsock ----------------
+ * The same non-blocking socket + poll design as POSIX: WSAPoll stands in for
+ * poll, ioctlsocket(FIONBIO) for O_NONBLOCK, closesocket for close, and
+ * WSAGetLastError for errno. Windows has no SIGPIPE, so the signal guard is
+ * empty. Winsock is started once per process on first use and never torn
+ * down (WSACleanup at exit would race other users of the process's
+ * sockets). */
+typedef SOCKET HttpSock;
+#define HTTP_SOCK_BAD INVALID_SOCKET
+#define http_sock_close closesocket
+#define http_poll(p, n, ms) WSAPoll((p), (ULONG)(n), (ms))
+#define strcasecmp _stricmp
+#define strncasecmp _strnicmp
+typedef WSAPOLLFD HttpPollFd;
+
+static INIT_ONCE g_wsa_once = INIT_ONCE_STATIC_INIT;
+static bool g_wsa_ok = false;
+
+static BOOL CALLBACK wsa_start_once(PINIT_ONCE once, PVOID param, PVOID *ctx) {
+    WSADATA wsa;
+    (void)once;
+    (void)param;
+    (void)ctx;
+    g_wsa_ok = WSAStartup(MAKEWORD(2, 2), &wsa) == 0;
+    return TRUE;
+}
+
+static bool http_net_init(void) {
+    (void)InitOnceExecuteOnce(&g_wsa_once, wsa_start_once, NULL, NULL);
+    return g_wsa_ok;
+}
+
+static int http_sock_errno(void) { return WSAGetLastError(); }
+#define HTTP_EINTR WSAEINTR
+#define HTTP_EAGAIN WSAEWOULDBLOCK
+#define HTTP_EINPROGRESS WSAEWOULDBLOCK
+#define HTTP_EWOULDBLOCK WSAEWOULDBLOCK
+#else
+#include <arpa/inet.h>
+#include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <strings.h>
 #include <sys/socket.h>
 #include <sys/types.h>
-#include <time.h>
 #include <unistd.h>
+
+typedef int HttpSock;
+#define HTTP_SOCK_BAD (-1)
+#define http_sock_close close
+#define http_poll poll
+typedef struct pollfd HttpPollFd;
+
+static bool http_net_init(void) { return true; }
+static int http_sock_errno(void) { return errno; }
+#define HTTP_EINTR EINTR
+#define HTTP_EAGAIN EAGAIN
+#define HTTP_EINPROGRESS EINPROGRESS
+#define HTTP_EWOULDBLOCK EWOULDBLOCK
+#endif
 
 #define HTTP_MAX_BODY_SEND (16u * 1024u * 1024u)
 
@@ -51,15 +113,28 @@ const char *break_http_error_name(BreakHttpError e) {
 }
 
 static u64 now_ms(void) {
+#if defined(_WIN32)
+    return (u64)GetTickCount64();
+#else
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (u64)ts.tv_sec * 1000u + (u64)ts.tv_nsec / 1000000u;
+#endif
 }
 
 /* ---------------- SIGPIPE ----------------
  * Linux: block SIGPIPE for the call and consume one this call raised.
- * BSD/macOS: SO_NOSIGPIPE on the socket (sigtimedwait does not exist there). */
+ * BSD/macOS: SO_NOSIGPIPE on the socket (sigtimedwait does not exist there).
+ * Windows: there is no SIGPIPE; a write to a reset peer just fails. */
 
+#if defined(_WIN32)
+typedef struct {
+    int unused;
+} SigGuard;
+
+static void sig_enter(SigGuard *g) { g->unused = 0; }
+static void sig_leave(SigGuard *g) { (void)g; }
+#else
 typedef struct {
     sigset_t old;
     bool was_pending;
@@ -92,6 +167,7 @@ static void sig_leave(SigGuard *g) {
 #endif
     (void)pthread_sigmask(SIG_SETMASK, &g->old, NULL);
 }
+#endif
 
 /* ---------------- URL ---------------- */
 
@@ -192,7 +268,7 @@ static bool parse_url(const char *s, Url *u) {
 /* ---------------- connection ---------------- */
 
 typedef struct {
-    int fd;
+    HttpSock fd;
     SSL *ssl;
     SSL_CTX *ctx;
     u64 deadline; /* total I/O budget, set after the TCP connect */
@@ -204,9 +280,9 @@ static void conn_close(Conn *c) {
         SSL_free(c->ssl);
         c->ssl = NULL;
     }
-    if (c->fd >= 0) {
-        close(c->fd);
-        c->fd = -1;
+    if (c->fd != HTTP_SOCK_BAD) {
+        http_sock_close(c->fd);
+        c->fd = HTTP_SOCK_BAD;
     }
     if (c->ctx != NULL) {
         SSL_CTX_free(c->ctx);
@@ -215,10 +291,10 @@ static void conn_close(Conn *c) {
 }
 
 /* 1 ready, 0 timed out, -1 error */
-static int wait_fd(int fd, short ev, u64 deadline) {
+static int wait_fd(HttpSock fd, short ev, u64 deadline) {
     for (;;) {
         u64 n = now_ms();
-        struct pollfd p;
+        HttpPollFd p;
         u64 rem;
         int r;
         if (n >= deadline) return 0;
@@ -227,9 +303,9 @@ static int wait_fd(int fd, short ev, u64 deadline) {
         p.fd = fd;
         p.events = ev;
         p.revents = 0;
-        r = poll(&p, 1, (int)rem);
+        r = http_poll(&p, 1, (int)rem);
         if (r < 0) {
-            if (errno == EINTR) continue;
+            if (http_sock_errno() == HTTP_EINTR) continue;
             return -1;
         }
         if (r == 0) return 0;
@@ -243,31 +319,45 @@ static bool addr_is_loopback(const struct addrinfo *ai) {
         return (ntohl(a->sin_addr.s_addr) >> 24) == 127u;
     }
     if (ai->ai_family == AF_INET6) {
+        /* Byte tests rather than IN6_IS_ADDR_*: the Windows SDK defines those
+         * as extern inline functions, which would leak into the archive. */
+        static const u8 k_loopback[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+        static const u8 k_v4mapped[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF};
         const struct sockaddr_in6 *a = (const struct sockaddr_in6 *)(const void *)ai->ai_addr;
-        if (IN6_IS_ADDR_LOOPBACK(&a->sin6_addr)) return true;
-        if (IN6_IS_ADDR_V4MAPPED(&a->sin6_addr)) {
-            return a->sin6_addr.s6_addr[12] == 127u;
-        }
+        const u8 *b = (const u8 *)a->sin6_addr.s6_addr;
+        if (memcmp(b, k_loopback, sizeof k_loopback) == 0) return true;
+        if (memcmp(b, k_v4mapped, sizeof k_v4mapped) == 0) return b[12] == 127u;
     }
     return false;
 }
 
-static void sock_setup(int fd) {
+/* False when the socket cannot be made non-blocking: every timeout in this
+ * file depends on it, so such a socket is not used. */
+static bool sock_setup(HttpSock fd) {
     int one = 1;
+#if defined(_WIN32)
+    u_long nb = 1;
+    if (ioctlsocket(fd, (long)FIONBIO, &nb) != 0) return false;
+    /* Sockets are not inherited by child processes unless asked for. */
+    (void)SetHandleInformation((HANDLE)fd, HANDLE_FLAG_INHERIT, 0);
+#else
     int fl = fcntl(fd, F_GETFL, 0);
-    if (fl >= 0) (void)fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+    if (fl < 0 || fcntl(fd, F_SETFL, fl | O_NONBLOCK) != 0) return false;
     (void)fcntl(fd, F_SETFD, FD_CLOEXEC);
-    (void)setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+#endif
+    (void)setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (const char *)&one, sizeof(one));
 #if defined(SO_NOSIGPIPE)
     (void)setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
 #endif
+    return true;
 }
 
 static BreakHttpError tcp_connect(const Url *u, bool require_loopback, u32 connect_ms,
-                                  int *out_fd) {
+                                  HttpSock *out_fd) {
     struct addrinfo hints, *res = NULL, *ai;
     u64 deadline = now_ms() + connect_ms;
     bool timed_out = false;
+    if (!http_net_init()) return BHTTP_ERR_CONNECT;
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
@@ -284,21 +374,24 @@ static BreakHttpError tcp_connect(const Url *u, bool require_loopback, u32 conne
         }
     }
     for (ai = res; ai != NULL; ai = ai->ai_next) {
-        int fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        HttpSock fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
         int w;
-        if (fd < 0) continue;
-        sock_setup(fd);
-        if (connect(fd, ai->ai_addr, ai->ai_addrlen) == 0) {
+        if (fd == HTTP_SOCK_BAD) continue;
+        if (!sock_setup(fd)) {
+            http_sock_close(fd);
+            continue;
+        }
+        if (connect(fd, ai->ai_addr, (int)ai->ai_addrlen) == 0) {
             freeaddrinfo(res);
             *out_fd = fd;
             return BHTTP_OK;
         }
-        if (errno == EINPROGRESS) {
+        if (http_sock_errno() == HTTP_EINPROGRESS) {
             w = wait_fd(fd, POLLOUT, deadline);
             if (w == 1) {
                 int err = 0;
                 socklen_t el = sizeof(err);
-                if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &el) == 0 && err == 0) {
+                if (getsockopt(fd, SOL_SOCKET, SO_ERROR, (char *)&err, &el) == 0 && err == 0) {
                     freeaddrinfo(res);
                     *out_fd = fd;
                     return BHTTP_OK;
@@ -307,7 +400,7 @@ static BreakHttpError tcp_connect(const Url *u, bool require_loopback, u32 conne
                 timed_out = true;
             }
         }
-        close(fd);
+        http_sock_close(fd);
         if (now_ms() >= deadline) {
             timed_out = true;
             break;
@@ -322,11 +415,12 @@ static long conn_read(Conn *c, u8 *buf, usize n) {
     if (n > (usize)INT_MAX) n = (usize)INT_MAX;
     for (;;) {
         if (!c->tls) {
-            ssize_t r = recv(c->fd, buf, n, 0);
-            int w;
-            if (r >= 0) return (long)r;
-            if (errno == EINTR) continue;
-            if (errno != EAGAIN && errno != EWOULDBLOCK) return -1;
+            long r = (long)recv(c->fd, (char *)buf, (int)n, 0);
+            int w, err;
+            if (r >= 0) return r;
+            err = http_sock_errno();
+            if (err == HTTP_EINTR) continue;
+            if (err != HTTP_EAGAIN && err != HTTP_EWOULDBLOCK) return -1;
             w = wait_fd(c->fd, POLLIN, c->deadline);
             if (w == 0) return -2;
             if (w < 0) return -1;
@@ -350,19 +444,21 @@ static int conn_write_all(Conn *c, const u8 *buf, usize n) {
     while (n > 0u) {
         if (!c->tls) {
             int flags = 0;
-            ssize_t r;
-            int w;
+            int chunk = n > (usize)INT_MAX ? INT_MAX : (int)n;
+            long r;
+            int w, err = 0;
 #if defined(MSG_NOSIGNAL)
             flags = MSG_NOSIGNAL;
 #endif
-            r = send(c->fd, buf, n, flags);
+            r = (long)send(c->fd, (const char *)buf, chunk, flags);
             if (r > 0) {
                 buf += r;
                 n -= (usize)r;
                 continue;
             }
-            if (r < 0 && errno == EINTR) continue;
-            if (r < 0 && errno != EAGAIN && errno != EWOULDBLOCK) return -1;
+            if (r < 0) err = http_sock_errno();
+            if (r < 0 && err == HTTP_EINTR) continue;
+            if (r < 0 && err != HTTP_EAGAIN && err != HTTP_EWOULDBLOCK) return -1;
             w = wait_fd(c->fd, POLLOUT, c->deadline);
             if (w == 0) return -2;
             if (w < 0) return -1;
@@ -389,7 +485,8 @@ static int conn_write_all(Conn *c, const u8 *buf, usize n) {
 static bool conn_extra_byte(Conn *c) {
     u8 b;
     if (!c->tls) {
-        return recv(c->fd, &b, 1, MSG_DONTWAIT) > 0;
+        /* the socket is already non-blocking (sock_setup) */
+        return recv(c->fd, (char *)&b, 1, 0) > 0;
     }
     if (SSL_pending(c->ssl) > 0) return true;
     return SSL_read(c->ssl, &b, 1) > 0;
@@ -447,7 +544,9 @@ static SSL_CTX *tls_ctx_new(const char *ca_file) {
 
 static BreakHttpError tls_handshake(Conn *c, const Url *u, bool want_status) {
     c->ssl = SSL_new(c->ctx);
-    if (c->ssl == NULL || SSL_set_fd(c->ssl, c->fd) != 1) return BHTTP_ERR_TLS;
+    /* OpenSSL takes the socket as an int; a Winsock SOCKET is a kernel handle
+     * value that fits (OpenSSL's own Windows BIO does the same cast). */
+    if (c->ssl == NULL || SSL_set_fd(c->ssl, (int)c->fd) != 1) return BHTTP_ERR_TLS;
     if (want_status && SSL_set_tlsext_status_type(c->ssl, TLSEXT_STATUSTYPE_ocsp) != 1) {
         return BHTTP_ERR_TLS;
     }
@@ -1060,8 +1159,8 @@ static BreakHttpError proxy_connect(Conn *c, const Url *u, const Url *proxy, u32
         DigestChallenge ch;
         if (find_digest_challenge((const char *)head, len, &ch) &&
             digest_authorization(cfg, &ch, authority, auth, sizeof(auth))) {
-            close(c->fd);
-            c->fd = -1;
+            http_sock_close(c->fd);
+            c->fd = HTTP_SOCK_BAD;
             e = tcp_connect(proxy, false, connect_ms, &c->fd);
             if (e != BHTTP_OK) return e;
             e = proxy_send_connect(c, authority, auth, head, sizeof(head), &used, &len, &h);
@@ -1075,7 +1174,7 @@ static BreakHttpError proxy_connect(Conn *c, const Url *u, const Url *proxy, u32
 
 static BreakHttpError perform(const BreakHttpConfig *cfg, const Req *rq, Expect ex, u8 *out,
                               u64 out_cap, u64 *out_len, int *status_out) {
-    Conn c = {-1, NULL, NULL, 0, false};
+    Conn c = {HTTP_SOCK_BAD, NULL, NULL, 0, false};
     char req[BREAK_HTTP_MAX_URL + 512];
     u8 head[BREAK_HTTP_MAX_HEAD];
     usize head_used = 0, head_len = 0;

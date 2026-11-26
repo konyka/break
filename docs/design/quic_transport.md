@@ -223,8 +223,8 @@ same loopback echo (dual-language policy, Build_Guide §1.1).
 
 ## 8. Documented limitations
 
-- **POSIX only** (sockets, poll). Windows is not implemented (mirrors
-  break_http's v1 posture).
+- **POSIX only** (sockets, poll). Windows is not implemented (break_http
+  itself gained a Winsock port later; this adapter has not).
 - **IPv4 only**, matching the pinned adapter's accept contract.
 - **No mTLS at the QUIC/TLS layer** (§4): use CHALLENGE/AUTH-v2 on top.
 - Retry/address validation is on by default (§6, per-boot secret); 0-RTT

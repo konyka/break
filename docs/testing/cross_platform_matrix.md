@@ -344,3 +344,12 @@ MoltenVK 初轮 staging 因 Homebrew 顶层 include 符号链接失败，改用�
   - `test_platform_win32_runtime`：`OpenClipboard failed`，与问题 1 相同（ToDesk 占用剪贴板）。
   - `test_rhi_backend_selection`：解压后的新源码树里没有 Agility SDK（`D3D12Core.dll missing`）。主机不能访问 nuget.org，把已有的 `E:\d3d12-agility-1.619.6.nupkg` 解压到 `engine/external/d3d12/agility` 后单独复跑，1/1 通过。CI 作业先执行 `fetch_d3d12_agility_sdk.cmake`，不受影响。
 - 本提交自身的远端工作流结果不在此预写。
+
+### 2026-11-27 `break_http` Winsock 移植（W1 实机）
+
+- **源码**：`7e8c08c1` 加本次 Winsock 移植（`break_http.c`、`break_http.h`、`engine/CMakeLists.txt`、`test_runtime_metrics_push_http.c`、`runtime_metrics_push_http.h`），以覆盖方式同步到 `E:\break`，构建目录删除后重建。配置同 CI（MSVC、Debug、`ENGINE_VULKAN=OFF`、`ENGINE_BUILD_FUZZ_SMOKE=ON`），PATH 中加入 `C:\Program Files\OpenSSL-Win64\bin` 以加载 OpenSSL 4.0.1 的 DLL。
+- **结果**：构建 0 错误、0 `warning C`；CI 列表中的 18 个 fuzz 目标全部构建（`fuzz_http_head` 已加回）；headless 选择 448 项中 447 项通过，`-L fuzz` 21/21。新进入 Windows 构建的测试 `test_runtime_metrics_push_http` 13/13（含仅 Windows 的 Winsock 自启动用例），`test_break_http_target_contract` 通过，`fuzz_http_head_smoke` 通过。
+- **唯一失败**：`test_platform_win32_runtime`，`OpenClipboard failed`，与问题 1 相同（ToDesk 占用剪贴板），与本改动无关。
+- **中途发现并修复**：第一轮实机全量中 `test_break_http_target_contract` 判红，导出表多出 `IN6_IS_ADDR_LOOPBACK`、`IN6_IS_ADDR_V4MAPPED`（Windows SDK 把它们定义成 extern inline 函数）。回环判断改为逐字节比较后，第二轮通过。
+- **变异（实机）**：去掉 `ioctlsocket(FIONBIO)` 后 `a_silent_collector_is_cut_off_at_the_io_timeout` 判红；让 `http_net_init` 不启动 Winsock 后 `the_transport_starts_winsock_by_itself` 判红；恢复原代码后 13/13。
+- **未覆盖**：MinGW（W4）与 Clang（W2/W3）这次没有在实机上重跑，留给 CI 的 MinGW 作业和后续实机轮次。本提交自身的远端工作流结果不在此预写。

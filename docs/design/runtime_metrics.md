@@ -152,7 +152,7 @@
 - 只有完整的 HTTP 200 回答算 `OK`；连接/TLS 失败、超时、URL 被拒、非 200、畸形回答一律 `FAILED`，重试由调用方安排。
 - 本地拒绝且不发起连接：ctx/metrics 为 NULL、base URL 为空/无 NUL/以 `/` 结尾/拼接后超长 → `INVALID`；非注册表拥有线程 → `REJECTED`；编码超过 `BREAK_RUNTIME_METRICS_PUSH_HTTP_MAX_BYTES`（64 KiB）→ `OVERLOAD`；编码缓冲分配失败 → `OOM`。
 - 先以零容量 encode 取所需长度，再按长度一次分配并编码；空注册表推送空 body。
-- 调用阻塞至多 `break_http` 的时间预算，应放在诊断线程步进中，不能在热路径调用。仅 POSIX（同 `break_http`）；无 Windows 实现。告警投递见第 21 节。
+- 调用阻塞至多 `break_http` 的时间预算，应放在诊断线程步进中，不能在热路径调用。POSIX 与 Windows 均可用（同 `break_http`，Windows 移植见第 36 节）。告警投递见第 21 节。
 
 ## 21. 告警边沿编码与投递
 
@@ -250,7 +250,7 @@ backlog：调用方持有的定长 FIFO，存放**已编码**的 payload 字节�
 这一缺陷是在没有新需求的情况下，对已推送代码做复查时发现的；原有测试只覆盖了「正常的」
 回调，不能证明回调可以安全地触碰队列。
 
-## 26. Windows 推送的前置条件（勘察，未实现）
+## 26. Windows 推送的前置条件（勘察；已由第 36 节实现）
 
 第 20/21 节的 HTTP 推送标注「仅 POSIX」。勘察确认根因在底层传输：`break_http`
 （`engine/src/net_http/break_http.{h,c}`）头部明确写明「POSIX only (sockets, poll). Windows is
@@ -526,3 +526,57 @@ LZ77 字节编解码器，不绑定 BRKM1 语法，可用于任意字节。
 
 normal/ASan+UBSan/TSan 下 `test_runtime_metrics` 90/90；`build-current-vk` fuzz lane 23/23。本提交
 自身的远端工作流结果不在此预写。
+
+## 36. Windows 上的 HTTP 推送：`break_http` 的 Winsock 移植
+
+第 26 节的勘察结论是：Windows 指标推送的缺口在底层传输 `break_http`，不在推送层。本节交付这次
+移植，推送层 `runtime_metrics_push_http` 本身没有改动，在 Windows 上照常构建。
+
+**移植方式**：保留 POSIX 版的非阻塞 socket 加 poll 设计，只在 `break_http.c` 顶部加一层很薄的
+平台映射：
+
+- `SOCKET`/`INVALID_SOCKET` 对应 `int`/`-1`，`closesocket` 对应 `close`。
+- `WSAPoll` 对应 `poll`，`ioctlsocket(FIONBIO)` 对应 `O_NONBLOCK`，`WSAGetLastError` 加 `WSAE*`
+  错误码对应 `errno`。
+- `GetTickCount64` 对应 `CLOCK_MONOTONIC`，`_stricmp`/`_strnicmp` 对应 `strcasecmp`/`strncasecmp`。
+- 套接字设为不可继承，对应 `FD_CLOEXEC`。
+- Windows 没有 SIGPIPE，信号保护在 Windows 上为空操作。
+- `WSAStartup` 由 `InitOnceExecuteOnce` 在第一次连接时执行一次，此后不再 `WSACleanup`，因为在
+  进程退出时清理会与进程内其他 socket 用户冲突。调用方不需要自己初始化 Winsock。
+
+TLS 策略不变：仍只信任 `ca_file` 指定的 CA，不使用 Windows 证书存储。原因是平台证书存储会让
+信任根因机器而异，与 update/crash 通道「信任根随包固定」的设计相冲突。
+
+**行为修正**：`sock_setup` 现在会检查设置非阻塞是否成功，失败时不使用该 socket。所有超时都依赖
+非阻塞模式，原先忽略这个错误，会让 `io_timeout_ms` 静默失效。
+
+**导出符号**：IPv6 回环与 v4-mapped 判断改为逐字节比较。Windows SDK 把 `IN6_IS_ADDR_*` 定义成
+extern inline 函数，使用它们会让这两个符号出现在 `break_http.lib` 的导出表里，
+`test_break_http_target_contract` 在 Windows 实机上因此判红。改为逐字节比较后，该契约在 Linux 上
+仍通过。
+
+**Windows 上不构建的目标**：`test_break_http` 的脚本化测试服务器、`break_update_server` 与
+`break_update_e2e`、`test_break_crash_upload_http` 都直接使用 POSIX socket 和信号，仍只在
+Linux/macOS 构建。Windows 上对传输的覆盖来自 `test_runtime_metrics_push_http`（回环 socket 加线程，
+已改为 `platform_thread` 与 Winsock 均可编译）和 `fuzz_http_head`（已加回 Windows CI 的 fuzz 构建
+列表）。
+
+**TDD**：`test_runtime_metrics_push_http` 新增两例。
+- `a_silent_collector_is_cut_off_at_the_io_timeout`（全平台）：假采集端收下请求后静默 4 秒，
+  `io_timeout_ms = 300` 时推送必须在 2.5 秒内返回 FAILED。
+- `the_transport_starts_winsock_by_itself`（仅 Windows）：在测试进程自己调用 `WSAStartup` 之前
+  推送一次，之后 `socket()` 必须可用。
+
+在 Windows 实机上做了两项变异：去掉 `ioctlsocket(FIONBIO)` 后第一例判红（推送一直阻塞到假采集端
+应答，返回 OK）；把 `http_net_init` 改为不启动 Winsock 后第二例判红。IPv6 判断在 Linux 上做了两项
+变异：v4-mapped 一律视为回环、`::1` 不视为回环，`test_break_http` 分别判红。
+
+**验证**：
+- Linux：normal/ASan+UBSan（含 leak 检测）/TSan 下 `test_runtime_metrics_push_http` 12/12、
+  `test_break_http` 72/72、`test_break_crash_upload_http` 8/8；`fuzz_http_head` 种子 73 跑 200000 次
+  干净；`build-current-vk` 非 fuzz 全量 460/460（另两项 `git archive HEAD` 契约在提交后复跑），
+  fuzz 23/23。
+- Windows 实机（MSVC，配置同 CI）：`test_runtime_metrics_push_http` 13/13，`fuzz_http_head`
+  2000 次干净。全量结果记在 `docs/testing/cross_platform_matrix.md`。
+
+本提交自身的远端工作流结果不在此预写。

@@ -33,9 +33,10 @@
  *     literal where that matters.
  *   - SIGPIPE is blocked for the duration on the calling thread and a
  *     SIGPIPE raised by this call is consumed, so a peer that closes early
- *     cannot kill the process.
+ *     cannot kill the process. Windows has no SIGPIPE.
  *
- *  POSIX only (sockets, poll). Windows is not implemented.
+ *  POSIX sockets + poll, or Winsock 2 + WSAPoll on Windows (Winsock is
+ *  started on first use and left running for the life of the process).
  * ========================================================================== */
 
 #include <core/types.h>

@@ -684,13 +684,14 @@ if(BREAK_ENABLE_CRYPTO)
     # Stage 5 — break_http: a bounded HTTP/1.1 client over OpenSSL (TLS with an
     # explicit CA file, loopback-only plain http, strict response framing; the
     # transport behind BreakUpdateFetchFn and the crash uploader,
-    # docs/design/update_transport.md). POSIX sockets only.
-    if(NOT WIN32)
-        add_library(break_http STATIC src/net_http/break_http.c)
-        set_property(TARGET break_http PROPERTY C_STANDARD 11)
-        target_include_directories(break_http PUBLIC
-            ${CMAKE_CURRENT_SOURCE_DIR}/src)
-        target_link_libraries(break_http PUBLIC OpenSSL::SSL OpenSSL::Crypto)
+    # docs/design/update_transport.md). POSIX sockets, or Winsock on Windows.
+    add_library(break_http STATIC src/net_http/break_http.c)
+    set_property(TARGET break_http PROPERTY C_STANDARD 11)
+    target_include_directories(break_http PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(break_http PUBLIC OpenSSL::SSL OpenSSL::Crypto)
+    if(WIN32)
+        target_link_libraries(break_http PUBLIC ws2_32)
     endif()
 
     # Stage 5 subproject 5 — break_integrity: client-side tamper SIGNALS (file
@@ -8535,7 +8536,10 @@ endif()
         set_property(TARGET fuzz_http_head PROPERTY C_STANDARD 11)
         target_include_directories(fuzz_http_head PRIVATE ${TEST_INCLUDE_DIRS}
             ${CMAKE_CURRENT_SOURCE_DIR}/src)
-        target_link_libraries(fuzz_http_head PRIVATE OpenSSL::SSL OpenSSL::Crypto pthread)
+        target_link_libraries(fuzz_http_head PRIVATE OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
+        if(WIN32)
+            target_link_libraries(fuzz_http_head PRIVATE ws2_32)
+        endif()
     endif()
 
     # Mutation fuzzer for break_crash_cluster_parse, the parser for the
@@ -8991,13 +8995,18 @@ endif()
     endif()
 
     if(BREAK_ENABLE_CRYPTO AND TARGET break_http)
-        add_executable(test_break_http tests/test_break_http.c)
-        target_include_directories(test_break_http PRIVATE ${TEST_INCLUDE_DIRS})
-        target_compile_definitions(test_break_http PRIVATE
-            BREAK_TEST_SSL_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ssl")
-        target_link_libraries(test_break_http PRIVATE break_http pthread)
-        add_test(NAME test_break_http COMMAND test_break_http)
-        set_tests_properties(test_break_http PROPERTIES LABELS "headless;security;update" TIMEOUT 120)
+        # The scripted test server uses POSIX sockets and signals; on Windows
+        # break_http is covered by test_runtime_metrics_push_http and
+        # fuzz_http_head (docs/design/runtime_metrics.md section 36).
+        if(NOT WIN32)
+            add_executable(test_break_http tests/test_break_http.c)
+            target_include_directories(test_break_http PRIVATE ${TEST_INCLUDE_DIRS})
+            target_compile_definitions(test_break_http PRIVATE
+                BREAK_TEST_SSL_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ssl")
+            target_link_libraries(test_break_http PRIVATE break_http pthread)
+            add_test(NAME test_break_http COMMAND test_break_http)
+            set_tests_properties(test_break_http PROPERTIES LABELS "headless;security;update" TIMEOUT 120)
+        endif()
         add_test(NAME test_break_http_target_contract
             COMMAND ${CMAKE_COMMAND}
                 -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
@@ -9051,7 +9060,7 @@ endif()
     endif()
 
     if(BREAK_ENABLE_CRYPTO AND TARGET break_http AND TARGET break_update AND TARGET break_manifest_tool
-       AND TARGET break_manifest_verify)
+       AND TARGET break_manifest_verify AND NOT WIN32)
         # The reference server and the e2e client are test/dev tools: they are
         # never linked into engine, engine_demo, dxx_break or editor.
         add_executable(break_update_server tools/break_update_server.c)
@@ -9073,7 +9082,7 @@ endif()
         set_tests_properties(test_break_update_e2e PROPERTIES LABELS "headless;security;update" TIMEOUT 180)
     endif()
 
-    if(TARGET break_crash_upload_http)
+    if(TARGET break_crash_upload_http AND NOT WIN32)
         add_executable(test_break_crash_upload_http tests/test_break_crash_upload_http.c
             src/platform/platform_fs.c src/core/break_version.c)
         target_include_directories(test_break_crash_upload_http PRIVATE ${TEST_INCLUDE_DIRS})
@@ -9086,7 +9095,8 @@ endif()
     if(TARGET runtime_metrics_push_http)
         add_executable(test_runtime_metrics_push_http tests/test_runtime_metrics_push_http.c)
         target_include_directories(test_runtime_metrics_push_http PRIVATE ${TEST_INCLUDE_DIRS})
-        target_link_libraries(test_runtime_metrics_push_http PRIVATE runtime_metrics_push_http pthread)
+        target_link_libraries(test_runtime_metrics_push_http PRIVATE runtime_metrics_push_http
+            Threads::Threads)
         add_test(NAME test_runtime_metrics_push_http COMMAND test_runtime_metrics_push_http)
         set_tests_properties(test_runtime_metrics_push_http PROPERTIES
             LABELS "headless;runtime_core;security" TIMEOUT 120)

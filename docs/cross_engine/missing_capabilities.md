@@ -1180,7 +1180,7 @@ authority handoff 和默认全局公平调度仍未交付。正常断连顺序�
 | world session 按连接过滤发布（权威 World 现场构建） | 已交付 | `break_world_session_publish_filtered` |
 | Publication 共享 fan-out 的按连接裁剪 | 已交付 | `break_world_session_publish_snapshot_filtered` 及回传身份的 `_id` 变体 |
 | Runtime adapter 调用该原语 | 已交付 | `BreakRuntimeWorldSessionConfig.publish_keep`（默认 NULL，显式 opt-in） |
-| 指标协议：远程传输 | 已交付 | `break_runtime_metrics_push_http`（`runtime_metrics_push_http`，仅 POSIX） |
+| 指标协议：远程传输 | 已交付 | `break_runtime_metrics_push_http`（`runtime_metrics_push_http`，POSIX 与 Windows） |
 | 指标协议：历史采样/时间序列 | 已交付 | `BreakRuntimeMetricsHistory` |
 | 指标协议：聚合窗口与告警规则 | 已交付 | 阈值/持续/边沿求值与 `history_delta` |
 | 指标协议：告警投递 | 已交付 | `break_runtime_metrics_encode_alert_edges` + `push_alerts_http` |
@@ -1197,8 +1197,8 @@ authority handoff 和默认全局公平调度仍未交付。正常断连顺序�
 - **core_app 启用 AOI 过滤**：前置条件未满足（该诊断 World 无位置/空间索引/witness，
   详见 `docs/design/runtime_world_aoi_integration.md`「core_app 接线的实际结论」），不属于
   可接线项而非缺实现。
-- **指标协议**：HTTP 推送仅 POSIX，无 Windows 实现。
-  （去重已由 `coalesce_repeats` 交付，见 `runtime_metrics.md` 第 24 节；自动退避计时已由
+- **指标协议**：无剩余未交付项。
+  （HTTP 推送的 Windows 实现已由 `break_http` 的 Winsock 移植交付，见 `runtime_metrics.md` 第 36 节；去重已由 `coalesce_repeats` 交付，见 `runtime_metrics.md` 第 24 节；自动退避计时已由
   `break_runtime_metrics_retry_drain_timed` 交付，见第 31 节；批量合并已由
   `break_runtime_metrics_merge` 交付，见第 32 节；磁盘持久化已由
   `break_runtime_metrics_retry_save`/`_load` 交付，见第 33 节；按渠道分队列已由

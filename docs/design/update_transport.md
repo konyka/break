@@ -30,7 +30,7 @@ Each rule below has a test that fails when the rule is removed.
 
 **Adapters**: `break_http_update_fetch` matches `BreakUpdateFetchFn`, fetches `<base>/objects/<64 lowercase hex>` with a Range request, and refuses any other object name (traversal, upper case, wrong length) before connecting. `break_http_rollout_percent_bp` reads `<base>/rollout`: at most 16 bytes, digits with one optional final LF, canonical (no leading zero), 0..10000; any failure leaves the output untouched.
 
-POSIX only (sockets, `poll`). Not built on Windows.
+POSIX sockets + `poll`, or Winsock 2 + `WSAPoll` on Windows (Winsock is started once on first use and left running; Windows has no SIGPIPE, so the guard above is empty there). On Windows only the library is built: the scripted test server in `test_break_http`, the reference server and the e2e client below use POSIX sockets and signals and stay Linux/macOS-only. Windows coverage of the transport comes from `test_runtime_metrics_push_http` and `fuzz_http_head` (`docs/design/runtime_metrics.md` section 36).
 
 ## 2. Reference server
 

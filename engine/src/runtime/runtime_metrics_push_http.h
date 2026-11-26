@@ -10,7 +10,7 @@
  * (text/x-break-metrics), or alert transitions to <base_url>/alerts
  * (text/x-break-alerts). The transport rules of break_http apply
  * unchanged: https needs a CA file, plain http only to a loopback address, no
- * redirects. POSIX only, like break_http. */
+ * redirects. Builds wherever break_http does (POSIX and Windows). */
 
 #include <core/types.h>
 #include <net_http/break_http.h>

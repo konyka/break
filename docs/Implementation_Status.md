@@ -14435,3 +14435,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：`test_runtime_metrics` 新增 8 例，先以未声明函数编译失败为 RED。20 项变异判红；首轮 6 项存活，补测试后全部判红，其中 3 项只在 ASan 下判红。无等价变异。
 - **fuzz**：新增 `fuzz_runtime_metrics_decompress`（种子 83，进 CI 三处 fuzz 构建列表）。种子 83 与 113 各 200000 次在 ASan+UBSan+leak 下干净；5 项负向对照均判红，其中尾随字节一项是补上「接受的流长度恰好」不变量后才判红。
 - **验证**：`test_runtime_metrics` 90/90（normal/ASan+UBSan/TSan）；`build-current-vk` fuzz lane 23/23；非 fuzz 全量 462 项中 460 项通过，余下两项 `test_core_app_*contract` 因新 fuzz 源文件尚未提交而无法从 `git archive HEAD` 配置，提交后复跑。本提交自身的远端工作流结果不在此预写。
+
+## 指标 HTTP 推送的 Windows 实现（2026-11-27）
+
+- **缺口**：`missing_capabilities.md` 对账列表中指标协议的最后一项是「HTTP 推送仅 POSIX，无 Windows 实现」。根因在底层传输 `break_http`，它直接使用 BSD socket、`poll` 和 SIGPIPE（设计文档第 26 节）。
+- **实现**：`break_http.c` 顶部新增平台映射层：Winsock 2、`WSAPoll`、`ioctlsocket(FIONBIO)`、`WSAGetLastError`、`GetTickCount64`；信号保护在 Windows 上为空；`WSAStartup` 在第一次连接时执行一次。TLS 仍只信任 `ca_file`。`sock_setup` 现在检查非阻塞设置是否成功。IPv6 回环判断改为逐字节比较，避免 Windows SDK 的 inline 函数进入导出表。CMake 在 Windows 上构建 `break_http`（链接 `ws2_32`）、`runtime_metrics_push_http`、`break_crash_upload_http` 和 `fuzz_http_head`；依赖 POSIX 测试服务器的 `test_break_http`、`test_break_crash_upload_http`、update 参考服务器与 e2e 仍只在 Linux/macOS 构建。设计见 `docs/design/runtime_metrics.md` 第 36 节；对账列表中指标协议已无剩余项。
+- **TDD 与变异**：`test_runtime_metrics_push_http` 改为跨平台，新增「静默采集端在 io 超时处被切断」和「传输自行启动 Winsock」（仅 Windows）两例。Windows 实机上去掉非阻塞设置、去掉 Winsock 启动两项变异分别判红；Linux 上两项 IPv6 判断变异判红。
+- **验证**：Linux normal/ASan+UBSan/TSan 下推送测试 12/12、`test_break_http` 72/72、`test_break_crash_upload_http` 8/8；`build-current-vk` 非 fuzz 460/460，fuzz 23/23。Windows 实机 MSVC 下推送测试 13/13，全量结果见 `docs/testing/cross_platform_matrix.md`。本提交自身的远端工作流结果不在此预写。

@@ -5,40 +5,78 @@
 #define _DEFAULT_SOURCE
 /* runtime_metrics_push_http: POSTs the BRKM1 encoding of a registry to a
  * collector over break_http, against a one-connection loopback fake. */
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#endif
 #include "test_framework.h"
 
 #include <runtime/runtime_metrics.h>
 #include <runtime/runtime_metrics_push_http.h>
 #include <core/platform_thread.h>
 
+#if defined(_WIN32)
+typedef SOCKET TestSock;
+#define TEST_SOCK_BAD INVALID_SOCKET
+#define test_sock_close closesocket
+#else
 #include <arpa/inet.h>
 #include <netinet/in.h>
-#include <pthread.h>
 #include <signal.h>
+#include <sys/socket.h>
+#include <unistd.h>
+typedef int TestSock;
+#define TEST_SOCK_BAD (-1)
+#define test_sock_close close
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
-#include <unistd.h>
+#if !defined(_WIN32)
+#include <time.h>
+#endif
+
+static unsigned long long test_now_ms(void) {
+#if defined(_WIN32)
+    return (unsigned long long)GetTickCount64();
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (unsigned long long)ts.tv_sec * 1000ull + (unsigned long long)ts.tv_nsec / 1000000ull;
+#endif
+}
+
+static void test_sleep_ms(unsigned ms) {
+#if defined(_WIN32)
+    Sleep(ms);
+#else
+    struct timespec ts = {(time_t)(ms / 1000u), (long)(ms % 1000u) * 1000000L};
+    nanosleep(&ts, NULL);
+#endif
+}
 
 /* A one-connection fake collector on the loopback: it records the request it
  * received and answers with a canned byte string (or nothing). */
 typedef struct {
-    int listen_fd;
+    TestSock listen_fd;
     const char *answer;      /* NULL: close without answering */
     size_t answer_len;
+    unsigned hold_ms;        /* stay silent this long after the request before answering */
     char got[70000];
     size_t got_len;
-    pthread_t th;
+    PlatformThread th;
 } Fake;
 
-static void *fake_main(void *arg) {
+static PLATFORM_THREAD_RET fake_main(PLATFORM_THREAD_ARG arg) {
     Fake *f = (Fake *)arg;
-    int fd = accept(f->listen_fd, NULL, NULL);
+    TestSock fd = accept(f->listen_fd, NULL, NULL);
     size_t head_end = 0, want = 0;
-    if (fd < 0) return NULL;
+    if (fd == TEST_SOCK_BAD) return PLATFORM_THREAD_RETURN;
     for (;;) {
-        ssize_t r = recv(fd, f->got + f->got_len, sizeof(f->got) - f->got_len, 0);
+        int r = (int)recv(fd, f->got + f->got_len, (int)(sizeof(f->got) - f->got_len), 0);
         char *he;
         if (r <= 0) break;
         f->got_len += (size_t)r;
@@ -51,21 +89,29 @@ static void *fake_main(void *arg) {
         }
         if (want != 0u && f->got_len >= want) break;
     }
-    if (f->answer != NULL) (void)!write(fd, f->answer, f->answer_len);
-    close(fd);
-    return NULL;
+    if (f->hold_ms != 0u) test_sleep_ms(f->hold_ms);
+    if (f->answer != NULL) (void)send(fd, f->answer, (int)f->answer_len, 0);
+    test_sock_close(fd);
+    return PLATFORM_THREAD_RETURN;
 }
 
+static bool fake_start_held(Fake *f, const char *answer, unsigned hold_ms, int *port);
+
 static bool fake_start(Fake *f, const char *answer, int *port) {
+    return fake_start_held(f, answer, 0u, port);
+}
+
+static bool fake_start_held(Fake *f, const char *answer, unsigned hold_ms, int *port) {
     struct sockaddr_in a;
     socklen_t al = sizeof(a);
     int one = 1;
     memset(f, 0, sizeof(*f));
     f->answer = answer;
     f->answer_len = answer != NULL ? strlen(answer) : 0u;
+    f->hold_ms = hold_ms;
     f->listen_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (f->listen_fd < 0) return false;
-    setsockopt(f->listen_fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    if (f->listen_fd == TEST_SOCK_BAD) return false;
+    setsockopt(f->listen_fd, SOL_SOCKET, SO_REUSEADDR, (const char *)&one, sizeof(one));
     memset(&a, 0, sizeof(a));
     a.sin_family = AF_INET;
     a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
@@ -74,7 +120,7 @@ static bool fake_start(Fake *f, const char *answer, int *port) {
         return false;
     }
     *port = (int)ntohs(a.sin_port);
-    return pthread_create(&f->th, NULL, fake_main, f) == 0;
+    return platform_thread_create(&f->th, fake_main, f);
 }
 
 static void fake_stop(Fake *f) {
@@ -82,13 +128,13 @@ static void fake_stop(Fake *f) {
      * so a refusal that happens before connecting ends the test with a failure, not a hang */
     struct sockaddr_in a;
     socklen_t al = sizeof(a);
-    int poke = socket(AF_INET, SOCK_STREAM, 0);
-    if (poke >= 0 && getsockname(f->listen_fd, (struct sockaddr *)&a, &al) == 0) {
+    TestSock poke = socket(AF_INET, SOCK_STREAM, 0);
+    if (poke != TEST_SOCK_BAD && getsockname(f->listen_fd, (struct sockaddr *)&a, &al) == 0) {
         (void)connect(poke, (struct sockaddr *)&a, sizeof(a));
     }
-    if (poke >= 0) close(poke);
-    pthread_join(f->th, NULL);
-    close(f->listen_fd);
+    if (poke != TEST_SOCK_BAD) test_sock_close(poke);
+    platform_thread_join(f->th);
+    test_sock_close(f->listen_fd);
 }
 
 #define OK200 "HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nok\n"
@@ -238,6 +284,28 @@ TEST(plain_http_off_loopback_and_https_without_a_ca_are_failed) {
     ASSERT_EQ(break_runtime_metrics_push_http(&c, m), BREAK_RUNTIME_FAILED);
     snprintf(c.base_url, sizeof(c.base_url), "https://127.0.0.1:9");
     ASSERT_EQ(break_runtime_metrics_push_http(&c, m), BREAK_RUNTIME_FAILED);
+    break_runtime_metrics_destroy(m);
+}
+
+/* io_timeout_ms bounds the whole exchange: a collector that accepts and then
+ * says nothing cannot hold the push past it. This depends on the socket being
+ * non-blocking on every platform. */
+TEST(a_silent_collector_is_cut_off_at_the_io_timeout) {
+    static Fake f;
+    BreakRuntimeMetrics *m = sample_registry();
+    BreakRuntimeMetricsPushHttp c;
+    unsigned long long started, took;
+    int port = 0;
+    ASSERT_NOT_NULL(m);
+    ASSERT_TRUE(fake_start_held(&f, OK200, 4000u, &port));
+    ctx_for(&c, port);
+    c.cfg.io_timeout_ms = 300u;
+    started = test_now_ms();
+    ASSERT_EQ(break_runtime_metrics_push_http(&c, m), BREAK_RUNTIME_FAILED);
+    took = test_now_ms() - started;
+    fake_stop(&f);
+    ASSERT_NOT_NULL(strstr(f.got, "POST /metrics HTTP/1.1\r\n"));
+    ASSERT_TRUE(took < 2500ull);
     break_runtime_metrics_destroy(m);
 }
 
@@ -482,14 +550,43 @@ TEST(a_dead_metrics_collector_does_not_hold_back_alert_delivery) {
     break_runtime_metrics_retry_router_destroy(r);
 }
 
+#if defined(_WIN32)
+/* Runs before the test itself starts Winsock: a push must start it on its own,
+ * which shows up as socket() working afterwards in a process that never called
+ * WSAStartup. */
+TEST(the_transport_starts_winsock_by_itself) {
+    BreakRuntimeMetrics *m = sample_registry();
+    BreakRuntimeMetricsPushHttp c;
+    SOCKET probe;
+    ASSERT_NOT_NULL(m);
+    ctx_for(&c, 9);
+    c.cfg.io_timeout_ms = 300u;
+    c.cfg.connect_timeout_ms = 300u;
+    (void)break_runtime_metrics_push_http(&c, m);
+    probe = socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_TRUE(probe != INVALID_SOCKET);
+    if (probe != INVALID_SOCKET) closesocket(probe);
+    break_runtime_metrics_destroy(m);
+}
+#endif
+
 TEST_MAIN_BEGIN()
+#if defined(_WIN32)
+    RUN_TEST(the_transport_starts_winsock_by_itself);
+    {
+        WSADATA wsa;
+        if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return 1;
+    }
+#else
     signal(SIGPIPE, SIG_IGN);
+#endif
     RUN_TEST(a_200_answer_is_ok_and_the_body_decodes_to_the_snapshot);
     RUN_TEST(any_other_status_or_a_broken_answer_is_failed);
     RUN_TEST(an_empty_registry_is_pushed_as_an_empty_body);
     RUN_TEST(bad_arguments_are_refused_before_any_connection);
     RUN_TEST(a_registry_too_large_to_send_is_overload_and_never_sent);
     RUN_TEST(plain_http_off_loopback_and_https_without_a_ca_are_failed);
+    RUN_TEST(a_silent_collector_is_cut_off_at_the_io_timeout);
     RUN_TEST(alert_edges_are_posted_to_the_alerts_endpoint);
     RUN_TEST(all_steady_edges_send_nothing_and_succeed);
     RUN_TEST(alert_delivery_failures_and_local_refusals);
