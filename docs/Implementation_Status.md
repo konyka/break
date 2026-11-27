@@ -14792,3 +14792,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **实现**：`ta_bump_text_revision` 不再清空缓存；`ta_layout_rtl` 在 revision 不同时用槽位 layout 保存的文本与当前行字节比较，一致则继续使用并更新 revision。字体、shaping 参数变化与销毁仍清空。
 - **TDD 与变异**：`test_myui_window_manager` 新增 2 例（242 例），旧实现 RED；6 项定向变异中 4 项判红，2 项为已说明的等价变异，首版多余的两项检查已删除。
 - **验证**：普通与 ASan+UBSan 下 242/242（LeakSanitizer 驱动泄漏与基线相同）；`build-current-vk` 非 fuzz 477/477。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
+
+## RTL syntax 高亮保留整形字形（2026-11-27）
+
+- **缺口**：RTL 行的 syntax 高亮逐码点绘制 visual 子串，Arabic joining form、合字与附加符号丢失，高亮行和普通行字形不同。
+- **实现**：`ta_draw_syntax_line` 按 visual 顺序合并同 token kind 的连续 item，每段整行整形绘制并用水平 clip 限定到该段范围；开放边界用 float 可精确表示的 `TA_OPEN_CLIP_EXTENT`。
+- **TDD**：`test_myui_window_manager` 新增 `text_area_rtl_syntax_keeps_shaped_glyph_runs`（243 例），要求高亮与无高亮像素逐字节相同；旧实现 RED。
+- **验证**：普通与 ASan+UBSan 下 243/243；`build-myui-tests` 全量 ctest 482/482。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。

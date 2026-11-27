@@ -27,6 +27,7 @@
 #define TA_CELL_W 8 /* fallback cell width without a font */
 #define TA_LINE_NUMBER_GAP 6
 #define TA_SYNTAX_DEFAULT_LINE_BUDGET 32
+#define TA_OPEN_CLIP_EXTENT 65536 /* exact in float, wider than any line */
 #define TA_MAX_FOLD_STATE_BYTES (64u * 1024u)
 #define TA_MAX_FOLD_RANGES 4096u
 #define TA_FOLD_STATE_LEGACY_VERSION 0
@@ -1413,22 +1414,7 @@ static my_ret_t ta_draw_text(my_text_area_t* ta, my_vgcanvas_t* vg,
   return my_vgcanvas_draw_text_ex(vg, text, x, y, &ta->shaping_params);
 }
 
-static void ta_draw_visual_syntax_segment(
-    my_text_area_t* ta, my_vgcanvas_t* vg, my_text_layout_t* layout,
-    size_t start, size_t end, size_t visual_start,
-    my_syntax_token_kind_t kind, float base_x, int32_t ty, uint32_t normal) {
-  char saved = layout->visual_utf8[end];
-  layout->visual_utf8[end] = '\0';
-  my_vgcanvas_set_fill_color(
-      vg, my_color_from_rgba32(ta_syntax_color(normal, kind)));
-  ta_draw_text(
-      ta, vg, layout->visual_utf8 + start,
-      base_x + (float)my_text_layout_visual_boundary_x_ex(
-                   layout, ta->font, ta->font_size, visual_start,
-                   &ta->shaping_params),
-      (float)ty);
-  layout->visual_utf8[end] = saved;
-}
+static int32_t ta_line_height(const my_text_area_t* ta);
 
 static bool ta_draw_syntax_line(my_text_area_t* ta, my_vgcanvas_t* vg,
                                 const my_visual_line_t* vl, const char* line,
@@ -1443,48 +1429,47 @@ static bool ta_draw_syntax_line(my_text_area_t* ta, my_vgcanvas_t* vg,
   tokens = my_syntax_cache_line_tokens(ta->syntax_cache, vl->phys, &count);
   if (tokens == NULL || count == 0) return false;
   if (layout != NULL) {
-    size_t visual_offset = 0;
-    size_t group_start = 0;
-    size_t group_visual_start = 0;
-    my_syntax_token_kind_t group_kind = MY_SYNTAX_TOKEN_TEXT;
-    bool group_open = false;
-    const char* visual = layout->visual_utf8;
-    size_t visual_index;
-    for (visual_index = 0; visual_index < layout->len; visual_index++) {
-      size_t item_start = visual_offset;
-      size_t logical = layout->visual_to_logical[visual_index];
+    /* RTL/bidi line: draw the whole logical line once per run of visual
+     * items that share a token kind, clipped to that run's x range. Every
+     * pass is shaped as a whole, so joining forms, ligatures and marks
+     * stay intact, and the clip keeps only this run's pixels. */
+    size_t run_start = 0u;
+    int32_t line_h = ta_line_height(ta);
+    while (run_start < layout->len) {
+      size_t logical = layout->visual_to_logical[run_start];
       my_syntax_token_kind_t kind =
           ta_syntax_kind_at(tokens, count, logical + vl->start_cp);
-      (void)my_utf8_next(&visual);
-      visual_offset = (size_t)(visual - layout->visual_utf8);
-      if (layout->visual_rtl[visual_index] != 0) {
-        if (group_open) {
-          ta_draw_visual_syntax_segment(ta, vg, layout, group_start,
-                                        item_start, group_visual_start,
-                                        group_kind, base_x, ty, normal);
-        }
-        ta_draw_visual_syntax_segment(ta, vg, layout, item_start,
-                                      visual_offset, visual_index, kind,
-                                      base_x, ty, normal);
-        group_open = false;
-      } else if (!group_open) {
-        group_open = true;
-        group_start = item_start;
-        group_visual_start = visual_index;
-        group_kind = kind;
-      } else if (kind != group_kind) {
-        ta_draw_visual_syntax_segment(ta, vg, layout, group_start, item_start,
-                                      group_visual_start, group_kind, base_x,
-                                      ty, normal);
-        group_start = item_start;
-        group_visual_start = visual_index;
-        group_kind = kind;
+      size_t run_end = run_start + 1u;
+      int32_t x0;
+      int32_t x1;
+      while (run_end < layout->len &&
+             ta_syntax_kind_at(tokens, count,
+                               layout->visual_to_logical[run_end] +
+                                   vl->start_cp) == kind) {
+        run_end++;
       }
-    }
-    if (group_open) {
-      ta_draw_visual_syntax_segment(ta, vg, layout, group_start, visual_offset,
-                                    group_visual_start, group_kind, base_x, ty,
-                                    normal);
+      x0 = my_text_layout_visual_boundary_x_ex(
+          layout, ta->font, ta->font_size, run_start, &ta->shaping_params);
+      x1 = run_end < layout->len
+               ? my_text_layout_visual_boundary_x_ex(layout, ta->font,
+                                                     ta->font_size, run_end,
+                                                     &ta->shaping_params)
+               : TA_OPEN_CLIP_EXTENT;
+      if (run_start == 0u) x0 = -(TA_OPEN_CLIP_EXTENT);
+      if (x1 > x0 && my_vgcanvas_save(vg) == MY_RET_OK) {
+        /* Glyph ink may leave the line box (Arabic marks, tall ascents):
+         * clip only horizontally and leave the vertical extent to the
+         * caller's clip, exactly as the unclipped plain path draws. */
+        my_rectf_t clip = {base_x + (float)x0, (float)ty - (float)line_h,
+                           (float)(x1 - x0), (float)line_h * 3.0f};
+        if (my_vgcanvas_clip_rect(vg, &clip) == MY_RET_OK) {
+          my_vgcanvas_set_fill_color(
+              vg, my_color_from_rgba32(ta_syntax_color(normal, kind)));
+          ta_draw_text(ta, vg, line, base_x, (float)ty);
+        }
+        (void)my_vgcanvas_restore(vg);
+      }
+      run_start = run_end;
     }
     return true;
   }

@@ -2780,3 +2780,19 @@ graphics 与 present queue。`RE_VK_DEVICE_INDEX` 现在也必须通过同一门
 **验证**：`test_myui_window_manager` 242/242；ASan+UBSan 242/242，LeakSanitizer 报告的 22012 字节与撤掉本改动后的基线完全相同，来自驱动模块；`build-current-vk` 非 fuzz 477/477。
 
 边界：缓存仍是 4 槽，长文档滚动时按 LRU 淘汰；跨段落 visual rebreaking 本身（断行结果复用）已由既有的 dirty-suffix 复用路径覆盖，本节只补布局缓存这一层。复杂多段落 JUSTIFY 联动仍未完成。
+
+## 本轮补充：RTL syntax 高亮保留整形字形（2026-11-27）
+
+此前 RTL/bidi 行的 syntax 高亮按 visual item 逐个截取 `visual_utf8` 子串绘制。Arabic 等需要 GSUB 连写的文字被拆成单个码点后，joining form、合字与附加符号全部丢失，高亮行与普通行画出的字形不同。
+
+修正（`engine/src/myui/myui/widgets/my_text_area.c` 的 `ta_draw_syntax_line`）：
+
+- 按 visual 顺序把 token kind 相同的相邻 item 合并为一段；每段整行绘制一次逻辑文本，只用水平 clip 限定到该段的 visual boundary x 范围。每次绘制都对整行整形，字形与普通路径一致，clip 只保留本段像素。
+- 垂直方向放宽到三倍行高，避免裁掉越出行框的附加符号和高字形；纵向仍由调用方的 clip 限定。
+- 首段左侧与末段右侧使用开放范围 `TA_OPEN_CLIP_EXTENT`（65536）。最初用 `INT32_MAX / 4`，转成 float 后坐标精度丢失，软光栅的覆盖率计算出现偏差，测试据此判红后改为可精确表示的有限值。
+
+**TDD**：`test_myui_window_manager` 新增 `text_area_rtl_syntax_keeps_shaped_glyph_runs`（243 例）：Noto Sans Arabic 渲染一行没有关键字的 Arabic 文本，开启 YAML 高亮与关闭高亮的像素必须逐字节相同。旧实现 1239 字节不同（RED）；`INT32_MAX / 4` 版本 399 字节不同；当前实现通过。无该字体时用例跳过。
+
+**验证**：`test_myui_window_manager` 243/243，ASan+UBSan 243/243；`build-myui-tests` 全量 ctest 482/482（4 项平台门禁跳过）。
+
+边界：每个颜色段都要整行绘制一次，颜色段很多的长 RTL 行绘制成本随段数线性增长。

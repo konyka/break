@@ -3613,6 +3613,100 @@ TEST(text_area_rtl_cache_rejects_prefix_of_longer_cached_line)
   my_widget_unref(area);
 }
 
+#if defined(MYUI_FONT_FREETYPE) && defined(MYUI_FONT_HARFBUZZ) && \
+    defined(MYUI_BIDI)
+#include "myr/my_font_ft.h"
+#endif
+
+TEST(text_area_rtl_syntax_keeps_shaped_glyph_runs)
+{
+#if defined(MYUI_FONT_FREETYPE) && defined(MYUI_FONT_HARFBUZZ) && \
+    defined(MYUI_BIDI)
+  /* An Arabic line with no keyword: every token draws in the default
+   * color, so the syntax-colored path must put exactly the pixels of the
+   * plain path on screen. Drawing one codepoint at a time loses the
+   * GSUB joining forms and the result differs. */
+  const char* path = "/usr/share/fonts/google-noto-vf/NotoSansArabic[wght].ttf";
+  const char* text = "\xD8\xB3\xD9\x84\xD8\xA7\xD9\x85 "
+                     "\xD8\xB9\xD9\x84\xD9\x8A\xD9\x83\xD9\x85";
+  FILE* file = fopen(path, "rb");
+  my_font_t* font;
+  my_widget_t* plain;
+  my_widget_t* highlighted;
+  my_lcd_t* plain_lcd;
+  my_lcd_t* highlighted_lcd;
+  my_vgcanvas_t* plain_canvas;
+  my_vgcanvas_t* highlighted_canvas;
+  size_t bytes;
+
+  if (file == NULL) {
+    printf("  SKIP: no Noto Sans Arabic font\n");
+    return;
+  }
+  fclose(file);
+  font = my_font_ft_create(NULL, path, 0, 16);
+  plain = my_text_area_create(NULL);
+  highlighted = my_text_area_create(NULL);
+  plain_lcd = my_lcd_mem_create(NULL, 240, 60, MY_PIXEL_FORMAT_BGRA8888);
+  highlighted_lcd = my_lcd_mem_create(NULL, 240, 60, MY_PIXEL_FORMAT_BGRA8888);
+  plain_canvas = my_vgcanvas_soft_create(NULL, plain_lcd);
+  highlighted_canvas = my_vgcanvas_soft_create(NULL, highlighted_lcd);
+  ASSERT_NOT_NULL(font);
+  ASSERT_NOT_NULL(plain);
+  ASSERT_NOT_NULL(highlighted);
+  ASSERT_NOT_NULL(plain_canvas);
+  ASSERT_NOT_NULL(highlighted_canvas);
+  ASSERT_EQ(my_widget_set_rect(plain, &(my_rect_t){0, 0, 240, 50}), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_rect(highlighted, &(my_rect_t){0, 0, 240, 50}),
+            MY_RET_OK);
+  my_text_area_set_font(plain, font, 20);
+  my_text_area_set_font(highlighted, font, 20);
+  ASSERT_EQ(my_vgcanvas_set_font(plain_canvas, font, 20), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_set_font(highlighted_canvas, font, 20), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_text(plain, text), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_text(highlighted, text), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_syntax_enabled(highlighted, true), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_syntax_language(highlighted, MY_SYNTAX_YAML),
+            MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_begin_frame(plain_canvas, NULL), MY_RET_OK);
+  plain->vtable->on_paint(plain, plain_canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(plain_canvas), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_begin_frame(highlighted_canvas, NULL), MY_RET_OK);
+  highlighted->vtable->on_paint(highlighted, highlighted_canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(highlighted_canvas), MY_RET_OK);
+  ASSERT_EQ(my_lcd_mem_get_stride(plain_lcd),
+            my_lcd_mem_get_stride(highlighted_lcd));
+  bytes = (size_t)my_lcd_mem_get_stride(plain_lcd) * 60u;
+  {
+    const uint8_t* a = my_lcd_mem_get_buffer(plain_lcd);
+    const uint8_t* b = my_lcd_mem_get_buffer(highlighted_lcd);
+    size_t k, diff = 0u, first = bytes;
+    for (k = 0u; k < bytes; k++) {
+      if (a[k] != b[k]) {
+        if (first == bytes) first = k;
+        diff++;
+      }
+    }
+    if (diff != 0u) {
+      printf("  diff bytes=%zu first=%zu (x=%zu y=%zu) a=%u b=%u\n", diff,
+             first, (first % my_lcd_mem_get_stride(plain_lcd)) / 4u,
+             first / my_lcd_mem_get_stride(plain_lcd), a[first], b[first]);
+    }
+  }
+  ASSERT_TRUE(memcmp(my_lcd_mem_get_buffer(plain_lcd),
+                     my_lcd_mem_get_buffer(highlighted_lcd), bytes) == 0);
+  my_vgcanvas_destroy(highlighted_canvas);
+  my_vgcanvas_destroy(plain_canvas);
+  my_lcd_destroy(highlighted_lcd);
+  my_lcd_destroy(plain_lcd);
+  my_widget_unref(highlighted);
+  my_widget_unref(plain);
+  my_font_destroy(font);
+#else
+  printf("  SKIP: FreeType/HarfBuzz/BiDi is unavailable\n");
+#endif
+}
+
 TEST(text_area_rtl_syntax_colors_tokens)
 {
   my_widget_t* plain = my_text_area_create(NULL);
@@ -8904,6 +8998,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_area_rtl_cache_survives_edits_on_other_physical_lines);
     RUN_TEST(text_area_rtl_cache_rejects_prefix_of_longer_cached_line);
     RUN_TEST(text_area_rtl_syntax_colors_tokens);
+    RUN_TEST(text_area_rtl_syntax_keeps_shaped_glyph_runs);
     RUN_TEST(text_area_wrap_reuses_unchanged_prefix_after_edit);
     RUN_TEST(text_area_wrap_reuses_unchanged_suffix_after_single_line_edit);
     RUN_TEST(text_area_wrap_reuses_suffix_after_newline_edit);
