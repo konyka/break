@@ -14827,3 +14827,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **实现**：theme 累积保存加载过的 keyframes（克隆与事务加载均覆盖）；新增 `animation: <name> <duration> [easing] [delay] [count|infinite]` 与 `my_theme_get_for_widget_var_animating`，按延迟、迭代和 easing 计算进度后在 stop 间插值；easing 映射与 `transition` 共用。只支持单组，无 direction/fill-mode/play-state。
 - **TDD 与变异**：`test_myui_css` 新增 3 例（212 例），旧实现 RED；9 项定向变异全部判红。
 - **验证**：普通与 ASan+UBSan（含 LeakSanitizer）下 212/212；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
+
+## CSS `animation` 的 direction 与 fill-mode（2026-11-27）
+
+- **缺口**：`animation` 固定按 `both` 填充、不能反向；CSS 默认 fill-mode 为 `none`。
+- **实现**：解析 direction 与 fill-mode 关键字（各类最多一次、顺序不限）；`css_animation_progress` 按 fill-mode 决定延迟期与结束后是否施加值，按 direction 逐次迭代反向；默认 fill-mode 改为 `none`。
+- **TDD 与变异**：`test_myui_css` 新增 1 例并扩充非法值（213 例），旧实现 RED；11 项定向变异全部判红。
+- **验证**：普通与 ASan+UBSan（含 LeakSanitizer）下 213/213；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。

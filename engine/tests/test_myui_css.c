@@ -3519,9 +3519,11 @@ static double css_test_number(const my_value_t* v)
 
 TEST(css_animating_var_lookup_samples_keyframes)
 {
-  /* `animation: <keyframes> <duration> [easing] [delay] [count|infinite]`
-   * on the widget picks a @keyframes rule; the host supplies elapsed
-   * time and the engine samples the key between the stops. */
+  /* `animation: <keyframes> <duration> [easing] [delay] [count|infinite]
+   * [direction] [fill-mode]` on the widget picks a @keyframes rule; the
+   * host supplies elapsed time and the engine samples the key between the
+   * stops. `both` holds the first stop during the delay and the end state
+   * afterwards. */
   const char* css =
       "@property --accent { syntax: \"<color>\"; inherits: true;"
       " initial-value: red; }"
@@ -3532,8 +3534,8 @@ TEST(css_animating_var_lookup_samples_keyframes)
       "  50% { --size: 10; }"
       "  to { --accent: #0000ffff; --size: 4; }"
       "}"
-      "button { animation: pulse 200ms; }"
-      "label { animation: pulse 100ms linear 50ms 2; }"
+      "button { animation: pulse 200ms both; }"
+      "label { animation: pulse 100ms linear 50ms 2 both; }"
       "slider { animation: pulse 100ms linear infinite; }"
       "check { animation: missing 100ms; }";
   my_theme_t* theme = my_theme_create(NULL);
@@ -3566,7 +3568,8 @@ TEST(css_animating_var_lookup_samples_keyframes)
       theme, button, MY_STATE_NORMAL, "--size", 150.0, &out));
   ASSERT_FLOAT_EQ(css_test_number(&out), 7.0, 1e-9);
   my_value_reset(&out);
-  /* one iteration by default: past the end holds the last stop. */
+  /* one iteration by default: with `both`, past the end holds the last
+   * stop. */
   ASSERT_TRUE(my_theme_get_for_widget_var_animating(
       theme, button, MY_STATE_NORMAL, "--size", 900.0, &out));
   ASSERT_FLOAT_EQ(css_test_number(&out), 4.0, 1e-9);
@@ -3610,6 +3613,104 @@ TEST(css_animating_var_lookup_samples_keyframes)
   my_theme_destroy(theme);
 }
 
+TEST(css_animation_direction_and_fill_mode)
+{
+  const char* css =
+      "@property --size { syntax: \"<number>\"; inherits: false;"
+      " initial-value: 0; }"
+      "@keyframes grow { from { --size: 0; } to { --size: 10; } }"
+      "button { animation: grow 100ms linear 50ms; }"
+      "label { animation: grow 100ms linear reverse forwards; }"
+      "slider { animation: grow 100ms linear 3 alternate forwards; }"
+      "check { animation: grow 100ms linear 2 alternate-reverse backwards"
+      " 10ms; }"
+      "toggle { animation: grow 100ms linear 2 alternate forwards; }";
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* button = my_widget_create(NULL, "button");
+  my_widget_t* label = my_widget_create(NULL, "label");
+  my_widget_t* slider = my_widget_create(NULL, "slider");
+  my_widget_t* check = my_widget_create(NULL, "check");
+  my_widget_t* toggle = my_widget_create(NULL, "toggle");
+  my_value_t out;
+
+  ASSERT_NOT_NULL(theme);
+  button->widget_type = "button";
+  label->widget_type = "label";
+  slider->widget_type = "slider";
+  check->widget_type = "check";
+  toggle->widget_type = "toggle";
+  my_value_init(&out, NULL);
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+
+  /* fill-mode none (default): no value during the delay or after the end,
+   * the animated value while active. */
+  ASSERT_FALSE(my_theme_get_for_widget_var_animating(
+      theme, button, MY_STATE_NORMAL, "--size", 20.0, &out));
+  ASSERT_TRUE(my_theme_get_for_widget_var_animating(
+      theme, button, MY_STATE_NORMAL, "--size", 75.0, &out));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 2.5, 1e-9);
+  my_value_reset(&out);
+  ASSERT_FALSE(my_theme_get_for_widget_var_animating(
+      theme, button, MY_STATE_NORMAL, "--size", 150.0, &out));
+
+  /* reverse runs to -> from; forwards then holds `from`. */
+  ASSERT_TRUE(my_theme_get_for_widget_var_animating(
+      theme, label, MY_STATE_NORMAL, "--size", 25.0, &out));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 7.5, 1e-9);
+  my_value_reset(&out);
+  ASSERT_TRUE(my_theme_get_for_widget_var_animating(
+      theme, label, MY_STATE_NORMAL, "--size", 500.0, &out));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 0.0, 1e-9);
+  my_value_reset(&out);
+
+  /* alternate: the second iteration runs backwards, the third forwards
+   * again, so forwards holds `to`. */
+  ASSERT_TRUE(my_theme_get_for_widget_var_animating(
+      theme, slider, MY_STATE_NORMAL, "--size", 25.0, &out));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 2.5, 1e-9);
+  my_value_reset(&out);
+  ASSERT_TRUE(my_theme_get_for_widget_var_animating(
+      theme, slider, MY_STATE_NORMAL, "--size", 125.0, &out));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 7.5, 1e-9);
+  my_value_reset(&out);
+  ASSERT_TRUE(my_theme_get_for_widget_var_animating(
+      theme, slider, MY_STATE_NORMAL, "--size", 900.0, &out));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 10.0, 1e-9);
+  my_value_reset(&out);
+
+  /* alternate-reverse: the first iteration runs backwards, so backwards
+   * fill holds `to` during the delay; nothing after the end. */
+  ASSERT_TRUE(my_theme_get_for_widget_var_animating(
+      theme, check, MY_STATE_NORMAL, "--size", 5.0, &out));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 10.0, 1e-9);
+  my_value_reset(&out);
+  ASSERT_TRUE(my_theme_get_for_widget_var_animating(
+      theme, check, MY_STATE_NORMAL, "--size", 35.0, &out));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 7.5, 1e-9);
+  my_value_reset(&out);
+  ASSERT_TRUE(my_theme_get_for_widget_var_animating(
+      theme, check, MY_STATE_NORMAL, "--size", 135.0, &out));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 2.5, 1e-9);
+  my_value_reset(&out);
+  ASSERT_FALSE(my_theme_get_for_widget_var_animating(
+      theme, check, MY_STATE_NORMAL, "--size", 300.0, &out));
+
+  /* two alternate iterations end on the backward one: forwards holds
+   * `from`. */
+  ASSERT_TRUE(my_theme_get_for_widget_var_animating(
+      theme, toggle, MY_STATE_NORMAL, "--size", 900.0, &out));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 0.0, 1e-9);
+  my_value_reset(&out);
+
+  my_widget_unref(toggle);
+  my_widget_unref(button);
+  my_widget_unref(label);
+  my_widget_unref(slider);
+  my_widget_unref(check);
+  my_theme_destroy(theme);
+}
+
 TEST(css_animation_declaration_rejects_malformed_values)
 {
   static const char* const bad[] = {
@@ -3619,6 +3720,12 @@ TEST(css_animation_declaration_rejects_malformed_values)
       "button { animation: pulse 1s linear 2s 3 extra; }",
       "button { animation: pulse 1s 0; }",
       "button { animation: --pulse 1s; }",
+      "button { animation: pulse 1s reverse alternate; }",
+      "button { animation: pulse 1s both forwards; }",
+      "button { animation: pulse 1s 2s 3s; }",
+      "button { animation: pulse 1s 2 3; }",
+      "button { animation: pulse 1s infinite 2; }",
+      "button { animation: pulse 1s 2 infinite; }",
   };
   size_t i;
   for (i = 0u; i < sizeof(bad) / sizeof(bad[0]); i++) {
@@ -11215,6 +11322,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_transition_declaration_storage);
     RUN_TEST(css_transitioning_var_lookup_blends_over_time);
     RUN_TEST(css_animating_var_lookup_samples_keyframes);
+    RUN_TEST(css_animation_direction_and_fill_mode);
     RUN_TEST(css_animation_declaration_rejects_malformed_values);
     RUN_TEST(css_theme_keyframes_survive_clone_and_reload);
     RUN_TEST(css_percentage_length_resolution);

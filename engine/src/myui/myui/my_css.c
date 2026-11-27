@@ -1239,26 +1239,47 @@ static bool css_transition_value_ok(const char* text) {
 }
 
 /* The `animation` declaration: one group of
- * `<keyframes-name> <duration> [easing] [delay] [<count>|infinite]`.
- * Tokens after the duration are classified by shape: a time is the
- * delay, `infinite` or a positive integer the count, anything else must
- * be an easing; each may appear once, in that relative order. */
+ * `<keyframes-name> <duration> [easing] [delay] [<count>|infinite]
+ * [direction] [fill-mode]`. The name and duration come first. After them,
+ * a time is the delay, `infinite` or a positive integer the count, a
+ * direction keyword the direction, a fill keyword the fill mode, anything
+ * else must be an easing; each may appear once, in any order. */
+enum {
+  CSS_ANIMATION_NORMAL = 0,
+  CSS_ANIMATION_REVERSE = 1,
+  CSS_ANIMATION_ALTERNATE = 2,
+  CSS_ANIMATION_ALTERNATE_REVERSE = 3
+};
+enum {
+  CSS_ANIMATION_FILL_NONE = 0,
+  CSS_ANIMATION_FILL_FORWARDS = 1,
+  CSS_ANIMATION_FILL_BACKWARDS = 2,
+  CSS_ANIMATION_FILL_BOTH = 3
+};
+
 typedef struct {
   char name[MY_CSS_NAME_LEN];
   css_transition_spec_t timing; /* duration/delay/easing; name unused */
   double iterations;            /* INFINITY for `infinite` */
+  int direction;
+  int fill;
 } css_animation_spec_t;
 
+static bool css_token_is(const char* token, size_t len, const char* word) {
+  return strlen(word) == len && memcmp(token, word, len) == 0;
+}
+
 static bool css_animation_parse(const char* text, css_animation_spec_t* spec) {
-  const char* tokens[5];
-  size_t lens[5];
+  const char* tokens[8];
+  size_t lens[8];
   size_t count = 0u;
   size_t i = 0u;
   size_t len = strlen(text);
   size_t depth = 0u;
   size_t start = 0u;
   size_t t;
-  int stage = 0; /* 0 easing, 1 delay, 2 count, 3 done */
+  bool have_easing = false, have_delay = false, have_count = false;
+  bool have_direction = false, have_fill = false;
   memset(spec, 0, sizeof(*spec));
   spec->timing.x1 = 1.0 / 3.0;
   spec->timing.y1 = 1.0 / 3.0;
@@ -1270,7 +1291,7 @@ static bool css_animation_parse(const char* text, css_animation_spec_t* spec) {
     if (c == ',' && depth == 0u) return false;
     if (depth == 0u && (c == ' ' || c == '\t' || c == '\r' || c == '\n')) {
       if (i > start) {
-        if (count >= 5u) return false;
+        if (count >= sizeof(tokens) / sizeof(tokens[0])) return false;
         tokens[count] = text + start;
         lens[count] = i - start;
         count++;
@@ -1285,15 +1306,13 @@ static bool css_animation_parse(const char* text, css_animation_spec_t* spec) {
     i++;
   }
   if (depth != 0u || count < 2u) return false;
-  if (lens[0] >= sizeof(spec->name) ||
+  if (lens[0] == 0u || lens[0] >= sizeof(spec->name) ||
+      (tokens[0][0] >= '0' && tokens[0][0] <= '9') ||
       (lens[0] >= 2u && tokens[0][0] == '-' && tokens[0][1] == '-')) {
     return false;
   }
   for (t = 0u; t < lens[0]; t++) {
     if (!c_ident_char((unsigned char)tokens[0][t])) return false;
-  }
-  if (lens[0] == 0u || (tokens[0][0] >= '0' && tokens[0][0] <= '9')) {
-    return false;
   }
   memcpy(spec->name, tokens[0], lens[0]);
   spec->name[lens[0]] = '\0';
@@ -1303,36 +1322,115 @@ static bool css_animation_parse(const char* text, css_animation_spec_t* spec) {
     return false;
   }
   for (t = 2u; t < count; t++) {
+    const char* tok = tokens[t];
+    size_t tl = lens[t];
     double ms;
-    if (stage <= 1 && css_transition_time_token(tokens[t], lens[t], &ms)) {
-      if (ms < 0.0) return false;
+    int direction = -1;
+    int fill = -1;
+    if (css_token_is(tok, tl, "normal")) direction = CSS_ANIMATION_NORMAL;
+    if (css_token_is(tok, tl, "reverse")) direction = CSS_ANIMATION_REVERSE;
+    if (css_token_is(tok, tl, "alternate")) {
+      direction = CSS_ANIMATION_ALTERNATE;
+    }
+    if (css_token_is(tok, tl, "alternate-reverse")) {
+      direction = CSS_ANIMATION_ALTERNATE_REVERSE;
+    }
+    if (css_token_is(tok, tl, "none")) fill = CSS_ANIMATION_FILL_NONE;
+    if (css_token_is(tok, tl, "forwards")) fill = CSS_ANIMATION_FILL_FORWARDS;
+    if (css_token_is(tok, tl, "backwards")) {
+      fill = CSS_ANIMATION_FILL_BACKWARDS;
+    }
+    if (css_token_is(tok, tl, "both")) fill = CSS_ANIMATION_FILL_BOTH;
+    if (direction >= 0) {
+      if (have_direction) return false;
+      have_direction = true;
+      spec->direction = direction;
+    } else if (fill >= 0) {
+      if (have_fill) return false;
+      have_fill = true;
+      spec->fill = fill;
+    } else if (css_transition_time_token(tok, tl, &ms)) {
+      if (have_delay || ms < 0.0) return false;
+      have_delay = true;
       spec->timing.delay_ms = ms;
-      stage = 2;
-    } else if (stage <= 2 && lens[t] == 8u &&
-               memcmp(tokens[t], "infinite", 8u) == 0) {
+    } else if (css_token_is(tok, tl, "infinite")) {
+      if (have_count) return false;
+      have_count = true;
       spec->iterations = INFINITY;
-      stage = 3;
-    } else if (stage <= 2 && tokens[t][0] >= '0' && tokens[t][0] <= '9') {
+    } else if (tok[0] >= '0' && tok[0] <= '9') {
       size_t k;
       double n = 0.0;
-      for (k = 0u; k < lens[t]; k++) {
-        if (tokens[t][k] < '0' || tokens[t][k] > '9') return false;
-        n = n * 10.0 + (double)(tokens[t][k] - '0');
+      if (have_count) return false;
+      for (k = 0u; k < tl; k++) {
+        if (tok[k] < '0' || tok[k] > '9') return false;
+        n = n * 10.0 + (double)(tok[k] - '0');
         if (n > 1000000.0) return false;
       }
       if (n < 1.0) return false;
+      have_count = true;
       spec->iterations = n;
-      stage = 3;
-    } else if (stage == 0 &&
+    } else if (!have_easing &&
                css_transition_easing_token(
-                   tokens[t], lens[t], &spec->timing.x1, &spec->timing.y1,
+                   tok, tl, &spec->timing.x1, &spec->timing.y1,
                    &spec->timing.x2, &spec->timing.y2,
                    &spec->timing.steps_count, &spec->timing.steps_pos)) {
-      stage = 1;
+      have_easing = true;
     } else {
       return false;
     }
   }
+  return true;
+}
+
+static double css_transition_ease(const css_transition_spec_t* spec,
+                                  double t);
+
+/* Whether iteration `index` (0-based) of the spec runs backwards. */
+static bool css_animation_iteration_reversed(const css_animation_spec_t* spec,
+                                             double index) {
+  bool odd = fmod(index, 2.0) >= 1.0;
+  switch (spec->direction) {
+    case CSS_ANIMATION_REVERSE: return true;
+    case CSS_ANIMATION_ALTERNATE: return odd;
+    case CSS_ANIMATION_ALTERNATE_REVERSE: return !odd;
+    default: return false;
+  }
+}
+
+/* Keyframe progress for the spec at `elapsed_ms`, or false when the
+ * fill mode applies no animated value at that time. */
+static bool css_animation_progress(const css_animation_spec_t* spec,
+                                   double elapsed_ms, double* progress) {
+  double duration = spec->timing.duration_ms;
+  double active = elapsed_ms - spec->timing.delay_ms;
+  double total;
+  double index;
+  double t;
+  if (!(active >= 0.0)) {
+    if (spec->fill != CSS_ANIMATION_FILL_BACKWARDS &&
+        spec->fill != CSS_ANIMATION_FILL_BOTH) {
+      return false;
+    }
+    index = 0.0;
+    t = 0.0;
+  } else {
+    total = duration * spec->iterations;
+    if (!(duration > 0.0) || active >= total) {
+      if (spec->fill != CSS_ANIMATION_FILL_FORWARDS &&
+          spec->fill != CSS_ANIMATION_FILL_BOTH) {
+        return false;
+      }
+      /* the end state: progress 1 of the last iteration */
+      index = spec->iterations - 1.0;
+      if (!(index >= 0.0) || isinf(index)) index = 0.0;
+      t = 1.0;
+    } else {
+      index = floor(active / duration);
+      t = (active - index * duration) / duration;
+    }
+  }
+  t = css_transition_ease(&spec->timing, t);
+  *progress = css_animation_iteration_reversed(spec, index) ? 1.0 - t : t;
   return true;
 }
 
@@ -7895,7 +7993,6 @@ bool my_theme_get_for_widget_var_animating(const my_theme_t* theme,
   const my_theme_property_def_t* def;
   const my_css_keyframes_t* keyframes;
   css_animation_spec_t spec;
-  double active;
   double t;
   char blended[CSS_VAR_MAX_SUBST_BYTES];
   if (theme == NULL || widget == NULL || key == NULL || out == NULL) {
@@ -7911,16 +8008,9 @@ bool my_theme_get_for_widget_var_animating(const my_theme_t* theme,
   if (keyframes == NULL || def == NULL) {
     return false;
   }
-  active = elapsed_ms - spec.timing.delay_ms;
-  if (!(active > 0.0)) {
-    t = 0.0;
-  } else if (!(spec.timing.duration_ms > 0.0) ||
-             active >= spec.timing.duration_ms * spec.iterations) {
-    t = 1.0;
-  } else {
-    t = fmod(active, spec.timing.duration_ms) / spec.timing.duration_ms;
+  if (!css_animation_progress(&spec, elapsed_ms, &t)) {
+    return false;
   }
-  t = css_transition_ease(&spec.timing, t);
   if (!my_css_keyframes_sample(keyframes, key, def->syntax, t, blended,
                                sizeof(blended))) {
     return false;

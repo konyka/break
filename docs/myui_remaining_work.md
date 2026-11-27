@@ -2867,10 +2867,26 @@ graphics 与 present queue。`RE_VK_DEVICE_INDEX` 现在也必须通过同一门
 - `my_theme_get_for_widget_var_animating(theme, widget, state, key, elapsed_ms, out)`：延迟期保持首帧；每次迭代按 easing 映射进度；所有迭代结束后保持末帧；key 必须是已注册属性，按其 syntax 在声明了该 key 的 stop 之间插值。返回 false 时调用方回退普通查询。
 - `transition` 的 easing 映射抽成 `css_transition_ease`，两条路径共用。
 
-边界：只支持单组 animation，不支持 `animation-direction`、`fill-mode`、`play-state` 与多组；起始时间由调用方记录。
+边界：只支持单组 animation；direction 与 fill-mode 见下一节；不支持 `play-state` 与多组；起始时间由调用方记录。
 
 **TDD**：`test_myui_css` 新增 3 例（212 例）：按时间采样（颜色与经过 50% stop 的数值、延迟、两次迭代后保持末帧、`infinite` 循环、未知 keyframes 与未声明 key 回退）、6 种非法 `animation` 值被跳过、theme 克隆与二次加载累积。旧实现缺少接口，编译即失败（RED）。
 
 **变异**：9 项全部判红：忽略延迟、忽略迭代次数、不取模、加载时不合并、提交时不交换、不校验声明、接受次数 0、接受 `--` 名字、接受多余 token。
 
 **验证**：`test_myui_css` 212/212；ASan+UBSan（含 LeakSanitizer）212/212；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 全量构建通过。
+
+## 本轮补充：`animation` 的 direction 与 fill-mode（2026-11-27）
+
+上一节的 `animation` 总是在延迟期保持首帧、结束后保持末帧，相当于固定 `both`，且不能反向。CSS 默认 fill-mode 是 `none`：延迟期与结束后不施加动画值。
+
+修正（`engine/src/myui/myui/my_css.c`）：
+
+- 声明接受 direction（`normal`、`reverse`、`alternate`、`alternate-reverse`）与 fill-mode（`none`、`forwards`、`backwards`、`both`）。名字与时长之后的 token 按形状分类，各类最多出现一次、顺序不限；重复的 delay、次数、direction 或 fill-mode 使声明无效。
+- 进度计算抽成 `css_animation_progress`：延迟期仅在 `backwards`/`both` 时返回第 0 次迭代的起点；结束后仅在 `forwards`/`both` 时返回最后一次迭代的终点；否则 `my_theme_get_for_widget_var_animating` 返回 false，调用方回退普通值。每次迭代按 direction 决定是否反向（`alternate` 奇数次反向，`alternate-reverse` 偶数次反向），easing 在反向之前应用。
+- 默认 fill-mode 改为 `none`，与 CSS 一致。上一节的用例改为显式写 `both`。
+
+**TDD**：`test_myui_css` 新增 `css_animation_direction_and_fill_mode`（213 例），覆盖 fill `none` 的延迟与结束、`reverse forwards`、三次 `alternate forwards`、`alternate-reverse backwards` 的延迟期与结束后、两次 `alternate forwards` 结束于反向迭代；非法值用例新增 6 种（direction 或 fill 重复、delay 重复、次数重复与 `infinite` 混用）。旧实现在新语法上返回 false（RED）。
+
+**变异**：11 项全部判红：三种 direction 映射各一、去掉 backwards 或 forwards 的判断、结束态迭代序号恒为 0、去掉 direction/fill/delay/整数次数/`infinite` 的重复检查。
+
+**验证**：`test_myui_css` 213/213；ASan+UBSan（含 LeakSanitizer）213/213；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。

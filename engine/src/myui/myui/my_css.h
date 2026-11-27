@@ -478,16 +478,20 @@ const my_css_keyframes_t* my_theme_keyframes_find(const my_theme_t* theme,
                                                   const char* name);
 
 /** @brief Time-stamped var lookup driven by the widget's `animation`
- * declaration: `<keyframes-name> <duration> [easing] [delay]
- * [<count>|infinite]` (one group; easing as in `transition`, count a
- * positive integer, default 1). The host supplies the elapsed
- * milliseconds since the animation started. The delay holds the first
- * stop; each iteration maps through the easing; after the last
- * iteration the end state holds. The key is sampled between the stops
- * that declare it and blended with the property's registered syntax.
- * Returns false when the widget has no animation, the keyframes name is
- * unknown, no stop declares the key, or the key is unregistered; the
- * caller then falls back to my_theme_get_for_widget_var. */
+ * declaration: `<keyframes-name> <duration>` followed, in any order and
+ * each at most once, by an easing (as in `transition`), a delay, an
+ * iteration count (positive integer or `infinite`, default 1), a direction
+ * (`normal`/`reverse`/`alternate`/`alternate-reverse`) and a fill mode
+ * (`none`/`forwards`/`backwards`/`both`, default `none`). One group only.
+ * The host supplies the elapsed milliseconds since the animation started.
+ * Each iteration maps through the easing, then runs backwards when the
+ * direction says so. During the delay a value exists only with
+ * `backwards`/`both`, after the last iteration only with
+ * `forwards`/`both`. The key is sampled between the stops that declare it
+ * and blended with the property's registered syntax. Returns false when no
+ * value applies (no animation, unknown keyframes name, no stop declares
+ * the key, unregistered key, or outside the active period without fill);
+ * the caller then falls back to my_theme_get_for_widget_var. */
 bool my_theme_get_for_widget_var_animating(const my_theme_t* theme,
                                            const struct my_widget_t* widget,
                                            my_widget_state_t state,
