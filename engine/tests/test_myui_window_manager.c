@@ -7166,6 +7166,64 @@ TEST(pressable_widgets_report_pressed_state)
   my_widget_unref(plain);
 }
 
+TEST(window_reduced_motion_media_stops_css_animation)
+{
+  /* Window CSS can drop motion under prefers-reduced-motion: when the
+   * platform starts reporting reduce mid-animation, the media refresh
+   * swaps the theme, the next tick stops the motion, and the widget shows
+   * its settled value. Unknown reduced-motion keeps the animation. */
+  const char* css =
+      "@keyframes grow { from { font-size: 10; } to { font-size: 20; } }"
+      "moving { font-size: 12; animation: grow 1000ms linear; }"
+      "@media (prefers-reduced-motion: reduce) {"
+      "  moving { animation: none; } }";
+  my_pal_t* pal = my_pal_dummy_create(NULL);
+  my_pal_main_loop_t* loop = my_pal_main_loop_create(pal);
+  my_window_manager_t* wm = my_window_manager_create(NULL, pal, loop);
+  my_window_t* win = my_window_create(NULL, pal, 160, 100, "reduce");
+  my_widget_t* moving = my_widget_create(NULL, "moving");
+  my_pal_media_context_ex_t media = {{true, false, false, 0u}, 0u};
+
+  ASSERT_NOT_NULL(win);
+  moving->widget_type = "moving";
+  my_pal_dummy_set_media_context_ex(pal, &media);
+  ASSERT_EQ(my_widget_add_child(my_window_widget(win), moving), MY_RET_OK);
+  ASSERT_EQ(my_window_set_css_style(win, css), MY_RET_OK);
+  ASSERT_EQ(my_window_manager_open(wm, win), MY_RET_OK);
+  my_pal_dummy_set_now_ms(pal, 1000u);
+  ASSERT_EQ(my_window_manager_tick_style_clocks(wm), 1u);
+  my_pal_dummy_set_now_ms(pal, 1500u);
+  ASSERT_EQ(my_window_manager_tick_style_clocks(wm), 1u);
+  ASSERT_EQ(my_widget_style_get_int(moving, MY_STATE_NORMAL,
+                                    MY_STYLE_FONT_SIZE, 0), 15);
+
+  media.base.prefers_reduced_motion = true;
+  media.known = MY_PAL_MEDIA_KNOWN_REDUCED_MOTION;
+  my_pal_dummy_set_media_context_ex(pal, &media);
+  ASSERT_TRUE(my_window_manager_refresh_media(wm));
+  my_pal_dummy_set_now_ms(pal, 1600u);
+  ASSERT_EQ(my_window_manager_tick_style_clocks(wm), 0u);
+  ASSERT_EQ(my_widget_style_get_int(moving, MY_STATE_NORMAL,
+                                    MY_STYLE_FONT_SIZE, 0), 12);
+
+  /* the preference going away brings the animation back from its start. */
+  media.base.prefers_reduced_motion = false;
+  my_pal_dummy_set_media_context_ex(pal, &media);
+  ASSERT_TRUE(my_window_manager_refresh_media(wm));
+  my_pal_dummy_set_now_ms(pal, 2000u);
+  ASSERT_EQ(my_window_manager_tick_style_clocks(wm), 1u);
+  my_pal_dummy_set_now_ms(pal, 2100u);
+  ASSERT_EQ(my_window_manager_tick_style_clocks(wm), 1u);
+  ASSERT_EQ(my_widget_style_get_int(moving, MY_STATE_NORMAL,
+                                    MY_STYLE_FONT_SIZE, 0), 11);
+
+  my_widget_unref(moving);
+  my_widget_unref((my_widget_t*)win);
+  my_window_manager_destroy(wm);
+  my_pal_main_loop_destroy(loop);
+  my_pal_destroy(pal);
+}
+
 TEST(window_manager_paint_tick_drives_style_clocks)
 {
   /* The manager's paint tick reads the PAL clock and ticks every open
@@ -9835,6 +9893,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(button_cooldown_paint_samples_clock_once);
     RUN_TEST(window_style_clock_tick_advances_and_invalidates);
     RUN_TEST(window_manager_paint_tick_drives_style_clocks);
+    RUN_TEST(window_reduced_motion_media_stops_css_animation);
     RUN_TEST(window_style_clock_tick_enrolls_themed_motion);
     RUN_TEST(theme_has_motion_tracks_motion_declarations);
     RUN_TEST(window_style_clock_tick_sees_pressed_state);

@@ -3518,6 +3518,51 @@ static double css_test_number(const my_value_t* v)
   return -12345.0;
 }
 
+TEST(css_animation_none_switches_animation_off)
+{
+  /* `animation: none` is accepted in strict mode and overrides an earlier
+   * animation: nothing samples and no motion runs. `none` cannot be mixed
+   * into a multi-animation list. */
+  const char* css =
+      "@keyframes pulse { from { font-size: 0; } to { font-size: 10; } }"
+      "button { font-size: 4; animation: pulse 100ms linear; }"
+      "button { animation: none; }";
+  my_theme_t* theme = my_theme_create(NULL);
+  my_theme_t* bad = my_theme_create(NULL);
+  my_widget_t* button = my_widget_create(NULL, "button");
+  my_theme_animation_state_t box;
+  my_value_t out;
+
+  ASSERT_NOT_NULL(theme);
+  button->widget_type = "button";
+  memset(&box, 0, sizeof(box));
+  my_value_init(&out, NULL);
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_FALSE(my_theme_get_for_widget_var_animating_at(
+      theme, button, MY_STATE_NORMAL, MY_STYLE_FONT_SIZE, 50.0, &box, &out));
+  ASSERT_FALSE(my_theme_motion_running(theme, button, MY_STATE_NORMAL, 50.0,
+                                       &box, NULL));
+  /* a mixed list is a bad value: it is skipped and the earlier animation
+   * stays in effect. */
+  ASSERT_EQ(my_theme_load_css_ex(
+                bad,
+                "@keyframes pulse { from { font-size: 0; } to { font-size: 10; } }"
+                "button { font-size: 4; animation: pulse 100ms linear; }"
+                "button { animation: none, pulse 1s; }",
+                MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  memset(&box, 0, sizeof(box));
+  my_theme_animation_sync(bad, button, MY_STATE_NORMAL, 0.0, &box);
+  ASSERT_TRUE(my_theme_get_for_widget_var_animating_at(
+      bad, button, MY_STATE_NORMAL, MY_STYLE_FONT_SIZE, 50.0, &box, &out));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 5.0, 1e-9);
+  my_value_reset(&out);
+  my_widget_unref(button);
+  my_theme_destroy(bad);
+  my_theme_destroy(theme);
+}
+
 TEST(css_animating_var_lookup_samples_keyframes)
 {
   /* `animation: <keyframes> <duration> [easing] [delay] [count|infinite]
@@ -11885,6 +11930,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_transition_declaration_storage);
     RUN_TEST(css_transitioning_var_lookup_blends_over_time);
     RUN_TEST(css_animating_var_lookup_samples_keyframes);
+    RUN_TEST(css_animation_none_switches_animation_off);
     RUN_TEST(css_animation_direction_and_fill_mode);
     RUN_TEST(css_animation_list_last_active_wins);
     RUN_TEST(css_animation_list_is_bounded_and_validated);

@@ -3096,3 +3096,22 @@ BreakUI 关闭了 window manager 的自动重绘定时器（`break_ui_init` 调�
 **测量**：20000 行文本，首次换行 1536 ms、59991 行；缩窄后 1501 ms、80001 行，确实是整篇重排。按可见区域增量重排（「跨段落增量预算」）仍未完成，5 万行改宽度约需 3.8 s。
 
 **验证**：`test_myui_window_manager` 254/254，ASan+UBSan（`detect_leaks=0`）254/254；`build-myui-tests` 全量 ctest 482 项无失败，4 项平台门禁 skip；`build-current-vk` 构建通过，`mycompose_gpu` 与 editor 相关 28 项 ctest 通过。本提交自身的远端工作流结果不在此预写。
+
+## 本轮补充：`animation: none` 与 prefers-reduced-motion（2026-11-27）
+
+尝试把 prefers-reduced-motion 接到 CSS 动画时发现缺陷：严格解析把 `animation: none`（CSS 初始值）当作坏值丢弃，因此 `@media (prefers-reduced-motion: reduce) { x { animation: none; } }` 无法关闭先前声明的动画。窗口 CSS 本来就会在媒体事实变化时整体重新求值（`my_window_manager_refresh_media`），所以修正这一点之后，reduced-motion 不需要再加专门的动画查询分支。
+
+修正（`engine/src/myui/myui/my_css.c`）：`css_animation_value_ok` 接受单独的 `none`。驱动和 `my_theme_motion_running` 对 `none` 的处理与「没有动画」相同：不取样，不计为运行中，驱动状态被清空，所以动画回来时从头开始。`none` 混入多组列表（`none, pulse 1s`）仍是坏值，该声明被跳过，先前的动画继续生效。
+
+**TDD**：
+- `test_myui_css` 新增 `css_animation_none_switches_animation_off`（224 例）：`none` 覆盖先前的动画后不取样、不运行；混合列表被跳过，原动画仍按时间取样。
+- `test_myui_window_manager` 新增 `window_reduced_motion_media_stops_css_animation`（255 例）：动画进行到一半时，平台开始报告 reduce，媒体刷新后下一次 tick 不再运行，控件显示静止值；偏好取消后动画从头重新开始；reduced-motion 未知时动画照常进行。
+
+修正前两例都判红：tick 仍报告 1 个运行中的动画。
+
+**变异**：2 项判红：不接受 `none`（两例都判红）；把判断放宽为「含 `none` 子串」（混合列表用例判红）。
+
+**验证**：普通构建与 ASan+UBSan（`detect_leaks=0`）下，`test_myui_window_manager` 255/255、`test_myui_css` 224/224；`build-myui-tests` 全量 ctest 482 项无失败，4 项平台门禁 skip；`build-current-vk` 构建通过，`mycompose_gpu` 与 editor 相关 28 项 ctest 通过。
+
+**边界**：reduced-motion 由样式作者用 `@media` 表达，引擎不会自动关闭动画（与浏览器一致）。transition 同样可以在媒体规则中覆盖。平台是否报告该偏好取决于 PAL：Wayland/Linux 目前保持 unknown，Windows/macOS 的真实读取仍需对应主机验证。本提交自身的远端工作流结果不在此预写。
+

@@ -1522,10 +1522,13 @@ static bool css_animation_list_parse(const char* text,
   return depth == 0u && *count > 0u;
 }
 
+/* `none` is the initial value: no animation applies, so a later rule (for
+ * example under prefers-reduced-motion) can switch one off. */
 static bool css_animation_value_ok(const char* text) {
   css_animation_spec_t specs[MY_CSS_MAX_ANIMATIONS];
   size_t count;
-  return css_animation_list_parse(text, specs, &count);
+  return my_str_eq(text, "none") ||
+         css_animation_list_parse(text, specs, &count);
 }
 
 /* R672: bounded @property syntax primitives — <color>/<length>/

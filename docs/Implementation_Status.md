@@ -14936,3 +14936,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **测量**：20000 行缩窄耗时 1.5 s，visual line 数 59991→80001，为整篇重排；按可见区域增量重排未做。
 - **验证**：普通与 ASan+UBSan 下 254/254；`build-myui-tests` 全量 ctest 482 项无失败；`build-current-vk` 构建通过、28 项相关 ctest 通过。详见 `docs/myui_remaining_work.md` 同日更正。本提交自身的远端工作流结果不在此预写。
 
+## `animation: none` 与 prefers-reduced-motion（2026-11-27）
+
+- **缺陷**：严格 CSS 解析丢弃 `animation: none`，`@media (prefers-reduced-motion: reduce)` 规则因此无法关闭动画。
+- **修复**：`animation` 接受单独的 `none`，行为等同于没有动画；混入多组列表仍是坏值。媒体刷新后下一次 tick 即停止动画，偏好取消后动画从头开始。
+- **TDD 与变异**：`test_myui_css` 新增 1 例（224 例），`test_myui_window_manager` 新增 1 例（255 例），修复前均 RED；2 项定向变异判红。
+- **验证**：普通与 ASan+UBSan 下两者通过；`build-myui-tests` 全量 ctest 482 项无失败；`build-current-vk` 构建通过、28 项相关 ctest 通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
+
