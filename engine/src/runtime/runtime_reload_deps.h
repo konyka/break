@@ -40,7 +40,8 @@
  *    changed after that reload started.
  *
  * Owner thread only, like pump_events/commit_owner; the graph and the
- * coordinator are borrowed. */
+ * coordinator are borrowed. An owner that rebuilds its graph hands the new
+ * one over with break_runtime_reload_deps_set_graph before freeing the old. */
 typedef struct BreakRuntimeReloadDeps BreakRuntimeReloadDeps;
 
 #define BREAK_RUNTIME_RELOAD_DEPS_MAX_ASSETS 4096u
@@ -92,6 +93,15 @@ BreakRuntimeError break_runtime_reload_deps_committed(BreakRuntimeReloadDeps *de
  * the commit hook runs there. */
 BreakRuntimeError break_runtime_reload_deps_committed_path(BreakRuntimeReloadDeps *deps,
                                                            const char *path);
+
+/* Moves to `graph`, which replaces the borrowed one (the owner rebuilt it,
+ * for example after a scene reload); the old graph is no longer touched and
+ * may be destroyed once this returns. Queued ids the new graph does not
+ * declare are dropped and counted as skipped; the others keep their order.
+ * An in-flight reload finishes normally. Recorded paths are kept. INVALID
+ * for NULL arguments. */
+BreakRuntimeError break_runtime_reload_deps_set_graph(BreakRuntimeReloadDeps *deps,
+                                                      const BreakAssetGraph *graph);
 
 /* Advances the chain: polls the in-flight dependent and, once it is
  * terminal, issues the next one. Call every tick after commit_owner.

@@ -14981,3 +14981,13 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：`test_runtime_reload_deps` 新增 4 例（25 例），修复前 RED（超时）；5 项变异 4 项判红，1 项为等价变异（只多一次 pump）。
 - **验证**：普通与 ASan+UBSan 下 25/25；全量 ctest 482 项无失败。详见 `docs/design/runtime_hot_reload.md` 同日补充。本提交自身的远端工作流结果不在此预写。
 
+## 依赖驱动热重载：重建的依赖图不再留下悬空借用（2026-11-27）
+
+- **缺陷**（此前审查记录的次要问题）：`break_editor_hot_reload_attach_reload_deps` 借用调用方传入的依赖图，通常是 `break_editor_shell_scene_deps(shell)->graph`。外壳每次加载、热重载或新建场景都会在 `editor_shell_sync_scene_textures` 中释放并重建该图，外壳销毁时也会释放它。附加的 `BreakRuntimeReloadDeps` 却继续持有旧指针，下一次 `committed`/`pump` 读到已释放内存。`hot_reload_deps_follow_the_rebuilt_scene_graph` 在修复前于 ASan 下报 heap-use-after-free（`asset_graph.c` 的 `lookup`）。当前产品代码没有调用点，但该接口是公开的宿主接线入口。
+- **修复**：
+  - `runtime_reload_deps` 新增 `break_runtime_reload_deps_set_graph(deps, graph)`：改为借用新图，新图不声明的排队 id 计为 skipped 并移除，其余保持顺序；在途重载照常完成，已登记的路径保留。
+  - 编辑器 hot-reload 记录 deps 借用的是哪张图（`deps_graph`）。外壳重建场景依赖图后调用 `editor_hot_reload_scene_graph_rebuilt(hr, old, new)`：deps 借用的正是旧图时改借新图；没有新图（重建失败、场景无路径）或外壳销毁时销毁 deps。旧图只做指针比较，不被读取。借用其他图的 deps 不受影响。
+- **TDD**：`test_runtime_reload_deps` 新增 `set_graph_rebinds_and_drops_queued_ids_the_new_graph_lacks`（26 例），缺少函数时编译失败（RED）；`test_editor_shell` 新增 `hot_reload_deps_follow_the_rebuilt_scene_graph` 与 `hot_reload_deps_are_dropped_when_the_scene_graph_goes_away`，前者修复前 ASan 报 use-after-free（RED），并覆盖外壳先于 hot-reload 销毁的顺序。首版断言「重建后的图地址不同」在普通构建下偶发失败（分配器复用了同一地址），已删去；悬空访问只能由 ASan 判定。
+- **变异**（9 项，全部判红）：外壳重建后不通知（use-after-free）；外壳销毁时不通知；不比较借用的是哪张图；attach 不记录借用的图（use-after-free）；改借新图后不更新记录；无新图时不销毁 deps；`set_graph` 不替换图（use-after-free）；移除的 id 不计 skipped；不移除新图缺少的 id。
+- **验证**：`test_runtime_reload_deps` 26/26、`test_editor_shell` 240/240（ASan+UBSan，`detect_leaks=0`）；普通构建 `test_editor_shell` 连跑三次 193/193；`build-myui-tests` 全量 ctest 482 项无失败；`build-current-vk` 构建通过，28 项相关 ctest 通过。本提交自身的远端工作流结果不在此预写。
+

@@ -449,3 +449,7 @@ arm64 lane 新增 `test_hotreload`（7 例），与 VFS、异步加载和 filewa
 
 **验证**：`test_runtime_reload_deps` 25/25，ASan+UBSan（`detect_leaks=0`）25/25；`build-myui-tests` 全量 ctest 482 项无失败。本提交自身的远端工作流结果不在此预写。
 
+## 补充（2026-11-27）：重建依赖图时改借新图
+
+`break_runtime_reload_deps_set_graph(deps, graph)` 让依赖适配层改为借用新图：所有者重建图（例如编辑器在场景重载后重建场景依赖图）时，先把新图交给 deps，再释放旧图。新图不再声明的排队 id 被移除并计入 `stats.skipped`，其余保持原顺序；在途重载照常完成；已登记的路径不变。编辑器 hot-reload 在外壳重建场景依赖图时自动调用它，外壳没有新图或被销毁时直接销毁附加的 deps。详见 `docs/Implementation_Status.md` 同日条目。
+

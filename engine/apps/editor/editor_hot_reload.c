@@ -37,6 +37,9 @@ struct BreakEditorHotReload {
     VFS *vfs;
     BreakRuntimeReload *reload;
     BreakRuntimeReloadDeps *reload_deps; /* owned; NULL when not attached */
+    /* reload_deps reads the shell's scene graph, which the shell rebuilds
+     * on every scene reload (editor_hot_reload_scene_graph_rebuilt) */
+    const BreakAssetGraph *deps_graph;
     FileWatcher watcher;
     bool watcher_live;
     bool watching;
@@ -263,6 +266,7 @@ static bool hr_stop(BreakEditorHotReload *hr) {
     if (hr->reload_deps) {
         break_runtime_reload_deps_destroy(hr->reload_deps);
         hr->reload_deps = NULL;
+        hr->deps_graph = NULL;
     }
     if (hr->watcher_live) {
         filewatch_shutdown(&hr->watcher);
@@ -331,6 +335,24 @@ void editor_hot_reload_shell_destroyed(BreakEditorHotReload *hr,
     if (hr != NULL && hr->shell == shell) {
         hr->shell = NULL;
     }
+}
+
+void editor_hot_reload_scene_graph_rebuilt(BreakEditorHotReload *hr,
+                                           const BreakAssetGraph *old_graph,
+                                           const BreakAssetGraph *new_graph) {
+    if (hr == NULL || hr->reload_deps == NULL || hr->deps_graph != old_graph ||
+        old_graph == NULL) {
+        return;
+    }
+    if (new_graph != NULL &&
+        break_runtime_reload_deps_set_graph(hr->reload_deps, new_graph) == BREAK_RUNTIME_OK) {
+        hr->deps_graph = new_graph;
+        return;
+    }
+    /* no graph to follow: the deps would read freed memory, so drop it */
+    break_runtime_reload_deps_destroy(hr->reload_deps);
+    hr->reload_deps = NULL;
+    hr->deps_graph = NULL;
 }
 
 void editor_hot_reload_attach(BreakEditorHotReload *hr,
@@ -502,6 +524,7 @@ BreakRuntimeReloadDeps *break_editor_hot_reload_attach_reload_deps(
     if (hr->reload_deps) {
         break_runtime_reload_deps_destroy(hr->reload_deps);
         hr->reload_deps = NULL;
+        hr->deps_graph = NULL;
     }
     memset(&dc, 0, sizeof(dc));
     dc.reload = hr->reload;
@@ -511,6 +534,7 @@ BreakRuntimeReloadDeps *break_editor_hot_reload_attach_reload_deps(
         return NULL;
     }
     hr->reload_deps = new_deps;
+    hr->deps_graph = graph;
     return new_deps;
 }
 

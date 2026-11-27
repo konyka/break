@@ -731,6 +731,47 @@ TEST(only_loop_members_are_failed_what_waits_on_them_is_skipped) {
     fx_dispose(&fx);
 }
 
+TEST(set_graph_rebinds_and_drops_queued_ids_the_new_graph_lacks) {
+    /* The owner rebuilt its graph (a reloaded scene): the deps object moves
+     * to the new one. Queued ids still declared keep their place; ids the new
+     * graph lacks are dropped as skipped. */
+    Fx fx;
+    BreakRuntimeReloadDepsStats st;
+    BreakAssetGraph *next = NULL;
+    BreakAssetGraphConfig gc;
+    const BreakAssetId mat_a[] = {kTex, kShader};
+    ASSERT_TRUE(fx_init(&fx, 16u));
+    ASSERT_EQ(break_runtime_reload_deps_committed(fx.deps, kShader), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_stats(fx.deps, &st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(st.queued, 3u);
+    /* the new graph has no matB and no scene */
+    memset(&gc, 0, sizeof(gc));
+    gc.capacity = 8u;
+    gc.max_edges = 8u;
+    ASSERT_EQ(break_asset_graph_create(&gc, &next), BREAK_ASSET_GRAPH_OK);
+    ASSERT_EQ(break_asset_graph_add(next, kMatA, mat_a, 2u), BREAK_ASSET_GRAPH_OK);
+    ASSERT_EQ(break_asset_graph_add(next, kTex, NULL, 0u), BREAK_ASSET_GRAPH_OK);
+    ASSERT_EQ(break_asset_graph_add(next, kShader, NULL, 0u), BREAK_ASSET_GRAPH_OK);
+    ASSERT_EQ(break_runtime_reload_deps_set_graph(fx.deps, next), BREAK_RUNTIME_OK);
+    /* the old graph may go now */
+    break_asset_graph_destroy(fx.graph);
+    fx.graph = next;
+    ASSERT_EQ(break_runtime_reload_deps_stats(fx.deps, &st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(st.queued, 1u);
+    ASSERT_EQ(st.skipped, 2u);
+    ASSERT_TRUE(run_until_idle(&fx));
+    ASSERT_EQ(g_probe.count, 1u);
+    ASSERT_STR_EQ(g_probe.order[0], "mat_a.bin");
+    /* later commits use the new graph */
+    ASSERT_EQ(break_runtime_reload_deps_committed(fx.deps, kTex), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_committed(fx.deps, kScene), BREAK_RUNTIME_INVALID);
+    ASSERT_TRUE(run_until_idle(&fx));
+    ASSERT_EQ(g_probe.count, 2u);
+    ASSERT_EQ(break_runtime_reload_deps_set_graph(NULL, next), BREAK_RUNTIME_INVALID);
+    ASSERT_EQ(break_runtime_reload_deps_set_graph(fx.deps, NULL), BREAK_RUNTIME_INVALID);
+    fx_dispose(&fx);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(a_changed_texture_rebuilds_its_material_then_the_scene);
     RUN_TEST(a_shared_dependency_rebuilds_each_dependent_once_in_order);
@@ -757,4 +798,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(a_dependency_loop_downstream_lets_the_ready_part_finish_first);
     RUN_TEST(a_loop_broken_while_the_chain_runs_is_rebuilt);
     RUN_TEST(only_loop_members_are_failed_what_waits_on_them_is_skipped);
+    RUN_TEST(set_graph_rebinds_and_drops_queued_ids_the_new_graph_lacks);
 TEST_MAIN_END()

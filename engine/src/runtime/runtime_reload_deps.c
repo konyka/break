@@ -327,6 +327,21 @@ BreakRuntimeError break_runtime_reload_deps_pump(BreakRuntimeReloadDeps *deps) {
     return BREAK_RUNTIME_OK;
 }
 
+BreakRuntimeError break_runtime_reload_deps_set_graph(BreakRuntimeReloadDeps *deps,
+                                                      const BreakAssetGraph *graph) {
+    if (!deps || !graph) return BREAK_RUNTIME_INVALID;
+    deps->graph = graph;
+    for (u32 i = 0u; i < deps->queued;) {
+        if (!break_asset_graph_contains(graph, deps->queue[i])) {
+            remove_queued(deps, i);
+            deps->stats.skipped++;
+        } else {
+            ++i;
+        }
+    }
+    return BREAK_RUNTIME_OK;
+}
+
 BreakRuntimeError break_runtime_reload_deps_stats(const BreakRuntimeReloadDeps *deps,
                                                   BreakRuntimeReloadDepsStats *out) {
     if (!deps || !out) return BREAK_RUNTIME_INVALID;

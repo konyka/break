@@ -93,9 +93,12 @@ BreakRuntimeReloadDeps *break_editor_hot_reload_reload_deps_for_test(
 /* Attach a BreakRuntimeReloadDeps object so that after each successful scene
  * reload, committed_path is forwarded to trigger dependent-asset rebuilds.
  * The hot-reload object creates the deps internally, using the same
- * coordinator (reload) it already owns.  `graph` is borrowed; pass the
- * shell's current scene_deps->graph (may be NULL if the scene has no deps
- * yet — a new one is registered whenever the scene changes).  `max_assets`
+ * coordinator (reload) it already owns.  `graph` is borrowed and must not be
+ * NULL; pass the shell's current scene_deps->graph. When the shell rebuilds
+ * that graph (every scene reload, open or new scene) the deps moves to the
+ * new graph (break_runtime_reload_deps_set_graph); when the shell is left
+ * without one, or is destroyed, the deps is destroyed, so it never reads a
+ * freed graph. A graph of the caller's own must outlive the deps.  `max_assets`
  * is passed to BreakRuntimeReloadDepsConfig. Returns the created deps object
  * (borrowed; owned by the hot-reload instance), or NULL on failure (OOM,
  * NULL hr, or hr not watching).

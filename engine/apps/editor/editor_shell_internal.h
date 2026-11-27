@@ -61,6 +61,12 @@ void editor_hot_reload_shell_destroyed(struct BreakEditorHotReload *hr,
                                        BreakEditorShell *shell);
 void editor_hot_reload_attach(struct BreakEditorHotReload *hr,
                               BreakEditorShell *shell);
+/* The shell replaced its scene dependency graph: a reload_deps attached to
+ * `old_graph` moves to `new_graph`, or is destroyed when there is none.
+ * `old_graph` is only compared, never read, so it may already be freed. */
+void editor_hot_reload_scene_graph_rebuilt(struct BreakEditorHotReload *hr,
+                                           const BreakAssetGraph *old_graph,
+                                           const BreakAssetGraph *new_graph);
 
 /* Assets browser panel (model: BreakEditorAssets, Phase 3 Task 1). The
  * default root at create is "." (process cwd); a create failure of the

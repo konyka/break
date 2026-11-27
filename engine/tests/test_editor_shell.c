@@ -13899,6 +13899,77 @@ TEST(hot_reload_with_deps_queues_dependents_after_scene_commit)
     hr_close(&fx);
 }
 
+/* The shell rebuilds its scene dependency graph on every scene reload. A
+ * reload_deps attached to the shell's graph must follow it, not keep reading
+ * the freed one (checked under ASan): after a hot reload the attached deps
+ * looks the scene up in the new graph. */
+TEST(hot_reload_deps_follow_the_rebuilt_scene_graph)
+{
+    HrFixture fx;
+    BreakRuntimeReloadDepsStats dep_st;
+    BreakRuntimeReloadDeps *deps;
+    const BreakEditorSceneDeps *scene_deps;
+
+    hr_open(&fx, "editor_hr_deps_rebuilt", 1u);
+    scene_deps = break_editor_shell_scene_deps(fx.shell);
+    ASSERT_NOT_NULL(scene_deps->graph);
+    deps = break_editor_hot_reload_attach_reload_deps(fx.hr, scene_deps->graph, 32u);
+    ASSERT_NOT_NULL(deps);
+    ASSERT_EQ(break_runtime_reload_deps_set_path(deps, scene_deps->scene_id, fx.scene),
+              BREAK_RUNTIME_OK);
+
+    hr_external_scene(fx.scene, 3u);
+    HR_WAIT(fx.shell, break_editor_doc_entity_count(fx.doc) == 3u);
+    ASSERT_EQ(hr_stats(&fx).reloads, 1u);
+    scene_deps = break_editor_shell_scene_deps(fx.shell);
+    /* the graph was freed and rebuilt (the allocator may reuse its address,
+     * so only ASan tells a stale read apart); the deps reads the shell's current graph: the scene is declared there */
+    ASSERT_EQ(break_runtime_reload_deps_committed(deps, scene_deps->scene_id), BREAK_RUNTIME_OK);
+    hr_settle(fx.shell, 20);
+    ASSERT_EQ(break_runtime_reload_deps_stats(deps, &dep_st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(dep_st.queued, 0u);
+    ASSERT_TRUE(break_editor_hot_reload_reload_deps_for_test(fx.hr) == deps);
+
+    /* destroying the shell frees its graph: the attached deps goes with it,
+     * while the hot-reload object (destroyed later by its host) survives */
+    break_editor_shell_destroy(fx.shell);
+    ASSERT_TRUE(break_editor_hot_reload_reload_deps_for_test(fx.hr) == NULL);
+    break_editor_hot_reload_tick(fx.hr);
+    break_editor_hot_reload_destroy(fx.hr);
+    remove(fx.scene);
+    remove(fx.sidecar);
+    TEST_RMDIR(fx.dir);
+}
+
+/* A rebuild that leaves the shell without a graph (the manifest builder
+ * rejected the new chunk) gives an attached reload_deps nothing to follow:
+ * it is dropped rather than left reading the freed graph. A rebuild of
+ * some other graph leaves it alone. */
+TEST(hot_reload_deps_are_dropped_when_the_scene_graph_goes_away)
+{
+    HrFixture fx;
+    BreakRuntimeReloadDeps *deps;
+    const BreakEditorSceneDeps *scene_deps;
+    BreakAssetGraph *other = NULL;
+    BreakAssetGraphConfig gc;
+
+    hr_open(&fx, "editor_hr_deps_gone", 1u);
+    scene_deps = break_editor_shell_scene_deps(fx.shell);
+    ASSERT_NOT_NULL(scene_deps->graph);
+    deps = break_editor_hot_reload_attach_reload_deps(fx.hr, scene_deps->graph, 32u);
+    ASSERT_NOT_NULL(deps);
+    memset(&gc, 0, sizeof(gc));
+    gc.capacity = 2u;
+    gc.max_edges = 2u;
+    ASSERT_EQ(break_asset_graph_create(&gc, &other), BREAK_ASSET_GRAPH_OK);
+    editor_hot_reload_scene_graph_rebuilt(fx.hr, other, NULL);
+    ASSERT_TRUE(break_editor_hot_reload_reload_deps_for_test(fx.hr) == deps);
+    editor_hot_reload_scene_graph_rebuilt(fx.hr, scene_deps->graph, NULL);
+    ASSERT_TRUE(break_editor_hot_reload_reload_deps_for_test(fx.hr) == NULL);
+    break_asset_graph_destroy(other);
+    hr_close(&fx);
+}
+
 /* A dependent reload of another file in the scene directory goes through the
  * same coordinator, so it reaches the same commit hook. Only the watched
  * scene may replace the document: another file is never loaded into it, and
@@ -15347,6 +15418,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(hot_reload_teardown_in_either_order_is_safe);
     RUN_TEST(hot_reload_with_deps_queues_dependents_after_scene_commit);
     RUN_TEST(hot_reload_dependent_of_another_file_never_replaces_the_document);
+    RUN_TEST(hot_reload_deps_follow_the_rebuilt_scene_graph);
+    RUN_TEST(hot_reload_deps_are_dropped_when_the_scene_graph_goes_away);
     RUN_TEST(camera_pose_whose_eye_collapses_onto_the_target_is_rejected);
     RUN_TEST(remote_cli_default_off_and_fail_closed_flags);
 #ifdef BREAK_EDITOR_REMOTE_TESTS

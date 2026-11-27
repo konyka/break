@@ -2446,6 +2446,7 @@ void editor_shell_sync_scene_textures(BreakEditorShell *shell) {
     char abs_path[BREAK_EDITOR_SCENE_PATH_CAPACITY];
     char cwd[BREAK_EDITOR_SCENE_PATH_CAPACITY];
     const char *scene = NULL;
+    const BreakAssetGraph *old_graph;
     if (shell == NULL || shell->scene_textures == NULL) {
         return;
     }
@@ -2457,6 +2458,7 @@ void editor_shell_sync_scene_textures(BreakEditorShell *shell) {
     }
     (void)break_editor_scene_textures_set_scene(shell->scene_textures, shell->doc,
                                                 scene);
+    old_graph = shell->scene_deps.graph;
     break_editor_scene_deps_free(&shell->scene_deps);
     if (scene == NULL && shell->scene_path_set) {
         scene = shell->scene_path;
@@ -2466,6 +2468,8 @@ void editor_shell_sync_scene_textures(BreakEditorShell *shell) {
             BREAK_EDITOR_SCENE_DEPS_OK) {
         editor_shell_log(shell, "%s", break_editor_tr(BREAK_EDITOR_TR_LOG_SCENE_DEPS_FAILED));
     }
+    editor_hot_reload_scene_graph_rebuilt(shell->hot_reload, old_graph,
+                                          shell->scene_deps.graph);
     editor_panel_render_invalidate(shell->render_panel);
 }
 
@@ -3413,7 +3417,12 @@ bool break_editor_shell_destroy(BreakEditorShell *shell) {
         break_editor_scene_textures_destroy(shell->scene_textures);
         shell->scene_textures = NULL;
     }
-    break_editor_scene_deps_free(&shell->scene_deps);
+    {
+        const BreakAssetGraph *old_graph = shell->scene_deps.graph;
+        break_editor_scene_deps_free(&shell->scene_deps);
+        /* an attached reload_deps may not outlive the graph it reads */
+        editor_hot_reload_scene_graph_rebuilt(shell->hot_reload, old_graph, NULL);
+    }
     /* a still-attached remote (host destroyed the shell first) is orphaned
      * before anything is freed: it drops its back-pointer and its
      * doc-borrowing console, so its later destroy never reaches this shell */
