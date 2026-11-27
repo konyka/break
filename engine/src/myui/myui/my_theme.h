@@ -295,6 +295,29 @@ bool my_theme_transition_step(const my_theme_t* theme,
                               double now_ms, my_value_t* out,
                               my_theme_transition_state_t* state_box);
 
+/** @brief Host-side animation driver state: the widget's last seen
+ * `animation` value text and the host clock time it was first seen.
+ * Reset with memset(0). */
+typedef struct {
+  char animation[MY_THEME_MAX_PROPERTY_VALUE_BYTES + 1u]; /* "" = none */
+  double start_ms;
+} my_theme_animation_state_t;
+
+/** @brief Step one animated key: reads the widget's `animation` value for
+ * `state`; when it differs from the stored one (or none was stored) the
+ * clock restarts at now_ms. Returns the animated value from
+ * my_theme_get_for_widget_var_animating at now_ms - start, or, when no
+ * animation applies a value, the plain var value typed like the animated
+ * one (as my_theme_transition_step does). Without any `animation`
+ * the stored value is cleared, so the same animation later restarts.
+ * Returns false when the key has no value at all or
+ * state_box is NULL. Implemented in my_css.c. */
+bool my_theme_animation_step(const my_theme_t* theme,
+                             const struct my_widget_t* widget,
+                             my_widget_state_t state, const char* key,
+                             double now_ms, my_value_t* out,
+                             my_theme_animation_state_t* state_box);
+
 /** @brief R670/R673: evaluate a deferred @container condition for an
  * element — walk from `anchor` upward (inclusive) for the nearest
  * qualifying ancestor. Size queries require a query container

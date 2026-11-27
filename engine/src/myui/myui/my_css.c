@@ -8171,6 +8171,44 @@ bool my_theme_transition_step(const my_theme_t* theme,
   return css_probe_full_value(current, out);
 }
 
+bool my_theme_animation_step(const my_theme_t* theme,
+                             const struct my_widget_t* widget,
+                             my_widget_state_t state, const char* key,
+                             double now_ms, my_value_t* out,
+                             my_theme_animation_state_t* state_box) {
+  const my_value_t* av;
+  const char* animation;
+  if (theme == NULL || widget == NULL || key == NULL || out == NULL ||
+      state_box == NULL) {
+    return false;
+  }
+  av = my_theme_get_for_widget(theme, widget, state, MY_STYLE_ANIMATION);
+  animation = av != NULL && my_value_type(av) == MY_VALUE_STR
+                  ? my_value_get_str(av)
+                  : NULL;
+  if (animation == NULL) {
+    state_box->animation[0] = '\0';
+  } else if (!my_str_eq(state_box->animation, animation)) {
+    /* a zeroed box holds "", which no valid animation value equals */
+    snprintf(state_box->animation, sizeof(state_box->animation), "%s",
+             animation);
+    state_box->start_ms = now_ms;
+  }
+  if (animation != NULL &&
+      my_theme_get_for_widget_var_animating(
+          theme, widget, state, key, now_ms - state_box->start_ms, out)) {
+    return true;
+  }
+  {
+    char current[MY_THEME_MAX_PROPERTY_VALUE_BYTES + 1u];
+    if (!my_theme_get_for_widget_var_text(theme, widget, state, key, current,
+                                          sizeof(current))) {
+      return false;
+    }
+    return css_probe_full_value(current, out);
+  }
+}
+
 my_ret_t my_theme_load_css_ex(my_theme_t* theme, const char* css,
                               uint32_t flags) {
   my_css_parse_options_t options = {flags, NULL, NULL, NULL, NULL};

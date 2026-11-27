@@ -3890,6 +3890,88 @@ TEST(css_keyframes_reject_invalid_stop_timing_function)
   my_css_sheet_destroy(sheet);
 }
 
+TEST(css_animation_step_tracks_start_time)
+{
+  /* The host-side animation driver: the clock starts when the widget's
+   * animation value is first seen or changes; a value without an
+   * animation falls back to the plain var lookup. */
+  const char* css =
+      "@property --size { syntax: \"<number>\"; inherits: false;"
+      " initial-value: 0; }"
+      "@keyframes grow { from { --size: 0; } to { --size: 10; } }"
+      "@keyframes drop { from { --size: 100; } to { --size: 0; } }"
+      "button { --size: 7; animation: grow 100ms linear; }"
+      "button:pressed { --size: 7; animation: drop 100ms linear; }"
+      "label { --size: 3; }";
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* button = my_widget_create(NULL, "button");
+  my_widget_t* label = my_widget_create(NULL, "label");
+  my_theme_animation_state_t box;
+  my_theme_animation_state_t label_box;
+  my_value_t out;
+
+  ASSERT_NOT_NULL(theme);
+  button->widget_type = "button";
+  label->widget_type = "label";
+  memset(&box, 0, sizeof(box));
+  memset(&label_box, 0, sizeof(label_box));
+  my_value_init(&out, NULL);
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+
+  /* first sight at t=1000 starts the clock there. */
+  ASSERT_TRUE(my_theme_animation_step(theme, button, MY_STATE_NORMAL,
+                                      "--size", 1000.0, &out, &box));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 0.0, 1e-9);
+  my_value_reset(&out);
+  ASSERT_TRUE(my_theme_animation_step(theme, button, MY_STATE_NORMAL,
+                                      "--size", 1050.0, &out, &box));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 5.0, 1e-9);
+  my_value_reset(&out);
+  /* after the end (fill none) the plain value shows. */
+  ASSERT_TRUE(my_theme_animation_step(theme, button, MY_STATE_NORMAL,
+                                      "--size", 1200.0, &out, &box));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 7.0, 1e-9);
+  my_value_reset(&out);
+  /* a different animation value (pressed) restarts the clock. */
+  ASSERT_TRUE(my_theme_animation_step(theme, button, MY_STATE_PRESSED,
+                                      "--size", 1300.0, &out, &box));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 100.0, 1e-9);
+  my_value_reset(&out);
+  ASSERT_TRUE(my_theme_animation_step(theme, button, MY_STATE_PRESSED,
+                                      "--size", 1325.0, &out, &box));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 75.0, 1e-9);
+  my_value_reset(&out);
+  /* back to the first animation: it restarts too. */
+  ASSERT_TRUE(my_theme_animation_step(theme, button, MY_STATE_NORMAL,
+                                      "--size", 1400.0, &out, &box));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 0.0, 1e-9);
+  my_value_reset(&out);
+  /* the widget loses its animation (here: the box is stepped for a label
+   * without one), then gets the same value back: the clock restarts. */
+  ASSERT_TRUE(my_theme_animation_step(theme, label, MY_STATE_NORMAL,
+                                      "--size", 1500.0, &out, &box));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 3.0, 1e-9);
+  my_value_reset(&out);
+  ASSERT_TRUE(my_theme_animation_step(theme, button, MY_STATE_NORMAL,
+                                      "--size", 1600.0, &out, &box));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 0.0, 1e-9);
+  my_value_reset(&out);
+  /* no animation at all: the plain value. */
+  ASSERT_TRUE(my_theme_animation_step(theme, label, MY_STATE_NORMAL,
+                                      "--size", 10.0, &out, &label_box));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 3.0, 1e-9);
+  my_value_reset(&out);
+  /* no value anywhere: false. */
+  ASSERT_FALSE(my_theme_animation_step(theme, label, MY_STATE_NORMAL,
+                                       "--absent", 10.0, &out, &label_box));
+  ASSERT_FALSE(my_theme_animation_step(theme, label, MY_STATE_NORMAL,
+                                       "--size", 10.0, &out, NULL));
+  my_widget_unref(button);
+  my_widget_unref(label);
+  my_theme_destroy(theme);
+}
+
 TEST(css_animation_declaration_rejects_malformed_values)
 {
   static const char* const bad[] = {
@@ -11506,6 +11588,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_animation_list_is_bounded_and_validated);
     RUN_TEST(css_keyframes_stop_timing_function_eases_its_segment);
     RUN_TEST(css_keyframes_reject_invalid_stop_timing_function);
+    RUN_TEST(css_animation_step_tracks_start_time);
     RUN_TEST(css_animation_declaration_rejects_malformed_values);
     RUN_TEST(css_theme_keyframes_survive_clone_and_reload);
     RUN_TEST(css_percentage_length_resolution);

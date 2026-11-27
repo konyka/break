@@ -2867,7 +2867,7 @@ graphics 与 present queue。`RE_VK_DEVICE_INDEX` 现在也必须通过同一门
 - `my_theme_get_for_widget_var_animating(theme, widget, state, key, elapsed_ms, out)`：延迟期保持首帧；每次迭代按 easing 映射进度；所有迭代结束后保持末帧；key 必须是已注册属性，按其 syntax 在声明了该 key 的 stop 之间插值。返回 false 时调用方回退普通查询。
 - `transition` 的 easing 映射抽成 `css_transition_ease`，两条路径共用。
 
-边界：direction 与 fill-mode、逗号多组见后续两节；不支持 `play-state`；起始时间由调用方记录。
+边界：direction 与 fill-mode、逗号多组、分段 easing 与起始时间驱动见后续各节；不支持 `play-state`。
 
 **TDD**：`test_myui_css` 新增 3 例（212 例）：按时间采样（颜色与经过 50% stop 的数值、延迟、两次迭代后保持末帧、`infinite` 循环、未知 keyframes 与未声明 key 回退）、6 种非法 `animation` 值被跳过、theme 克隆与二次加载累积。旧实现缺少接口，编译即失败（RED）。
 
@@ -2921,3 +2921,18 @@ graphics 与 present queue。`RE_VK_DEVICE_INDEX` 现在也必须通过同一门
 **变异**：5 项全部判红：忽略 stop 的 easing、忽略动画的 easing、恢复整体 easing、不校验声明、改用结束 stop 的 easing。
 
 **验证**：`test_myui_css` 217/217；ASan+UBSan（含 LeakSanitizer）217/217；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。源码与测试在提交 `myui: ease CSS animations per keyframe segment` 中，本节与头文件注释在随后的文档提交中补上。
+
+## 本轮补充：animation 的宿主驱动（2026-11-27）
+
+`my_theme_get_for_widget_var_animating` 需要调用方传入「动画开始后经过的毫秒数」，调用方因此要自己判断动画何时开始。transition 已有对应的宿主驱动 `my_theme_transition_step`，animation 没有。
+
+新增（`my_theme.h` 声明，`my_css.c` 实现）：
+
+- `my_theme_animation_state_t`：保存上次看到的 `animation` 值文本与开始时刻，`memset(0)` 即初始状态。
+- `my_theme_animation_step(theme, widget, state, key, now_ms, out, box)`：读取该状态下的 `animation` 值；与保存的不同（含首次）时把开始时刻设为 `now_ms`；返回 `now_ms - start` 处的动画值，没有动画值时（无 animation、填充模式不施加值等）返回普通 var 值，并与动画值一样转成类型化值。没有 `animation` 时清空保存的值，之后再出现同一个动画会重新开始。key 完全无值或 box 为 NULL 时返回 false。
+
+**TDD**：`test_myui_css` 新增 `css_animation_step_tracks_start_time`（218 例）：首次看到时开始计时、结束后显示普通值、按下状态换成另一个动画时重新计时、切回原动画再次重新计时、动画消失后再出现时重新计时、无动画控件返回普通值、无值与 NULL box 返回 false。旧实现缺少接口（RED）。
+
+**变异**：4 项全部判红：值变化不重启、不减开始时刻、没有动画值时不回退、动画消失时不清空。首版有 `active` 标志，「首次看到」变异存活，说明全零的 box 已能表达未开始；该标志已删除。
+
+**验证**：`test_myui_css` 218/218；ASan+UBSan（含 LeakSanitizer）218/218；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。

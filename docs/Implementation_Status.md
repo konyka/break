@@ -14848,3 +14848,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **实现**：easing 改为逐 keyframe 分段应用；stop 的 `animation-timing-function`（与 `transition` 同一 easing 语法，非法则跳过）替换该段的 easing。
 - **TDD 与变异**：`test_myui_css` 新增 2 例（217 例），旧实现 RED；5 项定向变异全部判红。
 - **验证**：普通与 ASan+UBSan（含 LeakSanitizer）下 217/217；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
+
+## CSS animation 的宿主驱动（2026-11-27）
+
+- **缺口**：animation 查询要求调用方自己记录开始时间；transition 已有宿主驱动，animation 没有。
+- **实现**：`my_theme_animation_state_t` 与 `my_theme_animation_step`：`animation` 值首次出现或变化时以当前时刻开始计时，返回动画值，否则回退为类型化的普通 var 值；动画消失时清空，再出现时重新开始。
+- **TDD 与变异**：`test_myui_css` 新增 1 例（218 例），旧实现 RED；4 项定向变异全部判红，多余的 `active` 标志经变异证明后删除。
+- **验证**：普通与 ASan+UBSan（含 LeakSanitizer）下 218/218；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
