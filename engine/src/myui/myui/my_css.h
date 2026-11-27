@@ -463,8 +463,10 @@ const char* my_css_keyframes_stop_value(const my_css_keyframes_t* keyframes,
 /** @brief Sample `key` at progress t: picks the two stops around t among
  * the stops that declare the key and blends them with
  * my_css_property_interpolate(syntax, ...). t below the first or above
- * the last such stop clamps to it. Returns false when no stop declares
- * the key or interpolation fails (the caller then jump-cuts). */
+ * the last such stop clamps to it. The segment is eased by its starting
+ * stop's `animation-timing-function`, linear otherwise. Returns false
+ * when no stop declares the key or interpolation fails (the caller then
+ * jump-cuts). */
 bool my_css_keyframes_sample(const my_css_keyframes_t* keyframes,
                              const char* key, const char* syntax, double t,
                              char* out, size_t cap);
@@ -488,11 +490,14 @@ const my_css_keyframes_t* my_theme_keyframes_find(const my_theme_t* theme,
  * key, the last group that applies a value at that time wins. An invalid
  * group invalidates the whole declaration.
  * The host supplies the elapsed milliseconds since the animation started.
- * Each iteration maps through the easing, then runs backwards when the
+ * Each iteration runs backwards when the
  * direction says so. During the delay a value exists only with
  * `backwards`/`both`, after the last iteration only with
  * `forwards`/`both`. The key is sampled between the stops that declare it
- * and blended with the property's registered syntax. Returns false when no
+ * and blended with the property's registered syntax. The group's easing
+ * applies to each keyframe segment separately; a stop's own
+ * `animation-timing-function` replaces it for the segment starting at that
+ * stop. Returns false when no
  * value applies (no animation, unknown keyframes name, no stop declares
  * the key, unregistered key, or outside the active period without fill);
  * the caller then falls back to my_theme_get_for_widget_var. */

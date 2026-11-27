@@ -2905,3 +2905,19 @@ graphics 与 present queue。`RE_VK_DEVICE_INDEX` 现在也必须通过同一门
 **变异**：5 项全部判红：不拆逗号、从第一组开始、遇到无值的组就返回 false、组数上限差一（越过 8 元素数组，测试进程崩溃）、首组未声明该 key 时不再继续。
 
 **验证**：`test_myui_css` 215/215；ASan+UBSan（含 LeakSanitizer）215/215；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。
+
+## 本轮补充：keyframe 分段 easing（2026-11-27）
+
+此前 `animation` 的 easing 作用于整个迭代的进度，再在 stop 之间线性插值。CSS 的语义是：easing 作用于每两个相邻 keyframe 之间的分段；stop 内声明的 `animation-timing-function` 替换从该 stop 开始那一段的 easing。
+
+修正（`engine/src/myui/myui/my_css.c`）：
+
+- 声明块接受 `animation-timing-function`，值必须是一个合法 easing（与 `transition` 同一语法），否则跳过该声明。它在 keyframe stop 里作为普通声明保存，可经 `my_css_keyframes_stop_value` 读取。
+- `css_animation_progress` 不再对整体进度做 easing，只处理延迟、迭代、方向与填充。
+- 新增内部 `css_keyframes_sample_eased`：在 t 两侧的 stop 之间求分段内的局部进度，先用起始 stop 的 `animation-timing-function`，否则用动画自身的 easing，再插值。公开的 `my_css_keyframes_sample` 没有动画 easing，分段默认线性。
+
+**TDD**：`test_myui_css` 新增 2 例（217 例）：首段 stop 的 `steps(2)` 只作用于首段、第二段沿用动画的 linear、动画自身为 `steps(2)` 时按分段而不是整体阶梯；非法 `animation-timing-function` 被跳过。旧实现把 easing 作用于整体进度（RED）。
+
+**变异**：5 项全部判红：忽略 stop 的 easing、忽略动画的 easing、恢复整体 easing、不校验声明、改用结束 stop 的 easing。
+
+**验证**：`test_myui_css` 217/217；ASan+UBSan（含 LeakSanitizer）217/217；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。源码与测试在提交 `myui: ease CSS animations per keyframe segment` 中，本节与头文件注释在随后的文档提交中补上。

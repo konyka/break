@@ -14841,3 +14841,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **实现**：按顶层逗号拆分为至多 8 组，任一组非法则整条无效；查询从最后一组往前，取第一个此刻对该 key 有值的组。
 - **TDD 与变异**：`test_myui_css` 新增 2 例（215 例），旧实现 RED；5 项定向变异全部判红。
 - **验证**：普通与 ASan+UBSan（含 LeakSanitizer）下 215/215；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
+
+## CSS keyframe 分段 easing（2026-11-27）
+
+- **缺口**：`animation` 的 easing 作用于整体进度，stop 内的 `animation-timing-function` 不被识别。
+- **实现**：easing 改为逐 keyframe 分段应用；stop 的 `animation-timing-function`（与 `transition` 同一 easing 语法，非法则跳过）替换该段的 easing。
+- **TDD 与变异**：`test_myui_css` 新增 2 例（217 例），旧实现 RED；5 项定向变异全部判红。
+- **验证**：普通与 ASan+UBSan（含 LeakSanitizer）下 217/217；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
