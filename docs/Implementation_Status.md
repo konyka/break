@@ -14677,3 +14677,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：`test_runtime_reload_deps` 新增 3 例（21 例），新规则先判红；7 项定向变异全部判红。
 - **验证**：ASan+UBSan 21/21 无泄漏，TSan 连跑 3 次 21/21；`test_editor_shell` 190/190（ASan 237/237）；`build-current-vk` 非 fuzz 462 通过、0 失败、4 项条件 skip。设计说明见 `docs/design/runtime_hot_reload.md` 同日补充。
 - **仍未完成**：编辑器外壳尚未在场景加载/切换时自动调用 `attach_reload_deps` 并登记 `scene_deps` 的路径。本提交自身的远端工作流结果不在此预写。
+
+## 编辑器热重载只让被监视的场景替换文档（2026-11-27）
+
+- **缺口**：接上 `reload_deps` 后，依赖链会经同一个协调器重载场景目录里的其他文件，这些提交也进入 `hr_commit`。`hr_commit` 原先忽略 `path`，只要字节是合法 BSCN 就载入文档。依赖者若记录为目录里的另一个 `.bscn`，那个文件会替换当前文档。测试复现：外部改写场景后，`other.bscn` 的 5 个实体覆盖了文档，`reloads` 变成 2。
+- **实现**（`engine/apps/editor/editor_hot_reload.c`）：`hr_commit` 开头比较 `path` 与被监视场景的 VFS 名（`hr->name`），不一致就返回 FAILED，不改任何状态和统计。依赖者因此以失败结束并保留旧版本，链按既有规则跳过依赖它的项。
+- **TDD 与变异**：`test_editor_shell` 新增 `hot_reload_dependent_of_another_file_never_replaces_the_document`（191 例），先判红；3 项定向变异全部判红（删掉检查、反转比较、只检查 NULL）。
+- **验证**：`test_editor_shell` 191/191；ASan+UBSan（`build-aoi-asan`）238/238 无泄漏；`build-current-vk` 非 fuzz 466/466。
+- **仍未完成**：编辑器外壳尚未在场景加载/切换时自动调用 `attach_reload_deps` 并登记 `scene_deps` 的路径（`scene_deps` 记录绝对路径，协调器 VFS 只接受相对场景目录的路径，接线时需转换）。本提交自身的远端工作流结果不在此预写。

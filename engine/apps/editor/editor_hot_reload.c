@@ -184,7 +184,13 @@ static BreakRuntimeError hr_commit(const char *path, const void *bytes,
     BreakEditorShell *shell = hr->shell;
     BreakEditorDoc *doc;
     u64 h;
-    (void)path;
+    /* The coordinator also carries dependent reloads (reload_deps) of other
+     * files in the scene directory. Only the watched scene may replace the
+     * document; anything else is refused before any state changes, so the
+     * hot-reload request's own outcome and stats stay untouched. */
+    if (path == NULL || strcmp(path, hr->name) != 0) {
+        return BREAK_RUNTIME_FAILED;
+    }
     if (shell == NULL) {
         hr->outcome = HR_OUT_SKIPPED;
         return BREAK_RUNTIME_FAILED;

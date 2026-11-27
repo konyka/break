@@ -13899,6 +13899,58 @@ TEST(hot_reload_with_deps_queues_dependents_after_scene_commit)
     hr_close(&fx);
 }
 
+/* A dependent reload of another file in the scene directory goes through the
+ * same coordinator, so it reaches the same commit hook. Only the watched
+ * scene may replace the document: another file is never loaded into it, and
+ * the dependent ends as failed (old version kept). */
+TEST(hot_reload_dependent_of_another_file_never_replaces_the_document)
+{
+    HrFixture fx;
+    BreakRuntimeReloadDepsStats dep_st;
+    BreakRuntimeReloadDeps *deps;
+    BreakAssetGraph *graph;
+    BreakAssetGraphConfig gc;
+    char other[700];
+    static const BreakAssetId kRoot = 42u;
+    static const BreakAssetId kChild = 43u;
+    static const BreakAssetId kRoot_as_dep[1] = {42u};
+
+    hr_open(&fx, "editor_hr_deps_other", 1u);
+    snprintf(other, sizeof(other), "%s/other.bscn", fx.dir);
+    save_fixture_scene(other, 5u);
+
+    memset(&gc, 0, sizeof(gc));
+    gc.capacity = 4u;
+    gc.max_edges = 4u;
+    ASSERT_EQ(break_asset_graph_create(&gc, &graph), BREAK_ASSET_GRAPH_OK);
+    ASSERT_EQ(break_asset_graph_add(graph, kRoot, NULL, 0u), BREAK_ASSET_GRAPH_OK);
+    ASSERT_EQ(break_asset_graph_add(graph, kChild, kRoot_as_dep, 1u), BREAK_ASSET_GRAPH_OK);
+    deps = break_editor_hot_reload_attach_reload_deps(fx.hr, graph, 32u);
+    ASSERT_NOT_NULL(deps);
+    ASSERT_EQ(break_runtime_reload_deps_set_path(deps, kRoot, fx.scene), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_set_path(deps, kChild, "other.bscn"), BREAK_RUNTIME_OK);
+
+    hr_external_scene(fx.scene, 3u);
+    HR_WAIT(fx.shell, break_editor_doc_entity_count(fx.doc) == 3u);
+    ASSERT_EQ(break_runtime_reload_deps_stats(deps, &dep_st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(dep_st.chains, 1u);
+    hr_settle(fx.shell, 100);
+    ASSERT_EQ(break_runtime_reload_deps_stats(deps, &dep_st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(dep_st.requested, 1u);
+    ASSERT_EQ(dep_st.queued, 0u);
+    ASSERT_FALSE(dep_st.in_flight);
+    ASSERT_EQ(dep_st.rebuilt, 0u);
+    ASSERT_EQ(dep_st.failed, 1u);
+    /* still the watched scene's content, not other.bscn's five entities */
+    ASSERT_EQ(break_editor_doc_entity_count(fx.doc), 3u);
+    ASSERT_EQ(hr_stats(&fx).reloads, 1u);
+
+    ASSERT_TRUE(break_editor_hot_reload_set_scene(fx.hr, NULL));
+    break_asset_graph_destroy(graph);
+    remove(other);
+    hr_close(&fx);
+}
+
 /* ---------------- i18n ---------------- */
 
 static const char *label_text(BreakEditorShell *shell, const char *name) {
@@ -15294,6 +15346,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(hot_reload_overlong_scene_path_disables_watch_without_truncating);
     RUN_TEST(hot_reload_teardown_in_either_order_is_safe);
     RUN_TEST(hot_reload_with_deps_queues_dependents_after_scene_commit);
+    RUN_TEST(hot_reload_dependent_of_another_file_never_replaces_the_document);
     RUN_TEST(camera_pose_whose_eye_collapses_onto_the_target_is_rejected);
     RUN_TEST(remote_cli_default_off_and_fail_closed_flags);
 #ifdef BREAK_EDITOR_REMOTE_TESTS
