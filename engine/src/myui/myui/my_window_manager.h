@@ -122,7 +122,8 @@ void my_window_manager_set_auto_paint(my_window_manager_t* wm, bool on);
 /** @brief Tick every open window's style clocks to the PAL clock
  * (my_window_tick_style_clocks); returns the number of widgets whose CSS
  * motion is still running. The auto-paint tick calls this before
- * painting; hosts that drive painting themselves call it each frame. */
+ * painting; hosts that drive painting themselves call it each frame
+ * (break_ui_render does, before collecting damage). */
 size_t my_window_manager_tick_style_clocks(my_window_manager_t* wm);
 
 /**

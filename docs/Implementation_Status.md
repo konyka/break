@@ -14883,3 +14883,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **实现**：`my_widget_tick_style_clocks` / `my_window_tick_style_clocks` / `my_window_manager_tick_style_clocks` 推进时钟、同步驱动、让仍在变化的控件失效（结束时再失效一次）并返回运行数；自动重绘定时器在绘制前调用；新增 `my_theme_motion_running` 与 `my_theme_animation_sync`。tick 不感知控件私有的按下状态。
 - **TDD 与变异**：`test_myui_window_manager` 新增 2 例（247 例），旧实现 RED；10 项定向变异全部判红。
 - **验证**：普通与 ASan+UBSan 下 `test_myui_window_manager` 247/247、`test_myui_css` 223/223；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
+
+## BreakUI 帧循环推进 CSS 动画时钟（2026-11-27）
+
+- **缺口**：BreakUI 关闭了自动重绘定时器，CSS 动画时钟的 tick 在引擎内不运行。
+- **实现**：`break_ui_render` 在收集 damage 前调用 `my_window_manager_tick_style_clocks`。
+- **验证**：`test_mycompose_gpu_opengl` / `_vulkan` 通过且 `idle_allocs=0`；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。接线改动，无专门 BreakUI 动画用例。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。

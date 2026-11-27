@@ -721,6 +721,9 @@ void break_ui_render(BreakUI *ui, RHICmdBuffer *cmd, u32 width, u32 height) {
       goto composite_surface;
     }
     epoch = my_window_manager_windows_epoch(ui->wm);
+    /* auto-paint is off here, so this frame loop advances CSS motion
+     * clocks itself before damage is collected */
+    (void)my_window_manager_tick_style_clocks(ui->wm);
     for (i = 0; i < n; i++) {
       if (my_window_prepare_layout(windows[i]) != MY_RET_OK) {
         my_window_manager_release_snapshot(ui->wm, windows, n);

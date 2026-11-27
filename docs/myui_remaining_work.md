@@ -3008,3 +3008,13 @@ CSS transition 与 animation 只有 `my_theme_*` 层的查询与宿主驱动，�
 **变异**：10 项全部判红：不失效、不做收尾失效、不遍历子控件、tick 不同步、设置时钟不同步、结束时刻恒为 0、未见过的动画不算运行（测试进程崩溃）、manager 用 0 作时钟、定时器不调用 tick。
 
 **验证**：`test_myui_window_manager` 247/247 与 `test_myui_css` 223/223；ASan+UBSan 下两者通过（`test_myui_css` 含 LeakSanitizer）；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。
+
+## 本轮补充：BreakUI 帧循环推进 CSS 动画时钟（2026-11-27）
+
+BreakUI 关闭了 window manager 的自动重绘定时器（`break_ui_init` 调用 `my_window_manager_set_auto_paint(false)`），由 `break_ui_render` 自行绘制，因此上一节加在定时器里的 tick 在 BreakUI 下不会运行，控件动画在引擎内不动。
+
+修正：`break_ui_render`（`engine/src/ui/myui_break.c`）在收集各窗口 damage 之前调用 `my_window_manager_tick_style_clocks`，仍在变化的控件因此进入本帧 damage。`my_window_manager.h` 的注释同步说明。
+
+**验证**：`test_mycompose_gpu_opengl` 与 `test_mycompose_gpu_vulkan`（BreakUI 真实帧路径）通过，`idle_allocs=0`，tick 没有给空闲帧带来分配；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。
+
+边界：这是接线改动，没有专门的 BreakUI 动画用例——BreakUI 测试需要真实窗口与 GPU 设备，tick 的行为本身由 `test_myui_window_manager` 的两个用例覆盖。
