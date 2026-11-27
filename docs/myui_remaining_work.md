@@ -2014,7 +2014,7 @@ Canvas 状态 setter 现拒绝 NaN、Inf 和非正 line width，避免非法数�
 | 能力 | 当前边界 | 主要风险 | 完成判据 |
 | --- | --- | --- | --- |
 | OpenType shaping | 可选 HarfBuzz + FreeType glyph-run 已接入四个 canvas；字体 API 支持 direction/script/language/features；BiDi 构建复用 SheenBidi Unicode 17 primary Script 与仓库内 Unicode 17 Script_Extensions 表，paragraph 按 resolved Script 拆分 run，并保留 byte cluster 与失败回滚；无 BiDi 构建复用静态扩展表和常用 primary fallback；Common 标点、Inherited、variation selector 与假名归属已修正；非 shaping fallback 不产生独立 VS glyph；OpenType provider 清理未消费的 VS15/VS16 并保留 ZWJ 组合；字体链已支持 provider 可确认的跨 face variation glyph 覆盖选择；公共 feature 边界、规范化、冲突覆盖、GSUB/GPOS feature 存在性和 HarfBuzz buffer allocation 检查已统一；provider、字体链和 text-layout 聚合层共享 `MY_FONT_SHAPE_MAX_GLYPHS` 输出预算；每个 layout 提供固定 4 槽 LRU glyph-run cache | glyph/advance 与逻辑边界错配、字体缓存跨 key 污染、复杂 RTL 视觉顺序错误、未知 provider 的 variation 能力、font lifetime 不满足缓存契约 | 保持 glyph-id/codepoint 独立缓存；golden glyph/advance、超大 provider 输出、禁用依赖回退和四后端构建；后续补完整跨字体 variation corpus、language-specific feature 选择和完整 RTL GSUB |
-| 复杂 RTL rebreaking | paragraph 按逻辑范围生成 cluster-safe wrapped lines，并在断行测量时复用 visual bidi glyph-run；text area 已消费该模型，RTL 行内映射、同一物理行及相邻物理行之间的全局 visual-line 水平导航、跨 face glyph-run、paragraph shaping 参数、全局 logical ↔ 局部 visual boundary 包装及单段落 JUSTIFY 的绘制/选区/光标联动已接入；跨 visual-line navigation cursor 解决共享 logical boundary 的连续箭头归属；GSUB/GPOS language-system 与 requested feature 存在性可查询；跨物理段落 visual rebreaking、跨段落增量预算和复杂多段落 JUSTIFY 联动仍未完成 | 光标、选区和 line hit-test 在 bidi run/换行边界错位 | 段落模型 golden visual order、重排后逻辑映射、跨 visual-line selection 契约；后续补完整 script/features run shaping 与跨物理段落增量 mapping |
+| 复杂 RTL rebreaking | paragraph 按逻辑范围生成 cluster-safe wrapped lines，并在断行测量时复用 visual bidi glyph-run；text area 已消费该模型，RTL 行内映射、同一物理行及相邻物理行之间的全局 visual-line 水平导航、跨 face glyph-run、paragraph shaping 参数、全局 logical ↔ 局部 visual boundary 包装及单段落 JUSTIFY 的绘制/选区/光标联动已接入；跨 visual-line navigation cursor 解决共享 logical boundary 的连续箭头归属；GSUB/GPOS language-system 与 requested feature 存在性可查询；跨物理段落 visual rebreaking 与跨段落增量预算仍未完成（多段落 JUSTIFY 已于 2026-11-27 以表征用例核对通过） | 光标、选区和 line hit-test 在 bidi run/换行边界错位 | 段落模型 golden visual order、重排后逻辑映射、跨 visual-line selection 契约；后续补完整 script/features run shaping 与跨物理段落增量 mapping |
 | 高级编辑器 | 物理行折叠支持严格包含嵌套、有界 YAML v1 状态快照、legacy v0/无版本快照显式升级、可见行缓存 O(rows+ranges) 构建、OOM 正确性回退、行号栏、wrap 增量缓存、visual-line 分页、绘制 scratch 复用、行级 lexer、LTR/RTL 受限 token 着色已实现；完整 RTL GSUB、跨 face token shaping 未实现（LTR 与 RTL JUSTIFY token 着色已于 2026-11-27 接入） | 大文档单帧 O(n) 卡顿、折叠后索引失效、token 状态跨行污染 | 继续保持 lexer/cache 单帧预算，并补齐 paragraph/run 级 RTL shaping |
 | 真 partial present | 已完成后端无关的 `SKIP/PARTIAL/FULL` 决策、RHI 有界 damage 帧接口、Wayland EGL buffer-age/damage-present 接入和 dxx 集成；Wayland 在 `EGL_BUFFER_PRESERVED` 成功协商后使用固定容量 history 合并 age>1 重绘区域，history 仅在 swap 成功后更新，失败/resize 自动清除；Vulkan 仍安全全屏，`VK_KHR_incremental_present` 不作为像素保留能力位，因为该扩展不保证 present 后 swapchain image 内容可被 `LOAD`（2026-11-27 起只作为 damage 提示启用，见文末同日补充）；Win32/macOS 仍安全全屏 | 未损伤区域内容丢失、WSI 内容保留语义误用、Vulkan 缺少标准 buffer-age/内容保留契约、真实平台能力未覆盖 | Weston 与真实 Wayland runtime 只覆盖其实际执行项；仍需更多 Wayland buffer-age 轮转、Win32/macOS retained-buffer 语义、异常 present 及具备明确 image 保留保证的 Vulkan/WSI 方案 |
 | 完整 UAX#14 默认规则 | Unicode 17 `LineBreakTest.txt` 已通过 60,487/60,487 边界；SA dictionary 基础 callback 和 paragraph/wrap 接入已完成；核心状态机固定内存、无分配、无锁 | locale-specific tailoring、调用方 SA dictionary 质量和真实平台语言策略 | 版本化 UCD golden corpus 已完成；后续补 locale dictionary corpus、超长输入预算和产品级 tailoring 契约 |
@@ -2779,7 +2779,7 @@ graphics 与 present queue。`RE_VK_DEVICE_INDEX` 现在也必须通过同一门
 
 **验证**：`test_myui_window_manager` 242/242；ASan+UBSan 242/242，LeakSanitizer 报告的 22012 字节与撤掉本改动后的基线完全相同，来自驱动模块；`build-current-vk` 非 fuzz 477/477。
 
-边界：缓存仍是 4 槽，长文档滚动时按 LRU 淘汰；跨段落 visual rebreaking 本身（断行结果复用）已由既有的 dirty-suffix 复用路径覆盖，本节只补布局缓存这一层。复杂多段落 JUSTIFY 联动仍未完成。
+边界：缓存仍是 4 槽，长文档滚动时按 LRU 淘汰；跨段落 visual rebreaking 本身（断行结果复用）已由既有的 dirty-suffix 复用路径覆盖，本节只补布局缓存这一层。多段落 JUSTIFY 见文末同日核对。
 
 ## 本轮补充：RTL syntax 高亮保留整形字形（2026-11-27）
 
@@ -3051,3 +3051,13 @@ BreakUI 关闭了 window manager 的自动重绘定时器（`break_ui_init` 调�
 **变异**：9 项全部判红：四个控件各自不设置回调、`my_widget_pressed` 恒为 false、三处状态推导各自改回不含按下。首轮手动设置时钟那一处存活，据此补了手动设置时钟的用例。
 
 **验证**：`test_myui_window_manager` 251/251 与 `test_myui_css` 223/223；ASan+UBSan 下两者通过；`build-myui-tests` 全量 ctest 482/482；`test_mycompose_gpu_opengl` 与 `_vulkan` 通过且 `idle_allocs=0`；`build-current-vk` 构建通过。
+
+## 本轮核对：多段落 JUSTIFY（2026-11-27）
+
+「复杂 RTL rebreaking」一行把「复杂多段落 JUSTIFY 联动」列为未完成。核对时写了表征用例，现有实现直接通过：JUSTIFY 的判定按 visual line 进行（同一物理行还有后续 visual line 才拉伸），每个物理段落独立处理，RTL 段落走 bidi layout 的拉伸路径。
+
+**测试**：`test_myui_window_manager` 新增 `text_area_justify_multi_paragraph_stretches_each_inner_line`（252 例）：三段、中间一段为 Hebrew，各自换成两行；每段首行左右两端都有墨迹（拉伸到满宽），每段末行保持自然宽度（LTR 段靠左、RTL 段靠右）。变异「JUSTIFY 恒不拉伸」使该用例判红（同时 `text_area_justify_syntax_colors_tokens` 也判红）。
+
+**验证**：`test_myui_window_manager` 252/252，ASan+UBSan 252/252。
+
+因此表中该项改为已核对；同一行剩余的「跨物理段落 visual rebreaking」与「跨段落增量预算」不变。

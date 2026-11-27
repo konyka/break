@@ -14914,3 +14914,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **测试夹具 UB**：同一 Snowflake 配置下以 ASan+UBSan 运行时，`test_runtime_world_session` 的 `fixture_init_without_adapter_scaled` 在 `memset` 前读取了未初始化栈上 `Fixture` 的 `fair_outbound_admission`（本文件从不置真），UBSan 报 `load of value 14 ... type 'bool'`。删除该保留逻辑后 ASan+UBSan（`detect_leaks=0`）下 `test_runtime_world_session` 76/76、`test_world_session`/`_recovery`/`_loopback` 均通过且无诊断。
 - **其余审查项**：本轮对 `cb9352de..6d81ebef` 的预测、延迟补偿、快照插值、World merge、实体映射、snapshot log、metrics、资产依赖图、HTTP/ELF 解析、CSS keyframes 做了只读复核，未发现内存安全缺陷；记录的次要问题（例如 `runtime_metrics_push_http` 对 body 超过 256 字节的 200 响应报 FAILED、`runtime_reload_deps` 依赖环时队列停滞、编辑器热重载借用的依赖图在重建后悬空但当前无生产调用点）未在本提交处理。
 - **边界**：远端仓库 `SNOWFLAKE_READ_TOKEN` 仍未配置，CI 中该 job 仍会记 UNAVAILABLE，本机 14/14 不代表远端执行。本收据提交自身的工作流结果不在此预写。
+
+## 多段落 JUSTIFY 核对（2026-11-27）
+
+- **核对**：`myui_remaining_work.md` 把「复杂多段落 JUSTIFY 联动」列为未完成；表征用例显示现有实现已按段落独立拉伸，RTL 段落同样正确。
+- **测试**：`test_myui_window_manager` 新增 `text_area_justify_multi_paragraph_stretches_each_inner_line`（252 例），现有实现直接通过；「JUSTIFY 恒不拉伸」变异判红。
+- **验证**：普通与 ASan+UBSan 下 252/252。文档中该项改为已核对。本提交自身的远端工作流结果不在此预写。

@@ -8164,6 +8164,74 @@ TEST(text_area_wrap_rtl_justify_cursor_tracks_stretched_space)
   my_font_destroy(font);
 }
 
+TEST(text_area_justify_multi_paragraph_stretches_each_inner_line)
+{
+  /* Three paragraphs, the middle one RTL, each wrapping into two lines.
+   * Every first line is justified to the full inner width; every last
+   * line of a paragraph keeps its natural width. With the bitmap font at
+   * size 8, cells are 8 px, content starts at x = 4 and the inner width
+   * is 56, so "aa bb" (40 px) wraps before "cc" and is stretched: its
+   * last cell, x 52..59, has ink; the natural "cc" line does not. */
+  const char* text =
+      "aa bb cc\n"
+      "\xD7\x90\xD7\x91 \xD7\x92\xD7\x93 \xD7\x94\xD7\x95\n"
+      "dd ee ff";
+  my_widget_t* area = my_text_area_create(NULL);
+  my_font_t* font = my_font_bitmap_create(NULL);
+  my_lcd_t* lcd = my_lcd_mem_create(NULL, 100, 120, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
+  const uint8_t* px;
+  uint32_t stride;
+  size_t line, x, y;
+
+  ASSERT_NOT_NULL(area);
+  ASSERT_NOT_NULL(canvas);
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 64, 110}), MY_RET_OK);
+  my_text_area_set_font(area, font, 8);
+  ASSERT_EQ(my_vgcanvas_set_font(canvas, font, 8), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_wrap(area, true), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_align(area, MY_TEXT_ALIGN_JUSTIFY), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_text(area, text), MY_RET_OK);
+  ASSERT_EQ(my_text_area_visual_line_count(area), 6u);
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  area->vtable->on_paint(area, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  px = my_lcd_mem_get_buffer(lcd);
+  stride = my_lcd_mem_get_stride(lcd);
+  for (line = 0u; line < 6u; line++) {
+    const my_visual_line_t* vl = my_text_area_visual_line_at(area, line);
+    bool first = line % 2u == 0u;
+    bool ink_right = false;
+    bool ink_left = false;
+    size_t y0 = 3u + line * (size_t)my_font_line_height(font, 8);
+    for (y = y0; y < y0 + 8u; y++) {
+      for (x = 52u; x < 60u; x++) {
+        if (px[y * stride + x * 4u] != 255u) ink_right = true;
+      }
+      for (x = 4u; x < 12u; x++) {
+        if (px[y * stride + x * 4u] != 255u) ink_left = true;
+      }
+    }
+    ASSERT_NOT_NULL(vl);
+    if (!first && vl->len_cp == 2u && !ink_left) {
+      /* an RTL last line sits at the right edge instead of the left */
+      ASSERT_TRUE(vl->phys == 1u);
+      ASSERT_TRUE(ink_right);
+      continue;
+    }
+    if ((first && (!ink_right || !ink_left)) || (!first && ink_right)) {
+      printf("  line %zu phys=%zu len=%zu left=%d right=%d\n", line,
+             vl->phys, vl->len_cp, ink_left, ink_right);
+    }
+    ASSERT_TRUE(ink_left);
+    ASSERT_EQ(ink_right, first);
+  }
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
+  my_font_destroy(font);
+  my_widget_unref(area);
+}
+
 TEST(text_area_rtl_justify_selection_uses_stretched_visual_rect)
 {
   my_widget_t* area = my_text_area_create(NULL);
@@ -9697,6 +9765,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_area_wrap_rtl_ime_spot_uses_visual_boundary);
     RUN_TEST(text_area_wrap_rtl_justify_cursor_tracks_stretched_space);
     RUN_TEST(text_area_rtl_justify_selection_uses_stretched_visual_rect);
+    RUN_TEST(text_area_justify_multi_paragraph_stretches_each_inner_line);
     RUN_TEST(text_area_nonwrap_rtl_geometry_keeps_logical_boundaries);
     RUN_TEST(text_area_nonwrap_rtl_geometry_works_without_shaping);
 #endif
