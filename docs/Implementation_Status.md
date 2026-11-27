@@ -14943,3 +14943,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：`test_myui_css` 新增 1 例（224 例），`test_myui_window_manager` 新增 1 例（255 例），修复前均 RED；2 项定向变异判红。
 - **验证**：普通与 ASan+UBSan 下两者通过；`build-myui-tests` 全量 ctest 482 项无失败；`build-current-vk` 构建通过、28 项相关 ctest 通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
 
+## `transition: none`（2026-11-27）
+
+- **缺陷**：严格 CSS 解析丢弃 `transition: none`，媒体规则无法关闭 transition。
+- **修复**：接受单独的 `none`，值变化直接切换；混入列表仍是坏值。
+- **TDD 与变异**：`test_myui_css` 新增 1 例（225 例），修复前 RED；2 项定向变异判红。
+- **验证**：普通与 ASan+UBSan 下 225/225；全量 ctest 482 项无失败；`build-current-vk` 构建通过。本提交自身的远端工作流结果不在此预写。
+

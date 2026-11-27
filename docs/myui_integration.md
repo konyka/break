@@ -1186,7 +1186,7 @@ resolver 仍应限制根目录并拒绝不可信符号链接。
 只声明 Wayland seat/output 能稳定证明的 pointer/hover 与 sRGB，没有可靠证据的色域和 HDR
 保持 unknown；Windows/macOS 在冷路径读取可用的系统颜色方案与 reduced-motion 偏好，
 （CSS 动画按 reduced-motion 关闭由样式作者用 `@media (prefers-reduced-motion: reduce)`
-加 `animation: none` 表达，媒体事实变化时 `my_window_manager_refresh_media` 重新求值窗口 CSS，
+加 `animation: none`（transition 用 `transition: none`）表达，媒体事实变化时 `my_window_manager_refresh_media` 重新求值窗口 CSS，
 下一次 style clock tick 即停止该动画；Linux/Wayland 下该事实为 unknown，动画照常进行）
 Windows 还将系统鼠标/触控指标映射为 pointer 能力。Cocoa
 会从窗口当前屏幕的 Color Space 识别 Display P3/Rec.2020，并从可用的 EDR selector 识别 HDR；Win32

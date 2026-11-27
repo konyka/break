@@ -3115,3 +3115,15 @@ BreakUI 关闭了 window manager 的自动重绘定时器（`break_ui_init` 调�
 
 **边界**：reduced-motion 由样式作者用 `@media` 表达，引擎不会自动关闭动画（与浏览器一致）。transition 同样可以在媒体规则中覆盖。平台是否报告该偏好取决于 PAL：Wayland/Linux 目前保持 unknown，Windows/macOS 的真实读取仍需对应主机验证。本提交自身的远端工作流结果不在此预写。
 
+## 本轮补充：`transition: none`（2026-11-27）
+
+上一节的边界写了「transition 同样可以在媒体规则中覆盖」，核对时发现不成立：`transition: none` 也被严格解析当作坏值丢弃（每组至少要求属性名和时长两个 token），先前的 transition 继续生效。
+
+修正（`engine/src/myui/myui/my_css.c`）：`css_transition_value_ok` 接受单独的 `none`。`none` 不构成任何组，`css_transition_targets` 在其中找不到属性，因此值变化时直接切换，`my_theme_motion_running` 也不再计入。`none` 混入列表（`none, color 1s`）仍是坏值，声明被跳过。
+
+**TDD**：`test_myui_css` 新增 `css_transition_none_switches_transition_off`（225 例）：`none` 覆盖先前的 transition 后，颜色变化直接得到新值且不再运行；混合列表被跳过，原 transition 在半程得到混合色 `0x800080FF`。修正前在「直接得到新值」处判红。
+
+**变异**：2 项判红：不接受 `none`；放宽为「含 `none` 子串」（混合列表用例与 `css_transition_steps_full_positions` 判红）。
+
+**验证**：`test_myui_css` 225/225，ASan+UBSan（`detect_leaks=0`）225/225；`build-myui-tests` 全量 ctest 482 项无失败；`build-current-vk` 构建通过，28 项相关 ctest 通过。本提交自身的远端工作流结果不在此预写。
+

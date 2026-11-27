@@ -4129,6 +4129,64 @@ TEST(css_animation_play_state_starting_paused_and_per_group)
   my_theme_destroy(theme);
 }
 
+TEST(css_transition_none_switches_transition_off)
+{
+  /* `transition: none` is accepted in strict mode and overrides an earlier
+   * transition: a value change jump-cuts and no motion runs. `none` cannot
+   * be mixed into a list. */
+  const char* v1 =
+      "button { color: #ff0000ff; transition: color 200ms linear; }"
+      "button { transition: none; }";
+  const char* v2 = "button { color: #0000ffff; }";
+  my_theme_t* theme = my_theme_create(NULL);
+  my_theme_t* bad = my_theme_create(NULL);
+  my_widget_t* button = my_widget_create(NULL, "button");
+  my_theme_transition_state_t box;
+  my_value_t out;
+
+  ASSERT_NOT_NULL(theme);
+  button->widget_type = "button";
+  memset(&box, 0, sizeof(box));
+  my_value_init(&out, NULL);
+  ASSERT_EQ(my_theme_load_css_ex(theme, v1, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_transition_step(theme, button, MY_STATE_NORMAL,
+                                       MY_STYLE_FG_COLOR, 0.0, &out, &box));
+  my_value_reset(&out);
+  ASSERT_EQ(my_theme_load_css_ex(theme, v2, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_transition_step(theme, button, MY_STATE_NORMAL,
+                                       MY_STYLE_FG_COLOR, 100.0, &out, &box));
+  ASSERT_EQ(my_value_get_uint32(&out), 0x0000FFFFu);
+  my_value_reset(&out);
+  ASSERT_FALSE(my_theme_motion_running(theme, button, MY_STATE_NORMAL, 150.0,
+                                       NULL, &box));
+
+  /* a mixed list is a bad value: skipped, the earlier transition stays. */
+  memset(&box, 0, sizeof(box));
+  ASSERT_EQ(my_theme_load_css_ex(
+                bad,
+                "button { color: #ff0000ff; transition: color 200ms linear; }"
+                "button { transition: none, color 1s; }",
+                MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_transition_step(bad, button, MY_STATE_NORMAL,
+                                       MY_STYLE_FG_COLOR, 0.0, &out, &box));
+  my_value_reset(&out);
+  ASSERT_EQ(my_theme_load_css_ex(bad, v2, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_transition_step(bad, button, MY_STATE_NORMAL,
+                                       MY_STYLE_FG_COLOR, 100.0, &out, &box));
+  my_value_reset(&out);
+  ASSERT_TRUE(my_theme_transition_step(bad, button, MY_STATE_NORMAL,
+                                       MY_STYLE_FG_COLOR, 200.0, &out, &box));
+  ASSERT_EQ(my_value_get_uint32(&out), 0x800080FFu);
+  my_value_reset(&out);
+  my_widget_unref(button);
+  my_theme_destroy(bad);
+  my_theme_destroy(theme);
+}
+
 TEST(css_builtin_keys_transition_and_animate)
 {
   /* The theme's built-in color and size keys interpolate without an
@@ -11940,6 +11998,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_animation_play_state_pauses_without_restart);
     RUN_TEST(css_animation_play_state_starting_paused_and_per_group);
     RUN_TEST(css_builtin_keys_transition_and_animate);
+    RUN_TEST(css_transition_none_switches_transition_off);
     RUN_TEST(widget_style_clock_drives_css_animation_and_transition);
     RUN_TEST(widget_style_clock_local_override_wins);
     RUN_TEST(css_animation_declaration_rejects_malformed_values);

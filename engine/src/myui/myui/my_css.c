@@ -1227,12 +1227,17 @@ static bool css_transition_group_parse(const char* text, size_t len,
   return true;
 }
 
+/* `none` (the initial value) transitions nothing: it is never a group, so
+ * css_transition_targets finds no key in it. */
 static bool css_transition_value_ok(const char* text) {
   size_t len = strlen(text);
   size_t i = 0u;
   size_t depth = 0u;
   size_t groups = 0u;
   size_t start = 0u;
+  if (my_str_eq(text, "none")) {
+    return true;
+  }
   while (i <= len) {
     char c = i < len ? text[i] : ',';
     if (depth == 0u && (c == ',' || i == len)) {
