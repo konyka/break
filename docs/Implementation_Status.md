@@ -14704,3 +14704,12 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
   - 客户端影响服务端状态的通道是输入：`core_app_simulation_intent` 与 `break_prediction_session` 的按序去重输入收件箱，由服务端 simulation 权威执行。
   - 让合并生效需要 simulation 改为以权威 World 为状态来源，属于 simulation 设计改变，而不是缺少的接线。`BreakWorldMerge` 本身已交付并有测试，供以 World 为状态来源的宿主使用。
 - `docs/cross_engine/missing_capabilities.md` 同步更新。本提交只改文档；本提交自身的远端工作流结果不在此预写。
+
+## core_app 预测不改用关卡用户实体的结论（2026-11-27）
+
+- **核对对象**：`missing_capabilities.md` 中「`core_app --prediction` 改用关卡中的真实用户实体」。
+- **结论**：不接线，前置条件不成立。
+  - 关卡只有一个用户实体：`stage_simulation`（`engine/apps/core_app/core_app.c`）取 `entities[CORE_APP_USER_ENTITY_INDEX]`，`CoreAppSimulationDesc` 只有一个 `user` 字段，`core_app_simulation_tick` 的输入来自本机输入帧。
+  - 服务端预测按连接运行（`core_app_net_transport.c` 的 `prediction_bodies[slot]`，由 `net_prediction_apply` 逐连接执行输入）。把它绑定到关卡用户，需要每个连接各有一个由该连接输入驱动的用户实体，即多用户 simulation。
+  - 这属于 simulation 设计改变，与上一条「每连接诊断 World 不接入权威合并」同因；预测、延迟补偿、插值与会话收发的库与接线均已交付。
+- `docs/cross_engine/missing_capabilities.md` 同步更新。本提交只改文档；本提交自身的远端工作流结果不在此预写。
