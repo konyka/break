@@ -14785,3 +14785,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **核对**：Cantarell + Vazirmatn 字体链经 `my_text_layout_shape` 整形 Arabic 连写、lam-alef 合字、harakat 与「Arabic + Latin + Arabic」混合方向文本，结果与 `hb-shape` 直接用 Vazirmatn 一致，视觉顺序和逻辑 cluster 正确。
 - **测试**：`test_myui_text_layout` 新增表征用例 `text_layout_shapes_mixed_bidi_through_font_chain_golden`（143 例），现有实现直接通过；4 项定向变异中 3 项判红，1 项落在 BiDi 构建不会进入的分支。
 - **验证**：普通与 ASan+UBSan 下 143/143；`build-current-vk` 非 fuzz 477/477。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
+
+## RTL 布局缓存跨物理段落保留（2026-11-27）
+
+- **缺口**：text area 的 RTL 布局缓存以全局 `text_revision` 为键，每次编辑都清空全部槽位，未修改的物理段落也要重建 bidi 布局。
+- **实现**：`ta_bump_text_revision` 不再清空缓存；`ta_layout_rtl` 在 revision 不同时用槽位 layout 保存的文本与当前行字节比较，一致则继续使用并更新 revision。字体、shaping 参数变化与销毁仍清空。
+- **TDD 与变异**：`test_myui_window_manager` 新增 2 例（242 例），旧实现 RED；6 项定向变异中 4 项判红，2 项为已说明的等价变异，首版多余的两项检查已删除。
+- **验证**：普通与 ASan+UBSan 下 242/242（LeakSanitizer 驱动泄漏与基线相同）；`build-current-vk` 非 fuzz 477/477。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。

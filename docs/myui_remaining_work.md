@@ -2754,3 +2754,29 @@ graphics 与 present queue。`RE_VK_DEVICE_INDEX` 现在也必须通过同一门
 **验证**：`test_myui_text_layout` 143/143，ASan+UBSan 143/143；`build-current-vk` 非 fuzz 477/477。
 
 该行判据中「完整 RTL GSUB」的剩余部分只是本机字体覆盖不到的情形（如 Syriac、N'Ko 等其他 RTL script 与 `rlig` 之外的 language-specific RTL feature），需要相应字体才能取证。
+
+## 本轮补充：RTL 布局缓存跨物理段落保留（2026-11-27）
+
+「未完成能力」表中「复杂 RTL rebreaking」一行的判据有「跨物理段落增量 mapping」与「跨段落增量预算」。text area 的 RTL 布局缓存（`rtl_cache`，4 槽 LRU，每槽一份 visual line 的 bidi layout）此前以全局 `text_revision` 为键，任何一次编辑都会经 `ta_bump_text_revision` 清空全部槽位。只改第 3 行时，其余物理段落的 SheenBidi 布局也要在下一帧重建。
+
+修正（`engine/src/myui/myui/widgets/my_text_area.c`）：
+
+- `ta_bump_text_revision` 不再清空 RTL 缓存，只使导航状态失效。
+- `ta_layout_rtl` 命中条件改为：物理行、起始字节、字体、字号、shaping 参数相同，且槽位的 `len_bytes` 等于当前 visual line 的长度；再看 revision 相同，或者 layout 自己保存的 `logical_utf8` 与该行当前字节一致。内容一致时把槽位的 revision 更新到当前值，后续帧不再重复比较。
+- 字体、shaping 参数变化和控件销毁仍显式清空缓存。
+
+**TDD**：`test_myui_window_manager` 新增 2 例（242 例）：
+
+- `text_area_rtl_cache_survives_edits_on_other_physical_lines`：4 行 Hebrew，只在第 2 行输入一个字符，重绘后另外 3 行保留原 layout 指针，第 2 行换成新 layout（长度 5 字节）。随后在第 0 行插入换行，后续行整体下移，检查每个槽位的 layout 文本与它对应的当前行字节一致。旧实现上保留数为 0（RED）。
+- `text_area_rtl_cache_rejects_prefix_of_longer_cached_line`：行尾退格后，新行是旧缓存文本的字节前缀，不能命中旧 layout。
+
+**变异**：6 项中 4 项判红（去掉内容比较、恒命中、去掉长度相等、去掉物理行比较）。另 2 项存活，都是等价变异：
+
+- 去掉 revision 快路径（恒做内容比较）：结果相同，只多一次 memcmp。
+- 命中后不更新 revision：结果相同，只是后续帧继续做内容比较。
+
+首版的「`logical_utf8` 非空」与「`logical_utf8[length]` 为终止符」两项检查被变异证明多余，已删除。layout 构造时总会复制文本，长度相等已由 `len_bytes == length` 保证。
+
+**验证**：`test_myui_window_manager` 242/242；ASan+UBSan 242/242，LeakSanitizer 报告的 22012 字节与撤掉本改动后的基线完全相同，来自驱动模块；`build-current-vk` 非 fuzz 477/477。
+
+边界：缓存仍是 4 槽，长文档滚动时按 LRU 淘汰；跨段落 visual rebreaking 本身（断行结果复用）已由既有的 dirty-suffix 复用路径覆盖，本节只补布局缓存这一层。复杂多段落 JUSTIFY 联动仍未完成。

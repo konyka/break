@@ -1625,11 +1625,13 @@ static void ta_rtl_cache_mirror(my_text_area_t* ta,
   ta->rtl_font_size = entry->font_size;
 }
 
+/* The RTL layout cache survives text edits: ta_layout_rtl validates each
+ * entry against the current bytes of its visual line, so lines an edit did
+ * not touch keep their bidi layouts. */
 static void ta_bump_text_revision(my_text_area_t* ta) {
   ta->text_revision = ta->text_revision == UINT64_MAX
                            ? 1
                            : ta->text_revision + 1;
-  ta_rtl_cache_clear(ta);
   ta->navigation_valid = false;
 }
 
@@ -2813,21 +2815,26 @@ static my_text_layout_t* ta_layout_rtl(my_text_area_t* ta,
   size_t end;
   size_t length;
   my_text_layout_t* layout;
+  if (!ta_vline_slice_bounds(ta, vl, &start, &end)) return NULL;
+  length = end - start;
   for (i = 0; i < MY_TEXT_AREA_RTL_CACHE_CAPACITY; i++) {
     entry = &ta->rtl_cache[i];
+    /* len_bytes == length and the layout's own copy of the bytes match:
+     * the entry holds exactly this line's current text. The revision
+     * check skips the compare when nothing was edited since. */
     if (entry->layout != NULL && entry->phys == vl->phys &&
-        entry->start_byte == vl->start_byte &&
-        entry->len_bytes == vl->len_bytes &&
-        entry->text_revision == ta->text_revision && entry->font == ta->font &&
-        entry->font_size == ta->font_size &&
-        entry->shaping_revision == ta->shaping_revision) {
+        entry->start_byte == vl->start_byte && entry->len_bytes == length &&
+        entry->font == ta->font && entry->font_size == ta->font_size &&
+        entry->shaping_revision == ta->shaping_revision &&
+        (entry->text_revision == ta->text_revision ||
+         memcmp(entry->layout->logical_utf8, ta->text + start, length) ==
+             0)) {
+      entry->text_revision = ta->text_revision;
       entry->last_used = ta_rtl_cache_next_tick(ta);
       ta_rtl_cache_mirror(ta, entry);
       return entry->layout;
     }
   }
-  if (!ta_vline_slice_bounds(ta, vl, &start, &end)) return NULL;
-  length = end - start;
   if (!my_text_layout_may_need_bidi_n(ta->text + start, length)) return NULL;
   layout = my_text_layout_process_n(ta->allocator, ta->text + start, length);
   if (layout == NULL) return NULL;

@@ -3467,6 +3467,152 @@ TEST(text_area_rtl_paint_caches_multiple_visual_lines)
   my_widget_unref(area);
 }
 
+TEST(text_area_rtl_cache_survives_edits_on_other_physical_lines)
+{
+  my_widget_t* area = my_text_area_create(NULL);
+  my_text_area_t* text_area = (my_text_area_t*)area;
+  my_lcd_t* lcd = my_lcd_mem_create(NULL, 160, 120, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
+  my_event_t event = my_event_init(MY_EVENT_KEY_DOWN);
+  my_text_layout_t* before[MY_TEXT_AREA_RTL_CACHE_CAPACITY];
+  size_t phys_of[MY_TEXT_AREA_RTL_CACHE_CAPACITY];
+  size_t i;
+  size_t kept = 0u;
+  size_t edited_layouts = 0u;
+
+  ASSERT_NOT_NULL(area);
+  ASSERT_NOT_NULL(lcd);
+  ASSERT_NOT_NULL(canvas);
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 160, 100}), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_text(
+                area,
+                "\xD7\x90\xD7\x91\n\xD7\x92\xD7\x93\n\xD7\x94\xD7\x95\n"
+                "\xD7\x96\xD7\x97"),
+            MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  area->vtable->on_paint(area, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  for (i = 0u; i < MY_TEXT_AREA_RTL_CACHE_CAPACITY; i++) {
+    before[i] = text_area->rtl_cache[i].layout;
+    phys_of[i] = text_area->rtl_cache[i].phys;
+    ASSERT_NOT_NULL(before[i]);
+  }
+
+  /* Type into physical line 2 only; its byte length changes. */
+  text_area->focused = true;
+  text_area->cursor_row = 2u;
+  text_area->cursor_col = 1u;
+  text_area->anchor_row = 2u;
+  text_area->anchor_col = 1u;
+  event.u.key.key = 'x';
+  ASSERT_EQ(area->vtable->on_event(area, &event), MY_RET_OK);
+  ASSERT_STR_EQ(my_text_area_get_text(area),
+                "\xD7\x90\xD7\x91\n\xD7\x92\xD7\x93\n\xD7\x94x\xD7\x95\n"
+                "\xD7\x96\xD7\x97");
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  area->vtable->on_paint(area, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+
+  for (i = 0u; i < MY_TEXT_AREA_RTL_CACHE_CAPACITY; i++) {
+    size_t j;
+    const my_text_area_rtl_cache_entry_t* entry = &text_area->rtl_cache[i];
+    ASSERT_NOT_NULL(entry->layout);
+    if (entry->phys == 2u) {
+      edited_layouts++;
+      for (j = 0u; j < MY_TEXT_AREA_RTL_CACHE_CAPACITY; j++) {
+        if (phys_of[j] == 2u) ASSERT_TRUE(entry->layout != before[j]);
+      }
+      ASSERT_EQ(entry->len_bytes, 5u);
+      continue;
+    }
+    for (j = 0u; j < MY_TEXT_AREA_RTL_CACHE_CAPACITY; j++) {
+      if (phys_of[j] == entry->phys && before[j] == entry->layout) kept++;
+    }
+  }
+  ASSERT_EQ(edited_layouts, 1u);
+  ASSERT_EQ(kept, 3u);
+
+  /* A structural edit (new physical line) shifts every later row: their
+   * cache entries must not be served for the wrong text. */
+  text_area->cursor_row = 0u;
+  text_area->cursor_col = 1u;
+  text_area->anchor_row = 0u;
+  text_area->anchor_col = 1u;
+  event.u.key.key = MY_KEY_RETURN;
+  ASSERT_EQ(area->vtable->on_event(area, &event), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  area->vtable->on_paint(area, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  for (i = 0u; i < MY_TEXT_AREA_RTL_CACHE_CAPACITY; i++) {
+    const my_text_area_rtl_cache_entry_t* entry = &text_area->rtl_cache[i];
+    const my_visual_line_t vl = {entry->phys, entry->start_byte,
+                                 entry->len_bytes, 0u, 0u};
+    size_t start = 0u;
+    if (entry->layout == NULL) continue;
+    size_t j;
+    for (j = 0u; j < entry->phys; j++) {
+      const char* nl = strchr(my_text_area_get_text(area) + start, '\n');
+      ASSERT_NOT_NULL(nl);
+      start = (size_t)(nl - my_text_area_get_text(area)) + 1u;
+    }
+    (void)vl;
+    ASSERT_NOT_NULL(entry->layout->logical_utf8);
+    ASSERT_EQ(strlen(entry->layout->logical_utf8), entry->len_bytes);
+    ASSERT_EQ(memcmp(entry->layout->logical_utf8,
+                     my_text_area_get_text(area) + start + entry->start_byte,
+                     entry->len_bytes),
+              0);
+  }
+
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
+  my_widget_unref(area);
+}
+
+TEST(text_area_rtl_cache_rejects_prefix_of_longer_cached_line)
+{
+  my_widget_t* area = my_text_area_create(NULL);
+  my_text_area_t* text_area = (my_text_area_t*)area;
+  my_lcd_t* lcd = my_lcd_mem_create(NULL, 160, 120, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
+  my_event_t event = my_event_init(MY_EVENT_KEY_DOWN);
+  size_t i;
+
+  ASSERT_NOT_NULL(area);
+  ASSERT_NOT_NULL(lcd);
+  ASSERT_NOT_NULL(canvas);
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 160, 100}), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_text(area, "\xD7\x90\xD7\x91\xD7\x92"),
+            MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  area->vtable->on_paint(area, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  /* Backspace at the end: the line becomes a byte prefix of the cached
+   * layout's text. The old layout must not be served for it. */
+  text_area->focused = true;
+  text_area->cursor_row = 0u;
+  text_area->cursor_col = 3u;
+  text_area->anchor_row = 0u;
+  text_area->anchor_col = 3u;
+  event.u.key.key = MY_KEY_BACKSPACE;
+  ASSERT_EQ(area->vtable->on_event(area, &event), MY_RET_OK);
+  ASSERT_STR_EQ(my_text_area_get_text(area), "\xD7\x90\xD7\x91");
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  area->vtable->on_paint(area, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  for (i = 0u; i < MY_TEXT_AREA_RTL_CACHE_CAPACITY; i++) {
+    const my_text_area_rtl_cache_entry_t* entry = &text_area->rtl_cache[i];
+    if (entry->layout == NULL || entry->len_bytes != 4u) continue;
+    ASSERT_STR_EQ(entry->layout->logical_utf8, "\xD7\x90\xD7\x91");
+    ASSERT_EQ(entry->layout->logical_len, 2u);
+  }
+  ASSERT_STR_EQ(text_area->rtl_layout->logical_utf8, "\xD7\x90\xD7\x91");
+
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
+  my_widget_unref(area);
+}
+
 TEST(text_area_rtl_syntax_colors_tokens)
 {
   my_widget_t* plain = my_text_area_create(NULL);
@@ -8755,6 +8901,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_area_rtl_paint_reuses_layout);
     RUN_TEST(text_area_rtl_hit_test_reuses_layout);
     RUN_TEST(text_area_rtl_paint_caches_multiple_visual_lines);
+    RUN_TEST(text_area_rtl_cache_survives_edits_on_other_physical_lines);
+    RUN_TEST(text_area_rtl_cache_rejects_prefix_of_longer_cached_line);
     RUN_TEST(text_area_rtl_syntax_colors_tokens);
     RUN_TEST(text_area_wrap_reuses_unchanged_prefix_after_edit);
     RUN_TEST(text_area_wrap_reuses_unchanged_suffix_after_single_line_edit);
