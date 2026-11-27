@@ -14685,3 +14685,13 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：`test_editor_shell` 新增 `hot_reload_dependent_of_another_file_never_replaces_the_document`（191 例），先判红；3 项定向变异全部判红（删掉检查、反转比较、只检查 NULL）。
 - **验证**：`test_editor_shell` 191/191；ASan+UBSan（`build-aoi-asan`）238/238 无泄漏；`build-current-vk` 非 fuzz 466/466。
 - **仍未完成**：编辑器外壳尚未在场景加载/切换时自动调用 `attach_reload_deps` 并登记 `scene_deps` 的路径（`scene_deps` 记录绝对路径，协调器 VFS 只接受相对场景目录的路径，接线时需转换）。本提交自身的远端工作流结果不在此预写。
+
+## 编辑器外壳不自动接入依赖协调器的结论（2026-11-27）
+
+- **核对对象**：前两条记录留下的「编辑器外壳在场景加载/切换时自动调用 `attach_reload_deps`」。
+- **结论**：不实现，因为接上后不会重建任何东西。
+  - 纹理文件的变化由 `editor_scene_textures` 中每个纹理自己的 `BreakEditorImagePreview` 处理（独立的 Runtime Core 重载对象、文件监视和 GPU 事务替换），不经过 `hr->reload`，所以不会触发 `committed_path`。
+  - `editor_scene_deps` 中材质和场景节点记录的都是场景文件本身（`engine/src/editor/editor_scene_deps.h` 文件头说明）。场景提交后按路径转发，依同文件规则（本日「按路径转发的依赖提交不重复重载同一文件」）不入队任何项；纹理节点没有依赖。
+  - 编辑器没有从纹理重建材质的消费者：3D 视口不使用场景纹理，材质只按句柄引用纹理。
+- **保留的接口**：`break_editor_hot_reload_attach_reload_deps` 供宿主在确有独立依赖文件时显式接线，行为已由 `test_editor_shell` 覆盖。
+- `docs/cross_engine/missing_capabilities.md` 的「完整资产链」条目同步更新。本提交只改文档，不涉及代码与测试；本提交自身的远端工作流结果不在此预写。
