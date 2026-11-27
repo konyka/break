@@ -17,7 +17,9 @@ struct BreakRuntimeReloadDeps {
     BreakAssetId *queue; /* rebuild order, head first */
     u32 queued;
     BreakAssetId *scratch;
-    BreakAssetId in_flight_id;
+    u8 *mark;
+    BreakAssetId *riders; /* every id the in-flight reload covers */
+    u32 rider_count;
     BreakRuntimeReloadRequest in_flight;
     BreakRuntimeReloadDepsStats stats;
 };
@@ -35,7 +37,9 @@ BreakRuntimeError break_runtime_reload_deps_create(const BreakRuntimeReloadDepsC
     deps->paths = (PathEntry *)calloc(config->max_assets, sizeof(*deps->paths));
     deps->queue = (BreakAssetId *)calloc(config->max_assets, sizeof(*deps->queue));
     deps->scratch = (BreakAssetId *)calloc(config->max_assets, sizeof(*deps->scratch));
-    if (!deps->paths || !deps->queue || !deps->scratch) {
+    deps->mark = (u8 *)calloc(config->max_assets, sizeof(*deps->mark));
+    deps->riders = (BreakAssetId *)calloc(config->max_assets, sizeof(*deps->riders));
+    if (!deps->paths || !deps->queue || !deps->scratch || !deps->mark || !deps->riders) {
         break_runtime_reload_deps_destroy(deps);
         return BREAK_RUNTIME_OOM;
     }
@@ -51,6 +55,8 @@ void break_runtime_reload_deps_destroy(BreakRuntimeReloadDeps *deps) {
     free(deps->paths);
     free(deps->queue);
     free(deps->scratch);
+    free(deps->mark);
+    free(deps->riders);
     free(deps);
 }
 
@@ -92,6 +98,7 @@ BreakRuntimeError break_runtime_reload_deps_committed(BreakRuntimeReloadDeps *de
                                                       BreakAssetId id) {
     u32 count = 0u;
     u32 added = 0u;
+    bool riding;
     BreakAssetGraphResult r;
     if (!deps || !break_asset_graph_contains(deps->graph, id)) return BREAK_RUNTIME_INVALID;
     r = break_asset_graph_dependents(deps->graph, id, deps->scratch, deps->max_assets, &count);
@@ -106,10 +113,16 @@ BreakRuntimeError break_runtime_reload_deps_committed(BreakRuntimeReloadDeps *de
      * if that invariant ever changes. */
     if (deps->queued + added > deps->max_assets) return BREAK_RUNTIME_OVERLOAD;
     /* An asset already in flight is queued again: its dependency changed
-     * after its reload started. */
+     * after its reload started. Except when both ride on the same reload:
+     * that one commit already brought the dependency's new version. */
+    riding = in_list(deps->riders, deps->rider_count, id);
     for (u32 i = 0u; i < count; ++i) {
-        if (!in_list(deps->queue, deps->queued, deps->scratch[i]))
-            deps->queue[deps->queued++] = deps->scratch[i];
+        if (in_list(deps->queue, deps->queued, deps->scratch[i])) continue;
+        if (riding && in_list(deps->riders, deps->rider_count, deps->scratch[i])) {
+            added--;
+            continue;
+        }
+        deps->queue[deps->queued++] = deps->scratch[i];
     }
     if (added > 0u) deps->stats.chains++;
     return BREAK_RUNTIME_OK;
@@ -177,6 +190,42 @@ static bool next_ready(BreakRuntimeReloadDeps *deps, u32 *out_index) {
     return false;
 }
 
+static bool depends_on(BreakRuntimeReloadDeps *deps, BreakAssetId dependent, BreakAssetId on) {
+    u32 count = 0u;
+    if (break_asset_graph_dependents(deps->graph, on, deps->scratch, deps->max_assets, &count) !=
+        BREAK_ASSET_GRAPH_OK) {
+        return false;
+    }
+    return in_list(deps->scratch, count, dependent);
+}
+
+/* The issued reload of queue[index] loads its whole file, so every queued id
+ * recorded with the same path rides on it, unless it still waits for a
+ * queued id in another file (that one's new version would be missed). One
+ * pass is enough: dependents are transitive, so an id waiting on a dropped
+ * rider also waits on whatever that rider waits on, which is not riding. */
+static void take_riders(BreakRuntimeReloadDeps *deps, u32 index) {
+    const char *path = find_path(deps, deps->queue[index])->path;
+    for (u32 i = 0u; i < deps->queued; ++i) {
+        deps->mark[i] = (u8)(strcmp(find_path(deps, deps->queue[i])->path, path) == 0);
+    }
+    for (u32 i = 0u; i < deps->queued; ++i) {
+        if (!deps->mark[i]) continue;
+        for (u32 j = 0u; j < deps->queued; ++j) {
+            if (!deps->mark[j] && depends_on(deps, deps->queue[i], deps->queue[j])) {
+                deps->mark[i] = 0u;
+                break;
+            }
+        }
+    }
+    for (u32 i = deps->queued; i-- > 0u;) {
+        if (!deps->mark[i]) continue;
+        deps->riders[deps->rider_count++] = deps->queue[i];
+        remove_queued(deps, i);
+    }
+    deps->stats.coalesced += deps->rider_count - 1u;
+}
+
 BreakRuntimeError break_runtime_reload_deps_pump(BreakRuntimeReloadDeps *deps) {
     u32 index = 0u;
     if (!deps) return BREAK_RUNTIME_INVALID;
@@ -188,12 +237,12 @@ BreakRuntimeError break_runtime_reload_deps_pump(BreakRuntimeReloadDeps *deps) {
             return BREAK_RUNTIME_OK;
         }
         if (r == BREAK_RUNTIME_OK && state == BREAK_RUNTIME_RELOAD_COMMITTED) {
-            deps->stats.rebuilt++;
+            deps->stats.rebuilt += deps->rider_count;
         } else {
-            finish_failed(deps, deps->in_flight_id);
+            for (u32 i = 0u; i < deps->rider_count; ++i) finish_failed(deps, deps->riders[i]);
         }
         deps->in_flight = 0u;
-        deps->in_flight_id = 0u;
+        deps->rider_count = 0u;
     }
     while (next_ready(deps, &index)) {
         BreakAssetId id = deps->queue[index];
@@ -201,14 +250,14 @@ BreakRuntimeError break_runtime_reload_deps_pump(BreakRuntimeReloadDeps *deps) {
         BreakRuntimeError r =
             break_runtime_reload_request(deps->reload, find_path(deps, id)->path, &request);
         if (r == BREAK_RUNTIME_OVERLOAD) return BREAK_RUNTIME_OK; /* retry next pump */
-        remove_queued(deps, index);
         deps->stats.requested++;
         if (r != BREAK_RUNTIME_OK) {
+            remove_queued(deps, index);
             finish_failed(deps, id);
             continue;
         }
+        take_riders(deps, index);
         deps->in_flight = request;
-        deps->in_flight_id = id;
         break;
     }
     return BREAK_RUNTIME_OK;

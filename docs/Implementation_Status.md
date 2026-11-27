@@ -14578,3 +14578,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：`test_runtime_reload_deps` 增至 13 例，先以编译失败为 RED。25 项变异中 23 项判红，2 项等价变异的理由见设计文档。
 - **验证**：ASan+UBSan 13/13，TSan 连跑 3 次 13/13；`build-current-vk` 非 fuzz 469/469，fuzz 24/24；Windows 实机 MSVC 全量构建通过，本测试 13/13。
 - **仍未完成**：依赖图接入 manifest 与场景加载。本提交自身的远端工作流结果不在此预写。
+
+## 共用文件的依赖者合并重载（2026-11-27）
+
+- **缺口**：内嵌在同一文件中的多个资产各自重载，同一文件被读取、提交多次。
+- **实现**：`runtime_reload_deps` 发出某 id 的重载时，记录同一路径、且没有在等待其他文件的排队 id 搭乘这次重载（`stats.coalesced`），同成同败；转发回来的共享提交不会让搭乘者再入队。设计见 `docs/design/runtime_hot_reload.md` 2026-11-27「共用一个文件的依赖者只重载一次」。
+- **TDD 与变异**：`test_runtime_reload_deps` 增至 18 例，先以编译失败为 RED。新增变异全部判红；变异测试暴露的两处多余逻辑已删除。
+- **验证**：ASan+UBSan 18/18，TSan 连跑 3 次 18/18；`build-current-vk` 非 fuzz 469/469，fuzz 24/24；Windows 实机 MSVC 全量构建通过，本测试 18/18。
+- **仍未完成**：依赖图接入 manifest 与场景加载。本提交自身的远端工作流结果不在此预写。

@@ -24,6 +24,11 @@
  *    its old version and the chain stops there: what depends on it is
  *    skipped, since it would be rebuilt from stale input. The remaining
  *    unrelated ids still go.
+ *  - Several ids may share one path (materials inside a scene file). The
+ *    reload issued for one of them loads the whole file, so the other
+ *    queued ids with that path ride on it (stats.coalesced) unless one of
+ *    them still waits for a queued id in another file; that one is
+ *    reloaded again later. A ride succeeds or fails for all its riders.
  *  - A new commit while a chain runs merges: ids already queued are not
  *    queued twice, and the "no queued dependency" rule orders the union.
  *    An id whose reload is in flight is queued again, since its dependency
@@ -47,6 +52,7 @@ typedef struct BreakRuntimeReloadDepsStats {
     u64 rebuilt;   /* dependents that reached COMMITTED */
     u64 failed;    /* dependents that ended in another terminal state */
     u64 skipped;   /* dependents dropped because something they need failed */
+    u64 coalesced; /* dependents that rode on another one's reload of the same file */
     u32 queued;    /* waiting to be issued */
     bool in_flight;
 } BreakRuntimeReloadDepsStats;

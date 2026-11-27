@@ -465,6 +465,107 @@ TEST(a_failing_id_on_a_shared_path_does_not_stop_the_others) {
     fx_dispose(&fx);
 }
 
+/* matA and matB live inside the scene file: the first issued reload of
+ * scene.bin covers them all, so the file is loaded once. */
+TEST(dependents_sharing_a_file_ride_on_one_reload) {
+    Fx fx;
+    BreakRuntimeReloadDepsStats st;
+    ASSERT_TRUE(fx_init(&fx, 16u));
+    ASSERT_EQ(break_runtime_reload_deps_set_path(fx.deps, kMatA, "scene.bin"), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_set_path(fx.deps, kMatB, "scene.bin"), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_committed(fx.deps, kShader), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(run_until_idle(&fx));
+    ASSERT_EQ(g_probe.count, 1u);
+    ASSERT_STR_EQ(g_probe.order[0], "scene.bin");
+    ASSERT_EQ(break_runtime_reload_deps_stats(fx.deps, &st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(st.requested, 1u);
+    ASSERT_EQ(st.coalesced, 2u);
+    ASSERT_EQ(st.rebuilt, 3u);
+    fx_dispose(&fx);
+}
+
+/* A same-file dependent that still waits on another file's queued reload
+ * cannot ride: it is reloaded again after that file. */
+TEST(a_same_file_dependent_waiting_on_another_file_does_not_ride) {
+    Fx fx;
+    BreakRuntimeReloadDepsStats st;
+    ASSERT_TRUE(fx_init(&fx, 16u));
+    /* matA in scene.bin; matB in its own file; scene needs both */
+    ASSERT_EQ(break_runtime_reload_deps_set_path(fx.deps, kMatA, "scene.bin"), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_committed(fx.deps, kShader), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(run_until_idle(&fx));
+    ASSERT_EQ(committed_at("scene.bin") >= 0, true);
+    ASSERT_EQ(committed_at("mat_b.bin") >= 0, true);
+    /* the last commit is scene.bin, after mat_b */
+    ASSERT_STR_EQ(g_probe.order[g_probe.count - 1u], "scene.bin");
+    ASSERT_TRUE(committed_at("mat_b.bin") < (i32)g_probe.count - 1);
+    ASSERT_EQ(break_runtime_reload_deps_stats(fx.deps, &st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(st.failed, 0u);
+    ASSERT_EQ(st.rebuilt, 3u);
+    fx_dispose(&fx);
+}
+
+/* When the shared reload fails, every rider keeps its old version and what
+ * depends on any of them is skipped. */
+TEST(a_failed_shared_reload_fails_its_riders_too) {
+    Fx fx;
+    BreakRuntimeReloadDepsStats st;
+    const BreakAssetId on_mat_b[] = {kMatB};
+    ASSERT_TRUE(fx_init(&fx, 16u));
+    ASSERT_EQ(break_asset_graph_add(fx.graph, 90u, on_mat_b, 1u), BREAK_ASSET_GRAPH_OK);
+    ASSERT_EQ(break_runtime_reload_deps_set_path(fx.deps, 90u, "other.bin"), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_set_path(fx.deps, kMatA, "bad_mat.bin"), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_set_path(fx.deps, kMatB, "bad_mat.bin"), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_committed(fx.deps, kShader), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(run_until_idle(&fx));
+    ASSERT_EQ(g_probe.count, 0u);
+    ASSERT_EQ(break_runtime_reload_deps_stats(fx.deps, &st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(st.requested, 1u);
+    ASSERT_EQ(st.coalesced, 1u);
+    ASSERT_EQ(st.failed, 2u);
+    ASSERT_EQ(st.skipped, 2u); /* the scene and asset 90 */
+    ASSERT_EQ(st.rebuilt, 0u);
+    fx_dispose(&fx);
+}
+
+/* The forwarded commit of a shared file names every rider; what they need
+ * among themselves came with that same commit, so nothing is queued again. */
+TEST(a_forwarded_shared_commit_does_not_requeue_its_riders) {
+    Fx fx;
+    BreakRuntimeReloadDepsStats st;
+    ASSERT_TRUE(fx_init(&fx, 16u));
+    ASSERT_EQ(break_runtime_reload_deps_set_path(fx.deps, kMatA, "scene.bin"), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_set_path(fx.deps, kMatB, "scene.bin"), BREAK_RUNTIME_OK);
+    g_hook_deps = fx.deps;
+    ASSERT_EQ(break_runtime_reload_notify_file_event(fx.reload, "shader.bin"), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(run_events_until_idle(&fx));
+    ASSERT_EQ(g_probe.count, 2u);
+    ASSERT_STR_EQ(g_probe.order[0], "shader.bin");
+    ASSERT_STR_EQ(g_probe.order[1], "scene.bin");
+    ASSERT_EQ(break_runtime_reload_deps_stats(fx.deps, &st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(st.chains, 1u);
+    ASSERT_EQ(st.requested, 1u);
+    ASSERT_EQ(st.rebuilt, 3u);
+    fx_dispose(&fx);
+}
+
+/* Once a ride is over its riders are forgotten: a later change of one of
+ * them requeues the others that depend on it. */
+TEST(a_later_change_of_a_former_rider_requeues_its_dependents) {
+    Fx fx;
+    BreakRuntimeReloadDepsStats st;
+    ASSERT_TRUE(fx_init(&fx, 16u));
+    ASSERT_EQ(break_runtime_reload_deps_set_path(fx.deps, kMatA, "scene.bin"), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_committed(fx.deps, kTex), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(run_until_idle(&fx));
+    ASSERT_EQ(g_probe.count, 1u); /* matA and the scene in one reload */
+    ASSERT_EQ(break_runtime_reload_deps_committed(fx.deps, kMatA), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_stats(fx.deps, &st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(st.queued, 1u);
+    ASSERT_TRUE(run_until_idle(&fx));
+    fx_dispose(&fx);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(a_changed_texture_rebuilds_its_material_then_the_scene);
     RUN_TEST(a_shared_dependency_rebuilds_each_dependent_once_in_order);
@@ -479,4 +580,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(committed_path_ignores_unknown_paths_and_rejects_bad_arguments);
     RUN_TEST(every_id_sharing_the_committed_path_starts_its_chain);
     RUN_TEST(a_failing_id_on_a_shared_path_does_not_stop_the_others);
+    RUN_TEST(dependents_sharing_a_file_ride_on_one_reload);
+    RUN_TEST(a_same_file_dependent_waiting_on_another_file_does_not_ride);
+    RUN_TEST(a_failed_shared_reload_fails_its_riders_too);
+    RUN_TEST(a_forwarded_shared_commit_does_not_requeue_its_riders);
+    RUN_TEST(a_later_change_of_a_former_rider_requeues_its_dependents);
 TEST_MAIN_END()
