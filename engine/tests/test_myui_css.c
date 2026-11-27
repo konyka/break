@@ -3711,6 +3711,107 @@ TEST(css_animation_direction_and_fill_mode)
   my_theme_destroy(theme);
 }
 
+TEST(css_animation_list_last_active_wins)
+{
+  /* A comma list runs every animation at once; for a key several of them
+   * set, the last one that applies a value at that time wins. One that
+   * does not declare the key, or has no value then, is passed over. */
+  const char* css =
+      "@property --size { syntax: \"<number>\"; inherits: false;"
+      " initial-value: 0; }"
+      "@property --tint { syntax: \"<color>\"; inherits: false;"
+      " initial-value: red; }"
+      "@keyframes grow { from { --size: 0; } to { --size: 10; } }"
+      "@keyframes shrink { from { --size: 100; } to { --size: 0; } }"
+      "@keyframes fade { from { --tint: #ff0000ff; } to { --tint: #0000ffff; } }"
+      "button { animation: grow 100ms linear both,"
+      " shrink 100ms linear 50ms, fade 200ms linear; }";
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* button = my_widget_create(NULL, "button");
+  my_value_t out;
+
+  ASSERT_NOT_NULL(theme);
+  button->widget_type = "button";
+  my_value_init(&out, NULL);
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  /* shrink is still in its delay (fill none): grow applies. */
+  ASSERT_TRUE(my_theme_get_for_widget_var_animating(
+      theme, button, MY_STATE_NORMAL, "--size", 25.0, &out));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 2.5, 1e-9);
+  my_value_reset(&out);
+  /* both are active: shrink, later in the list, wins. */
+  ASSERT_TRUE(my_theme_get_for_widget_var_animating(
+      theme, button, MY_STATE_NORMAL, "--size", 75.0, &out));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 75.0, 1e-9);
+  my_value_reset(&out);
+  /* shrink has ended (fill none): grow's forwards fill applies again. */
+  ASSERT_TRUE(my_theme_get_for_widget_var_animating(
+      theme, button, MY_STATE_NORMAL, "--size", 400.0, &out));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 10.0, 1e-9);
+  my_value_reset(&out);
+  /* fade is the only one setting --tint. */
+  ASSERT_TRUE(my_theme_get_for_widget_var_animating(
+      theme, button, MY_STATE_NORMAL, "--tint", 100.0, &out));
+  ASSERT_EQ(my_value_get_uint32(&out), 0x800080FFu);
+  my_value_reset(&out);
+  my_widget_unref(button);
+  my_theme_destroy(theme);
+}
+
+TEST(css_animation_list_is_bounded_and_validated)
+{
+  /* MY_CSS_MAX_ANIMATIONS groups are accepted, one more is not; an
+   * invalid group invalidates the whole declaration. */
+  char css[1024];
+  size_t at = 0u;
+  size_t i;
+  my_theme_t* theme;
+  my_widget_t* button;
+  static const char* const bad[] = {
+      "button { animation: a 1s, ; }",
+      "button { animation: a 1s,, b 1s; }",
+      "button { animation: a 1s, b; }",
+      "button { animation: , a 1s; }",
+  };
+
+  at += (size_t)snprintf(css + at, sizeof(css) - at, "button { animation:");
+  for (i = 0u; i < MY_CSS_MAX_ANIMATIONS; i++) {
+    at += (size_t)snprintf(css + at, sizeof(css) - at, "%s a%zu 1s",
+                           i == 0u ? "" : ",", i);
+  }
+  at += (size_t)snprintf(css + at, sizeof(css) - at, "; }");
+  ASSERT_TRUE(at < sizeof(css));
+  theme = my_theme_create(NULL);
+  button = my_widget_create(NULL, "button");
+  button->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css(theme, css), MY_RET_OK);
+  ASSERT_NOT_NULL(my_theme_get_for_widget(theme, button, MY_STATE_NORMAL,
+                                          "animation"));
+  my_theme_destroy(theme);
+
+  at -= 3u;
+  at += (size_t)snprintf(css + at, sizeof(css) - at, ", extra 1s; }");
+  theme = my_theme_create(NULL);
+  ASSERT_EQ(my_theme_load_css(theme, css), MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget(theme, button, MY_STATE_NORMAL,
+                                      "animation") == NULL);
+  my_theme_destroy(theme);
+
+  for (i = 0u; i < sizeof(bad) / sizeof(bad[0]); i++) {
+    theme = my_theme_create(NULL);
+    ASSERT_EQ(my_theme_load_css(theme, bad[i]), MY_RET_OK);
+    if (my_theme_get_for_widget(theme, button, MY_STATE_NORMAL,
+                                "animation") != NULL) {
+      printf("  kept: %s\n", bad[i]);
+    }
+    ASSERT_TRUE(my_theme_get_for_widget(theme, button, MY_STATE_NORMAL,
+                                        "animation") == NULL);
+    my_theme_destroy(theme);
+  }
+  my_widget_unref(button);
+}
+
 TEST(css_animation_declaration_rejects_malformed_values)
 {
   static const char* const bad[] = {
@@ -11323,6 +11424,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_transitioning_var_lookup_blends_over_time);
     RUN_TEST(css_animating_var_lookup_samples_keyframes);
     RUN_TEST(css_animation_direction_and_fill_mode);
+    RUN_TEST(css_animation_list_last_active_wins);
+    RUN_TEST(css_animation_list_is_bounded_and_validated);
     RUN_TEST(css_animation_declaration_rejects_malformed_values);
     RUN_TEST(css_theme_keyframes_survive_clone_and_reload);
     RUN_TEST(css_percentage_length_resolution);

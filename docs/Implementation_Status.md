@@ -14834,3 +14834,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **实现**：解析 direction 与 fill-mode 关键字（各类最多一次、顺序不限）；`css_animation_progress` 按 fill-mode 决定延迟期与结束后是否施加值，按 direction 逐次迭代反向；默认 fill-mode 改为 `none`。
 - **TDD 与变异**：`test_myui_css` 新增 1 例并扩充非法值（213 例），旧实现 RED；11 项定向变异全部判红。
 - **验证**：普通与 ASan+UBSan（含 LeakSanitizer）下 213/213；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
+
+## CSS `animation` 逗号多组（2026-11-27）
+
+- **缺口**：`animation` 只接受单组，逗号列表整条被丢弃。
+- **实现**：按顶层逗号拆分为至多 8 组，任一组非法则整条无效；查询从最后一组往前，取第一个此刻对该 key 有值的组。
+- **TDD 与变异**：`test_myui_css` 新增 2 例（215 例），旧实现 RED；5 项定向变异全部判红。
+- **验证**：普通与 ASan+UBSan（含 LeakSanitizer）下 215/215；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。

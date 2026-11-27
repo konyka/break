@@ -2867,7 +2867,7 @@ graphics 与 present queue。`RE_VK_DEVICE_INDEX` 现在也必须通过同一门
 - `my_theme_get_for_widget_var_animating(theme, widget, state, key, elapsed_ms, out)`：延迟期保持首帧；每次迭代按 easing 映射进度；所有迭代结束后保持末帧；key 必须是已注册属性，按其 syntax 在声明了该 key 的 stop 之间插值。返回 false 时调用方回退普通查询。
 - `transition` 的 easing 映射抽成 `css_transition_ease`，两条路径共用。
 
-边界：只支持单组 animation；direction 与 fill-mode 见下一节；不支持 `play-state` 与多组；起始时间由调用方记录。
+边界：direction 与 fill-mode、逗号多组见后续两节；不支持 `play-state`；起始时间由调用方记录。
 
 **TDD**：`test_myui_css` 新增 3 例（212 例）：按时间采样（颜色与经过 50% stop 的数值、延迟、两次迭代后保持末帧、`infinite` 循环、未知 keyframes 与未声明 key 回退）、6 种非法 `animation` 值被跳过、theme 克隆与二次加载累积。旧实现缺少接口，编译即失败（RED）。
 
@@ -2890,3 +2890,18 @@ graphics 与 present queue。`RE_VK_DEVICE_INDEX` 现在也必须通过同一门
 **变异**：11 项全部判红：三种 direction 映射各一、去掉 backwards 或 forwards 的判断、结束态迭代序号恒为 0、去掉 direction/fill/delay/整数次数/`infinite` 的重复检查。
 
 **验证**：`test_myui_css` 213/213；ASan+UBSan（含 LeakSanitizer）213/213；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。
+
+## 本轮补充：`animation` 逗号多组（2026-11-27）
+
+`animation` 此前只接受单组。CSS 允许逗号列表同时运行多个动画；多个动画写同一属性时，列表中靠后、此刻有值的那个生效。
+
+修正（`engine/src/myui/myui/my_css.c`）：
+
+- `css_animation_list_parse` 按顶层逗号拆分（括号内的逗号不拆，如 `cubic-bezier(...)`），每组交给已有的单组解析；任一组非法或空组则整条声明无效；最多 `MY_CSS_MAX_ANIMATIONS`（8）组。
+- `my_theme_get_for_widget_var_animating` 从最后一组往前找：跳过 keyframes 名未知、此刻按 fill-mode 无值、或 keyframes 未声明该 key 的组，返回第一个有值的结果。全部无值时返回 false。所有组共用同一个起始时间。
+
+**TDD**：`test_myui_css` 新增 2 例（215 例）：三组动画中靠后的组在延迟期让位给前一组、两组都活跃时靠后者生效、靠后者结束后前一组的 forwards 填充重新生效、只有一组声明某 key 时用该组；8 组可接受、9 组整条丢弃、4 种空组/非法组丢弃。旧实现把逗号当作非法 token 丢弃整条声明（RED）。
+
+**变异**：5 项全部判红：不拆逗号、从第一组开始、遇到无值的组就返回 false、组数上限差一（越过 8 元素数组，测试进程崩溃）、首组未声明该 key 时不再继续。
+
+**验证**：`test_myui_css` 215/215；ASan+UBSan（含 LeakSanitizer）215/215；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。

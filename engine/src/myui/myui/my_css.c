@@ -1434,9 +1434,44 @@ static bool css_animation_progress(const css_animation_spec_t* spec,
   return true;
 }
 
+/* Splits an `animation` value into its top-level comma groups and parses
+ * each one into specs[]. False when any group is invalid or there are more
+ * than MY_CSS_MAX_ANIMATIONS. */
+static bool css_animation_list_parse(const char* text,
+                                     css_animation_spec_t* specs,
+                                     size_t* count) {
+  char group[MY_THEME_MAX_PROPERTY_VALUE_BYTES + 1u];
+  size_t len = strlen(text);
+  size_t i;
+  size_t start = 0u;
+  size_t depth = 0u;
+  *count = 0u;
+  for (i = 0u; i <= len; i++) {
+    char c = i < len ? text[i] : ',';
+    if (c == '(') {
+      depth++;
+    } else if (c == ')') {
+      if (depth == 0u) return false;
+      depth--;
+    } else if (c == ',' && depth == 0u) {
+      size_t n = i - start;
+      if (*count >= MY_CSS_MAX_ANIMATIONS || n >= sizeof(group)) {
+        return false;
+      }
+      memcpy(group, text + start, n);
+      group[n] = '\0';
+      if (!css_animation_parse(group, &specs[*count])) return false;
+      (*count)++;
+      start = i + 1u;
+    }
+  }
+  return depth == 0u && *count > 0u;
+}
+
 static bool css_animation_value_ok(const char* text) {
-  css_animation_spec_t spec;
-  return css_animation_parse(text, &spec);
+  css_animation_spec_t specs[MY_CSS_MAX_ANIMATIONS];
+  size_t count;
+  return css_animation_list_parse(text, specs, &count);
 }
 
 /* R672: bounded @property syntax primitives — <color>/<length>/
@@ -7991,31 +8026,36 @@ bool my_theme_get_for_widget_var_animating(const my_theme_t* theme,
                                            my_value_t* out) {
   const my_value_t* av;
   const my_theme_property_def_t* def;
-  const my_css_keyframes_t* keyframes;
-  css_animation_spec_t spec;
-  double t;
+  css_animation_spec_t specs[MY_CSS_MAX_ANIMATIONS];
+  size_t count;
+  size_t i;
   char blended[CSS_VAR_MAX_SUBST_BYTES];
   if (theme == NULL || widget == NULL || key == NULL || out == NULL) {
     return false;
   }
   av = my_theme_get_for_widget(theme, widget, state, MY_STYLE_ANIMATION);
   if (av == NULL || my_value_type(av) != MY_VALUE_STR ||
-      !css_animation_parse(my_value_get_str(av), &spec)) {
+      !css_animation_list_parse(my_value_get_str(av), specs, &count)) {
     return false;
   }
-  keyframes = my_theme_keyframes_find(theme, spec.name);
   def = css_theme_property_def(theme, key);
-  if (keyframes == NULL || def == NULL) {
+  if (def == NULL) {
     return false;
   }
-  if (!css_animation_progress(&spec, elapsed_ms, &t)) {
-    return false;
+  for (i = count; i > 0u; i--) {
+    const css_animation_spec_t* spec = &specs[i - 1u];
+    const my_css_keyframes_t* keyframes =
+        my_theme_keyframes_find(theme, spec->name);
+    double t;
+    if (keyframes == NULL || !css_animation_progress(spec, elapsed_ms, &t)) {
+      continue;
+    }
+    if (my_css_keyframes_sample(keyframes, key, def->syntax, t, blended,
+                                sizeof(blended))) {
+      return css_probe_full_value(blended, out);
+    }
   }
-  if (!my_css_keyframes_sample(keyframes, key, def->syntax, t, blended,
-                               sizeof(blended))) {
-    return false;
-  }
-  return css_probe_full_value(blended, out);
+  return false;
 }
 
 

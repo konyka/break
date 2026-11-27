@@ -60,6 +60,7 @@
 #define MY_CSS_UNLAYERED_ORDER UINT32_MAX
 #define MY_CSS_MAX_KEYFRAMES 64u
 #define MY_CSS_MAX_KEYFRAME_STOPS 32u
+#define MY_CSS_MAX_ANIMATIONS 8u
 
 typedef enum my_css_parse_flags_t {
   MY_CSS_PARSE_DEFAULT = 0u,
@@ -482,7 +483,10 @@ const my_css_keyframes_t* my_theme_keyframes_find(const my_theme_t* theme,
  * each at most once, by an easing (as in `transition`), a delay, an
  * iteration count (positive integer or `infinite`, default 1), a direction
  * (`normal`/`reverse`/`alternate`/`alternate-reverse`) and a fill mode
- * (`none`/`forwards`/`backwards`/`both`, default `none`). One group only.
+ * (`none`/`forwards`/`backwards`/`both`, default `none`). A comma list of
+ * up to MY_CSS_MAX_ANIMATIONS such groups runs them all at once; for the
+ * key, the last group that applies a value at that time wins. An invalid
+ * group invalidates the whole declaration.
  * The host supplies the elapsed milliseconds since the animation started.
  * Each iteration maps through the easing, then runs backwards when the
  * direction says so. During the delay a value exists only with
