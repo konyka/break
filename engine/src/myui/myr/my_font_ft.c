@@ -413,6 +413,28 @@ static bool ft_required_tag_contains(const hb_tag_t* required_tags,
   return false;
 }
 
+/* Find the font's LangSys for any of the requested OpenType language tags.
+ * hb_ot_layout_script_select_language searches the script's whole LangSys
+ * list, so a match is found at any position (Noto Sans CJK lists ZHS and ZHT
+ * fourth and fifth). Requested tags are tried in HarfBuzz's preference
+ * order; the first one present wins. */
+static bool ft_select_language_system(hb_face_t* face, hb_tag_t table,
+                                      unsigned int script_index,
+                                      const hb_tag_t* language_tags,
+                                      unsigned int language_count,
+                                      unsigned int* language_index) {
+  unsigned int i;
+  for (i = 0u; i < language_count; i++) {
+    unsigned int index = HB_OT_LAYOUT_DEFAULT_LANGUAGE_INDEX;
+    if (hb_ot_layout_script_select_language(face, table, script_index, 1u,
+                                            &language_tags[i], &index)) {
+      *language_index = index;
+      return true;
+    }
+  }
+  return false;
+}
+
 static void ft_collect_required_tags(
     hb_face_t* face, const my_font_shape_params_t* params,
     hb_tag_t* required_tags, unsigned int* required_count) {
@@ -457,10 +479,6 @@ static void ft_collect_required_tags(
       unsigned int script_index;
       unsigned int language_index = HB_OT_LAYOUT_DEFAULT_LANGUAGE_INDEX;
       bool language_supported = params->language == NULL;
-      hb_tag_t available_languages[HB_OT_MAX_TAGS_PER_LANGUAGE];
-      unsigned int available_count = HB_OT_MAX_TAGS_PER_LANGUAGE;
-      unsigned int available_index;
-      unsigned int requested_index;
       unsigned int required_index;
       hb_tag_t required_tag;
 
@@ -470,27 +488,9 @@ static void ft_collect_required_tags(
         continue;
       }
       if (params->language != NULL) {
-        (void)hb_ot_layout_script_get_language_tags(
-            face, tables[table_index], script_index, 0u, &available_count,
-            available_languages);
-        if (available_count > HB_OT_MAX_TAGS_PER_LANGUAGE) {
-          available_count = HB_OT_MAX_TAGS_PER_LANGUAGE;
-        }
-        for (available_index = 0u; available_index < available_count &&
-                                    !language_supported;
-             available_index++) {
-          for (requested_index = 0u; requested_index < language_count;
-               requested_index++) {
-            if (available_languages[available_index] ==
-                    language_tags[requested_index] &&
-                hb_ot_layout_script_select_language(
-                    face, tables[table_index], script_index, 1u,
-                    &available_languages[available_index], &language_index)) {
-              language_supported = true;
-              break;
-            }
-          }
-        }
+        language_supported = ft_select_language_system(
+            face, tables[table_index], script_index, language_tags,
+            language_count, &language_index);
       }
       if (!language_supported ||
           !hb_ot_layout_language_get_required_feature(
@@ -647,32 +647,11 @@ static my_ret_t ft_shape_support_unlocked(
       {
         unsigned int language_index = HB_OT_LAYOUT_DEFAULT_LANGUAGE_INDEX;
         bool language_supported = params->language == NULL;
-        hb_tag_t available_languages[HB_OT_MAX_TAGS_PER_LANGUAGE];
-        unsigned int available_count = HB_OT_MAX_TAGS_PER_LANGUAGE;
-        unsigned int available_index;
         unsigned int requested_index;
         if (params->language != NULL) {
-          (void)hb_ot_layout_script_get_language_tags(
-              face, tables[table_index], script_index, 0u, &available_count,
-              available_languages);
-          if (available_count > HB_OT_MAX_TAGS_PER_LANGUAGE) {
-            available_count = HB_OT_MAX_TAGS_PER_LANGUAGE;
-          }
-          for (available_index = 0u; available_index < available_count &&
-                                      !language_supported;
-               available_index++) {
-            for (requested_index = 0u; requested_index < language_count;
-                 requested_index++) {
-              if (available_languages[available_index] ==
-                  language_tags[requested_index] &&
-                  hb_ot_layout_script_select_language(
-                      face, tables[table_index], script_index, 1u,
-                      &available_languages[available_index], &language_index)) {
-                language_supported = true;
-                break;
-              }
-            }
-          }
+          language_supported = ft_select_language_system(
+              face, tables[table_index], script_index, language_tags,
+              language_count, &language_index);
         }
         if (!language_supported) continue;
         system_supported = true;

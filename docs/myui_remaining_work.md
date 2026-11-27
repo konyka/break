@@ -2700,3 +2700,18 @@ graphics 与 present queue。`RE_VK_DEVICE_INDEX` 现在也必须通过同一门
 **验证**：13 项 `verify_myui_sa_dictionary` 测试全部通过（4 个语言语料、3 个新反例、原有 6 项）；ASan+UBSan 下 13 个语料的退出码与普通构建一致、无报错；`build-current-vk` 非 fuzz 477/477。
 
 该行其余判据只剩「产品级 tailoring 契约」，需要产品侧给出语言策略，不在本节范围内。
+
+## 本轮补充：OpenType language system 选择不再只看前三个（2026-11-27）
+
+「未完成能力」表中「OpenType shaping」一行的判据有「language-specific feature 选择」。排查时发现 FreeType provider 选择 LangSys 有缺陷：`ft_shape_support_unlocked` 与 `ft_collect_required_tags` 只读取字体 script 下的前 `HB_OT_MAX_TAGS_PER_LANGUAGE`（3）个 LangSys tag，再与请求的 tag 比对。Noto Sans CJK 的 Hani script 依次列出 JAN、KOR、ZHH、ZHS、ZHT，简体与繁体中文排在第四、��五位，所以 `zh-Hans`、`zh-CN`、`zh-Hant`、`zh-TW` 都被判为 unsupported。`my_font_shape_ex` 随后去掉 language 回退整形，`locl` 不生效，中文显示成日文字形（U+9AA8「骨」三种写法都得到 JAN 的 glyph 45132）。
+
+- **修正**（`engine/src/myui/myr/my_font_ft.c`）：新增 `ft_select_language_system`，按 HarfBuzz 给出的偏好顺序逐个把请求的 OpenType language tag 交给 `hb_ot_layout_script_select_language`。该函数会查找 script 的整个 LangSys 列表，第一个存在的 tag 胜出。两处调用都改用它，截断的 `available_languages` 数组已删除。
+- **效果**：`zh-Hans`/`zh-CN` 得到 ZHS 字形 45133，`zh-Hant`/`zh-TW` 得到 ZHT 字形 45134。`zh-MO` 在 HarfBuzz 中映射为 ZHTM、ZHH，字体只有 ZHH，现在能落到第二个候选，得到 U+76F4「直」的香港字形 27875。
+
+**TDD**：`test_myui_font` 新增 `freetype_selects_language_systems_beyond_the_first_three`（85 例），用系统 Noto Sans CJK 检查 10 组 locale/字符的 capability 与 glyph id，字体不存在时 SKIP。在旧实现上该用例失败（`zh-Hans: support=2 ... glyph=45132`），新实现通过。
+
+**变异**：6 项中 5 项判红（只试第一个候选、不写回 language index、恒返回找到、capability 查询恒判支持、候选数传 0）。`ft_collect_required_tags` 中「恒判 language 支持」一项存活：该路径只影响 LangSys required feature，本机字体都没有 required feature，既有的 `freetype_required_feature_cannot_be_disabled` 同样 SKIP，本机无法判红，需要带 required feature 的字体才能覆盖。
+
+**验证**：`test_myui_font` 85/85，ASan+UBSan 85/85；`build-current-vk` 非 fuzz 477/477。
+
+该行其余判据（完整跨字体 variation corpus、完整 RTL GSUB）不变。

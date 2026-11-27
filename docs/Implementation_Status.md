@@ -14765,3 +14765,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：13 项定向变异中 10 项判红，3 项为已说明的等价变异（词表无前缀关系、内置模式不计回调次数）；被证明多余的 locale 支持检查已删除。
 - **验证**：13 项 SA 语料测试通过；ASan+UBSan 无报错；`build-current-vk` 非 fuzz 477/477。详见 `docs/myui_remaining_work.md` 同日补充。
 - **仍未完成**：产品级 tailoring 契约。本提交自身的远端工作流结果不在此预写。
+
+## OpenType language system 选择不再只看前三个（2026-11-27）
+
+- **缺陷**：FreeType provider 只比对字体 script 下前 3 个 LangSys tag。Noto Sans CJK 的 ZHS、ZHT 排在第四、第五，简繁中文被判为 unsupported，`locl` 不生效，中文显示日文字形。
+- **修正**：新增 `ft_select_language_system`（`engine/src/myui/myr/my_font_ft.c`），逐个请求 tag 调用 `hb_ot_layout_script_select_language` 查整个列表；capability 查询与 required feature 收集共用。
+- **TDD 与变异**：`test_myui_font` 新增 1 例（85 例），旧实现失败、新实现通过；6 项定向变异中 5 项判红，required feature 路径 1 项因本机缺少带 required feature 的字体无法判红。
+- **验证**：普通与 ASan+UBSan 下 85/85；`build-current-vk` 非 fuzz 477/477。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。

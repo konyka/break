@@ -2723,6 +2723,71 @@ TEST(freetype_script_capability_query)
 #endif
 }
 
+TEST(freetype_selects_language_systems_beyond_the_first_three)
+{
+#if defined(MYUI_FONT_FREETYPE) && defined(MYUI_FONT_HARFBUZZ)
+  /* Noto Sans CJK lists five Hani language systems (JAN, KOR, ZHH, ZHS,
+   * ZHT); the Simplified and Traditional Chinese ones come after the first
+   * three, and each locale selects its own glyph form through locl. */
+  const char* path =
+      "/usr/share/fonts/google-noto-sans-cjk-vf-fonts/NotoSansCJK-VF.ttc";
+  static const struct {
+    const char* language;
+    uint32_t glyph;
+    const char* text;
+  } cases[] = {{"ja", 45132u, "\xE9\xAA\xA8"},
+               {"ko", 45132u, "\xE9\xAA\xA8"},
+               {"zh-Hans", 45133u, "\xE9\xAA\xA8"},
+               {"zh-CN", 45133u, "\xE9\xAA\xA8"},
+               {"zh-Hant", 45134u, "\xE9\xAA\xA8"},
+               {"zh-TW", 45134u, "\xE9\xAA\xA8"},
+               {"zh-HK", 45132u, "\xE9\xAA\xA8"},
+               /* U+76F4 has a Hong Kong form. zh-MO maps to ZHTM then ZHH;
+                * the font only has ZHH, so the second candidate must win. */
+               {"zh-HK", 27875u, "\xE7\x9B\xB4"},
+               {"zh-MO", 27875u, "\xE7\x9B\xB4"},
+               {"ja", 27873u, "\xE7\x9B\xB4"}};
+  FILE* file = fopen(path, "rb");
+  my_font_t* font;
+  size_t i;
+
+  if (file == NULL) {
+    printf("  SKIP: no Noto Sans CJK font\n");
+    return;
+  }
+  fclose(file);
+  font = my_font_ft_create(NULL, path, 0, 32);
+  ASSERT_NOT_NULL(font);
+  for (i = 0u; i < sizeof(cases) / sizeof(cases[0]); i++) {
+    my_font_shape_params_t params = {false, MY_FONT_SCRIPT_HANI,
+                                     cases[i].language, NULL};
+    my_font_shape_support_t support = MY_FONT_SHAPE_SUPPORT_UNKNOWN;
+    my_font_shape_result_t result = {0};
+    my_ret_t status;
+    size_t count;
+    uint32_t glyph;
+    ASSERT_EQ(my_font_shape_support_query(font, &params, &support),
+              MY_RET_OK);
+    status = my_font_shape_ex(font, cases[i].text, 32, &params, NULL,
+                              &result);
+    count = result.count;
+    glyph = count > 0u ? result.glyphs[0].glyph_id : 0u;
+    my_font_shape_destroy(&result);
+    if (support != MY_FONT_SHAPE_SUPPORTED || status != MY_RET_OK ||
+        count != 1u || glyph != cases[i].glyph) {
+      printf("  %s: support=%d status=%d count=%zu glyph=%u (want %u)\n",
+             cases[i].language, (int)support, (int)status, count, glyph,
+             cases[i].glyph);
+    }
+    ASSERT_EQ(support, MY_FONT_SHAPE_SUPPORTED);
+    ASSERT_EQ(status, MY_RET_OK);
+    ASSERT_EQ(count, 1u);
+    ASSERT_EQ(glyph, cases[i].glyph);
+  }
+  my_font_destroy(font);
+#endif
+}
+
 TEST(freetype_language_specific_locl_golden)
 {
 #if defined(MYUI_FONT_FREETYPE) && defined(MYUI_FONT_HARFBUZZ)
@@ -3889,6 +3954,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(optional_opentype_shaping_has_explicit_fallback);
     RUN_TEST(freetype_script_capability_query);
     RUN_TEST(freetype_language_specific_locl_golden);
+    RUN_TEST(freetype_selects_language_systems_beyond_the_first_three);
     RUN_TEST(freetype_rtl_arabic_gsub_gpos_golden);
     RUN_TEST(freetype_rtl_hebrew_gpos_golden);
     RUN_TEST(freetype_rtl_arabic_marks_numbers_golden);
