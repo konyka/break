@@ -1918,6 +1918,51 @@ TEST(line_break_dictionary_rejects_invalid_unicode_scalars)
   }
 }
 
+/* The dictionary entry points share the 4 MiB paragraph budget: no paragraph
+ * yields more codepoints than bytes, so a longer array is rejected before any
+ * scan or callback and leaves the boundaries untouched. */
+TEST(line_break_dictionary_rejects_input_over_budget)
+{
+  size_t n = (size_t)MY_LINE_BREAK_MAX_INPUT_CODEPOINTS + 1u;
+  uint32_t* cps = (uint32_t*)calloc(n, sizeof(uint32_t));
+  bool* allow_before = (bool*)calloc(n, sizeof(bool));
+  my_line_break_options_t options = {line_break_test_dictionary, NULL, 8u};
+  my_line_break_profile_options_t profile_options = {
+      line_break_profile_dictionary, NULL, 8u};
+  my_line_break_dictionary_profile_t profile = {1u, "th-Thai"};
+
+  ASSERT_NOT_NULL(cps);
+  ASSERT_NOT_NULL(allow_before);
+  ASSERT_EQ(MY_LINE_BREAK_MAX_INPUT_CODEPOINTS, MY_TEXT_PARAGRAPH_MAX_BYTES);
+  cps[0] = 0x0E01u;
+  cps[1] = 0x0E02u;
+  line_break_dictionary_calls = 0u;
+  line_break_profile_dictionary_calls = 0u;
+  ASSERT_EQ(my_line_break_apply_dictionary_ex(cps, n, allow_before, &options,
+                                              NULL),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_line_break_apply_dictionary(cps, n, allow_before, &options),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_line_break_apply_dictionary_profile(
+                cps, n, allow_before, &profile_options, &profile),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(line_break_dictionary_calls, 0u);
+  ASSERT_EQ(line_break_profile_dictionary_calls, 0u);
+  ASSERT_FALSE(allow_before[1]);
+
+  /* exactly the budget is still processed */
+  ASSERT_EQ(my_line_break_apply_dictionary_ex(cps, n - 1u, allow_before,
+                                              &options, NULL),
+            MY_RET_OK);
+  ASSERT_EQ(line_break_dictionary_calls, 1u);
+  ASSERT_EQ(my_line_break_apply_dictionary_profile(
+                cps, n - 1u, allow_before, &profile_options, &profile),
+            MY_RET_OK);
+  ASSERT_EQ(line_break_profile_dictionary_calls, 1u);
+  free(cps);
+  free(allow_before);
+}
+
 TEST(line_break_builtin_dictionary_is_bounded_and_conservative)
 {
   uint32_t thai_words[] = {
@@ -3851,6 +3896,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(line_break_dictionary_cannot_change_run_start_boundary);
     RUN_TEST(line_break_dictionary_profile_requires_versioned_locale_contract);
     RUN_TEST(line_break_dictionary_rejects_invalid_unicode_scalars);
+    RUN_TEST(line_break_dictionary_rejects_input_over_budget);
     RUN_TEST(line_break_builtin_dictionary_is_bounded_and_conservative);
     RUN_TEST(line_break_builtin_dictionary_rejects_invalid_input_transactionally);
     RUN_TEST(line_break_builtin_dictionary_supports_lao_profile);

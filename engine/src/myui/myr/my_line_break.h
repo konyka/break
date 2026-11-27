@@ -122,6 +122,11 @@ typedef struct my_line_break_options_t {
 } my_line_break_options_t;
 
 #define MY_LINE_BREAK_MAX_DICTIONARY_CODEPOINTS 256u
+/* Input budget of the dictionary entry points, equal to the paragraph byte
+ * budget (MY_TEXT_PARAGRAPH_MAX_BYTES): a paragraph never yields more
+ * codepoints than bytes. A longer array is rejected before any scan or
+ * callback, and the boundaries are left untouched. */
+#define MY_LINE_BREAK_MAX_INPUT_CODEPOINTS (4u * 1024u * 1024u)
 
 /** @brief Return whether the bounded built-in dictionary supports a profile. */
 bool my_line_break_builtin_dictionary_supports(

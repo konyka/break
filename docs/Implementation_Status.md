@@ -14719,3 +14719,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **缺口**：`docs/cross_engine/feature_matrix.md` 的 Break 列把编辑器、崩溃上传、在线更新、安全/反作弊、大世界流式加载写为「资料不足」或「未实现」，写于这些能力交付之前。
 - **处理**：原表不改，在文末追加「Break 列修订（2026-11-27）」一节，逐行给出现状、证据（源码、测试、设计文档）与边界。
 - **验证**：对应 19 项测试在 `build-current-vk` 本地运行 19/19 通过。本提交只改文档；本提交自身的远端工作流结果不在此预写。
+
+## myui 断行词典入口的输入预算（2026-11-27）
+
+- **缺口**：`docs/myui_remaining_work.md`「未完成能力」中 UAX#14 一行列出「超长输入预算」。三个词典入口只限制单个 SA run，不限制整个数组长度。
+- **实现**（`engine/src/myui/myr/my_line_break.{h,c}`）：新增 `MY_LINE_BREAK_MAX_INPUT_CODEPOINTS`（等于 4 MiB 段落字节预算）。`my_line_break_apply_dictionary_ex` 与 `my_line_break_apply_dictionary_profile` 在任何扫描和回调前拒绝更长的数组；`my_line_break_apply_dictionary` 经 `_ex` 同样受限。
+- **TDD 与变异**：`test_myui_text_layout` 新增 1 例（142 例），先以编译失败为 RED；4 项定向变异全部判红。
+- **验证**：`test_myui_text_layout` 142/142；ASan+UBSan 142/142；`build-current-vk` 非 fuzz 466/466。
+- **仍未完成**：UAX#14 一行的 locale dictionary corpus 与产品级 tailoring 契约。本提交自身的远端工作流结果不在此预写。

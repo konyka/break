@@ -2599,3 +2599,17 @@ graphics 与 present queue。`RE_VK_DEVICE_INDEX` 现在也必须通过同一门
 现统一经 `redis_reply_is_ok_status()` 校验，严格要求状态类型且内容必须为 `"OK"`；
 否则安全失败关闭。`SELECT` 握手失败直接销毁连接返回错误，`SET`/`PSETEX` 记录
 `RE_PROVIDER_ERROR_UNAVAILABLE`，保证冷路径严格契约且不增加热路径分配。
+
+## 本轮补充：断行词典入口的输入预算（2026-11-27）
+
+「未完成能力」表中「完整 UAX#14 默认规则」一行的完成判据列有「超长输入预算」。此前 `my_line_break_apply_dictionary`、`my_line_break_apply_dictionary_ex` 与 `my_line_break_apply_dictionary_profile` 只限制单个 SA run 的长度（`max_codepoints`，最多 256），整个数组的长度没有上限：直接调用者传入超长数组时，入口会先完整扫描一遍做标量校验。
+
+新增 `MY_LINE_BREAK_MAX_INPUT_CODEPOINTS`（`engine/src/myui/myr/my_line_break.h`），取值等于段落字节预算 `MY_TEXT_PARAGRAPH_MAX_BYTES`（4 MiB），因为一个段落产生的码点数不会超过字节数，段落路径不受影响。超过预算的数组在任何扫描和回调之前返回 `MY_RET_INVALID_PARAMS`，边界数组保持不变；恰好等于预算的输入照常处理。内置词典入口原本就以 256 码点为上限，不变。
+
+**TDD**：`test_myui_text_layout` 新增 `line_break_dictionary_rejects_input_over_budget`（142 例），先以常量未声明的编译失败为 RED。覆盖三个入口在超出 1 个码点时拒绝、回调未被调用、边界未被修改，以及恰好等于预算时 `_ex` 与 `_profile` 都正常调用回调。
+
+**变异**：4 项全部判红（分别删去两个入口的检查、把两处 `>` 改为 `>=`）。
+
+**验证**：`test_myui_text_layout` 142/142；ASan+UBSan 142/142；`build-current-vk` 非 fuzz 466/466。
+
+该行其余判据（locale dictionary corpus、产品级 tailoring 契约）不变，仍未完成。

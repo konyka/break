@@ -1420,6 +1420,9 @@ my_ret_t my_line_break_apply_dictionary_ex(
   if (count != 0u && (codepoints == NULL || allow_before == NULL)) {
     return MY_RET_INVALID_PARAMS;
   }
+  if (count > MY_LINE_BREAK_MAX_INPUT_CODEPOINTS) {
+    return MY_RET_INVALID_PARAMS;
+  }
   for (i = 0u; i < count; ++i) {
     if (codepoints[i] > 0x10FFFFu ||
         (codepoints[i] >= 0xD800u && codepoints[i] <= 0xDFFFu)) {
@@ -1482,6 +1485,9 @@ my_ret_t my_line_break_apply_dictionary_profile(
     const my_line_break_dictionary_profile_t* profile) {
   size_t i;
   if (count != 0u && (codepoints == NULL || allow_before == NULL)) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (count > MY_LINE_BREAK_MAX_INPUT_CODEPOINTS) {
     return MY_RET_INVALID_PARAMS;
   }
   if (profile == NULL || !my_line_break_dictionary_profile_valid(profile) ||
