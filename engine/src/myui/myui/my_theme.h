@@ -325,6 +325,15 @@ typedef struct {
  * is cleared, so the same animation later restarts. Returns false when
  * the key has no value at all or state_box is NULL. Implemented in
  * my_css.c. */
+/** @brief The animation half of my_theme_animation_step: advances the
+ * driver state the same way but returns false (out untouched) when no
+ * animation applies a value, so the caller can try other sources such as
+ * my_theme_transition_step. Implemented in my_css.c. */
+bool my_theme_get_for_widget_var_animating_at(
+    const my_theme_t* theme, const struct my_widget_t* widget,
+    my_widget_state_t state, const char* key, double now_ms,
+    my_theme_animation_state_t* state_box, my_value_t* out);
+
 bool my_theme_animation_step(const my_theme_t* theme,
                              const struct my_widget_t* widget,
                              my_widget_state_t state, const char* key,

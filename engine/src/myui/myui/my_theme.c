@@ -1473,9 +1473,93 @@ static bool theme_widget_resolve_var(my_widget_t* widget,
   return my_theme_get_for_widget_var(w->theme, widget, state, key, out);
 }
 
+/* CSS motion: per-widget clock and the two host-side driver boxes. */
+struct my_widget_style_motion_t {
+  double now_ms;
+  my_theme_animation_state_t animation;
+  my_theme_transition_state_t transition;
+};
+
+my_ret_t my_widget_set_style_clock(my_widget_t* widget, double now_ms) {
+  if (widget == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (widget->style_motion == NULL) {
+    widget->style_motion = (struct my_widget_style_motion_t*)my_mem_calloc(
+        ((my_object_t*)widget)->allocator, 1, sizeof(*widget->style_motion));
+    if (widget->style_motion == NULL) {
+      return MY_RET_OOM;
+    }
+  }
+  widget->style_motion->now_ms = now_ms;
+  return MY_RET_OK;
+}
+
+void my_widget_clear_style_clock(my_widget_t* widget) {
+  if (widget == NULL || widget->style_motion == NULL) {
+    return;
+  }
+  my_mem_free(((my_object_t*)widget)->allocator, widget->style_motion);
+  widget->style_motion = NULL;
+}
+
+bool my_widget_style_clock_active(const my_widget_t* widget) {
+  return widget != NULL && widget->style_motion != NULL;
+}
+
+/* The nearest themed ancestor's theme, NULL without one. */
+static const my_theme_t* theme_widget_theme(const my_widget_t* widget) {
+  const my_widget_t* w = widget;
+  while (w != NULL) {
+    if (w->theme != NULL) return w->theme;
+    w = w->parent;
+  }
+  return NULL;
+}
+
+/* With a motion clock and no local override, resolve `key` through the
+ * animation and transition drivers. */
+static bool theme_widget_motion_value(my_widget_t* widget,
+                                      my_widget_state_t state,
+                                      const char* key, my_value_t* out) {
+  struct my_widget_style_motion_t* motion;
+  const my_theme_t* theme;
+  if (widget == NULL || widget->style_motion == NULL) {
+    return false;
+  }
+  if (widget->local_style != NULL &&
+      my_style_get(widget->local_style, state, key) != NULL) {
+    return false;
+  }
+  theme = theme_widget_theme(widget);
+  if (theme == NULL) {
+    return false;
+  }
+  motion = widget->style_motion;
+  if (my_theme_get_for_widget_var_animating_at(theme, widget, state, key,
+                                               motion->now_ms,
+                                               &motion->animation, out)) {
+    return true;
+  }
+  return my_theme_transition_step(theme, widget, state, key, motion->now_ms,
+                                  out, &motion->transition);
+}
+
 uint32_t my_widget_style_get_color(my_widget_t* widget, my_widget_state_t state,
                                    const char* key, uint32_t fallback) {
-  const my_value_t* v = my_widget_style_get(widget, state, key);
+  const my_value_t* v;
+  if (widget != NULL && widget->style_motion != NULL) {
+    my_value_t moving;
+    my_value_init(&moving, ((my_object_t*)widget)->allocator);
+    if (theme_widget_motion_value(widget, state, key, &moving) &&
+        my_value_type(&moving) == MY_VALUE_UINT32) {
+      uint32_t result = my_value_get_uint32(&moving);
+      my_value_reset(&moving);
+      return result;
+    }
+    my_value_reset(&moving);
+  }
+  v = my_widget_style_get(widget, state, key);
   if (v != NULL && v->type == MY_VALUE_UINT32) {
     return my_value_get_uint32(v);
   }
@@ -1494,7 +1578,26 @@ uint32_t my_widget_style_get_color(my_widget_t* widget, my_widget_state_t state,
 }
 
 int32_t my_widget_style_get_int(my_widget_t* widget, my_widget_state_t state,
-                                const char* key, int32_t fallback) {  const my_value_t* v = my_widget_style_get(widget, state, key);
+                                const char* key, int32_t fallback) {
+  const my_value_t* v;
+  if (widget != NULL && widget->style_motion != NULL) {
+    my_value_t moving;
+    bool have = false;
+    int32_t result = 0;
+    my_value_init(&moving, ((my_object_t*)widget)->allocator);
+    if (theme_widget_motion_value(widget, state, key, &moving)) {
+      if (my_value_type(&moving) == MY_VALUE_INT32) {
+        result = my_value_get_int32(&moving);
+        have = true;
+      } else if (my_value_type(&moving) == MY_VALUE_DOUBLE) {
+        result = (int32_t)my_value_get_double(&moving);
+        have = true;
+      }
+    }
+    my_value_reset(&moving);
+    if (have) return result;
+  }
+  v = my_widget_style_get(widget, state, key);
   if (v == NULL) {
     return fallback;
   }

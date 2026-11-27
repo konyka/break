@@ -14869,3 +14869,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **实现**：内置颜色键按 `<color>`、边框宽度/圆角/字号按 `<number>` 插值；`transition` 接受这些内置属性名；keyframes 中内置键的类型化值转回文本后插值。
 - **TDD 与变异**：`test_myui_css` 新增 1 例并调整 1 个旧用例（221 例），旧实现 RED；9 项定向变异全部判红。
 - **验证**：普通与 ASan+UBSan（含 LeakSanitizer）下 221/221；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
+
+## 控件样式查询接入 CSS 动画时钟（2026-11-27）
+
+- **缺口**：控件绘制用的 `my_widget_style_get_color` / `_int` 不经过 CSS transition/animation 驱动，主题动画在控件上不可见。
+- **实现**：`my_widget_set_style_clock` / `_clear_style_clock` / `_style_clock_active`；设置时钟后颜色与整数查询按本地覆盖 → 动画 → 过渡 → 普通值的顺序取值；新增 `my_theme_get_for_widget_var_animating_at`。时钟仍由宿主推进，window manager 帧循环的自动接入未做。
+- **TDD 与变异**：`test_myui_css` 新增 2 例（223 例），旧实现 RED；7 项定向变异全部判红。
+- **验证**：普通与 ASan+UBSan（含 LeakSanitizer）下 223/223；ASan 下 `test_myui_window_manager` 245/245；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。

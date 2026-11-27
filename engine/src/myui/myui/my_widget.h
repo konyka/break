@@ -109,6 +109,9 @@ struct my_widget_t {
   char* style_class; /**< owned: space-separated CSS classes (M18a) */
   char* bind_rules;                 /**< owned: MVVM rules (M4b), ";" separated */
   void* anim_mgr;                   /**< root only, weak (my_animator) */
+  /** @brief Owned CSS animation/transition clock and driver state; NULL
+   * until my_widget_set_style_clock (see there). */
+  struct my_widget_style_motion_t* style_motion;
   my_widget_removed_hook_t removed_hook; /**< root only: subtree removed */
   my_widget_child_removed_hook_t child_removed_hook; /**< optional parent hook */
 };
@@ -321,6 +324,22 @@ const my_value_t* my_widget_style_get(my_widget_t* widget,
 /** @brief Resolve a color (0xRRGGBBAA), fallback when unresolved. */
 uint32_t my_widget_style_get_color(my_widget_t* widget, my_widget_state_t state,
                                    const char* key, uint32_t fallback);
+
+/** @brief Set the widget's CSS motion clock (host monotonic ms). While a
+ * clock is set, my_widget_style_get_color and my_widget_style_get_int
+ * return the theme value as CSS `animation` and `transition` make it at
+ * that time (my_theme_animation_step, then my_theme_transition_step);
+ * local overrides still win and are not animated. The host advances the
+ * clock each frame and repaints while my_widget_style_clock_active is
+ * true. Allocates the driver state on first use. */
+my_ret_t my_widget_set_style_clock(my_widget_t* widget, double now_ms);
+
+/** @brief Drop the motion clock and its driver state; lookups return
+ * plain cascade values again. */
+void my_widget_clear_style_clock(my_widget_t* widget);
+
+/** @brief Whether a motion clock is set on the widget. */
+bool my_widget_style_clock_active(const my_widget_t* widget);
 
 /** @brief Resolve an int, fallback when unresolved. */
 int32_t my_widget_style_get_int(my_widget_t* widget, my_widget_state_t state,

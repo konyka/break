@@ -125,6 +125,7 @@ void my_widget_destroy(my_widget_t* widget) {
     my_mem_free(((my_object_t*)widget)->allocator, widget->local_style);
     widget->local_style = NULL;
   }
+  my_widget_clear_style_clock(widget);
   if (widget->layouter != NULL && widget->layouter->destroy != NULL) {
     widget->layouter->destroy(widget->layouter);
   }

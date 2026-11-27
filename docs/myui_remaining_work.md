@@ -2970,3 +2970,22 @@ transition 与 animation 此前只作用于用 `@property` 注册过的自定义
 **变异**：9 项全部判红：不回退到内置域、去掉 bg 颜色键、去掉圆角、去掉字号、去掉边框颜色、去掉边框宽度、transition 名不做别名映射、接受任意内置键、stop 只读字符串值。首轮边框颜色、边框宽度两项存活，据此在用例中补充这两个键。
 
 **验证**：`test_myui_css` 221/221；ASan+UBSan（含 LeakSanitizer）221/221；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。
+
+## 本轮补充：控件样式查询接入 CSS 动画时钟（2026-11-27）
+
+CSS transition 与 animation 只有 `my_theme_*` 层的查询与宿主驱动，控件绘制用的 `my_widget_style_get_color` / `my_widget_style_get_int` 不经过它们，所以主题里写的动画在控件上看不到。
+
+新增（`my_widget.h` 声明，`my_theme.c` 实现）：
+
+- `my_widget_set_style_clock(widget, now_ms)`：给控件设置动画时钟（宿主单调毫秒），首次调用时分配驱动状态（animation 与 transition 各一份），控件销毁时释放。
+- `my_widget_clear_style_clock`、`my_widget_style_clock_active`：清除时钟、查询是否设置了时钟。
+- 设置时钟后，`my_widget_style_get_color` / `_int` 先看本地覆盖（本地覆盖优先且不做动画），否则在最近的有主题祖先上依次取 `my_theme_get_for_widget_var_animating_at`（动画有值时）与 `my_theme_transition_step`（目标变化时过渡），都不适用时回到原有查询。未设置时钟的控件行为不变。
+- `my_theme_get_for_widget_var_animating_at`（`my_theme.h`）：`my_theme_animation_step` 的动画部分，推进同一份驱动状态，但没有动画值时返回 false 且不写 out，便于调用方再尝试 transition。`my_theme_animation_step` 改为调用它再回退普通值，行为不变。
+
+宿主每帧推进时钟并在 `my_widget_style_clock_active` 为真时重绘；把时钟接到 window manager 的帧循环（自动推进、动画结束后停止重绘）尚未完成。
+
+**TDD**：`test_myui_css` 新增 2 例（223 例）：动画进行中与结束后的字号、颜色目标变化后的过渡、无时钟控件不受影响、清除时钟、通过有主题祖先查找主题；本地覆盖优先。旧实现缺少接口（RED）。
+
+**变异**：7 项全部判红：本地覆盖不优先、不取动画、不取过渡、颜色查询跳过时钟、整数查询跳过时钟、不向上找主题祖先（据此补充子控件用例）。
+
+**验证**：`test_myui_css` 223/223；ASan+UBSan（含 LeakSanitizer）223/223；ASan 下 `test_myui_window_manager` 245/245；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。

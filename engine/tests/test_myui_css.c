@@ -4163,6 +4163,116 @@ TEST(css_builtin_keys_transition_and_animate)
   my_theme_destroy(theme);
 }
 
+TEST(widget_style_clock_drives_css_animation_and_transition)
+{
+  /* With a style clock set, my_widget_style_get_color/_int return the
+   * CSS-animated or transitioning value at that clock; without one they
+   * keep returning the plain cascade value. */
+  const char* v1 =
+      "@keyframes grow { from { font-size: 10; } to { font-size: 20; } }"
+      "button { transition: color 200ms linear; color: #ff0000ff;"
+      " font-size: 12; animation: grow 100ms linear; }";
+  const char* v2 =
+      "@keyframes grow { from { font-size: 10; } to { font-size: 20; } }"
+      "button { transition: color 200ms linear; color: #0000ffff;"
+      " font-size: 12; animation: grow 100ms linear; }";
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* button = my_widget_create(NULL, "button");
+  my_widget_t* plain = my_widget_create(NULL, "plain");
+
+  ASSERT_NOT_NULL(theme);
+  button->widget_type = "button";
+  plain->widget_type = "button";
+  ASSERT_EQ(my_widget_apply_theme(button, theme), MY_RET_OK);
+  ASSERT_EQ(my_widget_apply_theme(plain, theme), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, v1, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+
+  /* no clock: plain cascade values. */
+  ASSERT_EQ(my_widget_style_get_int(plain, MY_STATE_NORMAL,
+                                    MY_STYLE_FONT_SIZE, 0), 12);
+  ASSERT_FALSE(my_widget_style_clock_active(plain));
+
+  ASSERT_EQ(my_widget_set_style_clock(button, 1000.0), MY_RET_OK);
+  ASSERT_TRUE(my_widget_style_clock_active(button));
+  ASSERT_EQ(my_widget_style_get_int(button, MY_STATE_NORMAL,
+                                    MY_STYLE_FONT_SIZE, 0), 10);
+  ASSERT_EQ(my_widget_style_get_color(button, MY_STATE_NORMAL,
+                                      MY_STYLE_FG_COLOR, 0u), 0xFF0000FFu);
+  ASSERT_EQ(my_widget_set_style_clock(button, 1050.0), MY_RET_OK);
+  ASSERT_EQ(my_widget_style_get_int(button, MY_STATE_NORMAL,
+                                    MY_STYLE_FONT_SIZE, 0), 15);
+  /* past the animation (fill none): the cascade value. */
+  ASSERT_EQ(my_widget_set_style_clock(button, 1200.0), MY_RET_OK);
+  ASSERT_EQ(my_widget_style_get_int(button, MY_STATE_NORMAL,
+                                    MY_STYLE_FONT_SIZE, 0), 12);
+
+  /* the color target changes: it transitions from the old value. */
+  ASSERT_EQ(my_theme_load_css_ex(theme, v2, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_EQ(my_widget_set_style_clock(button, 1300.0), MY_RET_OK);
+  ASSERT_EQ(my_widget_style_get_color(button, MY_STATE_NORMAL,
+                                      MY_STYLE_FG_COLOR, 0u), 0xFF0000FFu);
+  ASSERT_EQ(my_widget_set_style_clock(button, 1400.0), MY_RET_OK);
+  ASSERT_EQ(my_widget_style_get_color(button, MY_STATE_NORMAL,
+                                      MY_STYLE_FG_COLOR, 0u), 0x800080FFu);
+  /* the plain widget jumps straight to the new color. */
+  ASSERT_EQ(my_widget_style_get_color(plain, MY_STATE_NORMAL,
+                                      MY_STYLE_FG_COLOR, 0u), 0x0000FFFFu);
+
+  /* clearing the clock returns to plain lookups. */
+  my_widget_clear_style_clock(button);
+  ASSERT_FALSE(my_widget_style_clock_active(button));
+  ASSERT_EQ(my_widget_style_get_color(button, MY_STATE_NORMAL,
+                                      MY_STYLE_FG_COLOR, 0u), 0x0000FFFFu);
+  ASSERT_EQ(my_widget_set_style_clock(NULL, 1.0), MY_RET_INVALID_PARAMS);
+  /* a child finds the theme on its themed ancestor. */
+  {
+    my_widget_t* root = my_widget_create(NULL, "root");
+    my_widget_t* child = my_widget_create(NULL, "child");
+    child->widget_type = "button";
+    ASSERT_EQ(my_widget_apply_theme(root, theme), MY_RET_OK);
+    ASSERT_EQ(my_widget_add_child(root, child), MY_RET_OK);
+    ASSERT_EQ(my_widget_set_style_clock(child, 0.0), MY_RET_OK);
+    ASSERT_EQ(my_widget_style_get_int(child, MY_STATE_NORMAL,
+                                      MY_STYLE_FONT_SIZE, 0), 10);
+    ASSERT_EQ(my_widget_set_style_clock(child, 50.0), MY_RET_OK);
+    ASSERT_EQ(my_widget_style_get_int(child, MY_STATE_NORMAL,
+                                      MY_STYLE_FONT_SIZE, 0), 15);
+    my_widget_unref(child);
+    my_widget_unref(root);
+  }
+  my_widget_unref(button);
+  my_widget_unref(plain);
+  my_theme_destroy(theme);
+}
+
+TEST(widget_style_clock_local_override_wins)
+{
+  /* A local style override is the highest priority and is not animated. */
+  const char* css =
+      "@keyframes grow { from { font-size: 10; } to { font-size: 20; } }"
+      "button { font-size: 12; animation: grow 100ms linear; }";
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* button = my_widget_create(NULL, "button");
+  my_value_t local;
+
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_apply_theme(button, theme), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css(theme, css), MY_RET_OK);
+  my_value_init(&local, NULL);
+  my_value_set_int32(&local, 30);
+  ASSERT_EQ(my_widget_style_set(button, MY_STATE_NORMAL, MY_STYLE_FONT_SIZE,
+                                &local),
+            MY_RET_OK);
+  ASSERT_EQ(my_widget_set_style_clock(button, 50.0), MY_RET_OK);
+  ASSERT_EQ(my_widget_style_get_int(button, MY_STATE_NORMAL,
+                                    MY_STYLE_FONT_SIZE, 0), 30);
+  my_value_reset(&local);
+  my_widget_unref(button);
+  my_theme_destroy(theme);
+}
+
 TEST(css_animation_declaration_rejects_malformed_values)
 {
   static const char* const bad[] = {
@@ -11784,6 +11894,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_animation_play_state_pauses_without_restart);
     RUN_TEST(css_animation_play_state_starting_paused_and_per_group);
     RUN_TEST(css_builtin_keys_transition_and_animate);
+    RUN_TEST(widget_style_clock_drives_css_animation_and_transition);
+    RUN_TEST(widget_style_clock_local_override_wins);
     RUN_TEST(css_animation_declaration_rejects_malformed_values);
     RUN_TEST(css_theme_keyframes_survive_clone_and_reload);
     RUN_TEST(css_percentage_length_resolution);

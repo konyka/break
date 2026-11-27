@@ -8265,11 +8265,10 @@ static bool css_animation_lists_same_but_play(const css_animation_spec_t* a,
   return true;
 }
 
-bool my_theme_animation_step(const my_theme_t* theme,
-                             const struct my_widget_t* widget,
-                             my_widget_state_t state, const char* key,
-                             double now_ms, my_value_t* out,
-                             my_theme_animation_state_t* state_box) {
+bool my_theme_get_for_widget_var_animating_at(
+    const my_theme_t* theme, const struct my_widget_t* widget,
+    my_widget_state_t state, const char* key, double now_ms,
+    my_theme_animation_state_t* state_box, my_value_t* out) {
   const my_value_t* av;
   const char* animation;
   css_animation_spec_t specs[MY_CSS_MAX_ANIMATIONS];
@@ -8318,18 +8317,30 @@ bool my_theme_animation_step(const my_theme_t* theme,
       const my_theme_animation_group_t* group = &state_box->groups[i];
       elapsed[i] = group->paused ? group->frozen_ms : now_ms - group->start_ms;
     }
-    if (css_animation_eval(theme, specs, count, elapsed, key, out)) {
-      return true;
-    }
+    return css_animation_eval(theme, specs, count, elapsed, key, out);
   }
-  {
-    char current[MY_THEME_MAX_PROPERTY_VALUE_BYTES + 1u];
-    if (!my_theme_get_for_widget_var_text(theme, widget, state, key, current,
-                                          sizeof(current))) {
-      return false;
-    }
-    return css_probe_full_value(current, out);
+  return false;
+}
+
+bool my_theme_animation_step(const my_theme_t* theme,
+                             const struct my_widget_t* widget,
+                             my_widget_state_t state, const char* key,
+                             double now_ms, my_value_t* out,
+                             my_theme_animation_state_t* state_box) {
+  char current[MY_THEME_MAX_PROPERTY_VALUE_BYTES + 1u];
+  if (theme == NULL || widget == NULL || key == NULL || out == NULL ||
+      state_box == NULL) {
+    return false;
   }
+  if (my_theme_get_for_widget_var_animating_at(theme, widget, state, key,
+                                               now_ms, state_box, out)) {
+    return true;
+  }
+  if (!my_theme_get_for_widget_var_text(theme, widget, state, key, current,
+                                        sizeof(current))) {
+    return false;
+  }
+  return css_probe_full_value(current, out);
 }
 
 my_ret_t my_theme_load_css_ex(my_theme_t* theme, const char* css,
