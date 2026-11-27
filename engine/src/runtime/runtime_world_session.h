@@ -196,7 +196,8 @@ BreakRuntimeError break_runtime_world_session_export_metrics(
 
 /* Per-connection read-only view for diagnosis. The query copies adapter scalars
  * under the adapter mutex; it never calls World Session, publication or queue and
- * never advances the state machine. `publish_dirty` mirrors the adapter-owned terms of
+ * never advances the state machine. In snapshot-log mode it also reads the
+ * connection's log backlog (the log takes its own lock; nothing is consumed). `publish_dirty` mirrors the adapter-owned terms of
  * the fanout continuation for one connection (false while unready; otherwise retry,
  * saved attempt scalars, then the observed-epoch comparison against completed, terminal
  * and held epochs); it deliberately omits the continuation's Session
@@ -214,6 +215,8 @@ typedef struct {
     bool publish_dirty;
     bool publish_ready;           /* always true without publish_requires_ready */
     u64 held_publication_epoch;   /* epoch last held by publish_waits_for_ack */
+    u64 log_backlog;              /* unread log epochs of this connection's reader;
+                                   * 0 without a log or without a reader */
 } BreakRuntimeWorldConnectionSnapshot;
 
 /* Writes up to `capacity` open connections in ascending slot order and returns the

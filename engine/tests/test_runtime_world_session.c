@@ -5418,6 +5418,34 @@ TEST(publish_log_unready_connection_keeps_its_backlog_until_ready)
     fixture_dispose(&fixture);
 }
 
+TEST(publish_log_connection_snapshot_reports_the_reader_backlog)
+{
+    Fixture fixture;
+    BreakRuntimeWorldConnectionSnapshot snapshot;
+    u64 epoch_a = 0u;
+    usize drained = 0u;
+
+    ASSERT_TRUE(fixture_init_log(&fixture, 7u, 2u, 0u, 8u, true));
+    ASSERT_TRUE(open_connection(&fixture, KEY_A, 7u, &epoch_a));
+    ASSERT_TRUE(log_publish(&fixture, 41u, 10u));
+    ASSERT_TRUE(log_publish(&fixture, 42u, 11u));
+    memset(&snapshot, 0, sizeof(snapshot));
+    ASSERT_EQ(break_runtime_world_session_connection_snapshots(fixture.adapter, &snapshot, 1u),
+              1u);
+    ASSERT_EQ(snapshot.log_backlog, 2u);
+
+    ASSERT_EQ(break_runtime_world_session_set_publish_ready(fixture.adapter, KEY_A, epoch_a,
+                                                            true),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(submit_current(&fixture, 7u, 0u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 1u, &drained),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_world_session_connection_snapshots(fixture.adapter, &snapshot, 1u),
+              1u);
+    ASSERT_EQ(snapshot.log_backlog, 0u);
+    fixture_dispose(&fixture);
+}
+
 TEST(publish_log_terminal_epoch_waits_for_the_next_notice)
 {
     Fixture fixture;
@@ -5728,6 +5756,7 @@ RUN_TEST(coordinator_abandon_failed_join_allows_manual_destroy);
     RUN_TEST(publish_log_overload_resumes_then_sends_the_rest);
     RUN_TEST(publish_log_rebaseline_drops_unread_old_level_epochs);
     RUN_TEST(publish_log_unready_connection_keeps_its_backlog_until_ready);
+    RUN_TEST(publish_log_connection_snapshot_reports_the_reader_backlog);
     RUN_TEST(publish_log_terminal_epoch_waits_for_the_next_notice);
     RUN_TEST(publish_log_max_unacked_config_requires_a_log_and_a_bounded_value);
     RUN_TEST(publish_log_max_unacked_rejected_with_a_publication);

@@ -287,8 +287,6 @@ struct CoreAppNetTransport {
     bool world_fail_next_build;
     bool world_reliable;
     BreakWorldSnapshotLog *world_log;
-    BreakWorldSnapshotReaderId world_log_readers[CORE_APP_NET_MAX_CONNECTIONS];
-    bool world_log_reader_open[CORE_APP_NET_MAX_CONNECTIONS];
     u64 world_publish_tick;
     BreakRuntimeCoordinator *world_coordinator;
     bool world_adapter_abandoned;
@@ -766,9 +764,15 @@ BreakRuntimeError core_app_net_transport_world_adapter_register(
     config.bus = bus;
     config.subscriber_name = "core_app.world";
     config.max_connections = CORE_APP_NET_MAX_CONNECTIONS;
-    config.publication = transport->world_publication;
     config.publish_requires_ready = true;
-    config.publish_waits_for_ack = true;
+    if (transport->world_reliable) {
+        config.log = transport->world_log;
+        config.publish_log_max_unacked = CORE_APP_NET_WORLD_RELIABLE_IN_FLIGHT;
+        config.publish_connection_budget = 64u;
+    } else {
+        config.publication = transport->world_publication;
+        config.publish_waits_for_ack = true;
+    }
     adapter = break_runtime_world_session_create(&config);
     if (!adapter) return BREAK_RUNTIME_OOM;
     memset(&lifecycle, 0, sizeof(lifecycle));
@@ -1037,10 +1041,6 @@ static void net_world_close(CoreAppNetTransport *t, u32 slot) {
     world_destroy(t->world_diagnostics[slot]);
     t->world_diagnostics[slot] = NULL;
     net_world_clear_control_state(t, slot);
-    if (t->world_log_reader_open[slot]) {
-        (void)break_world_snapshot_log_remove_reader(t->world_log, t->world_log_readers[slot]);
-        t->world_log_reader_open[slot] = false;
-    }
 }
 
 static void net_release_slot(CoreAppNetTransport *t, u32 slot, bool close_connection) {
@@ -1077,7 +1077,6 @@ static void net_world_destroy(CoreAppNetTransport *t) {
     t->world_publish_tick = 0u;
     break_world_snapshot_log_destroy(t->world_log);
     t->world_log = NULL;
-    memset(t->world_log_reader_open, 0, sizeof(t->world_log_reader_open));
     break_world_session_destroy(t->world_session);
     world_destroy(t->world_authoritative);
     break_schema_registry_destroy(t->world_schemas);
@@ -1243,25 +1242,39 @@ static void net_world_publish_runtime(CoreAppNetTransport *t) {
 }
 
 /* Reliable path (--world-reliable). Every tick's snapshot goes into the log
- * (a FULL log cannot happen: slow readers are evicted), then each ready
- * connection sends what its reader has not sent yet, in order. A connection
- * becomes a reader when it is first ready, so it starts at the next epoch and
- * its first packet is full anyway. Sending pauses while a full waits for its
- * ACK and while CORE_APP_NET_WORLD_RELIABLE_IN_FLIGHT packets are unACKed;
- * the epochs wait in the log meanwhile, and a connection that stays paused
- * for more than the log holds is evicted (its next packet is full). */
+ * (a FULL log cannot happen: slow readers are evicted) and the Runtime World
+ * adapter, registered in snapshot-log mode, sends each ready connection what
+ * its reader has not sent yet, in order. The adapter adds the reader when the
+ * connection opens, so epochs published before the connection is ready wait in
+ * the log; with no confirmed baseline the first of them goes out as a full.
+ * Sending pauses while a full waits for its ACK and while
+ * CORE_APP_NET_WORLD_RELIABLE_IN_FLIGHT packets are unACKed (the adapter's
+ * publish_log_max_unacked gate); a connection that stays paused for more than
+ * the log holds is evicted and its next packet is full. */
+static void net_world_reliable_backlog(CoreAppNetTransport *t) {
+    BreakRuntimeWorldConnectionSnapshot snapshots[CORE_APP_NET_MAX_CONNECTIONS];
+    usize count = break_runtime_world_session_connection_snapshots(
+        t->world_adapter, snapshots, CORE_APP_NET_MAX_CONNECTIONS);
+    if (count > CORE_APP_NET_MAX_CONNECTIONS) count = CORE_APP_NET_MAX_CONNECTIONS;
+    for (usize i = 0u; i < count; ++i) {
+        if (!snapshots[i].publish_ready) continue;
+        if (snapshots[i].log_backlog > t->world_stats.reliable_backlog_max) {
+            t->world_stats.reliable_backlog_max = snapshots[i].log_backlog;
+        }
+    }
+}
+
 static void net_world_publish_reliable(CoreAppNetTransport *t) {
     u64 tick;
     BreakWorldSnapshot *snapshot;
     usize outbound_before;
     usize outbound_after;
-    if (!t->world_log || !t->world_level_initialized) return;
+    if (!t->world_adapter || !t->world_log || !t->world_level_initialized) return;
     outbound_before = break_net_reactor_outbound_count(t->reactor);
     for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
-        if (t->world_open[i] && net_slot_sendable(t, i) && !t->world_log_reader_open[i]) {
-            t->world_log_reader_open[i] =
-                break_world_snapshot_log_add_reader(t->world_log, &t->world_log_readers[i]);
-        }
+        if (!t->world_open[i]) continue;
+        (void)break_runtime_world_session_set_publish_ready(
+            t->world_adapter, t->keys[i], t->world_connection_epochs[i], net_slot_sendable(t, i));
     }
     tick = (u64)t->current_tick > t->world_publish_tick ? (u64)t->current_tick
                                                         : t->world_publish_tick + 1u;
@@ -1281,34 +1294,24 @@ static void net_world_publish_reliable(CoreAppNetTransport *t) {
         }
         break_world_snapshot_release(snapshot);
     }
-    for (u32 i = 0u; i < CORE_APP_NET_MAX_CONNECTIONS; ++i) {
-        u64 backlog;
-        if (!t->world_log_reader_open[i] || !t->world_open[i] || !net_slot_sendable(t, i)) continue;
-        backlog = break_world_snapshot_log_backlog(t->world_log, t->world_log_readers[i]);
-        if (backlog > t->world_stats.reliable_backlog_max)
-            t->world_stats.reliable_backlog_max = backlog;
-        for (u32 sent = 0u; sent < CORE_APP_NET_WORLD_LOG_CAPACITY; ++sent) {
-            BreakWorldSessionSenderState state;
-            BreakWorldSessionLogResult result;
-            if (!break_world_session_sender_state(t->world_session, t->keys[i], &state)) break;
-            /* A pending attempt was started when both checks passed, and ACKs
-             * only shrink the history, so the checks pass again for it. */
-            if (!state.force_full) {
-                /* A full replaces the session history, so an ACK for an
-                 * earlier full no longer matches: wait for the in-flight
-                 * full's ACK before sending more. */
-                if (state.history_count != 0u && state.confirmed_snapshot_id == 0u) break;
-                /* stay below the session history limit, whose overflow would
-                 * fall back to a full and break the chain the same way */
-                if (state.history_count >= CORE_APP_NET_WORLD_RELIABLE_IN_FLIGHT) break;
-            }
-            result = break_world_session_publish_from_log(
-                t->world_session, t->keys[i], t->world_log, t->world_log_readers[i],
-                t->world_level_generation, NULL);
-            if (result == BREAK_WORLD_SESSION_LOG_SENT) continue;
-            if (result != BREAK_WORLD_SESSION_LOG_IDLE && result != BREAK_WORLD_SESSION_LOG_OVERLOAD)
-                t->world_stats.terminal_errors++;
-            break;
+    /* measured before the drain sends: what each ready reader still owes */
+    net_world_reliable_backlog(t);
+    {
+        BreakRuntimeWorldPublishCurrentNotice notice;
+        BreakRuntimeError result;
+        memset(&notice, 0, sizeof(notice));
+        notice.level_generation = t->world_level_generation;
+        result = break_runtime_world_session_submit_publish_current(t->world_adapter, &notice, 0u);
+        if (result == BREAK_RUNTIME_OVERLOAD) {
+            t->world_stats.notice_overloads++;
+        } else if (result != BREAK_RUNTIME_OK) {
+            t->world_stats.terminal_errors++;
+        }
+    }
+    if (break_runtime_world_session_pending(t->world_adapter) != 0u) {
+        BreakRuntimeError result = net_world_adapter_drain(t);
+        if (result != BREAK_RUNTIME_OK && result != BREAK_RUNTIME_OVERLOAD) {
+            t->world_stats.terminal_errors++;
         }
     }
     outbound_after = break_net_reactor_outbound_count(t->reactor);

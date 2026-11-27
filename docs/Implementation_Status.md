@@ -14609,7 +14609,7 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **实现**：配置新增可选 `log`（`BreakWorldSnapshotLog`，与 `publication` 互斥）；每个连接一个读者，随 OPEN/CLOSE/REBASELINE/destroy 管理；通知触发时按序发送每个连接的全部未读 epoch，预算限制每次 drain 的发送数，终止结果等下一个通知再试。设计见 `docs/design/ecs_snapshot_replication_aoi.md` 2026-11-27「Runtime adapter 的日志发布路径」。
 - **TDD 与变异**：新增 8 例（共 68 例），先以编译失败为 RED；11 项变异全部判红。
 - **验证**：联网构建 `runtime|world|core_app` 96/96；ASan 68/68；`build-current-vk` 非 fuzz 470/470，fuzz 24/24；Windows 实机 MSVC 全量构建通过（未开 Snowflake，本模块不在其中编译）。
-- **仍未完成**：core_app 的 adapter 尚未改用日志模式。本提交自身的远端工作流结果不在此预写。
+- **已完成**（2026-11-27）：core_app `--world-reliable` 的 adapter 现已改用日志模式；见下条「`--world-reliable` 改走 Runtime adapter 日志模式」。本提交自身的远端工作流结果不在此预写。
 
 ## Runtime adapter 日志模式的 ACK 门控（2026-11-27）
 
@@ -14617,7 +14617,7 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **实现**：配置新增 `publish_log_max_unacked`（0 关闭，1..1024，只能与 `log` 同用）。有未确认的 full、或未确认包数达到上限时，该连接停止读取新 epoch；续发中的 attempt 与 NEED_FULL 的修复 full 放行。设计见 `docs/design/ecs_snapshot_replication_aoi.md` 2026-11-27「Runtime adapter 日志模式 ACK 门控」。
 - **TDD 与变异**：新增 6 例（共 74 例），先以编译失败为 RED；8 项变异 7 项判红，1 项（去掉 `attempt_pending` 放行）为等价变异，原因已写入代码注释。
 - **验证**：联网构建 74/74；新建 ASan+UBSan 构建 `build-rws-asan`（`detect_leaks=1`）74/74，无诊断。
-- **仍未完成**：core_app 的 adapter 尚未改用日志模式并启用该门控。本提交自身的远端工作流结果不在此预写。
+- **已完成**（2026-11-27）：core_app `--world-reliable` 的 adapter 现已以 `publish_log_max_unacked=4` 启用该门控；见下条「`--world-reliable` 改走 Runtime adapter 日志模式」。本提交自身的远端工作流结果不在此预写。
 
 ## 编辑器的场景依赖图（2026-11-27）
 
@@ -14626,3 +14626,21 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：新增 9 例（解析 3、`test_editor_scene_deps` 5、外壳 1），均先以编译失败为 RED；35 项变异中，只泄漏内存的存活项由 LeakSanitizer 判红，`>`/`>=` 一项为等价变异。
 - **验证**：`build-current-vk` 非 fuzz 全部通过，fuzz 24/24，编辑器与场景相关 29 项通过；ASan 下 `test_editor_scene_deps` 5/5、`test_editor_shell` 236/236；Windows 实机 MSVC 构建通过，`test_editor_scene_deps`、`test_scene_serial`、`test_editor_shell`、`test_editor_scene_textures`、`test_break_editor_target_contract` 5/5。
 - **仍未完成**：编辑器的图未接热重载协调器。本提交自身的远端工作流结果不在此预写。
+
+## `--world-reliable` 改走 Runtime adapter 日志模式（2026-11-27）
+
+- **缺口**：`--world-reliable` 路径由 transport 自己持有日志读者并直接调用 `break_world_session_publish_from_log`，bypassing Runtime adapter 的 OPEN/CLOSE 生命周期管理；`reliable_backlog_max` 通过 transport 本地循环计算，不经 adapter 诊断 API。
+- **实现**：
+  - `core_app_net_transport_world_adapter_register`：reliable 模式下传 `config.log`、`publish_log_max_unacked=4`、`publish_connection_budget=64`，不再传 publication 和 `waits_for_ack`；非 reliable 路径不变。
+  - `net_world_publish_reliable`：移除 transport 侧的 reader 数组和 `publish_from_log` 循环，改为：1) 对每个 open 连接调用 `set_publish_ready`，2) 写入日志，3) 通过 `connection_snapshots` 的 `log_backlog` 字段更新 `reliable_backlog_max`，4) 提交 `submit_publish_current`，5) pending 时 `adapter_drain`。
+  - `BreakRuntimeWorldConnectionSnapshot` 新增 `log_backlog` 字段：持有 adapter mutex 时调用 `break_world_snapshot_log_backlog`（日志有自己的锁，调用安全）。
+- **TDD 与变异**：
+  - `test_runtime_world_session` 新增 `publish_log_connection_snapshot_reports_the_reader_backlog`（75 → 75 例，均 GREEN）；先以缺少成员的编译失败为 RED。
+  - `test_core_app_net_transport` 新增 `world_reliable_publish_goes_through_the_runtime_adapter`（57 例）；先以 `publish_ready is false` 为 RED。
+  - 更新现有 reliable 测试以反映新语义（adapter 在 OPEN 时加读者，早于 ready，所以之前收到的 epoch 在日志里积压；first full 携带 tick=1，之后 ACK 后一次补发等待中的 delta 链）。
+  - 9 项定向变异（禁用 `max_unacked`、削减 budget、跳过 `submit_current`、强制 ready、清零 backlog 计数等）全部判红（0 survivorss）。
+- **验证**：
+  - `build-core-app-net`：57/57 transport 测试、75/75 adapter 测试；真实 TLS loopback `core_app_network_world` 5 个 cmake 合同测试全部通过。
+  - `build-rws-asan` ASan+UBSan 75/75。
+  - `build-current-vk` 非 fuzz 466/466，fuzz 未在此构建树跑。
+- **仍未完成**：编辑器热重载协调器接入；core_app 每连接诊断 World 的 `BreakWorldMerge` 接入。本提交自身的远端工作流结果不在此预写。

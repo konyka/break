@@ -1156,6 +1156,10 @@ usize break_runtime_world_session_connection_snapshots(
         snapshot.publish_dirty = runtime_world_connection_dirty_locked(adapter, connection);
         snapshot.publish_ready = connection->publish_ready;
         snapshot.held_publication_epoch = connection->held_publication_epoch;
+        if (adapter->log && connection->has_reader) {
+            snapshot.log_backlog =
+                break_world_snapshot_log_backlog(adapter->log, connection->reader);
+        }
         if (out_snapshots && opened < capacity) out_snapshots[opened] = snapshot;
         ++opened;
     }
