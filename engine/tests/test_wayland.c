@@ -269,6 +269,88 @@ TEST(fractional_cursor_buffer_scale_rounds_up) {
     ASSERT_EQ(wl_out_cursor_buffer_scale(UINT32_MAX), 35791395);
 }
 
+/* The DRM connector names of the outputs a surface entered, for EDID
+ * lookup. An entered output whose connector name is not known (no
+ * xdg-output) makes the set incomplete; unknown globals are ignored. */
+TEST(entered_connectors_lists_names_and_flags_missing_ones) {
+    WaylandOutputList l;
+    const char *names[WAYLAND_OUTPUT_MAX];
+    const u32 entered[] = {10u, 999u, 20u};
+    const u32 with_unnamed[] = {10u, 30u};
+    bool complete = false;
+    wl_out_list_init(&l);
+    ASSERT_EQ(wl_out_add(&l, 10u), 0);
+    ASSERT_EQ(wl_out_add(&l, 20u), 1);
+    ASSERT_EQ(wl_out_add(&l, 30u), 2);
+    ASSERT_TRUE(l.items[0].connector[0] == '\0'); /* new slots have none */
+    wl_out_set_connector(&l.items[0], "eDP-1");
+    wl_out_set_connector(&l.items[1], "DP-3");
+
+    ASSERT_EQ(wl_out_entered_connectors(&l, entered, 3u, names, WAYLAND_OUTPUT_MAX,
+                                        &complete), 2u);
+    ASSERT_TRUE(complete);
+    ASSERT_STR_EQ(names[0], "eDP-1");
+    ASSERT_STR_EQ(names[1], "DP-3");
+
+    ASSERT_EQ(wl_out_entered_connectors(&l, with_unnamed, 2u, names, WAYLAND_OUTPUT_MAX,
+                                        &complete), 1u);
+    ASSERT_FALSE(complete);
+
+    /* capacity bounds the copy and marks the set incomplete */
+    ASSERT_EQ(wl_out_entered_connectors(&l, entered, 3u, names, 1u, &complete), 1u);
+    ASSERT_FALSE(complete);
+
+    ASSERT_EQ(wl_out_entered_connectors(&l, entered, 0u, names, WAYLAND_OUTPUT_MAX,
+                                        &complete), 0u);
+    ASSERT_TRUE(complete);
+    ASSERT_EQ(wl_out_entered_connectors(NULL, entered, 3u, names, WAYLAND_OUTPUT_MAX,
+                                        &complete), 0u);
+    ASSERT_FALSE(complete);
+    ASSERT_EQ(wl_out_entered_connectors(&l, entered, 3u, NULL, WAYLAND_OUTPUT_MAX,
+                                        &complete), 0u);
+    ASSERT_FALSE(complete);
+    ASSERT_EQ(wl_out_entered_connectors(&l, entered, 3u, names, WAYLAND_OUTPUT_MAX, NULL),
+              0u);
+}
+
+/* Before the compositor reports which outputs show the surface, every
+ * known output is used: a fact true on all of them is true on any subset,
+ * so nothing is over-claimed. Once entered outputs are known they are used. */
+TEST(media_outputs_fall_back_to_all_outputs_before_enter) {
+    WaylandOutputList l;
+    u32 out[WAYLAND_OUTPUT_MAX];
+    const u32 entered[] = {20u};
+    wl_out_list_init(&l);
+    ASSERT_EQ(wl_out_add(&l, 10u), 0);
+    ASSERT_EQ(wl_out_add(&l, 20u), 1);
+    ASSERT_EQ(wl_out_media_outputs(&l, NULL, 0u, out), 2u);
+    ASSERT_EQ(out[0], 10u);
+    ASSERT_EQ(out[1], 20u);
+    ASSERT_EQ(wl_out_media_outputs(&l, entered, 1u, out), 1u);
+    ASSERT_EQ(out[0], 20u);
+    ASSERT_EQ(wl_out_media_outputs(NULL, entered, 1u, out), 0u);
+    ASSERT_EQ(wl_out_media_outputs(&l, entered, 1u, NULL), 0u);
+    ASSERT_EQ(wl_out_media_outputs(&l, NULL, 1u, out), 0u);
+    wl_out_list_init(&l);
+    ASSERT_EQ(wl_out_media_outputs(&l, NULL, 0u, out), 0u);
+}
+
+/* The connector name is bounded and NULL clears it. */
+TEST(set_connector_is_bounded_and_clears_on_null) {
+    WaylandOutputInfo o;
+    char longname[200];
+    memset(&o, 0, sizeof(o));
+    /* a reused slot may hold anything: the terminator must be written */
+    memset(o.connector, 'y', sizeof(o.connector));
+    memset(longname, 'x', sizeof(longname) - 1u);
+    longname[sizeof(longname) - 1u] = '\0';
+    wl_out_set_connector(&o, longname);
+    ASSERT_EQ(strlen(o.connector), sizeof(o.connector) - 1u);
+    wl_out_set_connector(&o, NULL);
+    ASSERT_TRUE(o.connector[0] == '\0');
+    wl_out_set_connector(NULL, "DP-1");
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(add_up_to_capacity_then_full);
     RUN_TEST(add_dedups_same_global_name);
@@ -291,4 +373,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(integer_surface_scale_saturates_protocol_storage);
     RUN_TEST(fractional_drawable_size_handles_rounding_and_overflow);
     RUN_TEST(fractional_cursor_buffer_scale_rounds_up);
+    RUN_TEST(entered_connectors_lists_names_and_flags_missing_ones);
+    RUN_TEST(set_connector_is_bounded_and_clears_on_null);
+    RUN_TEST(media_outputs_fall_back_to_all_outputs_before_enter);
 TEST_MAIN_END()

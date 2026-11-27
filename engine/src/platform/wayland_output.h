@@ -20,6 +20,7 @@ typedef struct {
     i32  scale;             /* wl_output.scale factor (1, 2, 3...) */
     bool has_current_mode;  /* a mode flagged WL_OUTPUT_MODE_CURRENT arrived */
     bool done;              /* wl_output.done received (info is complete) */
+    char connector[32];     /* DRM connector name from xdg-output name, "" when unknown */
 } WaylandOutputInfo;
 
 typedef struct {
@@ -120,6 +121,68 @@ static inline bool wl_out_remove(WaylandOutputList *l, u32 global_name) {
                 (l->count - i - 1) * sizeof(l->items[0]));
     l->count--;
     return true;
+}
+
+/* Records the DRM connector name (xdg_output.name, e.g. "eDP-1"), bounded to
+ * the field; NULL clears it. */
+static inline void wl_out_set_connector(WaylandOutputInfo *o, const char *name) {
+    if (o == NULL) return;
+    if (name == NULL) {
+        o->connector[0] = '\0';
+        return;
+    }
+    strncpy(o->connector, name, sizeof(o->connector) - 1u);
+    o->connector[sizeof(o->connector) - 1u] = '\0';
+}
+
+/* The connector names of the entered outputs, for EDID lookup. Unknown
+ * globals are skipped (they may already be removed). *complete is false
+ * when an entered output has no connector name or `cap` was too small, so
+ * the caller does not claim a fact for an output it could not inspect.
+ * Returns the number of names written; 0 and *complete=false on bad
+ * arguments (a NULL `complete` returns 0). */
+static inline u32 wl_out_entered_connectors(const WaylandOutputList *l,
+                                            const u32 *entered_globals,
+                                            u32 entered_count, const char **names,
+                                            u32 cap, bool *complete) {
+    u32 n = 0;
+    if (complete == NULL) return 0;
+    *complete = false;
+    if (l == NULL || names == NULL || (entered_globals == NULL && entered_count > 0))
+        return 0;
+    *complete = true;
+    for (u32 i = 0; i < entered_count; i++) {
+        i32 slot = wl_out_find(l, entered_globals[i]);
+        if (slot < 0) continue;
+        if (l->items[slot].connector[0] == '\0' || n >= cap) {
+            *complete = false;
+            continue;
+        }
+        names[n++] = l->items[slot].connector;
+    }
+    return n;
+}
+
+/* The outputs whose display facts apply to the surface: the entered ones
+ * when the compositor has reported any, otherwise every known output (a
+ * fact true on all outputs holds on whichever ones show the surface, so
+ * nothing is over-claimed). Writes up to WAYLAND_OUTPUT_MAX global names to
+ * `out` and returns the count; 0 for NULL `l`/`out`, or NULL entered names
+ * with a nonzero count. */
+static inline u32 wl_out_media_outputs(const WaylandOutputList *l,
+                                       const u32 *entered_globals, u32 entered_count,
+                                       u32 *out) {
+    u32 n = 0;
+    if (l == NULL || out == NULL || (entered_globals == NULL && entered_count > 0))
+        return 0;
+    if (entered_count > 0) {
+        for (u32 i = 0; i < entered_count && n < WAYLAND_OUTPUT_MAX; i++)
+            out[n++] = entered_globals[i];
+        return n;
+    }
+    for (u32 i = 0; i < l->count && n < WAYLAND_OUTPUT_MAX; i++)
+        out[n++] = l->items[i].global_name;
+    return n;
 }
 
 /* Fold one wl_output.mode event into the slot's selected mode.

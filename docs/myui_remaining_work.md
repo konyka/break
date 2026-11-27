@@ -2613,3 +2613,21 @@ graphics 与 present queue。`RE_VK_DEVICE_INDEX` 现在也必须通过同一门
 **验证**：`test_myui_text_layout` 142/142；ASan+UBSan 142/142；`build-current-vk` 非 fuzz 466/466。
 
 该行其余判据（locale dictionary corpus、产品级 tailoring 契约）不变，仍未完成。
+
+## 本轮补充：Wayland 从 EDID 报告色域与 HDR（2026-11-27）
+
+「未完成能力」表中「完整 CSS/YAML UI」一行的完成判据有「真实平台上下文接入」。CSS 已能按 `color-gamut`、`dynamic-range` 过滤规则，但 Wayland 后端一直只报 sRGB，HDR 未知。EDID 解析器 `platform_display_parse_edid` 原先由已移除的 X11 RandR 路径调用，移除后没有调用方。
+
+- **读取 EDID**（`engine/src/platform/platform_display_media.{h,c}`，仅 Linux）：`platform_display_read_connector_edid(drm_root, connector, ...)` 在 `drm_root`（生产为 `/sys/class/drm`）下找名为 `card<数字>-<connector>` 的目录项，读取其 `edid`，最多读基本块加解析器的扩展上限（9×128 字节），再交给 `platform_display_parse_edid`。文件路径取自匹配到的目录项，不由 `connector` 拼出，所以带路径分隔符或点的名字只会匹配不到。空文件（未连接）、校验失败、名字不匹配时返回 false 并清空输出。
+- **多输出合并**：`platform_display_outputs_media` 只报告每个输出都具备的事实。P3/Rec.2020/HDR 及对应的 known 位只在所有输出的 EDID 都给出时才置位；任一输出没有可用 EDID，两者都清零，不对可能显示在该输出上的窗口做出声明。sRGB 基线由调用方自己保留。
+- **Wayland 接线**（`window_wayland.c`、`wayland_output.h`）：xdg-output 的 `name` 就是 DRM 连接器名，记录到 `WaylandOutputInfo.connector`（`wl_out_set_connector`，有界）。媒体上下文在 surface enter/leave 和收到输出名时失效并递增 generation。重新计算时用 surface 进入的输出；compositor 还没发 enter 时用全部已知输出（对全部输出成立的事实对任何子集也成立）。`wl_out_entered_connectors` 在某个输出没有连接器名时把集合标为不完整，此时不读 EDID。只在缓存失效后的冷路径上读文件。
+
+**TDD**：`test_platform_display_media` 新增 5 例（13 例），`test_wayland` 新增 3 例（24 例），先以函数和字段未声明的编译失败为 RED。用临时目录模拟 `/sys/class/drm`：按连接器名读取（`DP-1` 不匹配 `card0-DP-10`、`card0-DP-1x`）、空文件、坏校验和、不完整块、越界名字、格式不对的目录项（`card0-`、`card-DP-11`、`card0xDP-12`、`disk0-DP-13`）、超长文件只读有界前缀、多输出取交集（含 sRGB 输出与缺 EDID 的输出）、NULL 名字被跳过；Wayland 侧覆盖连接器名的截断与清除、不完整集合、容量不足、enter 之前回退到全部输出。
+
+**变异**：EDID 读取与合并 13 项、`wayland_output.h` 9 项，全部判红。首轮存活的项都补了测试：目录项前缀检查、NULL 名字跳过、`strncpy` 后的终止符（测试先把字段填满非零字节）。首版的连接器名安全检查被变异证明多余（路径取自目录项），已删除。
+
+**验证**：
+- 本机真实 Wayland（`WAYLAND_DISPLAY=wayland-0`，单块 eDP-1 屏）：探测程序创建真实窗口，`platform_get_media_context` 由原先的 sRGB 变为 sRGB+P3，色域 known，HDR 未知（该屏 EDID 无 HDR 静态元数据块）。
+- `test_platform_display_media` 13/13、`test_wayland` 24/24，ASan+UBSan 下相同且无报错；`ctest -R "wayland|display_media|mypal"` 7/7（含 `test_platform_wayland_runtime`）；`build-current-vk` 非 fuzz 466/466。
+
+边界：只覆盖 Linux DRM 暴露 EDID 的情况；compositor 的 color-management 协议、Windows/macOS 的色域查询不在本节。该行其余判据（媒体能力 golden corpus、全平台 runtime 证据）不变。

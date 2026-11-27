@@ -37,6 +37,7 @@
 #include "viewporter-client-protocol.h"
 #endif
 #include "wayland_output.h"                         /* R443: pure output-list logic */
+#include <platform/platform_display_media.h>
 
 /* ---- Platform state ---- */
 
@@ -1406,12 +1407,19 @@ static u32 wayland_output_global_name(const Platform *p,
     return 0;
 }
 
+/* The display gamut/HDR facts depend on which outputs show the surface. */
+static void wayland_invalidate_media(Platform *p) {
+    p->media_context_valid = false;
+    if (p->media_generation != UINT64_MAX) p->media_generation++;
+}
+
 static void surface_enter(void *data, struct wl_surface *surface,
                           struct wl_output *output) {
     Platform *p = data;
     (void)surface;
     wayland_surface_add_output(p, wayland_output_global_name(p, output));
     wayland_update_surface_scale(p);
+    wayland_invalidate_media(p);
 }
 
 static void surface_leave(void *data, struct wl_surface *surface,
@@ -1420,6 +1428,7 @@ static void surface_leave(void *data, struct wl_surface *surface,
     (void)surface;
     wayland_surface_remove_output(p, wayland_output_global_name(p, output));
     wayland_update_surface_scale(p);
+    wayland_invalidate_media(p);
 }
 
 static const struct wl_surface_listener surface_listener = {
@@ -1518,6 +1527,8 @@ static void xdg_output_name(void *data, struct zxdg_output_v1 *xo,
     if (o == NULL) return;
     strncpy(o->name, name ? name : "unknown", 63);
     o->name[63] = '\0';
+    wl_out_set_connector(o, name);
+    wayland_invalidate_media(ctx->p);
 }
 
 static void xdg_output_description(void *data, struct zxdg_output_v1 *xo,
@@ -2288,6 +2299,25 @@ bool platform_get_media_context(Platform *p, PlatformMediaContext *out) {
             next.capabilities |= PLATFORM_MEDIA_CAP_ANY_POINTER_COARSE;
             if (p->pointer == NULL) {
                 next.capabilities |= PLATFORM_MEDIA_CAP_POINTER_COARSE;
+            }
+        }
+        {
+            /* Wide gamut and HDR from the EDID of every output the surface
+             * is on, or of every output before the first enter event (cold
+             * path: once per invalidation). Claimed only when each of those
+             * outputs has a connector name and a usable EDID. */
+            const char *names[WAYLAND_OUTPUT_MAX];
+            u32 outputs[WAYLAND_OUTPUT_MAX];
+            bool complete = false;
+            u32 count = wl_out_media_outputs(&p->output_list, p->surface_outputs,
+                                             p->surface_output_count, outputs);
+            u32 n = wl_out_entered_connectors(&p->output_list, outputs, count, names,
+                                              WAYLAND_OUTPUT_MAX, &complete);
+            if (complete && n > 0) {
+                u32 caps = 0, known = 0;
+                platform_display_outputs_media("/sys/class/drm", names, n, &caps, &known);
+                next.capabilities |= caps;
+                next.known |= known;
             }
         }
         p->media_context = next;

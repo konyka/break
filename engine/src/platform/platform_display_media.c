@@ -136,3 +136,103 @@ bool platform_display_parse_edid(const unsigned char *data, usize length,
     }
     return true;
 }
+
+#if defined(__linux__)
+#include <dirent.h>
+#include <stdio.h>
+
+/* "card<digits>-<connector>" exactly. The file path is built from the
+ * directory entry that matched, never from `connector`, so a connector name
+ * with path separators or dots simply matches no entry. */
+static bool display_entry_is_connector(const char *entry, const char *connector)
+{
+    const char *p = entry;
+    if (strncmp(p, "card", 4u) != 0) return false;
+    p += 4;
+    if (*p < '0' || *p > '9') return false;
+    while (*p >= '0' && *p <= '9') ++p;
+    if (*p != '-') return false;
+    return strcmp(p + 1, connector) == 0;
+}
+
+bool platform_display_read_connector_edid(const char *drm_root, const char *connector,
+                                          u32 *capabilities, bool *gamut_known,
+                                          bool *hdr_known)
+{
+    unsigned char edid[DISPLAY_EDID_BLOCK_BYTES * (1u + DISPLAY_EDID_MAX_EXTENSIONS)];
+    char path[512];
+    DIR *dir;
+    struct dirent *entry;
+    bool found = false;
+    usize size = 0u;
+
+    if (capabilities == NULL || gamut_known == NULL || hdr_known == NULL) return false;
+    *capabilities = 0u;
+    *gamut_known = false;
+    *hdr_known = false;
+    if (drm_root == NULL || connector == NULL || connector[0] == '\0') return false;
+    dir = opendir(drm_root);
+    if (dir == NULL) return false;
+    while ((entry = readdir(dir)) != NULL) {
+        FILE *fp;
+        int written;
+        if (!display_entry_is_connector(entry->d_name, connector)) continue;
+        written = snprintf(path, sizeof(path), "%s/%s/edid", drm_root, entry->d_name);
+        if (written < 0 || (usize)written >= sizeof(path)) break;
+        fp = fopen(path, "rb");
+        if (fp == NULL) break;
+        size = fread(edid, 1u, sizeof(edid), fp);
+        fclose(fp);
+        found = true;
+        break;
+    }
+    closedir(dir);
+    if (!found ||
+        !platform_display_parse_edid(edid, size, capabilities, gamut_known, hdr_known)) {
+        *capabilities = 0u;
+        *gamut_known = false;
+        *hdr_known = false;
+        return false;
+    }
+    return true;
+}
+
+void platform_display_outputs_media(const char *drm_root, const char *const *names,
+                                    u32 count, u32 *capabilities, u32 *known)
+{
+    const u32 gamut_bits = PLATFORM_MEDIA_CAP_COLOR_P3 | PLATFORM_MEDIA_CAP_COLOR_REC2020;
+    u32 gamut = gamut_bits;
+    u32 hdr = PLATFORM_MEDIA_CAP_HDR;
+    bool all_gamut = true;
+    bool all_hdr = true;
+    bool any = false;
+
+    if (capabilities != NULL) *capabilities = 0u;
+    if (known != NULL) *known = 0u;
+    if (capabilities == NULL || known == NULL || names == NULL) return;
+    for (u32 i = 0u; i < count; ++i) {
+        u32 caps = 0u;
+        bool gamut_known = false;
+        bool hdr_known = false;
+        if (names[i] == NULL) continue;
+        if (!platform_display_read_connector_edid(drm_root, names[i], &caps, &gamut_known,
+                                                  &hdr_known)) {
+            return;
+        }
+        any = true;
+        all_gamut = all_gamut && gamut_known;
+        all_hdr = all_hdr && hdr_known;
+        gamut &= caps;
+        hdr &= caps;
+    }
+    if (!any) return;
+    if (all_gamut) {
+        *capabilities |= gamut;
+        *known |= PLATFORM_MEDIA_KNOWN_COLOR_GAMUT;
+    }
+    if (all_hdr) {
+        *capabilities |= hdr;
+        *known |= PLATFORM_MEDIA_KNOWN_HDR;
+    }
+}
+#endif

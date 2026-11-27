@@ -14727,3 +14727,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：`test_myui_text_layout` 新增 1 例（142 例），先以编译失败为 RED；4 项定向变异全部判红。
 - **验证**：`test_myui_text_layout` 142/142；ASan+UBSan 142/142；`build-current-vk` 非 fuzz 466/466。
 - **仍未完成**：UAX#14 一行的 locale dictionary corpus 与产品级 tailoring 契约。本提交自身的远端工作流结果不在此预写。
+
+## Wayland 从 EDID 报告色域与 HDR（2026-11-27）
+
+- **缺口**：`docs/myui_remaining_work.md` CSS/YAML 一行的「真实平台上下文接入」。Wayland 后端只报 sRGB；EDID 解析器在 X11 移除后没有调用方。
+- **实现**：`platform_display_read_connector_edid`、`platform_display_outputs_media`（`engine/src/platform/platform_display_media.{h,c}`，仅 Linux）按 DRM 连接器名读取 `/sys/class/drm/card<N>-<name>/edid`，多输出取交集；`wayland_output.h` 新增 `connector` 字段与 `wl_out_set_connector`、`wl_out_entered_connectors`、`wl_out_media_outputs`；`window_wayland.c` 记录 xdg-output 名，enter/leave/改名时使媒体上下文失效，重新计算时并入 EDID 事实。
+- **TDD 与变异**：新增 8 例，先以编译失败为 RED；22 项定向变异全部判红。
+- **验证**：本机真实 Wayland 窗口的媒体上下文由 sRGB 变为 sRGB+P3（色域 known，HDR 未知）；相关测试普通与 ASan+UBSan 均通过；`build-current-vk` 非 fuzz 466/466。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
