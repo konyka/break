@@ -14586,3 +14586,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：`test_runtime_reload_deps` 增至 18 例，先以编译失败为 RED。新增变异全部判红；变异测试暴露的两处多余逻辑已删除。
 - **验证**：ASan+UBSan 18/18，TSan 连跑 3 次 18/18；`build-current-vk` 非 fuzz 469/469，fuzz 24/24；Windows 实机 MSVC 全量构建通过，本测试 18/18。
 - **仍未完成**：依赖图接入 manifest 与场景加载。本提交自身的远端工作流结果不在此预写。
+
+## 场景 manifest 依赖图 `scene_manifest_graph`（2026-11-27）
+
+- **缺口**：资产依赖图只能手工声明，不能从场景 manifest 得到。
+- **实现**：新增 `engine/src/asset/scene_manifest_graph.{h,c}`，编入正式 `runtime_core`。`break_scene_manifest_graph_build` 把 BSCN 资源 manifest 声明为依赖图：纹理 ← 材质（`tex_slots`）← 网格（`u2`）← 场景；为每个 id 报告重载文件；悬空链接被计数并略去；失败时全部撤销。设计见 `docs/design/runtime_asset_streaming.md` 2026-11-27「场景 manifest 依赖图」。
+- **TDD 与变异**：`test_scene_manifest_graph` 10 例，先以链接失败为 RED；37 项变异全部判红。
+- **验证**：ASan+UBSan/TSan 10/10；`build-current-vk` 非 fuzz 470/470，fuzz 24/24；Windows 实机 MSVC 全量构建通过，本测试 10/10。
+- **仍未完成**：场景加载的消费者（编辑器等）尚未调用。本提交自身的远端工作流结果不在此预写。

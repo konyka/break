@@ -482,3 +482,29 @@ focused 测试 **22/22**，包含三流过期/复位、交织 pending 字节、d
 仍未完成：依赖图接入 manifest 与场景加载。
 
 本提交自身的远端工作流结果不在此预写。
+
+## 补充（2026-11-27）：场景 manifest 依赖图
+
+依赖图此前只能手工声明。新增 `engine/src/asset/scene_manifest_graph.{h,c}`，编入正式 `runtime_core` 与 `runtime_core_test`。`break_scene_manifest_graph_build` 把已加载场景的资源 manifest（BSCN RESOURCES chunk，即 `Scene.resources`）声明进 `BreakAssetGraph`，规则如下：
+
+- 纹理条目没有依赖。
+- 材质条目依赖其 `tex_slots` 指向的纹理条目。同一纹理用于多个槽时只算一条依赖。
+- 带内联描述（`flags & 1`）的静态网格或蒙皮网格条目，依赖 `u2` 指定的材质条目。静态网格和蒙皮网格的 `ref_index` 各自独立编号。
+- 场景自身（`scene_id`）依赖全部网格、蒙皮网格和材质条目。
+- 每个条目的 id 是它的 manifest guid。链接只在同类型条目中查找。指向不存在条目的链接计入 `dangling_links` 并略去，与尽力而为的 `asset_scene_rebind_textures` 一致。`BSCN_RES_SCENE` 等其他类型的条目被忽略，也不参与校验。
+- **重载路径**：可选的 `path` 回调为每个已声明的 id 给出重载文件。有路径的纹理是 `texture_base_dir + '/' + 条目路径`（base dir 为空时用条目路径本身）；其余 id 都在场景文件 `scene_path` 中。把这些路径交给 `break_runtime_reload_deps_set_path`，场景内嵌的材质和网格就会搭乘同一次场景文件重载（见 `docs/design/runtime_hot_reload.md` 2026-11-27「共用一个文件的依赖者只重载一次」）。
+- **全部成功或全部撤销**：按纹理、材质、网格、场景的顺序声明，任何一步失败都按相反顺序移除本次已声明的 id。图恢复原状，也不报告任何路径。
+- **错误**：参数为 NULL，`scene_id` 为 0 或与某条目 guid 相同，条目 guid 为 0，两条已声明条目的 guid 或 type+ref_index 相同，`scene_path` 为空或过长，或 `texture_base_dir` 放不下一条完整条目路径，均返回 INVALID。id 已存在返回 EXISTS；图容量不足返回 OVERLOAD。
+
+**TDD**：`test_scene_manifest_graph` 10 例，先以链接失败为 RED。覆盖：加载顺序中依赖在前、场景最后；纹理变化后列出的材质、网格和场景；每个 id 的重载路径（有无 base dir、纹理无路径时）；悬空链接被计数并略去；一个纹理用于多个槽只计一条依赖；节点不足、边不足、id 已存在时图恢复原状且不报告路径；各种非法输入；静态与蒙皮网格槽独立；被忽略的条目不参与校验，材质的路径字段不产生独立文件；链接只在同类型中查找。
+
+**变异**：37 项全部判红。初轮有存活：与图自身校验重复的 guid 为 0、`scene_id` 为 0 的检查，以及不可能失败的 snprintf 截断检查，已删除并注明原因；其余存活项靠补测试判红。
+
+**验证**：
+- ASan+UBSan、TSan 下 10/10。
+- `build-current-vk` 非 fuzz 470/470（新增 1 项），fuzz 24/24。
+- Windows 实机 MSVC 全量构建通过，本测试 10/10；同次唯一失败的 `test_platform_win32_runtime` 需要交互桌面，属已记录的环境限制。
+
+仍未完成：场景加载流程（`scene_load_binary` 的调用方，如编辑器）还没有调用本函数，加载 manifest 后建立依赖图并登记重载路径仍需在消费者中接线。
+
+本提交自身的远端工作流结果不在此预写。

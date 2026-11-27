@@ -18,7 +18,8 @@ if(runtime_core_pos LESS 0 OR first_tests_block_pos LESS 0 OR
 endif()
 
 # ...owning the coordinator and formal facade translation units, plus the
-# self-contained asset dependency graph the reload adapter uses.
+# self-contained asset dependency graph the reload adapter uses and its
+# builder from a scene's resource manifest.
 string(FIND "${cmake_text}" "add_library(engine STATIC" engine_target_pos)
 foreach(runtime_src
         src/runtime/runtime_coordinator.c
@@ -33,7 +34,8 @@ foreach(runtime_src
         src/runtime/runtime_metrics.c
         src/runtime/runtime_mainloop.c
         src/runtime/runtime_reload_deps.c
-        src/asset/asset_graph.c)
+        src/asset/asset_graph.c
+        src/asset/scene_manifest_graph.c)
     string(FIND "${cmake_text}" "${runtime_src}" runtime_src_pos)
     if(runtime_src_pos LESS runtime_core_pos OR runtime_src_pos GREATER engine_target_pos)
         message(FATAL_ERROR "${runtime_src} is not owned by runtime_core")

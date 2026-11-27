@@ -967,7 +967,8 @@ add_library(runtime_core STATIC
     src/runtime/runtime_metrics.c
     src/runtime/runtime_mainloop.c
     src/runtime/runtime_reload_deps.c
-    src/asset/asset_graph.c)
+    src/asset/asset_graph.c
+    src/asset/scene_manifest_graph.c)
 set_property(TARGET runtime_core PROPERTY C_STANDARD 11)
 target_include_directories(runtime_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -6181,6 +6182,14 @@ endif()
     add_test(NAME test_asset_graph COMMAND test_asset_graph)
     set_tests_properties(test_asset_graph PROPERTIES TIMEOUT 30 LABELS "headless;asset")
 
+    # test_scene_manifest_graph: a loaded scene's resource manifest declared
+    # as an asset dependency graph with reload paths.
+    add_executable(test_scene_manifest_graph tests/test_scene_manifest_graph.c)
+    target_include_directories(test_scene_manifest_graph PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_scene_manifest_graph PRIVATE runtime_core)
+    add_test(NAME test_scene_manifest_graph COMMAND test_scene_manifest_graph)
+    set_tests_properties(test_scene_manifest_graph PROPERTIES TIMEOUT 30 LABELS "headless;asset")
+
     # test_world_merge: authoritative merge of peer-written World state
     # (docs/design/ecs_snapshot_replication_aoi.md "权威合并").
     add_executable(test_world_merge tests/test_world_merge.c)
@@ -6794,7 +6803,8 @@ endif()
         src/runtime/runtime_metrics.c
         src/runtime/runtime_mainloop.c
         src/runtime/runtime_reload_deps.c
-        src/asset/asset_graph.c)
+        src/asset/asset_graph.c
+        src/asset/scene_manifest_graph.c)
     set_property(TARGET runtime_core_test PROPERTY C_STANDARD 11)
     target_include_directories(runtime_core_test PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
