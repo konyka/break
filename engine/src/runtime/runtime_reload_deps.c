@@ -17,6 +17,7 @@ struct BreakRuntimeReloadDeps {
     BreakAssetId *queue; /* rebuild order, head first */
     u32 queued;
     BreakAssetId *scratch;
+    BreakAssetId *walk;
     u8 *mark;
     BreakAssetId *riders; /* every id the in-flight reload covers */
     u32 rider_count;
@@ -37,9 +38,10 @@ BreakRuntimeError break_runtime_reload_deps_create(const BreakRuntimeReloadDepsC
     deps->paths = (PathEntry *)calloc(config->max_assets, sizeof(*deps->paths));
     deps->queue = (BreakAssetId *)calloc(config->max_assets, sizeof(*deps->queue));
     deps->scratch = (BreakAssetId *)calloc(config->max_assets, sizeof(*deps->scratch));
+    deps->walk = (BreakAssetId *)calloc(config->max_assets, sizeof(*deps->walk));
     deps->mark = (u8 *)calloc(config->max_assets, sizeof(*deps->mark));
     deps->riders = (BreakAssetId *)calloc(config->max_assets, sizeof(*deps->riders));
-    if (!deps->paths || !deps->queue || !deps->scratch || !deps->mark || !deps->riders) {
+    if (!deps->paths || !deps->queue || !deps->scratch || !deps->walk || !deps->mark || !deps->riders) {
         break_runtime_reload_deps_destroy(deps);
         return BREAK_RUNTIME_OOM;
     }
@@ -55,6 +57,7 @@ void break_runtime_reload_deps_destroy(BreakRuntimeReloadDeps *deps) {
     free(deps->paths);
     free(deps->queue);
     free(deps->scratch);
+    free(deps->walk);
     free(deps->mark);
     free(deps->riders);
     free(deps);
@@ -91,11 +94,35 @@ static bool in_list(const BreakAssetId *list, u32 count, BreakAssetId id) {
     return false;
 }
 
+/* After a commit of the file `same_file`, marks (deps->mark[i] = 1) the
+ * dependents in scratch[0..count) that must still be reloaded: those in
+ * another file, and those in the same file that depend on one in another
+ * file (that one is rebuilt after the commit, so the file must be reloaded
+ * again after it). The rest came with the commit itself. Dependents are
+ * transitive, so the dependents of a listed id are all listed too and fit. */
+static void mark_needed(BreakRuntimeReloadDeps *deps, u32 count, const char *same_file) {
+    for (u32 i = 0u; i < count; ++i) {
+        deps->mark[i] = (u8)(strcmp(find_path(deps, deps->scratch[i])->path, same_file) != 0);
+    }
+    for (u32 j = 0u; j < count; ++j) {
+        u32 walked = 0u;
+        if (strcmp(find_path(deps, deps->scratch[j])->path, same_file) == 0) continue;
+        if (break_asset_graph_dependents(deps->graph, deps->scratch[j], deps->walk,
+                                         deps->max_assets, &walked) != BREAK_ASSET_GRAPH_OK) {
+            continue;
+        }
+        for (u32 i = 0u; i < count; ++i) {
+            if (!deps->mark[i] && in_list(deps->walk, walked, deps->scratch[i])) deps->mark[i] = 1u;
+        }
+    }
+}
+
 /* Every pending asset's dependents fit in max_assets: it was listed among
  * the dependents of a committed asset, which were checked to fit, and its own
- * dependents are a subset of those. */
-BreakRuntimeError break_runtime_reload_deps_committed(BreakRuntimeReloadDeps *deps,
-                                                      BreakAssetId id) {
+ * dependents are a subset of those. `same_file` is the committed file for a
+ * commit forwarded by path, NULL for a direct one. */
+static BreakRuntimeError committed_impl(BreakRuntimeReloadDeps *deps, BreakAssetId id,
+                                        const char *same_file) {
     u32 count = 0u;
     u32 added = 0u;
     bool riding;
@@ -106,7 +133,14 @@ BreakRuntimeError break_runtime_reload_deps_committed(BreakRuntimeReloadDeps *de
     if (r != BREAK_ASSET_GRAPH_OK) return BREAK_RUNTIME_FAILED;
     for (u32 i = 0u; i < count; ++i) {
         if (!find_path(deps, deps->scratch[i])) return BREAK_RUNTIME_FAILED;
-        if (!in_list(deps->queue, deps->queued, deps->scratch[i])) added++;
+    }
+    if (same_file) {
+        mark_needed(deps, count, same_file);
+    } else {
+        memset(deps->mark, 1, count);
+    }
+    for (u32 i = 0u; i < count; ++i) {
+        if (deps->mark[i] && !in_list(deps->queue, deps->queued, deps->scratch[i])) added++;
     }
     /* Unreachable guard: queued ids are distinct and each has one of at most
      * max_assets recorded paths. Kept so the queue write below stays bounded
@@ -117,7 +151,7 @@ BreakRuntimeError break_runtime_reload_deps_committed(BreakRuntimeReloadDeps *de
      * that one commit already brought the dependency's new version. */
     riding = in_list(deps->riders, deps->rider_count, id);
     for (u32 i = 0u; i < count; ++i) {
-        if (in_list(deps->queue, deps->queued, deps->scratch[i])) continue;
+        if (!deps->mark[i] || in_list(deps->queue, deps->queued, deps->scratch[i])) continue;
         if (riding && in_list(deps->riders, deps->rider_count, deps->scratch[i])) {
             added--;
             continue;
@@ -126,6 +160,11 @@ BreakRuntimeError break_runtime_reload_deps_committed(BreakRuntimeReloadDeps *de
     }
     if (added > 0u) deps->stats.chains++;
     return BREAK_RUNTIME_OK;
+}
+
+BreakRuntimeError break_runtime_reload_deps_committed(BreakRuntimeReloadDeps *deps,
+                                                      BreakAssetId id) {
+    return committed_impl(deps, id, NULL);
 }
 
 BreakRuntimeError break_runtime_reload_deps_committed_path(BreakRuntimeReloadDeps *deps,
@@ -138,7 +177,7 @@ BreakRuntimeError break_runtime_reload_deps_committed_path(BreakRuntimeReloadDep
             !break_asset_graph_contains(deps->graph, deps->paths[i].id)) {
             continue;
         }
-        r = break_runtime_reload_deps_committed(deps, deps->paths[i].id);
+        r = committed_impl(deps, deps->paths[i].id, path);
         if (r != BREAK_RUNTIME_OK && first == BREAK_RUNTIME_OK) first = r;
     }
     return first;

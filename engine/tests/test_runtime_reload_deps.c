@@ -549,6 +549,58 @@ TEST(a_forwarded_shared_commit_does_not_requeue_its_riders) {
     fx_dispose(&fx);
 }
 
+/* An external commit of a file that holds several ids already brought every
+ * one of them: a dependent recorded with that same file is not reloaded
+ * again. */
+TEST(a_committed_file_does_not_requeue_ids_it_already_reloaded) {
+    Fx fx;
+    BreakRuntimeReloadDepsStats st;
+    ASSERT_TRUE(fx_init(&fx, 16u));
+    ASSERT_EQ(break_runtime_reload_deps_set_path(fx.deps, kMatA, "scene.bin"), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_set_path(fx.deps, kMatB, "scene.bin"), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_committed_path(fx.deps, "scene.bin"), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_stats(fx.deps, &st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(st.queued, 0u);
+    ASSERT_EQ(st.chains, 0u);
+    ASSERT_TRUE(run_until_idle(&fx));
+    ASSERT_EQ(g_probe.count, 0u);
+    ASSERT_EQ(break_runtime_reload_deps_stats(fx.deps, &st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(st.requested, 0u);
+    fx_dispose(&fx);
+}
+
+/* A same-file dependent that waits on a dependent in another file is still
+ * reloaded, after that file: the commit predates the other file's rebuild. */
+TEST(a_same_file_dependent_waiting_on_another_file_is_still_requeued) {
+    Fx fx;
+    BreakRuntimeReloadDepsStats st;
+    ASSERT_TRUE(fx_init(&fx, 16u));
+    /* the shader lives in the scene file; both materials need it */
+    ASSERT_EQ(break_runtime_reload_deps_set_path(fx.deps, kShader, "scene.bin"), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_committed_path(fx.deps, "scene.bin"), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_stats(fx.deps, &st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(st.queued, 3u);
+    ASSERT_EQ(st.chains, 1u);
+    ASSERT_TRUE(run_until_idle(&fx));
+    ASSERT_EQ(g_probe.count, 3u);
+    ASSERT_STR_EQ(g_probe.order[2], "scene.bin");
+    fx_dispose(&fx);
+}
+
+/* Excluding same-file ids is only for commits forwarded by path: committing
+ * an id directly still queues every dependent. */
+TEST(committing_an_id_directly_queues_same_file_dependents) {
+    Fx fx;
+    BreakRuntimeReloadDepsStats st;
+    ASSERT_TRUE(fx_init(&fx, 16u));
+    ASSERT_EQ(break_runtime_reload_deps_set_path(fx.deps, kMatA, "scene.bin"), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_committed(fx.deps, kMatA), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_stats(fx.deps, &st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(st.queued, 1u);
+    ASSERT_TRUE(run_until_idle(&fx));
+    fx_dispose(&fx);
+}
+
 /* Once a ride is over its riders are forgotten: a later change of one of
  * them requeues the others that depend on it. */
 TEST(a_later_change_of_a_former_rider_requeues_its_dependents) {
@@ -584,5 +636,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(a_same_file_dependent_waiting_on_another_file_does_not_ride);
     RUN_TEST(a_failed_shared_reload_fails_its_riders_too);
     RUN_TEST(a_forwarded_shared_commit_does_not_requeue_its_riders);
+    RUN_TEST(a_committed_file_does_not_requeue_ids_it_already_reloaded);
+    RUN_TEST(a_same_file_dependent_waiting_on_another_file_is_still_requeued);
+    RUN_TEST(committing_an_id_directly_queues_same_file_dependents);
     RUN_TEST(a_later_change_of_a_former_rider_requeues_its_dependents);
 TEST_MAIN_END()

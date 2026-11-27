@@ -14669,3 +14669,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
   - 5 项定向变异全部判红：跳过 `committed_path`、跳过 `pump`、跳过 `hr_stop` 里的 destroy、跳过 deps 赋值、把 graph 校验移到销毁之后。
 - **验证**：`test_editor_shell` 190/190；ASan（`build-aoi-asan`）237/237 无泄漏；`build-current-vk` 非 fuzz 466/466。
 - **仍未完成**：编辑器外壳尚未在场景加载/切换时自动调用 `attach_reload_deps`（目前需宿主显式接线）；纹理文件事件经依赖图触发的端到端重建仍需外壳侧接入 `scene_deps->graph` 的刷新。本提交自身的远端工作流结果不在此预写。
+
+## 按路径转发的依赖提交不重复重载同一文件（2026-11-27）
+
+- **缺口**：编辑器场景里材质和场景节点都记录场景文件本身。场景文件提交后经 `break_runtime_reload_deps_committed_path` 转发，会把同一文件再排队重载一次，读到的是刚提交过的相同字节。这是外壳自动接线前要先消掉的重复工作。
+- **实现**（`engine/src/runtime/runtime_reload_deps.{h,c}`）：按路径转发时，记录同一路径的依赖者不再入队；但如果它还依赖另一文件里的依赖者，仍然入队（在那个文件之后重载）。`break_runtime_reload_deps_committed(id)` 的行为不变。新增 create 时分配的 `walk` 缓冲。
+- **TDD 与变异**：`test_runtime_reload_deps` 新增 3 例（21 例），新规则先判红；7 项定向变异全部判红。
+- **验证**：ASan+UBSan 21/21 无泄漏，TSan 连跑 3 次 21/21；`test_editor_shell` 190/190（ASan 237/237）；`build-current-vk` 非 fuzz 462 通过、0 失败、4 项条件 skip。设计说明见 `docs/design/runtime_hot_reload.md` 同日补充。
+- **仍未完成**：编辑器外壳尚未在场景加载/切换时自动调用 `attach_reload_deps` 并登记 `scene_deps` 的路径。本提交自身的远端工作流结果不在此预写。

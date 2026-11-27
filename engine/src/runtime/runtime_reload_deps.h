@@ -77,7 +77,12 @@ BreakRuntimeError break_runtime_reload_deps_committed(BreakRuntimeReloadDeps *de
  * coordinator's commit hook can forward each commit as it happens: a path
  * no id records, or whose id is not in the graph, is ignored (OK). The
  * chain's own commits may be forwarded too; their dependents are already
- * queued, so they start no new chain. Every matching id is tried; the first
+ * queued, so they start no new chain. The commit of `path` already brought
+ * every id recorded with `path`, so a dependent recorded with the same path
+ * is not queued, unless it depends on a dependent in another file (that one
+ * is rebuilt after this commit, so the file is reloaded again after it).
+ * break_runtime_reload_deps_committed does not apply this rule: it has no
+ * file to compare with. Every matching id is tried; the first
  * error is returned. INVALID for a NULL or empty path. Owner thread only:
  * the commit hook runs there. */
 BreakRuntimeError break_runtime_reload_deps_committed_path(BreakRuntimeReloadDeps *deps,
