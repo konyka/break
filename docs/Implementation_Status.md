@@ -14991,3 +14991,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **变异**（9 项，全部判红）：外壳重建后不通知（use-after-free）；外壳销毁时不通知；不比较借用的是哪张图；attach 不记录借用的图（use-after-free）；改借新图后不更新记录；无新图时不销毁 deps；`set_graph` 不替换图（use-after-free）；移除的 id 不计 skipped；不移除新图缺少的 id。
 - **验证**：`test_runtime_reload_deps` 26/26、`test_editor_shell` 240/240（ASan+UBSan，`detect_leaks=0`）；普通构建 `test_editor_shell` 连跑三次 193/193；`build-myui-tests` 全量 ctest 482 项无失败；`build-current-vk` 构建通过，28 项相关 ctest 通过。本提交自身的远端工作流结果不在此预写。
 
+## 决策：Vulkan 不实施持久离屏 image 式 partial present（2026-11-27）
+
+- **背景**：`myui_remaining_work.md` 把「持久离屏 color image + 整幅 blit 到交换链」列为 Vulkan 真 partial present 的后续切片。
+- **结论**：不实施。myui 已在持久 `surface_fbo` 中保留像素并只重绘 damage，Vulkan 每帧做一次全屏合成；该方案每帧多一次整幅 blit 与一张交换链尺寸的 image，节省的合成工作被抵消，且要改动交换链 pass 的四个重启点和截图路径。compositor 侧的 damage 已由 `VK_KHR_incremental_present` 提示交付。
+- **不变**：Vulkan 的 `present_target_preserved` 仍为 false，由 `test_vulkan` 的 `tv_test_present_damage_regions` 固定。详见 `docs/myui_remaining_work.md` 同日决策记录。本提交只改文档。
+
