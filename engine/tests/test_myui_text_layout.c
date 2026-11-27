@@ -1393,6 +1393,108 @@ TEST(text_layout_shapes_bidi_runs_with_logical_clusters)
   my_text_layout_destroy(layout);
 }
 
+TEST(text_layout_shapes_mixed_bidi_through_font_chain_golden)
+{
+#if defined(MYUI_FONT_FREETYPE) && defined(MYUI_FONT_HARFBUZZ) && \
+    defined(MYUI_BIDI)
+  /* "salam abc salam" in a Cantarell + Vazirmatn chain: the Arabic runs
+   * keep their joining forms (GSUB init/medi/fina, the same glyphs
+   * HarfBuzz gives Vazirmatn alone), the Latin run is shaped LTR by
+   * Cantarell, and the runs come back in visual order with logical
+   * byte clusters. */
+  const char* latin_path =
+      "/usr/share/fonts/abattis-cantarell-fonts/Cantarell-Regular.otf";
+  const char* arabic_path =
+      "/usr/share/fonts/vazirmatn-vf-fonts/Vazirmatn[wght].ttf";
+  const my_font_source_t sources[] = {{latin_path, 0}, {arabic_path, 0}};
+  const char* text =
+      "\xD8\xB3\xD9\x84\xD8\xA7\xD9\x85 abc "
+      "\xD8\xB3\xD9\x84\xD8\xA7\xD9\x85";
+  const char* lam_alef = "\xD9\x84\xD8\xA7";
+  static const uint32_t expected_glyphs[] = {718u, 1302u, 1218u, 592u,
+                                             244u, 272u,  273u,  592u,
+                                             718u, 1302u, 1218u};
+  static const uint32_t expected_clusters[] = {19u, 15u, 13u, 12u, 9u, 10u,
+                                               11u, 8u,  6u,  2u,  0u};
+  FILE* latin_file = fopen(latin_path, "rb");
+  FILE* arabic_file = fopen(arabic_path, "rb");
+  my_font_t* arabic;
+  my_font_t* latin;
+  my_font_t* chain;
+  my_text_layout_t* layout;
+  my_text_layout_t* ligature_layout;
+  my_font_shape_result_t shaped = {0};
+  my_font_shape_result_t ligature = {0};
+  my_font_shape_result_t latin_only = {0};
+  my_font_shape_result_t arabic_only = {0};
+  size_t i;
+
+  if (latin_file == NULL || arabic_file == NULL) {
+    if (latin_file != NULL) fclose(latin_file);
+    if (arabic_file != NULL) fclose(arabic_file);
+    printf("  SKIP: no Cantarell/Vazirmatn test fonts\n");
+    return;
+  }
+  fclose(latin_file);
+  fclose(arabic_file);
+  chain = my_font_create_chain_ex(NULL, sources, 2u, 16u);
+  arabic = my_font_ft_create(NULL, arabic_path, 0, 16);
+  latin = my_font_ft_create(NULL, latin_path, 0, 16);
+  layout = my_text_layout_process(NULL, text);
+  ligature_layout = my_text_layout_process(NULL, lam_alef);
+  ASSERT_NOT_NULL(chain);
+  ASSERT_NOT_NULL(arabic);
+  ASSERT_NOT_NULL(latin);
+  ASSERT_NOT_NULL(layout);
+  ASSERT_NOT_NULL(ligature_layout);
+  ASSERT_EQ(my_text_layout_shape(layout, text, chain, 24, NULL, &shaped),
+            MY_RET_OK);
+  ASSERT_EQ(shaped.count,
+            sizeof(expected_glyphs) / sizeof(expected_glyphs[0]));
+  ASSERT_EQ(my_font_shape(latin, "abc", 24, false, NULL, &latin_only),
+            MY_RET_OK);
+  ASSERT_EQ(my_font_shape(arabic, text, 24, true, NULL, &arabic_only),
+            MY_RET_OK);
+  ASSERT_EQ(latin_only.count, 3u);
+  for (i = 0u; i < shaped.count; i++) {
+    ASSERT_EQ(shaped.glyphs[i].glyph_id, expected_glyphs[i]);
+    ASSERT_EQ(shaped.glyphs[i].cluster, expected_clusters[i]);
+    ASSERT_TRUE(shaped.glyphs[i].font != NULL);
+    ASSERT_TRUE(shaped.glyphs[i].advance_x_26_6 > 0);
+  }
+  /* The Latin run is Cantarell's own LTR shaping, the Arabic runs match
+   * Vazirmatn shaping the Arabic words alone. */
+  for (i = 0u; i < 3u; i++) {
+    ASSERT_EQ(shaped.glyphs[4u + i].glyph_id, latin_only.glyphs[i].glyph_id);
+    ASSERT_EQ(shaped.glyphs[4u + i].advance_x_26_6,
+              latin_only.glyphs[i].advance_x_26_6);
+  }
+  ASSERT_EQ(arabic_only.count, shaped.count);
+  ASSERT_EQ(arabic_only.glyphs[0].glyph_id, shaped.glyphs[0].glyph_id);
+  ASSERT_EQ(arabic_only.glyphs[2].glyph_id, shaped.glyphs[2].glyph_id);
+  ASSERT_EQ(arabic_only.glyphs[10].glyph_id, shaped.glyphs[10].glyph_id);
+  ASSERT_TRUE(shaped.glyphs[4].font != shaped.glyphs[0].font);
+  ASSERT_TRUE(shaped.glyphs[0].font == shaped.glyphs[10].font);
+  ASSERT_EQ(my_text_layout_shape(ligature_layout, lam_alef, chain, 24, NULL,
+                                 &ligature),
+            MY_RET_OK);
+  ASSERT_EQ(ligature.count, 1u);
+  ASSERT_EQ(ligature.glyphs[0].glyph_id, 1301u);
+  ASSERT_EQ(ligature.glyphs[0].cluster, 0u);
+  my_font_shape_destroy(&arabic_only);
+  my_font_shape_destroy(&latin_only);
+  my_font_shape_destroy(&ligature);
+  my_font_shape_destroy(&shaped);
+  my_text_layout_destroy(ligature_layout);
+  my_text_layout_destroy(layout);
+  my_font_destroy(latin);
+  my_font_destroy(arabic);
+  my_font_destroy(chain);
+#else
+  printf("  SKIP: FreeType/HarfBuzz/BiDi shaping is unavailable\n");
+#endif
+}
+
 TEST(text_layout_shape_oom_is_transactional)
 {
   text_budget_alloc_state_t state = {0};
@@ -3843,6 +3945,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(string_utf8_length_validates_scalar_sequences);
     RUN_TEST(text_layout_maps_rtl_visual_order);
     RUN_TEST(text_layout_shapes_bidi_runs_with_logical_clusters);
+    RUN_TEST(text_layout_shapes_mixed_bidi_through_font_chain_golden);
     RUN_TEST(text_layout_splits_mixed_scripts_for_shape_provider);
     RUN_TEST(text_layout_shape_ex_forwards_language_and_features);
     RUN_TEST(text_layout_shape_reuses_bounded_glyph_cache);

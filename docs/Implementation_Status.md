@@ -14779,3 +14779,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **修正**：`engine/src/myui/myr/my_font.c` 新增覆盖等级 `CHAIN_CLUSTER_BASE_ONLY`（全部 base 有字形、selector 不被支持），优先级排在 variation 未知之后、首码点回退之前；普通与显式参数两条选择路径都使用。
 - **TDD 与变异**：`test_myui_font` 新增 1 例（86 例），旧实现 RED；7 项定向变异全部判红，首版多余的 language 条件已删除。
 - **验证**：字体 86/86、布局 142/142，ASan+UBSan 无报错；`build-current-vk` 非 fuzz 477/477。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
+
+## 混合方向 RTL GSUB 经字体链的 golden（2026-11-27）
+
+- **核对**：Cantarell + Vazirmatn 字体链经 `my_text_layout_shape` 整形 Arabic 连写、lam-alef 合字、harakat 与「Arabic + Latin + Arabic」混合方向文本，结果与 `hb-shape` 直接用 Vazirmatn 一致，视觉顺序和逻辑 cluster 正确。
+- **测试**：`test_myui_text_layout` 新增表征用例 `text_layout_shapes_mixed_bidi_through_font_chain_golden`（143 例），现有实现直接通过；4 项定向变异中 3 项判红，1 项落在 BiDi 构建不会进入的分支。
+- **验证**：普通与 ASan+UBSan 下 143/143；`build-current-vk` 非 fuzz 477/477。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。

@@ -2735,3 +2735,22 @@ graphics 与 present queue。`RE_VK_DEVICE_INDEX` 现在也必须通过同一门
 **验证**：`test_myui_font` 86/86、`test_myui_text_layout` 142/142，ASan+UBSan 下相同且无报错；`build-current-vk` 非 fuzz 477/477。
 
 同一轮检查的其他序列结果正确：心形 U+2764 加 VS16 在 Cantarell + Symbola + Noto Emoji 链中选 Symbola，加 VS15 选 Noto Emoji（其 cmap14 确认 VS15）；IVS U+9089 U+E0101 选 Noto Sans CJK 的变体字形 62913，前后 Latin 字母仍由 Cantarell 整形。该行其余判据（完整 RTL GSUB）不变。
+
+## 本轮补充：混合方向 RTL GSUB 经字体链的 golden（2026-11-27）
+
+「未完成能力」表中「OpenType shaping」一行的判据有「完整 RTL GSUB」。本轮先核对现状：用 Cantarell + Vazirmatn 字体链，经 `my_text_layout_shape`（SheenBidi 拆 run、按 script 分段）整形，与 `hb-shape` 直接用 Vazirmatn 的结果逐 glyph 对照：
+
+- 「سلام」得到 init/medi/fina 连写字形 1218、1302、718，与 HarfBuzz 一致；
+- 「لا」得到 lam-alef 合字 1301；「بِسْم」的 harakat 由 GPOS 挂在 base 上，5 个 glyph 与 cluster 都一致；
+- 「سلام abc سلام」三段按视觉顺序返回，Arabic 段字形与单独整形一致，`abc` 由 Cantarell 按 LTR 整形，cluster 保持逻辑字节偏移；
+- 数字串在 RTL 段内保持 LTR 顺序。
+
+结论：RTL GSUB 的连写、合字、mark 定位以及混合方向下的跨 face run 已经正确，此前没有覆盖这条路径（字体链 + bidi 布局 + 真实 Arabic 字体）的测试。
+
+**测试**：`test_myui_text_layout` 新增 `text_layout_shapes_mixed_bidi_through_font_chain_golden`（143 例），固定 11 个 glyph id、cluster 与 face 归属，并与 Cantarell、Vazirmatn 单独整形的结果交叉比对；另检查 lam-alef 合字。字体或 BiDi 不可用时 SKIP。该用例是对已有行为的表征测试，在现有实现上直接通过，没有 RED 阶段；用变异确认它确实守住这些行为。
+
+**变异**（`my_text_layout.c`）：4 项中 3 项判红：分段整形时丢失 RTL 方向、丢失 script、RTL 段按逻辑顺序拼接。不拆 script 的分支丢失 RTL 一项存活，因为 BiDi 构建下该分支不会进入这条用例，与本用例无关。
+
+**验证**：`test_myui_text_layout` 143/143，ASan+UBSan 143/143；`build-current-vk` 非 fuzz 477/477。
+
+该行判据中「完整 RTL GSUB」的剩余部分只是本机字体覆盖不到的情形（如 Syriac、N'Ko 等其他 RTL script 与 `rlig` 之外的 language-specific RTL feature），需要相应字体才能取证。
