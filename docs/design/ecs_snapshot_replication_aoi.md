@@ -406,7 +406,9 @@ World 的 `Entity{index, generation}` 只在所属 World 内有效，随 World �
 `docs/design/runtime_world_aoi_integration.md` 记录的约束——Runtime adapter 的 attempt/epoch
 对账需要“该连接应得的目标 id”，而各连接过滤视图的 id 互不相同。`publish_snapshot_filtered`
 现在是 `_id(..., NULL, NULL)` 的薄封装。输出只在 OK/OVERLOAD（存在新建或续发 attempt）时写入，
-续发路径从 `state->attempt.target` 读取，两个 out 指针均可为 NULL。
+续发路径从 `state->attempt.target` 读取，两个 out 指针均可为 NULL。续发回传的是旧 attempt 的
+身份而不是本次 `target` 的，调用方不能据此把续发记到当前 epoch；Runtime adapter 在续发时只用
+lease 身份对账（2026-11-27 修复，见 `docs/design/runtime_world_aoi_integration.md` 变异检查更正）。
 
 验证：`test_world_session_recovery` 31/31（原 29 例，新增 2 例；normal/ASan+UBSan 含 leak 检测/
 TSan 均 31/31）：过滤发布回传视图 id/tick（≠ 共享 target）、NULL keep 回传 target 自身 id/tick

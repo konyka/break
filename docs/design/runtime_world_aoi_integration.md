@@ -153,6 +153,17 @@ core_app 级（`test_core_app_net_transport` / loopback）：
   `publish_dirty/completed/attempt_epoch` 探针输出完全相同，证明不可达，该用例已删除而不是
   留作假阳性保护。实现保留视图身份仍是正确取向（语义更准确，且一旦将来续发路径改为重新过滤
   就会变得可达），但不为等价变异编造测试。
+- **更正（2026-11-27）**：上面的「等价」结论不成立，漏看了续发**再次 OVERLOAD** 的路径。
+  `had_active == true` 时续发回传的是旧 attempt（E1）自己的 id/tick，于是 `after_current`
+  恒为真，`attempt_publication_epoch` 被改写为当前 lease 的 E2；随后续发 OK 走 `same_saved`，
+  把从未发送的 E2 记为 completed，该连接停在 E1 直到下一个 epoch。lease 身份对账在这一步给出
+  false，`same_saved` 保留 E1，因此原实现才是对的，变异的方向反了。复现序列：E1 在出站队列满时
+  OVERLOAD → 发布 E2 且队列仍满，续发再次 OVERLOAD → 清空队列，续发 OK。修复：
+  `runtime_world_publish_connection` 在 `had_active` 时只用 lease 身份对账，回传身份只用于新建
+  attempt；`break_world_session_publish_snapshot_filtered_id` 的新建路径也改为只在 OK/OVERLOAD
+  时写出参（此前 INVALID 时也会改写，违反头文件约定）。回归用例
+  `publish_repeated_overload_resume_keeps_e1_epoch_and_sends_e2`（修复前在
+  `stats.publish_pending` 断言判红）。
 
 ## 仍未交付
 

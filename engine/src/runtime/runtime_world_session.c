@@ -400,6 +400,12 @@ static BreakRuntimeError runtime_world_publish_connection(
             adapter->session, connection->key, lease->snapshot, lease->level_generation,
             NULL, NULL, &target_id, &target_tick);
     }
+    if (had_active) {
+        /* A resumed attempt reports its own (older) target, not this lease's;
+         * crediting it to the current epoch would mark an unsent epoch clean. */
+        target_id = lease_id;
+        target_tick = lease_tick;
+    }
     same_current = had_active && old_id == target_id && old_tick == target_tick;
     *out_called = true;
 

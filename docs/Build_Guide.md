@@ -625,7 +625,7 @@ ctest --test-dir build-quic -L weak_network -j4 --output-on-failure --no-tests=e
 ```bash
 cmake -S engine -B build-snowflake -G Ninja \
   -DCMAKE_BUILD_TYPE=Debug -DENGINE_RHI_BACKEND=metal -DENGINE_VULKAN=OFF \
-  -DBREAK_ENABLE_SNOWFLAKE=ON \
+  -DBREAK_ENABLE_SNOWFLAKE=ON -DCORE_APP_ENABLE_NETWORK=ON \
   -DSNOWFLAKE_SOURCE_DIR=<pinned snow checkout> \
   -DOPENSSL_ROOT_DIR=<openssl 前缀>
 cmake --build build-snowflake --target \
@@ -641,7 +641,9 @@ ctest --test-dir build-snowflake --output-on-failure --no-tests=error \
 
 主 CI 的 `macOS Snowflake replication (Clang)` job 使用相同的 pin 和十四项精确选择，
 并要求 `14/14`。它需要上述 `SNOWFLAKE_READ_TOKEN`；未配置时明确记录 **UNAVAILABLE**，
-不会将未运行记为通过。原有 QUIC 弱网 job 仍只负责四个弱网场景。
+不会将未运行记为通过。`test_core_app_net_client` 与 `test_core_app_network_*` 只在
+`CORE_APP_ENABLE_NETWORK=ON`（默认 OFF）时生成；漏掉该开关时构建步骤报
+`unknown target 'test_core_app_net_client'`。原有 QUIC 弱网 job 仍只负责四个弱网场景。
 
 ```bash
 cd engine

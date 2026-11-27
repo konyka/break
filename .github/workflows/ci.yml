@@ -1465,6 +1465,7 @@ jobs:
             -DENGINE_RHI_BACKEND=metal \
             -DENGINE_VULKAN=OFF \
             -DBREAK_ENABLE_SNOWFLAKE=ON \
+            -DCORE_APP_ENABLE_NETWORK=ON \
             -DSNOWFLAKE_SOURCE_DIR="$GITHUB_WORKSPACE/snowflake" \
             -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"
 

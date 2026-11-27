@@ -925,6 +925,8 @@ BreakNetSendResult break_world_session_publish_snapshot_filtered_id(
     BreakWorldSessionConnection *state;
     BreakWorldSnapshot *view;
     BreakNetSendResult result;
+    u64 target_id;
+    u64 target_tick;
     if (!session || !session->reactor) return BREAK_NET_SEND_CLOSED;
     slot = world_session_connection_index(session, connection);
     if (slot == session->max_connections) return BREAK_NET_SEND_CLOSED;
@@ -946,13 +948,18 @@ BreakNetSendResult break_world_session_publish_snapshot_filtered_id(
         break_world_snapshot_retain(target);
         view = target;
     }
-    if (out_target_id) *out_target_id = break_world_snapshot_id(view);
-    if (out_target_tick) *out_target_tick = break_world_snapshot_tick(view);
+    target_id = break_world_snapshot_id(view);
+    target_tick = break_world_snapshot_tick(view);
     if (!world_session_build_attempt_from_snapshot(session, state, view, level_generation,
                                                    true)) {
         return BREAK_NET_SEND_INVALID;
     }
-    return world_session_resume_attempt(session, state);
+    result = world_session_resume_attempt(session, state);
+    if (result == BREAK_NET_SEND_OK || result == BREAK_NET_SEND_OVERLOAD) {
+        if (out_target_id) *out_target_id = target_id;
+        if (out_target_tick) *out_target_tick = target_tick;
+    }
+    return result;
 }
 
 static BreakWorldSessionLogResult world_session_log_result(BreakNetSendResult result)

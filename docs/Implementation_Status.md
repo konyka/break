@@ -14903,3 +14903,14 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **实现**：`my_widget_t` 新增可选 `is_pressed` 回调与 `my_widget_pressed`；button、checkbox、slider、scroll bar 在工厂中设置；tick、自动启用与设置时钟都按含按下的状态推导。
 - **TDD 与变异**：`test_myui_window_manager` 新增 2 例（251 例），旧实现 RED；9 项定向变异全部判红。
 - **验证**：普通与 ASan+UBSan 下 `test_myui_window_manager` 251/251、`test_myui_css` 223/223；`build-myui-tests` 全量 ctest 482/482；`test_mycompose_gpu_opengl` / `_vulkan` 通过且 `idle_allocs=0`；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
+
+## World 续发再次 OVERLOAD 误记 epoch 与 Snowflake CI 配置（2026-11-27）
+
+- **缺陷**：`8aacfc87` 起 `runtime_world_publish_connection` 用 `break_world_session_publish_snapshot_filtered_id` 回传的身份对账。续发路径回传的是旧 attempt（E1）自己的 id/tick，续发再次 OVERLOAD 时 `after_current` 恒真，`attempt_publication_epoch` 被改写为 E2；续发 OK 后经 `same_saved` 把从未发送的 E2 记为 completed，该连接停在 E1，直到下一个 epoch。触发序列：E1 在出站队列满时 OVERLOAD → 发布 E2 且队列仍满 → 清空队列。不设 filter 的默认路径同样受影响。此前 `docs/design/runtime_world_aoi_integration.md` 把该变异判为等价，结论有误，已在原处更正。
+- **修复**：adapter 在 `had_active` 时只用 lease 身份对账，回传身份只用于新建 attempt；`_filtered_id` 新建路径改为只在 OK/OVERLOAD 时写出参（此前 INVALID 时也改写，违反头文件约定）。
+- **TDD**：`test_runtime_world_session` 新增 `publish_repeated_overload_resume_keeps_e1_epoch_and_sends_e2`，修复前在 `stats.publish_pending` 断言判红（75/76），修复后 76/76。
+- **CI 配置缺陷**：`macOS Snowflake replication (Clang)` job 的 configure 未传 `-DCORE_APP_ENABLE_NETWORK=ON`（默认 OFF），而 build 步骤要求的 `test_core_app_net_client` 只在该开关下生成，secret 一旦配置该 job 会在构建步骤以 `unknown target` 失败。本机按 job 原样复现了该错误，补开关后通过。`docs/Build_Guide.md` 的本地命令同步更正。
+- **验证（macOS arm64，HEAD `6d81ebef` + 本修复）**：本机用固定提交 `4ab761fc` 的 Snowflake 检出按 CI 同一配置构建，十四项精确选择 **14/14** 通过；Metal 全量 **464/464**、MoltenVK 全量 **467/467**，各 5 项既有条件 skip（`test_d3d12_dependency_gate`、`test_core_app_crash_context`、`test_core_app_nm_missing`、`test_core_app_nm_unsupported`、`test_core_app_nm_symbol_missing_unsupported`），不计执行通过。
+- **测试夹具 UB**：同一 Snowflake 配置下以 ASan+UBSan 运行时，`test_runtime_world_session` 的 `fixture_init_without_adapter_scaled` 在 `memset` 前读取了未初始化栈上 `Fixture` 的 `fair_outbound_admission`（本文件从不置真），UBSan 报 `load of value 14 ... type 'bool'`。删除该保留逻辑后 ASan+UBSan（`detect_leaks=0`）下 `test_runtime_world_session` 76/76、`test_world_session`/`_recovery`/`_loopback` 均通过且无诊断。
+- **其余审查项**：本轮对 `cb9352de..6d81ebef` 的预测、延迟补偿、快照插值、World merge、实体映射、snapshot log、metrics、资产依赖图、HTTP/ELF 解析、CSS keyframes 做了只读复核，未发现内存安全缺陷；记录的次要问题（例如 `runtime_metrics_push_http` 对 body 超过 256 字节的 200 响应报 FAILED、`runtime_reload_deps` 依赖环时队列停滞、编辑器热重载借用的依赖图在重建后悬空但当前无生产调用点）未在本提交处理。
+- **边界**：远端仓库 `SNOWFLAKE_READ_TOKEN` 仍未配置，CI 中该 job 仍会记 UNAVAILABLE，本机 14/14 不代表远端执行。本收据提交自身的工作流结果不在此预写。

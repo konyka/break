@@ -103,9 +103,7 @@ static bool fixture_init_without_adapter_scaled(Fixture *fixture, u64 level,
 {
     BreakComponentSchema schema;
     BreakWorldSessionConfig config;
-    bool fair_outbound_admission = fixture->fair_outbound_admission;
     memset(fixture, 0, sizeof(*fixture));
-    fixture->fair_outbound_admission = fair_outbound_admission;
     memset(&schema, 0, sizeof(schema));
     schema.component_id = TEST_COMPONENT;
     schema.version = 1u;
@@ -982,6 +980,65 @@ TEST(publish_overload_resumes_e1_before_latest_e2)
     ASSERT_EQ(stats.publish_overloads, 1u);
     ASSERT_EQ(stats.transport_overloads, 0u);
     ASSERT_FALSE(stats.publish_pending);
+    break_world_snapshot_release(s2);
+    break_world_snapshot_release(s1);
+    fixture_dispose(&fixture);
+}
+
+TEST(publish_repeated_overload_resume_keeps_e1_epoch_and_sends_e2)
+{
+    Fixture fixture;
+    BreakWorldSnapshot *s1;
+    BreakWorldSnapshot *s2;
+    BreakWorldSessionSenderState a_state;
+    BreakRuntimeWorldSessionStats stats;
+    u64 epoch_a = 0u;
+    usize drained = 0u;
+
+    ASSERT_TRUE(fixture_init_publication(&fixture, 7u, 2u, 0u));
+    ASSERT_TRUE(open_connection(&fixture, KEY_A, 7u, &epoch_a));
+    s1 = make_target(&fixture, 42u, 10u);
+    ASSERT_NOT_NULL(s1);
+    ASSERT_TRUE(break_world_snapshot_publication_publish(fixture.publication, s1, 7u));
+    for (u32 i = 0u; i < BREAK_NET_OUTBOUND_QUEUE_CAPACITY; ++i) {
+        ASSERT_EQ(break_net_reactor_send(fixture.reactor, KEY_A, BREAK_NET_MESSAGE_ID_PING,
+                                         1u, "x", 1u),
+                  BREAK_NET_SEND_OK);
+    }
+    ASSERT_EQ(submit_current(&fixture, 7u, 0u), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 1u, &drained),
+              BREAK_RUNTIME_OVERLOAD);
+
+    s2 = make_target(&fixture, 84u, 20u);
+    ASSERT_NOT_NULL(s2);
+    ASSERT_TRUE(break_world_snapshot_publication_publish(fixture.publication, s2, 7u));
+    /* The outbound queue is still full: the E2 continuation resumes the E1
+     * attempt and overloads again. That attempt still belongs to E1. */
+    ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 1u, &drained),
+              BREAK_RUNTIME_OVERLOAD);
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, KEY_A, &a_state));
+    ASSERT_TRUE(a_state.attempt_pending);
+    ASSERT_EQ(a_state.attempt_target_snapshot_id, break_world_snapshot_id(s1));
+
+    /* E1 completes; E2 was never sent, so it must stay dirty. */
+    clear_outbound(&fixture);
+    ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 1u, &drained),
+              BREAK_RUNTIME_OK);
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, KEY_A, &a_state));
+    ASSERT_FALSE(a_state.attempt_pending);
+    ASSERT_EQ(a_state.next_delta_id, 2u);
+    break_runtime_world_session_stats(fixture.adapter, &stats);
+    ASSERT_TRUE(stats.publish_pending);
+    ASSERT_EQ(break_runtime_world_session_pending(fixture.adapter), 1u);
+
+    ASSERT_EQ(break_runtime_world_session_drain(fixture.adapter, 1u, &drained),
+              BREAK_RUNTIME_OK);
+    ASSERT_TRUE(break_world_session_sender_state(fixture.session, KEY_A, &a_state));
+    ASSERT_EQ(a_state.next_delta_id, 3u);
+    ASSERT_EQ(break_runtime_world_session_pending(fixture.adapter), 0u);
+    break_runtime_world_session_stats(fixture.adapter, &stats);
+    ASSERT_FALSE(stats.publish_pending);
+    ASSERT_EQ(stats.publish_overloads, 2u);
     break_world_snapshot_release(s2);
     break_world_snapshot_release(s1);
     fixture_dispose(&fixture);
@@ -5706,6 +5763,7 @@ RUN_TEST(publish_waits_for_ack_holds_until_ack_or_need_full);
 RUN_TEST(publish_budget_one_round_robin_continues_without_queue_message);
 RUN_TEST(publish_default_budget_eight_defers_ninth_connection);
 RUN_TEST(publish_overload_resumes_e1_before_latest_e2);
+RUN_TEST(publish_repeated_overload_resume_keeps_e1_epoch_and_sends_e2);
 RUN_TEST(publish_unknown_old_attempt_does_not_complete_current);
 RUN_TEST(publish_overload_across_connections_does_not_abort_fanout);
 RUN_TEST(publish_terminal_dedup_new_epoch_and_need_full_rules);
