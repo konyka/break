@@ -14974,3 +14974,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **未改动**：`break_crash_upload_http` 有同样的 256 字节应答缓冲。它的头文件明确把「过大的应答」列为失败，`test_break_crash_upload_http` 的 `a_200_with_broken_framing_is_failure` 也固定了这一行为。改为成功会改变 spool 的重试语义（失败时记录保留并重传，服务端可能收到重复记录），属于契约变更，本提交不做，留待确认服务端去重策略。
 - 本提交自身的远端工作流结果不在此预写。
 
+## 依赖驱动热重载：依赖环不再使队列停滞（2026-11-27）
+
+- **缺陷**（此前审查记录的次要问题）：依赖图有环时，环上的排队项互相等待，`break_runtime_reload_deps_pump` 永远不发出它们，队列不清空，之后入队的链也被挡住。
+- **修复**：pump 在没有可发出的项时，把互相依赖的排队项按失败处理（保留旧版本、不发请求），依赖它们的项跳过；能先重建的项先重建。
+- **TDD 与变异**：`test_runtime_reload_deps` 新增 4 例（25 例），修复前 RED（超时）；5 项变异 4 项判红，1 项为等价变异（只多一次 pump）。
+- **验证**：普通与 ASan+UBSan 下 25/25；全量 ctest 482 项无失败。详见 `docs/design/runtime_hot_reload.md` 同日补充。本提交自身的远端工作流结果不在此预写。
+

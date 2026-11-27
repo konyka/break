@@ -24,6 +24,11 @@
  *    its old version and the chain stops there: what depends on it is
  *    skipped, since it would be rebuilt from stale input. The remaining
  *    unrelated ids still go.
+ *  - A dependency loop among the queued ids (which the graph reports through
+ *    load_order) would leave every one of them waiting on another. Once
+ *    nothing queued is ready, the queued ids on a loop are failed without a
+ *    reload (they keep their old version) and what needs them is skipped;
+ *    the ids that could go have gone first, and later chains run normally.
  *  - Several ids may share one path (materials inside a scene file). The
  *    reload issued for one of them loads the whole file, so the other
  *    queued ids with that path ride on it (stats.coalesced) unless one of

@@ -618,6 +618,119 @@ TEST(a_later_change_of_a_former_rider_requeues_its_dependents) {
     fx_dispose(&fx);
 }
 
+TEST(a_dependency_loop_among_dependents_does_not_stall_the_chain) {
+    /* matA and matB come to need each other (a loop the graph reports through
+     * load_order). Each is queued and blocks the other under the "no queued
+     * dependency" rule; the chain must still finish: the loop is dropped
+     * without loading anything, and a later unrelated chain still runs. */
+    Fx fx;
+    BreakRuntimeReloadDepsStats st;
+    const BreakAssetId mat_a[] = {kTex, kShader, kMatB};
+    const BreakAssetId mat_b[] = {kShader, kMatA};
+    ASSERT_TRUE(fx_init(&fx, 16u));
+    ASSERT_EQ(break_asset_graph_set_deps(fx.graph, kMatA, mat_a, 3u), BREAK_ASSET_GRAPH_OK);
+    ASSERT_EQ(break_asset_graph_set_deps(fx.graph, kMatB, mat_b, 2u), BREAK_ASSET_GRAPH_OK);
+    ASSERT_EQ(break_runtime_reload_deps_committed(fx.deps, kShader), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(run_until_idle(&fx));
+    ASSERT_EQ(committed_at("mat_a.bin"), -1);
+    ASSERT_EQ(committed_at("mat_b.bin"), -1);
+    ASSERT_EQ(committed_at("scene.bin"), -1);
+    ASSERT_EQ(break_runtime_reload_deps_stats(fx.deps, &st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(st.queued, 0u);
+    ASSERT_EQ(st.requested, 0u);
+    /* the first loop member found is failed; the other one and the scene
+     * depend on it and are skipped */
+    ASSERT_EQ(st.failed, 1u);
+    ASSERT_EQ(st.skipped, 2u);
+    ASSERT_EQ(st.rebuilt, 0u);
+    /* an unrelated chain still runs afterwards */
+    {
+        const BreakAssetId other_user[] = {kOther};
+        ASSERT_EQ(break_asset_graph_add(fx.graph, 0x77u, other_user, 1u), BREAK_ASSET_GRAPH_OK);
+        ASSERT_EQ(break_runtime_reload_deps_set_path(fx.deps, 0x77u, "mat_b.bin"),
+                  BREAK_RUNTIME_OK);
+        ASSERT_EQ(break_runtime_reload_deps_committed(fx.deps, kOther), BREAK_RUNTIME_OK);
+        ASSERT_TRUE(run_until_idle(&fx));
+        ASSERT_TRUE(committed_at("mat_b.bin") >= 0);
+    }
+    fx_dispose(&fx);
+}
+
+TEST(a_dependency_loop_downstream_lets_the_ready_part_finish_first) {
+    /* tex -> matA -> {scene <-> 0x66 loop}: matA is rebuilt; the loop behind
+     * it is dropped only once nothing else can go. */
+    Fx fx;
+    BreakRuntimeReloadDepsStats st;
+    const BreakAssetId scene[] = {kMatA, kMatB, 0x66u};
+    const BreakAssetId loop_node[] = {kScene};
+    ASSERT_TRUE(fx_init(&fx, 16u));
+    ASSERT_EQ(break_asset_graph_add(fx.graph, 0x66u, loop_node, 1u), BREAK_ASSET_GRAPH_OK);
+    ASSERT_EQ(break_asset_graph_set_deps(fx.graph, kScene, scene, 3u), BREAK_ASSET_GRAPH_OK);
+    ASSERT_EQ(break_runtime_reload_deps_set_path(fx.deps, 0x66u, "other.bin"), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_committed(fx.deps, kTex), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(run_until_idle(&fx));
+    ASSERT_EQ(committed_at("mat_a.bin"), 0);
+    ASSERT_EQ(committed_at("scene.bin"), -1);
+    ASSERT_EQ(committed_at("other.bin"), -1);
+    ASSERT_EQ(break_runtime_reload_deps_stats(fx.deps, &st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(st.rebuilt, 1u);
+    ASSERT_EQ(st.failed + st.skipped, 2u);
+    fx_dispose(&fx);
+}
+
+TEST(a_loop_broken_while_the_chain_runs_is_rebuilt) {
+    /* The loop is only dropped once nothing else can go: an edit that breaks
+     * it while matA is still loading lets scene and 0x66 be rebuilt. */
+    Fx fx;
+    BreakRuntimeReloadDepsStats st;
+    const BreakAssetId scene[] = {kMatA, kMatB, 0x66u};
+    const BreakAssetId loop_node[] = {kScene};
+    ASSERT_TRUE(fx_init(&fx, 16u));
+    ASSERT_EQ(break_asset_graph_add(fx.graph, 0x66u, loop_node, 1u), BREAK_ASSET_GRAPH_OK);
+    ASSERT_EQ(break_asset_graph_set_deps(fx.graph, kScene, scene, 3u), BREAK_ASSET_GRAPH_OK);
+    ASSERT_EQ(break_runtime_reload_deps_set_path(fx.deps, 0x66u, "other.bin"), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_committed(fx.deps, kTex), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_pump(fx.deps), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_stats(fx.deps, &st), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(st.in_flight);
+    ASSERT_EQ(st.queued, 2u);
+    ASSERT_EQ(break_asset_graph_set_deps(fx.graph, kScene, scene, 2u), BREAK_ASSET_GRAPH_OK);
+    ASSERT_TRUE(run_until_idle(&fx));
+    ASSERT_EQ(committed_at("mat_a.bin"), 0);
+    ASSERT_EQ(committed_at("scene.bin"), 1);
+    ASSERT_EQ(committed_at("other.bin"), 2);
+    ASSERT_EQ(break_runtime_reload_deps_stats(fx.deps, &st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(st.rebuilt, 3u);
+    ASSERT_EQ(st.failed + st.skipped, 0u);
+    fx_dispose(&fx);
+}
+
+TEST(only_loop_members_are_failed_what_waits_on_them_is_skipped) {
+    /* A merged commit can queue a dependent of the loop ahead of it: it is
+     * not on the loop, so it is skipped, not failed. */
+    Fx fx;
+    BreakRuntimeReloadDepsStats st;
+    const BreakAssetId scene[] = {kMatA, kMatB, 0x66u};
+    const BreakAssetId loop_node[] = {kScene};
+    const BreakAssetId waiter[] = {kOther, kScene};
+    ASSERT_TRUE(fx_init(&fx, 16u));
+    ASSERT_EQ(break_asset_graph_add(fx.graph, 0x66u, loop_node, 1u), BREAK_ASSET_GRAPH_OK);
+    ASSERT_EQ(break_asset_graph_set_deps(fx.graph, kScene, scene, 3u), BREAK_ASSET_GRAPH_OK);
+    ASSERT_EQ(break_asset_graph_add(fx.graph, 0x88u, waiter, 2u), BREAK_ASSET_GRAPH_OK);
+    ASSERT_EQ(break_runtime_reload_deps_set_path(fx.deps, 0x66u, "other.bin"), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_set_path(fx.deps, 0x88u, "shader.bin"), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_committed(fx.deps, kOther), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_reload_deps_committed(fx.deps, kTex), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(run_until_idle(&fx));
+    ASSERT_EQ(committed_at("mat_a.bin"), 0);
+    ASSERT_EQ(committed_at("shader.bin"), -1);
+    ASSERT_EQ(break_runtime_reload_deps_stats(fx.deps, &st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(st.rebuilt, 1u);
+    ASSERT_EQ(st.failed, 1u);
+    ASSERT_EQ(st.skipped, 2u);
+    fx_dispose(&fx);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(a_changed_texture_rebuilds_its_material_then_the_scene);
     RUN_TEST(a_shared_dependency_rebuilds_each_dependent_once_in_order);
@@ -640,4 +753,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(a_same_file_dependent_waiting_on_another_file_is_still_requeued);
     RUN_TEST(committing_an_id_directly_queues_same_file_dependents);
     RUN_TEST(a_later_change_of_a_former_rider_requeues_its_dependents);
+    RUN_TEST(a_dependency_loop_among_dependents_does_not_stall_the_chain);
+    RUN_TEST(a_dependency_loop_downstream_lets_the_ready_part_finish_first);
+    RUN_TEST(a_loop_broken_while_the_chain_runs_is_rebuilt);
+    RUN_TEST(only_loop_members_are_failed_what_waits_on_them_is_skipped);
 TEST_MAIN_END()

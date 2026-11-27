@@ -265,6 +265,30 @@ static void take_riders(BreakRuntimeReloadDeps *deps, u32 index) {
     deps->stats.coalesced += deps->rider_count - 1u;
 }
 
+/* Nothing queued is ready: every queued asset waits on another queued one,
+ * which only a dependency loop does (the graph reports it through
+ * load_order). Two queued assets that each depend on the other lie on one
+ * loop and can never be rebuilt from a settled dependency, so they keep
+ * their old versions and what needs them is skipped, as for a failure.
+ * dependents() never lists an asset itself, hence the pairwise test. */
+static void drop_loop_members(BreakRuntimeReloadDeps *deps) {
+    for (u32 i = 0u; i < deps->queued;) {
+        BreakAssetId id = deps->queue[i];
+        bool on_loop = false;
+        for (u32 j = 0u; j < deps->queued && !on_loop; ++j) {
+            on_loop = j != i && depends_on(deps, id, deps->queue[j]) &&
+                      depends_on(deps, deps->queue[j], id);
+        }
+        if (on_loop) {
+            remove_queued(deps, i);
+            finish_failed(deps, id);
+            i = 0u; /* finish_failed may have removed entries before i */
+        } else {
+            ++i;
+        }
+    }
+}
+
 BreakRuntimeError break_runtime_reload_deps_pump(BreakRuntimeReloadDeps *deps) {
     u32 index = 0u;
     if (!deps) return BREAK_RUNTIME_INVALID;
@@ -283,6 +307,7 @@ BreakRuntimeError break_runtime_reload_deps_pump(BreakRuntimeReloadDeps *deps) {
         deps->in_flight = 0u;
         deps->rider_count = 0u;
     }
+    if (deps->queued > 0u && !next_ready(deps, &index)) drop_loop_members(deps);
     while (next_ready(deps, &index)) {
         BreakAssetId id = deps->queue[index];
         BreakRuntimeReloadRequest request = 0u;

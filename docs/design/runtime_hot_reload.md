@@ -430,3 +430,22 @@ arm64 lane 新增 `test_hotreload`（7 例），与 VFS、异步加载和 filewa
 **验证**：ASan+UBSan 下 21/21 无泄漏，TSan 下连跑 3 次 21/21；`test_editor_shell` 190/190（ASan 237/237）；`build-current-vk` 非 fuzz 462 通过、0 失败、4 项条件 skip。
 
 本提交自身的远端工作流结果不在此预写。
+
+## 补充（2026-11-27）：依赖环不再使依赖链停滞
+
+此前的审查记录了一个次要问题：依赖图中有环时（例如两个材质互相依赖），环上的每个排队项都在等另一个排队项，`next_ready` 永远找不到可发出的项。队列于是永远不空，`stats.queued` 不归零，之后的链虽然能入队，却排在这些项后面，同样永远等待。图本身会在 `break_asset_graph_load_order` 中报告 CYCLE，但重载适配层没有处理。
+
+修正（`engine/src/runtime/runtime_reload_deps.c`）：`break_runtime_reload_deps_pump` 在队列非空、却没有可发出的项时调用 `drop_loop_members`。两个排队项彼此依赖时，它们在同一个环上，永远不可能从已稳定的依赖重建。于是按失败处理：保留旧版本，计入 `stats.failed`，不发出重载请求，依赖它们的排队项被跳过。`break_asset_graph_dependents` 从不列出资产本身，所以判定按两两互相依赖进行。只有在别无可发出的项时才处理环，所以能先重建的项先重建；环在链运行期间被编辑打破时，环上的项照常重建。
+
+**TDD**（`test_runtime_reload_deps`，25 例）：
+- `a_dependency_loop_among_dependents_does_not_stall_the_chain`：matA 与 matB 互相依赖，shader 变化后链在有限步内结束，不加载任何文件，之后不相关的链照常运行。修正前 `run_until_idle` 超时（RED）。
+- `a_dependency_loop_downstream_lets_the_ready_part_finish_first`：环在 matA 之后，matA 先重建，环随后被丢弃。
+- `a_loop_broken_while_the_chain_runs_is_rebuilt`：matA 加载期间编辑依赖打破环，scene 与环上另一项随后照常重建。
+- `only_loop_members_are_failed_what_waits_on_them_is_skipped`：排在环前面、依赖环的项不在环上，计为跳过而不是失败。
+
+**变异**（5 项）：
+- 判红 4 项：不调用环处理（两例超时）；每次 pump 都处理环（打破环的用例判红）；只要求单向依赖就判为环（等待者用例判红）；环成员只计失败、不跳过依赖者。
+- 存活 1 项：删除后的下标不归零。`finish_failed` 移除前面的排队项后，可能有一个环成员被跳过，但它仍在队列里；下一次 pump 仍无可发出的项，于是再处理一次。结果相同，只多一次 pump，判为等价变异。
+
+**验证**：`test_runtime_reload_deps` 25/25，ASan+UBSan（`detect_leaks=0`）25/25；`build-myui-tests` 全量 ctest 482 项无失败。本提交自身的远端工作流结果不在此预写。
+
