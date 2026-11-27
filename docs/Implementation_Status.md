@@ -14695,3 +14695,12 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
   - 编辑器没有从纹理重建材质的消费者：3D 视口不使用场景纹理，材质只按句柄引用纹理。
 - **保留的接口**：`break_editor_hot_reload_attach_reload_deps` 供宿主在确有独立依赖文件时显式接线，行为已由 `test_editor_shell` 覆盖。
 - `docs/cross_engine/missing_capabilities.md` 的「完整资产链」条目同步更新。本提交只改文档，不涉及代码与测试；本提交自身的远端工作流结果不在此预写。
+
+## core_app 每连接诊断 World 不接入权威合并的结论（2026-11-27）
+
+- **核对对象**：`missing_capabilities.md` 中「core_app 中每连接诊断 World 尚未接入合并」。
+- **结论**：不接线，前置条件不成立，与「core_app 启用 AOI 过滤」同类。
+  - core_app 的权威 World（`world_authoritative`）只有 2 个物体，每个 tick 由 `net_tick` → `net_world_update` 用 simulation 的实体输出整体重写（`engine/apps/core_app/core_app_net_transport.c`）。`BreakWorldMerge` 写入的对端值会在下一个 tick 被覆盖，不会进入 simulation。
+  - 客户端影响服务端状态的通道是输入：`core_app_simulation_intent` 与 `break_prediction_session` 的按序去重输入收件箱，由服务端 simulation 权威执行。
+  - 让合并生效需要 simulation 改为以权威 World 为状态来源，属于 simulation 设计改变，而不是缺少的接线。`BreakWorldMerge` 本身已交付并有测试，供以 World 为状态来源的宿主使用。
+- `docs/cross_engine/missing_capabilities.md` 同步更新。本提交只改文档；本提交自身的远端工作流结果不在此预写。
