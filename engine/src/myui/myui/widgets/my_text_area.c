@@ -1248,16 +1248,115 @@ static my_ret_t ta_vlines_rebuild_from(my_text_area_t* ta, size_t from) {
   return MY_RET_OK;
 }
 
-static void ta_vlines_invalidate_from(my_text_area_t* ta, size_t from) {
+static void ta_vlines_invalidate_index(my_text_area_t* ta) {
   my_mem_free(ta->allocator, ta->vline_first_by_phys);
   ta->vline_first_by_phys = NULL;
   ta->vline_last_by_phys = NULL;
   ta->vline_index_count = 0;
   ta->vline_index_dirty = true;
+}
+
+static void ta_vlines_invalidate_from(my_text_area_t* ta, size_t from) {
+  ta_vlines_invalidate_index(ta);
   if (!ta->vlines_dirty || from < ta->vlines_dirty_from) {
     ta->vlines_dirty_from = from;
   }
   ta->vlines_dirty = true;
+}
+
+static size_t ta_vline_phys_at(const my_darray_t* lines, size_t i) {
+  return ((const my_visual_line_t*)my_darray_get(lines, i))->phys;
+}
+
+/** @brief Whether lines[i] is the only visual line of its paragraph. */
+static bool ta_vline_is_single(const my_darray_t* lines, size_t i,
+                               size_t count) {
+  size_t phys = ta_vline_phys_at(lines, i);
+  return (i == 0u || ta_vline_phys_at(lines, i - 1u) != phys) &&
+         (i + 1u == count || ta_vline_phys_at(lines, i + 1u) != phys);
+}
+
+/** @brief Rewrap a clean cache at a larger width: a paragraph that fit on
+ * one visual line still fits, so its line is kept and only paragraphs that
+ * wrapped are shaped again. The old cache stays intact on failure. */
+static my_ret_t ta_vlines_rewrap_wider(my_text_area_t* ta) {
+  my_darray_t* old_lines = ta->vlines;
+  my_darray_t* new_lines;
+  size_t old_count = my_darray_size(old_lines);
+  size_t n = ta_line_count(ta);
+  size_t i = 0u;
+  size_t j;
+  new_lines = my_darray_create(ta->allocator, old_count);
+  if (new_lines == NULL) return MY_RET_OOM;
+  ta->vlines = new_lines;
+  while (i < old_count) {
+    my_visual_line_t* first = (my_visual_line_t*)my_darray_get(old_lines, i);
+    size_t pi = first->phys;
+    size_t group_end = i + 1u;
+    while (group_end < old_count &&
+           ta_vline_phys_at(old_lines, group_end) == pi) {
+      group_end++;
+    }
+    if (group_end == i + 1u) {
+      if (my_darray_push(new_lines, first) != MY_RET_OK) goto oom;
+    } else {
+      size_t start_off = ta_line_start(ta, pi);
+      size_t end_off = pi + 1u < n ? ta_line_start(ta, pi + 1u)
+                                   : ta->text_len;
+      size_t segment_end = ta_line_content_end(ta, start_off, end_off);
+      size_t segment_len = segment_end > start_off ? segment_end - start_off
+                                                   : 0u;
+      my_text_paragraph_t* paragraph = my_text_paragraph_process_n_ex(
+          ta->allocator, ta->text + start_off, segment_len, ta->font,
+          ta->font_size, (int32_t)ta_inner_width(ta), &ta->shaping_params);
+      size_t k;
+      if (paragraph == NULL) goto oom;
+      for (k = 0u; k < paragraph->line_count; k++) {
+        const my_text_paragraph_line_t* line =
+            my_text_paragraph_line_at(paragraph, k);
+        if (line != NULL &&
+            ta_vline_push(ta, pi, line->start_byte, line->end_byte,
+                          line->start_cp, line->cp_count) != MY_RET_OK) {
+          my_text_paragraph_destroy(paragraph);
+          goto oom;
+        }
+      }
+      my_text_paragraph_destroy(paragraph);
+    }
+    i = group_end;
+  }
+  /* a line is single when neither neighbour shares its row; read both
+   * neighbours before freeing anything */
+  {
+    bool prev_shares = false;
+    for (i = 0u; i < old_count; i++) {
+      bool next_shares = i + 1u < old_count &&
+                         ta_vline_phys_at(old_lines, i + 1u) ==
+                             ta_vline_phys_at(old_lines, i);
+      if (prev_shares || next_shares) {
+        my_mem_free(ta->allocator, my_darray_get(old_lines, i));
+      }
+      prev_shares = next_shares;
+    }
+  }
+  my_darray_destroy(old_lines);
+  return MY_RET_OK;
+oom:
+  /* reused lines appear in new_lines in their old order, so one forward
+   * cursor over the old single lines tells them from fresh ones */
+  j = 0u;
+  for (i = 0u; i < my_darray_size(new_lines); i++) {
+    void* line = my_darray_get(new_lines, i);
+    while (j < old_count && !ta_vline_is_single(old_lines, j, old_count)) j++;
+    if (j < old_count && my_darray_get(old_lines, j) == line) {
+      j++;
+    } else {
+      my_mem_free(ta->allocator, line);
+    }
+  }
+  my_darray_destroy(new_lines);
+  ta->vlines = old_lines;
+  return MY_RET_OOM;
 }
 
 /** @brief Ensure visual lines are built (when wrap is on). */
@@ -1268,8 +1367,15 @@ static void ta_vlines_ensure(my_text_area_t* ta) {
    * set_rect, a layouter, a gutter change): rewrap when the width does */
   width = ta_inner_width(ta);
   if (width != ta->vlines_width) {
-    ta_vlines_invalidate_from(ta, 0);
-    ta->vlines_full_rebuild = true;
+    if (width > ta->vlines_width && !ta->vlines_dirty &&
+        ta->vlines != NULL && my_darray_size(ta->vlines) > 0u &&
+        ta_vlines_rewrap_wider(ta) == MY_RET_OK) {
+      ta_vlines_invalidate_index(ta);
+      ta->vlines_width = width;
+    } else {
+      ta_vlines_invalidate_from(ta, 0);
+      ta->vlines_full_rebuild = true;
+    }
   }
   if (ta->vlines_dirty) {
     if (ta_vlines_rebuild_from(ta, ta->vlines_dirty_from) == MY_RET_OK) {

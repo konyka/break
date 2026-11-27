@@ -4322,6 +4322,111 @@ TEST(text_area_wrap_suffix_reuse_oom_preserves_old_objects)
   my_allocator_debug_destroy(allocator);
 }
 
+TEST(text_area_widening_reshapes_only_wrapped_paragraphs)
+{
+  /* Widening keeps every single-line paragraph on one line, so only the
+   * paragraphs that wrapped are shaped again; narrowing reshapes all. */
+  text_area_variable_font_t font = {{&text_area_variable_font_vtable}, 0, 0};
+  my_widget_t* area = my_text_area_create(NULL);
+  size_t before;
+  size_t i;
+
+  ASSERT_NOT_NULL(area);
+  my_text_area_set_font(area, (my_font_t*)&font, 16);
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 60, 400}), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_wrap(area, true), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_text(area, "B\nBBBBBB\nB\n"), MY_RET_OK);
+  ASSERT_TRUE(my_text_area_visual_line_count(area) > 4u);
+  /* builds the row -> visual line index for the old wrap */
+  ASSERT_TRUE(my_text_area_visual_line_of_pos(area, 2u, 0u, NULL) > 2u);
+  before = font.glyph_calls;
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 400, 400}),
+            MY_RET_OK);
+  ASSERT_EQ(my_text_area_visual_line_count(area), 4u);
+  ASSERT_EQ(my_text_area_visual_line_of_pos(area, 2u, 0u, NULL), 2u);
+  /* only the six-glyph paragraph is shaped again */
+  ASSERT_EQ(font.glyph_calls - before, 6u);
+  for (i = 0u; i < 4u; i++) {
+    const my_visual_line_t* vl = my_text_area_visual_line_at(area, i);
+    ASSERT_NOT_NULL(vl);
+    ASSERT_EQ(vl->phys, i);
+    ASSERT_EQ(vl->start_cp, 0u);
+  }
+  ASSERT_EQ(my_text_area_visual_line_at(area, 1u)->len_cp, 6u);
+  ASSERT_EQ(my_text_area_visual_line_at(area, 3u)->len_cp, 0u);
+  before = font.glyph_calls;
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 60, 400}), MY_RET_OK);
+  ASSERT_TRUE(my_text_area_visual_line_count(area) > 4u);
+  ASSERT_EQ(font.glyph_calls - before, 8u);
+  my_widget_unref(area);
+}
+
+TEST(text_area_widening_after_pending_edit_reshapes_edited_paragraph)
+{
+  /* An edit not yet rewrapped makes the cached lines stale: widening then
+   * must not reuse them. */
+  text_area_variable_font_t font = {{&text_area_variable_font_vtable}, 0, 0};
+  my_widget_t* area = my_text_area_create(NULL);
+  my_event_t event = my_event_init(MY_EVENT_KEY_DOWN);
+
+  ASSERT_NOT_NULL(area);
+  my_text_area_set_font(area, (my_font_t*)&font, 16);
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 60, 400}), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_wrap(area, true), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_text(area, "B\nB"), MY_RET_OK);
+  ASSERT_EQ(my_text_area_visual_line_count(area), 2u);
+  ((my_text_area_t*)area)->cursor_row = 0u;
+  ((my_text_area_t*)area)->cursor_col = 1u;
+  ((my_text_area_t*)area)->anchor_row = 0u;
+  ((my_text_area_t*)area)->anchor_col = 1u;
+  ((my_text_area_t*)area)->focused = true;
+  event.u.key.key = 'B';
+  ASSERT_EQ(area->vtable->on_event(area, &event), MY_RET_OK);
+  ASSERT_STR_EQ(my_text_area_get_text(area), "BB\nB");
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 400, 400}),
+            MY_RET_OK);
+  ASSERT_EQ(my_text_area_visual_line_count(area), 2u);
+  ASSERT_EQ(my_text_area_visual_line_at(area, 0u)->len_cp, 2u);
+  ASSERT_EQ(my_text_area_visual_line_at(area, 1u)->len_cp, 1u);
+
+  /* a pending in-row edit before a wrapped row keeps a suffix-reuse index
+   * into the old lines */
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 60, 400}), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_text(area, "BBBBBB\nB"), MY_RET_OK);
+  ASSERT_TRUE(my_text_area_visual_line_count(area) > 2u);
+  ((my_text_area_t*)area)->cursor_row = 0u;
+  ((my_text_area_t*)area)->cursor_col = 1u;
+  ((my_text_area_t*)area)->anchor_row = 0u;
+  ((my_text_area_t*)area)->anchor_col = 1u;
+  event.u.key.key = 'B';
+  ASSERT_EQ(area->vtable->on_event(area, &event), MY_RET_OK);
+  ASSERT_STR_EQ(my_text_area_get_text(area), "BBBBBBB\nB");
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 400, 400}),
+            MY_RET_OK);
+  ASSERT_EQ(my_text_area_visual_line_count(area), 2u);
+  ASSERT_EQ(my_text_area_visual_line_at(area, 0u)->len_cp, 7u);
+  ASSERT_EQ(my_text_area_visual_line_at(area, 1u)->phys, 1u);
+  ASSERT_EQ(my_text_area_visual_line_at(area, 1u)->len_cp, 1u);
+
+  /* a join leaves cached lines for a row that no longer exists */
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 60, 400}), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_text(area, "B\nBBBBBB"), MY_RET_OK);
+  ASSERT_TRUE(my_text_area_visual_line_count(area) > 2u);
+  ((my_text_area_t*)area)->cursor_row = 1u;
+  ((my_text_area_t*)area)->cursor_col = 0u;
+  ((my_text_area_t*)area)->anchor_row = 1u;
+  ((my_text_area_t*)area)->anchor_col = 0u;
+  event.u.key.key = MY_KEY_BACKSPACE;
+  ASSERT_EQ(area->vtable->on_event(area, &event), MY_RET_OK);
+  ASSERT_STR_EQ(my_text_area_get_text(area), "BBBBBBB");
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 400, 400}),
+            MY_RET_OK);
+  ASSERT_EQ(my_text_area_visual_line_count(area), 1u);
+  ASSERT_EQ(my_text_area_visual_line_at(area, 0u)->phys, 0u);
+  ASSERT_EQ(my_text_area_visual_line_at(area, 0u)->len_cp, 7u);
+  my_widget_unref(area);
+}
+
 TEST(text_area_wrap_single_line_edit_shapes_only_changed_row)
 {
   text_area_variable_font_t font = {{&text_area_variable_font_vtable}, 0, 0};
@@ -4746,6 +4851,74 @@ TEST(text_area_folded_range_rebuilds_wrapped_visual_lines)
   ASSERT_NOT_NULL(line);
   ASSERT_EQ(line->phys, 2u);
   my_widget_unref(area);
+}
+
+typedef struct text_area_countdown_alloc_t {
+  size_t remaining; /**< allocations left before failing; SIZE_MAX = never */
+} text_area_countdown_alloc_t;
+
+static bool text_area_countdown_take(void* ctx) {
+  text_area_countdown_alloc_t* state = (text_area_countdown_alloc_t*)ctx;
+  if (state->remaining == SIZE_MAX) return true;
+  if (state->remaining == 0u) return false;
+  state->remaining--;
+  return true;
+}
+
+static void* text_area_countdown_alloc(void* ctx, size_t size) {
+  return text_area_countdown_take(ctx) ? malloc(size) : NULL;
+}
+
+static void* text_area_countdown_calloc(void* ctx, size_t count, size_t size) {
+  return text_area_countdown_take(ctx) ? calloc(count, size) : NULL;
+}
+
+static void* text_area_countdown_realloc(void* ctx, void* ptr, size_t size) {
+  return text_area_countdown_take(ctx) ? realloc(ptr, size) : NULL;
+}
+
+static void text_area_countdown_free(void* ctx, void* ptr) {
+  (void)ctx;
+  free(ptr);
+}
+
+TEST(text_area_widening_oom_keeps_previous_cache)
+{
+  /* Failing each allocation of the widening rewrap in turn keeps a usable
+   * cache: either the old wrap or a full rebuild later, never a leak or a
+   * dangling line (checked under ASan). */
+  size_t fail_at;
+  bool succeeded_once = false;
+  for (fail_at = 0u; fail_at < 64u && !succeeded_once; fail_at++) {
+    text_area_countdown_alloc_t state = {SIZE_MAX};
+    my_allocator_t allocator = {&state, text_area_countdown_alloc,
+                                text_area_countdown_calloc,
+                                text_area_countdown_realloc,
+                                text_area_countdown_free};
+    text_area_variable_font_t font = {{&text_area_variable_font_vtable}, 0,
+                                      0};
+    my_widget_t* area = my_text_area_create(&allocator);
+    size_t count;
+    ASSERT_NOT_NULL(area);
+    my_text_area_set_font(area, (my_font_t*)&font, 16);
+    ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 60, 400}),
+              MY_RET_OK);
+    ASSERT_EQ(my_text_area_set_wrap(area, true), MY_RET_OK);
+    ASSERT_EQ(my_text_area_set_text(area, "B\nBBBBBB\nB\nBBBB"),
+              MY_RET_OK);
+    ASSERT_TRUE(my_text_area_visual_line_count(area) > 4u);
+    state.remaining = fail_at;
+    ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 400, 400}),
+              MY_RET_OK);
+    count = my_text_area_visual_line_count(area);
+    if (state.remaining > 0u) succeeded_once = true;
+    state.remaining = SIZE_MAX;
+    ASSERT_TRUE(count >= 4u);
+    ASSERT_EQ(my_text_area_visual_line_count(area), 4u);
+    ASSERT_EQ(my_text_area_visual_line_at(area, 1u)->len_cp, 6u);
+    my_widget_unref(area);
+  }
+  ASSERT_TRUE(succeeded_once);
 }
 
 TEST(text_area_wrap_oom_keeps_previous_cache)
@@ -9763,6 +9936,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_area_wrap_dirty_cache_disables_suffix_reuse);
     RUN_TEST(text_area_wrap_suffix_reuse_oom_preserves_old_objects);
     RUN_TEST(text_area_wrap_single_line_edit_shapes_only_changed_row);
+    RUN_TEST(text_area_widening_reshapes_only_wrapped_paragraphs);
+    RUN_TEST(text_area_widening_after_pending_edit_reshapes_edited_paragraph);
     RUN_TEST(text_area_wrap_preserves_trailing_empty_line_on_single_line_edit);
     RUN_TEST(text_area_wrap_represents_empty_document_as_empty_visual_line);
     RUN_TEST(text_area_wrap_keeps_all_consecutive_empty_physical_lines);
@@ -9779,6 +9954,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_area_many_nested_folds_build_visible_rows_once);
     RUN_TEST(text_area_folded_range_rebuilds_wrapped_visual_lines);
     RUN_TEST(text_area_wrap_oom_keeps_previous_cache);
+    RUN_TEST(text_area_widening_oom_keeps_previous_cache);
     RUN_TEST(text_area_folded_rows_remain_hidden_when_visible_cache_ooms);
     RUN_TEST(text_area_justify_cursor_tracks_stretched_space);
     RUN_TEST(text_area_justify_cursor_tracks_unicode_breaking_space);

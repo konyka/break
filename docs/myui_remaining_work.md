@@ -3127,3 +3127,24 @@ BreakUI 关闭了 window manager 的自动重绘定时器（`break_ui_init` 调�
 
 **验证**：`test_myui_css` 225/225，ASan+UBSan（`detect_leaks=0`）225/225；`build-myui-tests` 全量 ctest 482 项无失败；`build-current-vk` 构建通过，28 项相关 ctest 通过。本提交自身的远端工作流结果不在此预写。
 
+## 本轮补充：text area 放宽时只重排换过行的段落（2026-11-27）
+
+「跨段落增量预算」的第一步。宽度变化此前一律整篇重排。放宽时有一个安全的捷径：在旧宽度下只占一个 visual line 的段落，在更宽时仍是一行，且 visual line 的内容（起止字节、码点）不变，无需重新整形；只有原先换过行的段落需要重排。
+
+实现（`engine/src/myui/myui/widgets/my_text_area.c`）：`ta_vlines_rewrap_wider` 按物理行分组遍历旧 visual line，单行段落的 visual line 对象直接移入新数组，多行段落重新整形；成功后只释放被替换的旧对象，并使 row→visual line 索引失效。仅在宽度变大、缓存干净（`!vlines_dirty`）且非空时走这条路径；缩窄、有待重排的编辑或该路径 OOM 时回退到整篇重排（`vlines_full_rebuild`）。OOM 时新数组中复用的对象与旧数组顺序一致，以单个前向游标区分，只释放新建对象，旧缓存保持完整。
+
+**TDD**（`test_myui_window_manager`，258 例）：
+- `text_area_widening_reshapes_only_wrapped_paragraphs`：放宽后只对六字形段落整形（glyph 调用数恰为 6），各行位置正确，索引查询返回新结果；再缩窄时全部段落重新整形（8 次）。修正前整形 8 次（RED）。
+- `text_area_widening_after_pending_edit_reshapes_edited_paragraph`：编辑尚未重排时放宽（行内插入、在换行段落前插入、退格合并两行），结果与新文本一致。
+- `text_area_widening_oom_keeps_previous_cache`：逐次让第 N 次分配失败，放宽后缓存仍可用且最终行数正确；ASan 下无泄漏、无悬空访问。
+
+**过程中发现的缺陷**：初版成功路径在释放旧对象时还要读取相邻对象的 `phys`，退格合并用例在 ASan 下报 heap-use-after-free；改为先读邻居再释放的单遍扫描。
+
+**变异**（10 项）：
+- 判红 9 项：放宽条件改为任意宽度；单行段落也重排；不使索引失效（越界崩溃）；不更新记录宽度；OOM 路径不释放新对象或不销毁新数组（LeakSanitizer 报告比 libdbus 基线多出的泄漏）；OOM 路径把复用对象当新对象释放（use-after-free）；成功路径只看下一个邻居（不可编译，改用等价写法后由泄漏检出）。
+- 存活 1 项：去掉 `!vlines_dirty` 条件。所有编辑入口在置脏的同时都清空或截断了失效段落的 visual line，干净路径读到的分组仍按当前文本整形，因此判为等价变异；条件保留作为防御。
+
+**测量**（2 万行，每 10 行一段长段落，位图字体）：首次换行约 0.5 s；放宽 518 ms → 274 ms；缩窄仍整篇重排（约 0.5 s）。缩窄与按可见区域分帧预算仍未完成。
+
+**验证**：`test_myui_window_manager` 258/258，ASan+UBSan（`detect_leaks=0`）258/258；`build-myui-tests` 全量 ctest 482 项无失败；`build-current-vk` 构建通过，28 项相关 ctest 通过。本提交自身的远端工作流结果不在此预写。
+

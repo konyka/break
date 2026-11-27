@@ -14950,3 +14950,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：`test_myui_css` 新增 1 例（225 例），修复前 RED；2 项定向变异判红。
 - **验证**：普通与 ASan+UBSan 下 225/225；全量 ctest 482 项无失败；`build-current-vk` 构建通过。本提交自身的远端工作流结果不在此预写。
 
+## text area 放宽时只重排换过行的段落（2026-11-27）
+
+- **改动**：宽度变大且缓存干净时，单行段落的 visual line 直接复用，只重排原先换行的段落；缩窄、有待重排编辑或 OOM 时回退整篇重排。OOM 时旧缓存保持完整。
+- **TDD 与变异**：`test_myui_window_manager` 新增 3 例（258 例），修正前整形次数断言 RED；10 项变异中 9 项判红，1 项（去掉缓存干净条件）记为等价变异。初版在 ASan 下暴露一处 use-after-free，已修正。
+- **测量**：2 万行文档放宽 518 ms → 274 ms；缩窄未变。
+- **验证**：普通与 ASan+UBSan 下 258/258；全量 ctest 482 项无失败；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
+
