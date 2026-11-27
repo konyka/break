@@ -11,6 +11,7 @@
 #define RUNTIME_WORLD_MAX_QUEUE_CAPACITY 256u
 #define RUNTIME_WORLD_DEFAULT_CONNECTIONS 8u
 #define RUNTIME_WORLD_MAX_CONNECTIONS 64u
+#define RUNTIME_WORLD_MAX_LOG_UNACKED 1024u /* WORLD_SESSION_MAX_HISTORY_ENTRIES */
 
 typedef struct {
     u64 key;
@@ -40,6 +41,7 @@ struct BreakRuntimeWorldSession {
     u32 publish_connection_budget;
     bool publish_requires_ready;
     bool publish_waits_for_ack;
+    u32 publish_log_max_unacked;
     BreakWorldSnapshotEntityFilter publish_keep;
     void *(*publish_keep_user_for)(void *ctx, u64 connection_key);
     void *publish_keep_ctx;
@@ -492,12 +494,33 @@ static bool runtime_world_log_eligible(const RuntimeWorldConnection *connection)
            !connection->log_blocked;
 }
 
+/* With publish_log_max_unacked set, a connection waits while the ACK of its
+ * in-flight full is missing (a full replaces the history, so ACKs of older
+ * packets no longer match) or while max_unacked packets are unacknowledged
+ * (a full history would fall back to a full). A resumed attempt and a forced
+ * full always go through. The attempt_pending bypass is a guard only: a full
+ * attempt keeps force_full until it is sent, and a delta attempt started when
+ * both checks passed, which ACKs cannot undo (dropping it is equivalent). */
+static bool runtime_world_log_held(const BreakRuntimeWorldSession *adapter,
+                                   const RuntimeWorldConnection *connection)
+{
+    BreakWorldSessionSenderState state;
+    if (adapter->publish_log_max_unacked == 0u) return false;
+    if (!break_world_session_sender_state(adapter->session, connection->key, &state)) {
+        return false;
+    }
+    if (state.attempt_pending || state.force_full) return false;
+    if (state.history_count != 0u && state.confirmed_snapshot_id == 0u) return true;
+    return state.history_count >= adapter->publish_log_max_unacked;
+}
+
 static bool runtime_world_log_continuation(BreakRuntimeWorldSession *adapter)
 {
     for (usize i = 0u; i < adapter->max_connections; ++i) {
         const RuntimeWorldConnection *connection = &adapter->connections[i];
         BreakWorldSessionSenderState state;
         if (!runtime_world_log_eligible(connection)) continue;
+        if (runtime_world_log_held(adapter, connection)) continue;
         if (connection->retry_publish ||
             break_world_snapshot_log_backlog(adapter->log, connection->reader) != 0u) {
             return true;
@@ -526,7 +549,8 @@ static BreakRuntimeError runtime_world_publish_log(BreakRuntimeWorldSession *ada
     while (scanned < adapter->max_connections && calls < budget) {
         usize slot = adapter->publish_cursor;
         RuntimeWorldConnection *connection = &adapter->connections[slot];
-        while (runtime_world_log_eligible(connection) && calls < budget) {
+        while (runtime_world_log_eligible(connection) && calls < budget &&
+               !runtime_world_log_held(adapter, connection)) {
             BreakWorldSessionLogResult sent = break_world_session_publish_from_log(
                 adapter->session, connection->key, adapter->log, connection->reader, level,
                 NULL);
@@ -647,6 +671,10 @@ BreakRuntimeWorldSession *break_runtime_world_session_create(
                         config->publish_keep)) {
         return NULL;
     }
+    if (config->publish_log_max_unacked != 0u &&
+        (!config->log || config->publish_log_max_unacked > RUNTIME_WORLD_MAX_LOG_UNACKED)) {
+        return NULL;
+    }
     if (!config->publication && !config->log &&
         (config->publish_connection_budget != 0u || config->publish_requires_ready ||
          config->publish_waits_for_ack || config->publish_keep)) {
@@ -678,6 +706,7 @@ BreakRuntimeWorldSession *break_runtime_world_session_create(
         ? 8u : config->publish_connection_budget;
     adapter->publish_requires_ready = config->publish_requires_ready;
     adapter->publish_waits_for_ack = config->publish_waits_for_ack;
+    adapter->publish_log_max_unacked = config->publish_log_max_unacked;
     adapter->publish_keep = config->publish_keep;
     adapter->publish_keep_user_for = config->publish_keep_user_for;
     adapter->publish_keep_ctx = config->publish_keep_ctx;

@@ -85,6 +85,15 @@ typedef struct {
      * fails terminally (INVALID/CLOSED) is not retried until the next notice.
      * The publication-epoch fields of the connection snapshots stay 0. */
     BreakWorldSnapshotLog *log;
+    /* Optional log-mode ACK gate (0 = off, the default; 1..1024). With a log,
+     * each connection stops sending new epochs while its in-flight full is
+     * unacknowledged (a full replaces the session history, so ACKs of earlier
+     * packets no longer match) or while this many packets are already
+     * unacknowledged, and resumes as ACKs shrink the history. A resumed
+     * OVERLOAD attempt and a force_full repair (NEED_FULL) always pass. Zero
+     * keeps the legacy behavior of sending every unread epoch at once.
+     * Requires a log; rejected with a publication or when above 1024. */
+    u32 publish_log_max_unacked;
 } BreakRuntimeWorldSessionConfig;
 
 typedef struct {

@@ -612,3 +612,33 @@ core_app 的接线见 `docs/design/core_app_integration.md` 2026-11-27「可靠�
 **仍未完成**：core_app 的 Runtime adapter 仍传入 `publication`；`--world-reliable` 路径直接驱动日志，尚未改为经 adapter 的日志模式。
 
 本提交自身的远端工作流结果不在此预写。
+
+## 补充（2026-11-27）：Runtime adapter 日志模式 ACK 门控（`publish_log_max_unacked`）
+
+**背景**：日志模式默认无节流，每次 publish-current 通知到来时把每个连接的所有未读 epoch 一次性发出。在高 epoch 速率或高延迟链路上，可能发出远超 session 历史上限的 epoch，导致 ACK 对不上（session 历史被新的 full 覆盖）或占满发送窗口。`core_app --world-reliable` 路径用两个检查来解决这个问题：等待未确认的 full ACK，以及控制在途 delta 数量上限。
+
+**实现**：`BreakRuntimeWorldSessionConfig` 新增可选字段 `publish_log_max_unacked`（u32，0 = 关闭，默认；1..1024）。设置后，每次 drain 在送出新 epoch 之前先检查：
+1. `history_count != 0 && confirmed_snapshot_id == 0`：有未确认的 full 在途，停止。full 替换 session 历史，旧的 ACK 不再匹配，必须等新 full 的 ACK 建立基线后才继续。
+2. `history_count >= publish_log_max_unacked`：在途 delta 达到上限，停止。
+
+两个检查均跳过 `attempt_pending`（已有活动 attempt，续发不读新 epoch）和 `force_full`（NEED_FULL 修复包必须放行）的连接。ACK 缩减 history 后，下一个 publish-current 通知或 continuation 触发时继续发送。
+
+**配置约束**：`publish_log_max_unacked` 非零时必须设置 `log`，不能与 `publication` 同用，且值不超过 1024（与 `WORLD_SESSION_MAX_HISTORY_ENTRIES` 对齐）；创建时校验，违规返回 NULL。
+
+**测试**：`test_runtime_world_session` 新增 6 例，共 74 例，先以"无 `publish_log_max_unacked` 字段"编译失败为 RED：
+- 无日志时设置被拒；`publication` 与非零值同用被拒；边界值 1024 允许，1025 拒绝。
+- 有未确认 full 时停在第一个 epoch，ACK 到来后下一次通知继续发送其余 epoch。
+- 在途 delta 达到上限（2）时停止，ACK 覆盖两个后下一次通知发出剩余 epoch。
+- NEED_FULL 触发的修复 full 不受门控阻挡。
+- `max_unacked=0` 时与旧行为相同，5 个 epoch 一次全发。
+
+**变异**：8 项，7 项判红：0 判断翻转、`force_full` bypass 移除、confirmed 检查翻转、`history_count` 守卫移除、`>=` 改 `>`、`publication` 配置校验跳过、`> 1024` 改 `>= 1024`。第 8 项（移除 `attempt_pending` bypass）是等价变异：pending attempt 时 `force_full` 仍为有效 bypass，delta attempt 只在两个检查都通过时建立，ACK 只能缩减历史而不会让检查翻转，行为不变；已在代码注释中标注。
+
+**验证**：
+- 联网 Debug 构建 `build-core-app-net`：`test_runtime_world_session` 74/74。
+- 新建的 ASan+UBSan 构建 `build-rws-asan`（`ENGINE_USE_ASAN=ON`、`ENGINE_USE_UBSAN=ON`、Snowflake 开启，`detect_leaks=1`）：74/74，无 sanitizer 或泄漏诊断。旧的 `*-asan` 树缓存了已移除的 X11 选项，无法重新配置，因此新建了这个树。
+- 在 `build-core-app-net` 运行完整 CTest，停止时已完成 233 项，其中没有失败（包括 `test_core_app_network_world_reliable` 和 `test_core_app_network_world`）。这一轮没有跑完，不算全量通过；全量结果以下方 `build-current-vk` 的记录为准。
+
+**仍未完成**：core_app 的 `--world-reliable` 路径直接驱动日志（非通过 Runtime adapter），adapter 仍传入 `publication`；把 adapter 改用日志模式、并启用 `publish_log_max_unacked` 是后续切片。
+
+本提交自身的远端工作流结果不在此预写。

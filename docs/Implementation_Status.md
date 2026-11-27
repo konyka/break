@@ -14611,6 +14611,14 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **验证**：联网构建 `runtime|world|core_app` 96/96；ASan 68/68；`build-current-vk` 非 fuzz 470/470，fuzz 24/24；Windows 实机 MSVC 全量构建通过（未开 Snowflake，本模块不在其中编译）。
 - **仍未完成**：core_app 的 adapter 尚未改用日志模式。本提交自身的远端工作流结果不在此预写。
 
+## Runtime adapter 日志模式的 ACK 门控（2026-11-27）
+
+- **缺口**：日志模式每次通知把全部未读 epoch 一次发出，没有 `--world-reliable` 那样的在途限制；在途 full 未确认时继续发送会使 ACK 对不上，在途包超过 session 历史上限会退回 full。
+- **实现**：配置新增 `publish_log_max_unacked`（0 关闭，1..1024，只能与 `log` 同用）。有未确认的 full、或未确认包数达到上限时，该连接停止读取新 epoch；续发中的 attempt 与 NEED_FULL 的修复 full 放行。设计见 `docs/design/ecs_snapshot_replication_aoi.md` 2026-11-27「Runtime adapter 日志模式 ACK 门控」。
+- **TDD 与变异**：新增 6 例（共 74 例），先以编译失败为 RED；8 项变异 7 项判红，1 项（去掉 `attempt_pending` 放行）为等价变异，原因已写入代码注释。
+- **验证**：联网构建 74/74；新建 ASan+UBSan 构建 `build-rws-asan`（`detect_leaks=1`）74/74，无诊断。
+- **仍未完成**：core_app 的 adapter 尚未改用日志模式并启用该门控。本提交自身的远端工作流结果不在此预写。
+
 ## 编辑器的场景依赖图（2026-11-27）
 
 - **缺口**：编辑器加载场景后不建立资源依赖图，`scene_manifest_graph` 只有 core_app 一个消费者。
