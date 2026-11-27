@@ -14742,3 +14742,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：`test_rhi_vk_probe` 新增 6 例（16 例），先以编译失败为 RED；`test_vulkan` 新增真实窗口检查；17 项定向变异全部判红，首轮 3 项存活的多余守卫已删除。
 - **验证**：本机 RTX A5000 上 `test_vulkan`（验证层开启）通过，新检查 0 条验证消息；ASan+UBSan 下新增测试通过，LeakSanitizer 的驱动泄漏与基线相同；`build-current-vk` 非 fuzz 466/466。详见 `docs/myui_remaining_work.md` 同日补充。
 - **仍未完成**：Vulkan 持久离屏 image 的真正 partial present、Win32/macOS retained-buffer。本提交自身的远端工作流结果不在此预写。
+
+## CSS 媒体能力 golden corpus（2026-11-27）
+
+- **缺口**：`docs/myui_remaining_work.md` CSS/YAML 一行的「补媒体能力 golden corpus」。
+- **实现**：新增验证器 `verify_myui_css_media`（`engine/tools/verify_myui_css_media.c`）与语料 `engine/tests/data/myui_css_media_corpus.txt`（8 个上下文、72 个 case），另有 3 个 `WILL_FAIL` 反例语料；CMake 注册 4 项测试。
+- **TDD 与变异**：语料先跑出 `not screen` 与预期不符，核对后确认是既有契约（`not` 只修饰单个特性），修正语料；对 `my_css.c` 的 19 项定向变异全部判红，首轮 2 项存活的色域等级隐含关系已补上下文。
+- **验证**：语料 72/72，反例全部失败；ASan+UBSan 无报错；`build-current-vk` 非 fuzz 470/470。详见 `docs/myui_remaining_work.md` 同日补充。
+- **仍未完成**：schema 定位级 registry/error 契约、全平台 runtime 证据。本提交自身的远端工作流结果不在此预写。

@@ -1,0 +1,3 @@
+# Must fail: unknown capability name.
+ctx bad w=1280 h=800 screen=1 caps=srgb,wide known=all
+case bad match screen

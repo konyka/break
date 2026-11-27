@@ -1,0 +1,3 @@
+# Must fail: unknown expectation keyword.
+ctx desktop w=1920 h=1080 screen=1 caps=srgb known=all
+case desktop maybe screen

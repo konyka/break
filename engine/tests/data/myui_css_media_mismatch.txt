@@ -1,0 +1,3 @@
+# Must fail: a P3 display does not match rec2020.
+ctx wayland_p3 w=1280 h=800 screen=1 caps=srgb,p3 known=gamut
+case wayland_p3 match (color-gamut: rec2020)

@@ -2650,3 +2650,18 @@ graphics 与 present queue。`RE_VK_DEVICE_INDEX` 现在也必须通过同一门
 - `build-current-vk` 非 fuzz 466/466。
 
 边界：这一步不让 Vulkan 少画任何像素，只让 compositor 少合成。真正的 partial present 仍需持久离屏 color image，LOAD 后整幅 blit 到交换链，才能声明 `present_target_preserved`，留作单独切片。Win32、macOS 不变。
+
+## 本轮补充：CSS 媒体能力 golden corpus（2026-11-27）
+
+「未完成能力」表中「完整 CSS/YAML UI」一行的完成判据有「补媒体能力 golden corpus」。此前媒体条件只有 `test_myui_css` 里零散的单例，没有一份按设备类型列出全部预期结果的语料。
+
+- **工具**：`verify_myui_css_media`（`engine/tools/verify_myui_css_media.c`）。语料每行是 `ctx NAME key=value...`（视口、screen、dark、motion、`caps=`、`known=`，`known=legacy` 表示零掩码的旧语义）或 `case CTX match|nomatch|reject QUERY`。每个 case 按严格模式解析 `@media QUERY { button { color: red; } }`，比较规则数或解析失败。格式错误、未知能力名、未知期望、空语料都判失败。分词用自带的 `next_token`，不依赖 POSIX `strtok_r`，Windows 也能编译。
+- **语料**（`engine/tests/data/myui_css_media_corpus.txt`）：8 个上下文、72 个 case。上下文包括鼠标 sRGB 桌面、本机 Wayland 经 EDID 报告的 P3 屏（只知道色域）、HDR 电视、竖屏触摸平板、零掩码旧调用者、只知道配色方案的上下文，以及只报最高色域位的 P3/Rec.2020 上下文。覆盖媒体类型、视口范围与方向、hover/pointer、色域等级、dynamic-range、用户偏好、未知事实（未知时正反查询都不匹配，`not` 也不翻转）、布尔组合和严格模式拒绝。
+- **语料确认的契约**：`not screen` 这类对媒体类型取反的写法被拒绝，`not` 只能修饰单个媒体特性，与 `css_conditional_media_not_rejects_bounded_combinations` 一致。
+- **反例**：`myui_css_media_mismatch.txt`、`_malformed_context.txt`、`_malformed_case.txt` 注册为 `WILL_FAIL` 测试，确认验证器确实会报错。
+
+**变异**：对 `my_css.c` 的媒体求值做 19 项定向变异（已知掩码、色域等级、HDR、hover/pointer、`not` 的未知语义、screen 类型、`only`、方向、视口比较、逗号列表的 OR），全部被语料判红。首轮有 2 项存活：色域等级的隐含关系（只报 P3 或 Rec.2020 位时低等级也应匹配）没有覆盖，已补 `p3_bit`、`rec2020_bit` 两个上下文。
+
+**验证**：语料 72/72；三个反例都失败；ASan+UBSan 下四个运行结果相同且无报错；`build-current-vk` 非 fuzz 470/470（新增 4 项）。
+
+该行其余判据（registry/error 契约细化到 schema 定位、全平台 runtime 证据）不变。

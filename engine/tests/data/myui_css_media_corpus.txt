@@ -1,0 +1,110 @@
+# Golden corpus for MyUI CSS conditional media (verify_myui_css_media).
+# Contexts mirror the device classes the platform layer can report.
+
+# Desktop, mouse, sRGB panel; every fact known.
+ctx desktop w=1920 h=1080 screen=1 caps=hover,pointer-fine,any-pointer-fine,srgb known=all
+# Wayland laptop as reported from DRM EDID today: P3 gamut known, HDR and
+# input facts unknown (platform_display_outputs_media).
+ctx wayland_p3 w=1280 h=800 screen=1 caps=srgb,p3 known=gamut
+# HDR television with a coarse remote.
+ctx hdr_tv w=3840 h=2160 screen=1 caps=pointer-coarse,any-pointer-coarse,srgb,p3,rec2020,hdr known=all
+# Portrait touch tablet, dark scheme, reduced motion.
+ctx tablet w=800 h=1280 screen=1 dark=1 motion=1 caps=pointer-coarse,any-pointer-coarse,srgb known=all
+# Pre-known-mask callers: a zero mask means every fact is known.
+ctx legacy w=1024 h=768 screen=1 caps=srgb known=legacy
+# Only the highest gamut bit is reported; lower levels must be implied.
+ctx p3_bit w=1280 h=800 screen=1 caps=p3 known=gamut
+ctx rec2020_bit w=3840 h=2160 screen=1 caps=rec2020 known=gamut
+# Only the color scheme is known; everything else stays unknown.
+ctx scheme_only w=1024 h=768 screen=0 dark=0 caps=none known=scheme
+
+# Media types.
+case desktop match screen
+case desktop match all
+case desktop match only screen
+case scheme_only nomatch screen
+case scheme_only match all
+# `not` only negates a single media feature; a negated type is rejected.
+case desktop reject not screen
+case scheme_only reject not screen
+
+# Viewport size, ranges and orientation.
+case desktop match (min-width: 1920px)
+case desktop nomatch (min-width: 1921px)
+case desktop match (max-height: 1080px)
+case desktop match (width >= 800px)
+case tablet match (400px <= width < 801px)
+case tablet nomatch (400px <= width < 800px)
+case desktop match (orientation: landscape)
+case tablet match (orientation: portrait)
+case tablet nomatch (orientation: landscape)
+
+# Hover and pointers.
+case desktop match (hover: hover)
+case desktop nomatch (hover: none)
+case tablet match (hover: none)
+case tablet match (pointer: coarse)
+case tablet nomatch (pointer: fine)
+case desktop match (any-pointer: fine)
+case desktop nomatch (pointer: none)
+case wayland_p3 nomatch (hover: hover)
+case wayland_p3 nomatch (hover: none)
+case wayland_p3 nomatch (pointer: none)
+case wayland_p3 nomatch not (hover: hover)
+
+# Color gamut is a level: rec2020 implies p3 implies srgb.
+case desktop match (color-gamut: srgb)
+case desktop nomatch (color-gamut: p3)
+case wayland_p3 match (color-gamut: srgb)
+case wayland_p3 match (color-gamut: p3)
+case wayland_p3 nomatch (color-gamut: rec2020)
+case hdr_tv match (color-gamut: rec2020)
+case hdr_tv match (color-gamut: p3)
+case p3_bit match (color-gamut: srgb)
+case p3_bit match (color-gamut: p3)
+case p3_bit nomatch (color-gamut: rec2020)
+case rec2020_bit match (color-gamut: srgb)
+case rec2020_bit match (color-gamut: p3)
+case rec2020_bit match (color-gamut: rec2020)
+case scheme_only nomatch (color-gamut: srgb)
+case scheme_only nomatch not (color-gamut: srgb)
+
+# Dynamic range: standard holds on any known display, high needs HDR.
+case desktop match (dynamic-range: standard)
+case desktop nomatch (dynamic-range: high)
+case hdr_tv match (dynamic-range: high)
+case wayland_p3 nomatch (dynamic-range: standard)
+case wayland_p3 nomatch (dynamic-range: high)
+case wayland_p3 nomatch not (dynamic-range: high)
+
+# User preferences.
+case tablet match (prefers-color-scheme: dark)
+case desktop match (prefers-color-scheme: light)
+case tablet match (prefers-reduced-motion: reduce)
+case desktop match (prefers-reduced-motion: no-preference)
+case scheme_only match (prefers-color-scheme: light)
+case scheme_only nomatch (prefers-reduced-motion: no-preference)
+case wayland_p3 nomatch (prefers-color-scheme: light)
+
+# Legacy zero mask treats every fact as known.
+case legacy match (hover: none)
+case legacy match (dynamic-range: standard)
+case legacy match (color-gamut: srgb)
+case legacy nomatch (color-gamut: p3)
+
+# Boolean logic.
+case wayland_p3 match screen and (color-gamut: p3) and (min-width: 1024px)
+case wayland_p3 nomatch screen and (color-gamut: p3) and (dynamic-range: high)
+case hdr_tv match (color-gamut: rec2020) and (dynamic-range: high)
+case desktop match (hover: none) or (pointer: fine)
+case tablet match ((hover: none) and (pointer: coarse)) or (min-width: 2000px)
+case desktop match not (color-gamut: p3)
+case desktop match (prefers-color-scheme: light), (min-width: 99999px)
+
+# Strict mode rejects unknown features and values.
+case desktop reject (pointer: wireless)
+case desktop reject (color-gamut: adobe-rgb)
+case desktop reject (dynamic-range: ultra)
+case desktop reject (hover: sometimes)
+case desktop reject (resolution: 2dppx)
+case desktop reject only (hover: hover)

@@ -2973,6 +2973,13 @@ target_include_directories(verify_myui_line_break PRIVATE
 )
 target_link_libraries(verify_myui_line_break PRIVATE myui_core)
 
+# Golden-corpus verifier for CSS conditional media (strict, context-driven).
+add_executable(verify_myui_css_media tools/verify_myui_css_media.c)
+target_include_directories(verify_myui_css_media PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+)
+target_link_libraries(verify_myui_css_media PRIVATE myui_core)
+
 # Headless ECharts feature demo: renders every supported feature to PPM.
 add_executable(echarts_demo tools/echarts_demo.c
     src/myui/myui/echarts/my_echart_mvvm.c)
@@ -4260,6 +4267,16 @@ endif()
     )
     target_link_libraries(test_myui_syntax PRIVATE myui_core m)
     add_test(NAME test_myui_syntax COMMAND test_myui_syntax)
+    add_test(NAME verify_myui_css_media_corpus
+        COMMAND verify_myui_css_media
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/myui_css_media_corpus.txt)
+    foreach(_css_media_bad mismatch malformed_context malformed_case)
+        add_test(NAME verify_myui_css_media_rejects_${_css_media_bad}
+            COMMAND verify_myui_css_media
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/myui_css_media_${_css_media_bad}.txt)
+        set_tests_properties(verify_myui_css_media_rejects_${_css_media_bad}
+            PROPERTIES WILL_FAIL TRUE)
+    endforeach()
     add_test(NAME verify_myui_line_break_valid
         COMMAND verify_myui_line_break
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/myui_line_break_verifier_valid.txt)
