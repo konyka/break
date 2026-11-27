@@ -14862,3 +14862,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **实现**：每组解析 play-state；`my_theme_animation_state_t` 改为每组独立时钟；`my_theme_animation_step` 在只有 play-state 变化时冻结或恢复各组，其他变化重新开始。
 - **TDD 与变异**：`test_myui_css` 新增 2 例（220 例），旧实现 RED；9 项定向变异全部判红。
 - **验证**：普通与 ASan+UBSan（含 LeakSanitizer）下 220/220；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
+
+## CSS 内置样式键参与 transition 与 animation（2026-11-27）
+
+- **缺口**：transition 与 animation 只作用于 `@property` 注册的自定义属性；`color`、`background`、边框、圆角、字号等内置键不能过渡或做动画。
+- **实现**：内置颜色键按 `<color>`、边框宽度/圆角/字号按 `<number>` 插值；`transition` 接受这些内置属性名；keyframes 中内置键的类型化值转回文本后插值。
+- **TDD 与变异**：`test_myui_css` 新增 1 例并调整 1 个旧用例（221 例），旧实现 RED；9 项定向变异全部判红。
+- **验证**：普通与 ASan+UBSan（含 LeakSanitizer）下 221/221；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。

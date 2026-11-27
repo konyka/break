@@ -3410,7 +3410,7 @@ TEST(css_transition_declaration_storage)
   const char* linear =
       "button { transition: --accent 200ms linear; color: red; }";
   const char* not_custom =
-      "button { transition: color 200ms; color: red; }";
+      "button { transition: container-type 200ms; color: red; }";
   const char* no_duration =
       "button { transition: --accent; color: red; }";
   const char* bad_unit =
@@ -3454,8 +3454,9 @@ TEST(css_transition_declaration_storage)
                 "--accent 200ms linear");
   my_css_sheet_destroy(sheet);
 
-  /* non-custom property names, missing durations, bad units, bad
-   * easings and comma groups all drop just the declaration. */
+  /* a built-in key without an interpolation domain, missing durations,
+   * bad units, bad easings and comma groups all drop just the
+   * declaration. (Built-in color and size keys are valid targets.) */
   memset(&error, 0, sizeof(error));
   sheet = my_css_parse_ex(NULL, not_custom, strlen(not_custom),
                           MY_CSS_PARSE_STRICT_AT_RULES, &error);
@@ -4080,6 +4081,85 @@ TEST(css_animation_play_state_starting_paused_and_per_group)
   ASSERT_FLOAT_EQ(css_test_number(&out), 0.0, 1e-9);
   my_value_reset(&out);
   my_widget_unref(button);
+  my_theme_destroy(theme);
+}
+
+TEST(css_builtin_keys_transition_and_animate)
+{
+  /* The theme's built-in color and size keys interpolate without an
+   * @property registration: color keys as <color>, border width, radius
+   * and font size as <number>. */
+  const char* v1 =
+      "button { transition: color 200ms linear, background 200ms linear;"
+      " color: #ff0000ff; background: #000000ff; }"
+      "@keyframes swell { from { font-size: 10; border-radius: 0;"
+      " border-width: 1; border-color: #000000ff; }"
+      " to { font-size: 20; border-radius: 8; border-width: 3;"
+      " border-color: #ffffffff; } }"
+      "label { animation: swell 100ms linear; }";
+  const char* v2 =
+      "button { transition: color 200ms linear, background 200ms linear;"
+      " color: #0000ffff; background: #ffffffff; }";
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* button = my_widget_create(NULL, "button");
+  my_widget_t* label = my_widget_create(NULL, "label");
+  my_theme_transition_state_t box;
+  my_value_t out;
+
+  ASSERT_NOT_NULL(theme);
+  button->widget_type = "button";
+  label->widget_type = "label";
+  memset(&box, 0, sizeof(box));
+  my_value_init(&out, NULL);
+  ASSERT_EQ(my_theme_load_css_ex(theme, v1, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_transition_step(theme, button, MY_STATE_NORMAL,
+                                       MY_STYLE_FG_COLOR, 0.0, &out, &box));
+  my_value_reset(&out);
+  ASSERT_TRUE(my_theme_transition_step(theme, button, MY_STATE_NORMAL,
+                                       MY_STYLE_BG_COLOR, 0.0, &out, &box));
+  my_value_reset(&out);
+  ASSERT_EQ(my_theme_load_css_ex(theme, v2, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  /* each key's span starts at the step that first sees its new value. */
+  ASSERT_TRUE(my_theme_transition_step(theme, button, MY_STATE_NORMAL,
+                                       MY_STYLE_FG_COLOR, 100.0, &out, &box));
+  my_value_reset(&out);
+  ASSERT_TRUE(my_theme_transition_step(theme, button, MY_STATE_NORMAL,
+                                       MY_STYLE_BG_COLOR, 100.0, &out, &box));
+  my_value_reset(&out);
+  ASSERT_TRUE(my_theme_transition_step(theme, button, MY_STATE_NORMAL,
+                                       MY_STYLE_FG_COLOR, 200.0, &out, &box));
+  ASSERT_EQ(my_value_type(&out), MY_VALUE_UINT32);
+  ASSERT_EQ(my_value_get_uint32(&out), 0x800080FFu);
+  my_value_reset(&out);
+  ASSERT_TRUE(my_theme_transition_step(theme, button, MY_STATE_NORMAL,
+                                       MY_STYLE_BG_COLOR, 200.0, &out, &box));
+  ASSERT_EQ(my_value_type(&out), MY_VALUE_UINT32);
+  ASSERT_EQ(my_value_get_uint32(&out), 0x808080FFu);
+  my_value_reset(&out);
+
+  ASSERT_TRUE(my_theme_get_for_widget_var_animating(
+      theme, label, MY_STATE_NORMAL, MY_STYLE_FONT_SIZE, 50.0, &out));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 15.0, 1e-9);
+  my_value_reset(&out);
+  ASSERT_TRUE(my_theme_get_for_widget_var_animating(
+      theme, label, MY_STATE_NORMAL, MY_STYLE_ROUND_RADIUS, 50.0, &out));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 4.0, 1e-9);
+  my_value_reset(&out);
+  ASSERT_TRUE(my_theme_get_for_widget_var_animating(
+      theme, label, MY_STATE_NORMAL, MY_STYLE_BORDER_WIDTH, 50.0, &out));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 2.0, 1e-9);
+  my_value_reset(&out);
+  ASSERT_TRUE(my_theme_get_for_widget_var_animating(
+      theme, label, MY_STATE_NORMAL, MY_STYLE_BORDER_COLOR, 50.0, &out));
+  ASSERT_EQ(my_value_get_uint32(&out), 0x808080FFu);
+  my_value_reset(&out);
+  /* keys with no interpolation domain still do not animate. */
+  ASSERT_FALSE(my_theme_get_for_widget_var_animating(
+      theme, label, MY_STATE_NORMAL, "--unregistered", 50.0, &out));
+  my_widget_unref(button);
+  my_widget_unref(label);
   my_theme_destroy(theme);
 }
 
@@ -11703,6 +11783,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_animation_step_tracks_start_time);
     RUN_TEST(css_animation_play_state_pauses_without_restart);
     RUN_TEST(css_animation_play_state_starting_paused_and_per_group);
+    RUN_TEST(css_builtin_keys_transition_and_animate);
     RUN_TEST(css_animation_declaration_rejects_malformed_values);
     RUN_TEST(css_theme_keyframes_survive_clone_and_reload);
     RUN_TEST(css_percentage_length_resolution);

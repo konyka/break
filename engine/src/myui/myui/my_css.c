@@ -1106,6 +1106,23 @@ static bool css_transition_easing_token(const char* token, size_t len,
   return false;
 }
 
+static void css_key_map(const char* key, char* out, size_t cap);
+
+/* Interpolation domain of the theme's built-in keys; NULL for keys that
+ * do not interpolate. */
+static const char* css_builtin_key_syntax(const char* key) {
+  if (my_str_eq(key, MY_STYLE_FG_COLOR) || my_str_eq(key, MY_STYLE_BG_COLOR) ||
+      my_str_eq(key, MY_STYLE_BORDER_COLOR)) {
+    return "<color>";
+  }
+  if (my_str_eq(key, MY_STYLE_BORDER_WIDTH) ||
+      my_str_eq(key, MY_STYLE_ROUND_RADIUS) ||
+      my_str_eq(key, MY_STYLE_FONT_SIZE)) {
+    return "<number>";
+  }
+  return NULL;
+}
+
 /* parse one comma group into a spec (paren-aware tokens). */
 static bool css_transition_group_parse(const char* text, size_t len,
                                        css_transition_spec_t* spec) {
@@ -1156,23 +1173,29 @@ static bool css_transition_group_parse(const char* text, size_t len,
   if (depth != 0u || count < 2u || count > 4u) {
     return false;
   }
-  /* token 0: the custom property name. */
-  if (token_lens[0] < 3u || tokens[0][0] != '-' || tokens[0][1] != '-' ||
-      !c_ident_char((unsigned char)tokens[0][2])) {
-    return false;
-  }
+  /* token 0: a custom property name, or a built-in key with an
+   * interpolation domain (stored as its theme key). */
   {
     size_t n;
-    if (token_lens[0] >= sizeof(spec->name)) {
+    char raw[MY_STYLE_KEY_LEN];
+    if (token_lens[0] >= sizeof(spec->name) || token_lens[0] == 0u) {
       return false;
     }
-    for (n = 2u; n < token_lens[0]; n++) {
+    for (n = 0u; n < token_lens[0]; n++) {
       if (!c_ident_char((unsigned char)tokens[0][n])) {
         return false;
       }
     }
-    memcpy(spec->name, tokens[0], token_lens[0]);
-    spec->name[token_lens[0]] = '\0';
+    memcpy(raw, tokens[0], token_lens[0]);
+    raw[token_lens[0]] = '\0';
+    if (token_lens[0] >= 3u && raw[0] == '-' && raw[1] == '-') {
+      memcpy(spec->name, raw, token_lens[0] + 1u);
+    } else {
+      css_key_map(raw, spec->name, sizeof(spec->name));
+      if (css_builtin_key_syntax(spec->name) == NULL) {
+        return false;
+      }
+    }
   }
   /* token 1: the duration. */
   if (!css_transition_time_token(tokens[1], token_lens[1],
@@ -3620,6 +3643,24 @@ double my_css_keyframes_stop_offset(const my_css_keyframes_t* keyframes,
   return keyframes->stops[stop].offset;
 }
 
+static bool css_value_to_text(const my_value_t* v, char* buf, size_t cap);
+
+/* The last declaration of `key` in a stop as interpolation text: raw text
+ * for custom properties, typed values (built-in keys) rendered back. */
+static bool css_keyframes_stop_text(const my_css_keyframes_t* keyframes,
+                                    size_t stop, const char* key, char* out,
+                                    size_t cap) {
+  size_t i, n;
+  const my_value_t* found = NULL;
+  n = my_darray_size(keyframes->stops[stop].body->decls);
+  for (i = 0u; i < n; i++) {
+    const my_css_decl_t* decl = (const my_css_decl_t*)my_darray_get(
+        keyframes->stops[stop].body->decls, i);
+    if (my_str_eq(decl->key, key)) found = &decl->value;
+  }
+  return found != NULL && css_value_to_text(found, out, cap);
+}
+
 const char* my_css_keyframes_stop_value(const my_css_keyframes_t* keyframes,
                                         size_t stop, const char* key) {
   size_t i, n;
@@ -3649,8 +3690,8 @@ static bool css_keyframes_sample_eased(const my_css_keyframes_t* keyframes,
   size_t i;
   size_t before = SIZE_MAX;
   size_t after = SIZE_MAX;
-  const char* from;
-  const char* to;
+  char from[MY_THEME_MAX_PROPERTY_VALUE_BYTES + 1u];
+  char to[MY_THEME_MAX_PROPERTY_VALUE_BYTES + 1u];
   const char* easing_text;
   double span;
   double local;
@@ -3660,7 +3701,9 @@ static bool css_keyframes_sample_eased(const my_css_keyframes_t* keyframes,
     return false;
   }
   for (i = 0u; i < keyframes->stop_count; i++) {
-    if (my_css_keyframes_stop_value(keyframes, i, key) == NULL) continue;
+    if (!css_keyframes_stop_text(keyframes, i, key, from, sizeof(from))) {
+      continue;
+    }
     if (keyframes->stops[i].offset <= t) {
       before = i;
     } else if (after == SIZE_MAX) {
@@ -3670,8 +3713,10 @@ static bool css_keyframes_sample_eased(const my_css_keyframes_t* keyframes,
   if (before == SIZE_MAX && after == SIZE_MAX) return false;
   if (before == SIZE_MAX) before = after;
   if (after == SIZE_MAX) after = before;
-  from = my_css_keyframes_stop_value(keyframes, before, key);
-  to = my_css_keyframes_stop_value(keyframes, after, key);
+  if (!css_keyframes_stop_text(keyframes, before, key, from, sizeof(from)) ||
+      !css_keyframes_stop_text(keyframes, after, key, to, sizeof(to))) {
+    return false;
+  }
   span = keyframes->stops[after].offset - keyframes->stops[before].offset;
   local = span > 0.0 ? (t - keyframes->stops[before].offset) / span : 0.0;
   easing_text = my_css_keyframes_stop_value(keyframes, before,
@@ -7382,6 +7427,14 @@ static const my_theme_property_def_t* css_theme_property_def(
   return NULL;
 }
 
+/* Interpolation syntax for a key: its @property registration, else the
+ * built-in key's domain; NULL when the key does not interpolate. */
+static const char* css_theme_interpolation_syntax(const my_theme_t* theme,
+                                                  const char* key) {
+  const my_theme_property_def_t* def = css_theme_property_def(theme, key);
+  return def != NULL ? def->syntax : css_builtin_key_syntax(key);
+}
+
 /* R666: var() lookup-time substitution. A custom property's value is the
  * element's own cascade first, then DOM inheritance (nearest ancestor
  * wins); only raw string values participate (R665 stores them as such).
@@ -7995,7 +8048,7 @@ bool my_theme_get_for_widget_var_transitioning(
     my_widget_state_t state, const char* key, const char* from_text,
     double elapsed_ms, my_value_t* out) {
   const my_value_t* tv;
-  const my_theme_property_def_t* def;
+  const char* syntax;
   css_transition_spec_t spec;
   double t;
   char to_text[CSS_VAR_MAX_SUBST_BYTES];
@@ -8013,9 +8066,10 @@ bool my_theme_get_for_widget_var_transitioning(
   if (!css_transition_targets(my_value_get_str(tv), key, &spec)) {
     return false;
   }
-  /* the target needs an interpolation track (a registered property). */
-  def = css_theme_property_def(theme, key);
-  if (def == NULL) {
+  /* the target needs an interpolation track (a registered property or a
+   * built-in key with a domain). */
+  syntax = css_theme_interpolation_syntax(theme, key);
+  if (syntax == NULL) {
     return false;
   }
   /* resolve the target value through the ordinary var machinery. */
@@ -8041,7 +8095,7 @@ bool my_theme_get_for_widget_var_transitioning(
     t = 1.0;
   }
   t = css_transition_ease(&spec, t);
-  if (!my_css_property_interpolate(def->syntax, from_text, to_text, t,
+  if (!my_css_property_interpolate(syntax, from_text, to_text, t,
                                    blended, sizeof(blended))) {
     /* uninterpolable sides: jump straight to the target. */
     snprintf(blended, sizeof(blended), "%s", to_text);
@@ -8082,10 +8136,10 @@ static bool css_animation_eval(const my_theme_t* theme,
                                const css_animation_spec_t* specs,
                                size_t count, const double* elapsed,
                                const char* key, my_value_t* out) {
-  const my_theme_property_def_t* def = css_theme_property_def(theme, key);
+  const char* syntax = css_theme_interpolation_syntax(theme, key);
   char blended[CSS_VAR_MAX_SUBST_BYTES];
   size_t i;
-  if (def == NULL) {
+  if (syntax == NULL) {
     return false;
   }
   for (i = count; i > 0u; i--) {
@@ -8097,7 +8151,7 @@ static bool css_animation_eval(const my_theme_t* theme,
         !css_animation_progress(spec, elapsed[i - 1u], &t)) {
       continue;
     }
-    if (css_keyframes_sample_eased(keyframes, key, def->syntax, t,
+    if (css_keyframes_sample_eased(keyframes, key, syntax, t,
                                    &spec->timing, blended,
                                    sizeof(blended))) {
       return css_probe_full_value(blended, out);

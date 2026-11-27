@@ -407,7 +407,8 @@ bool my_css_list_at(const char* text, char separator, size_t index,
  * `transition: <property> <duration>` configuration and the target
  * value, then blends through my_css_property_interpolate (clamped
  * past the duration). Returns false when the key has no transition
- * configured or no interpolation track (unregistered / discrete) —
+ * configured or no interpolation track (neither an @property
+ * registration nor a built-in color/size key, or a discrete syntax) —
  * the caller falls back to my_theme_get_for_widget_var. Snapshotting
  * the start value and clocking elapsed time are host-side duties. */
 bool my_theme_get_for_widget_var_transitioning(
@@ -502,7 +503,10 @@ const my_css_keyframes_t* my_theme_keyframes_find(const my_theme_t* theme,
  * `animation-timing-function` replaces it for the segment starting at that
  * stop. Returns false when no
  * value applies (no animation, unknown keyframes name, no stop declares
- * the key, unregistered key, or outside the active period without fill);
+ * the key, a key with no interpolation domain, or outside the active
+ * period without fill). Built-in keys interpolate without @property:
+ * fg/bg/border colors as <color>, border width, radius and font size as
+ * <number>;
  * the caller then falls back to my_theme_get_for_widget_var. */
 bool my_theme_get_for_widget_var_animating(const my_theme_t* theme,
                                            const struct my_widget_t* widget,

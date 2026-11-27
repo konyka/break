@@ -2953,3 +2953,20 @@ graphics 与 present queue。`RE_VK_DEVICE_INDEX` 现在也必须通过同一门
 **变异**：9 项全部判红：不保留时钟、冻结为 0、恢复时从现在重新开始、首次暂停按运行处理、求值不用冻结时间、不查 play-state 重复、比较不含名字、比较不含组数。
 
 **验证**：`test_myui_css` 220/220；ASan+UBSan（含 LeakSanitizer）220/220；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。
+
+## 本轮补充：内置样式键参与 transition 与 animation（2026-11-27）
+
+transition 与 animation 此前只作用于用 `@property` 注册过的自定义属性。主题里真正驱动控件外观的是内置键（`color`、`background`、`border-color`、`border-width`、`border-radius`、`font-size`），它们不能过渡也不能做动画：`transition: color 200ms` 被当作非法值丢弃，keyframes 里的 `font-size` 因为是类型化值也取不到。
+
+修正（`engine/src/myui/myui/my_css.c`）：
+
+- `css_builtin_key_syntax`：三个颜色键按 `<color>` 插值，边框宽度、圆角、字号按 `<number>` 插值；其他内置键（如 `container-type`）不插值。
+- `css_theme_interpolation_syntax`：先用 `@property` 注册的 syntax，否则用内置键的域。transition 查询与 animation 求值都改用它。
+- `transition` 的目标名可以是内置属性名（CSS 名经别名映射为主题键，如 `color` → `fg_color`），但只限有插值域的键；自定义属性仍按原规则。
+- keyframe stop 里内置键的值是类型化的（颜色为 UINT32、数字为 INT32/DOUBLE），采样时经 `css_value_to_text` 转回文本再插值。
+
+**TDD**：`test_myui_css` 新增 `css_builtin_keys_transition_and_animate`（221 例）：`color` 与 `background` 的 transition 在半程得到中间色；keyframes 中的 `font-size`、`border-radius`、`border-width`、`border-color` 在半程得到中间值；未注册的自定义属性仍不动画。原有 `css_transition_declaration_storage` 中「非自定义属性名被丢弃」的用例改用没有插值域的 `container-type`。旧实现丢弃 `transition: color ...`（RED）。
+
+**变异**：9 项全部判红：不回退到内置域、去掉 bg 颜色键、去掉圆角、去掉字号、去掉边框颜色、去掉边框宽度、transition 名不做别名映射、接受任意内置键、stop 只读字符串值。首轮边框颜色、边框宽度两项存活，据此在用例中补充这两个键。
+
+**验证**：`test_myui_css` 221/221；ASan+UBSan（含 LeakSanitizer）221/221；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。
