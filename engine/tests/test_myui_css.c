@@ -3972,6 +3972,117 @@ TEST(css_animation_step_tracks_start_time)
   my_theme_destroy(theme);
 }
 
+TEST(css_animation_play_state_pauses_without_restart)
+{
+  /* `paused` in the animation value freezes that animation at the time
+   * it was paused; switching back to `running` continues from there.
+   * Changing only the play state does not restart the clock. */
+  const char* css =
+      "@property --size { syntax: \"<number>\"; inherits: false;"
+      " initial-value: 0; }"
+      "@keyframes grow { from { --size: 0; } to { --size: 100; } }"
+      "button { animation: grow 100ms linear; }"
+      "button:pressed { animation: grow 100ms linear paused; }";
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* button = my_widget_create(NULL, "button");
+  my_theme_animation_state_t box;
+  my_value_t out;
+
+  ASSERT_NOT_NULL(theme);
+  button->widget_type = "button";
+  memset(&box, 0, sizeof(box));
+  my_value_init(&out, NULL);
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_animation_step(theme, button, MY_STATE_NORMAL,
+                                      "--size", 0.0, &out, &box));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 0.0, 1e-9);
+  my_value_reset(&out);
+  ASSERT_TRUE(my_theme_animation_step(theme, button, MY_STATE_NORMAL,
+                                      "--size", 20.0, &out, &box));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 20.0, 1e-9);
+  my_value_reset(&out);
+  /* paused at 30: frozen there for as long as it stays paused. */
+  ASSERT_TRUE(my_theme_animation_step(theme, button, MY_STATE_PRESSED,
+                                      "--size", 30.0, &out, &box));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 30.0, 1e-9);
+  my_value_reset(&out);
+  ASSERT_TRUE(my_theme_animation_step(theme, button, MY_STATE_PRESSED,
+                                      "--size", 80.0, &out, &box));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 30.0, 1e-9);
+  my_value_reset(&out);
+  /* running again at 90: continues from 30, not from 90 or 0. */
+  ASSERT_TRUE(my_theme_animation_step(theme, button, MY_STATE_NORMAL,
+                                      "--size", 90.0, &out, &box));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 30.0, 1e-9);
+  my_value_reset(&out);
+  ASSERT_TRUE(my_theme_animation_step(theme, button, MY_STATE_NORMAL,
+                                      "--size", 110.0, &out, &box));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 50.0, 1e-9);
+  my_value_reset(&out);
+  my_widget_unref(button);
+  my_theme_destroy(theme);
+}
+
+TEST(css_animation_play_state_starting_paused_and_per_group)
+{
+  /* An animation first seen paused stays at its start; in a list each
+   * group has its own play state. */
+  const char* css =
+      "@property --a { syntax: \"<number>\"; inherits: false;"
+      " initial-value: 0; }"
+      "@property --b { syntax: \"<number>\"; inherits: false;"
+      " initial-value: 0; }"
+      "@keyframes ga { from { --a: 0; } to { --a: 100; } }"
+      "@keyframes gb { from { --b: 0; } to { --b: 100; } }"
+      "button { animation: ga 100ms linear paused, gb 100ms linear; }"
+      "button:pressed { animation: ga 100ms linear, gb 100ms linear paused; }"
+      "button:hover { animation: ga 100ms linear paused; }";
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* button = my_widget_create(NULL, "button");
+  my_theme_animation_state_t box;
+  my_value_t out;
+
+  ASSERT_NOT_NULL(theme);
+  button->widget_type = "button";
+  memset(&box, 0, sizeof(box));
+  my_value_init(&out, NULL);
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_animation_step(theme, button, MY_STATE_NORMAL, "--a",
+                                      0.0, &out, &box));
+  my_value_reset(&out);
+  ASSERT_TRUE(my_theme_animation_step(theme, button, MY_STATE_NORMAL, "--a",
+                                      40.0, &out, &box));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 0.0, 1e-9);
+  my_value_reset(&out);
+  ASSERT_TRUE(my_theme_animation_step(theme, button, MY_STATE_NORMAL, "--b",
+                                      40.0, &out, &box));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 40.0, 1e-9);
+  my_value_reset(&out);
+  /* swap: ga runs from 0, gb freezes at 50. */
+  ASSERT_TRUE(my_theme_animation_step(theme, button, MY_STATE_PRESSED, "--b",
+                                      50.0, &out, &box));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 50.0, 1e-9);
+  my_value_reset(&out);
+  ASSERT_TRUE(my_theme_animation_step(theme, button, MY_STATE_PRESSED, "--a",
+                                      70.0, &out, &box));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 20.0, 1e-9);
+  my_value_reset(&out);
+  ASSERT_TRUE(my_theme_animation_step(theme, button, MY_STATE_PRESSED, "--b",
+                                      70.0, &out, &box));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 50.0, 1e-9);
+  my_value_reset(&out);
+  /* dropping gb changes the list, not only a play state: ga restarts
+   * (paused at 0) instead of freezing at its running time. */
+  ASSERT_TRUE(my_theme_animation_step(theme, button, MY_STATE_HOVER, "--a",
+                                      80.0, &out, &box));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 0.0, 1e-9);
+  my_value_reset(&out);
+  my_widget_unref(button);
+  my_theme_destroy(theme);
+}
+
 TEST(css_animation_declaration_rejects_malformed_values)
 {
   static const char* const bad[] = {
@@ -3987,6 +4098,7 @@ TEST(css_animation_declaration_rejects_malformed_values)
       "button { animation: pulse 1s 2 3; }",
       "button { animation: pulse 1s infinite 2; }",
       "button { animation: pulse 1s 2 infinite; }",
+      "button { animation: pulse 1s paused running; }",
   };
   size_t i;
   for (i = 0u; i < sizeof(bad) / sizeof(bad[0]); i++) {
@@ -11589,6 +11701,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_keyframes_stop_timing_function_eases_its_segment);
     RUN_TEST(css_keyframes_reject_invalid_stop_timing_function);
     RUN_TEST(css_animation_step_tracks_start_time);
+    RUN_TEST(css_animation_play_state_pauses_without_restart);
+    RUN_TEST(css_animation_play_state_starting_paused_and_per_group);
     RUN_TEST(css_animation_declaration_rejects_malformed_values);
     RUN_TEST(css_theme_keyframes_survive_clone_and_reload);
     RUN_TEST(css_percentage_length_resolution);

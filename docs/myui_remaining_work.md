@@ -2867,7 +2867,7 @@ graphics 与 present queue。`RE_VK_DEVICE_INDEX` 现在也必须通过同一门
 - `my_theme_get_for_widget_var_animating(theme, widget, state, key, elapsed_ms, out)`：延迟期保持首帧；每次迭代按 easing 映射进度；所有迭代结束后保持末帧；key 必须是已注册属性，按其 syntax 在声明了该 key 的 stop 之间插值。返回 false 时调用方回退普通查询。
 - `transition` 的 easing 映射抽成 `css_transition_ease`，两条路径共用。
 
-边界：direction 与 fill-mode、逗号多组、分段 easing 与起始时间驱动见后续各节；不支持 `play-state`。
+边界：direction 与 fill-mode、逗号多组、分段 easing、起始时间驱动与 play-state 见后续各节。
 
 **TDD**：`test_myui_css` 新增 3 例（212 例）：按时间采样（颜色与经过 50% stop 的数值、延迟、两次迭代后保持末帧、`infinite` 循环、未知 keyframes 与未声明 key 回退）、6 种非法 `animation` 值被跳过、theme 克隆与二次加载累积。旧实现缺少接口，编译即失败（RED）。
 
@@ -2936,3 +2936,20 @@ graphics 与 present queue。`RE_VK_DEVICE_INDEX` 现在也必须通过同一门
 **变异**：4 项全部判红：值变化不重启、不减开始时刻、没有动画值时不回退、动画消失时不清空。首版有 `active` 标志，「首次看到」变异存活，说明全零的 box 已能表达未开始；该标志已删除。
 
 **验证**：`test_myui_css` 218/218；ASan+UBSan（含 LeakSanitizer）218/218；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。
+
+## 本轮补充：animation 的 play-state（2026-11-27）
+
+`animation` 值里的 `running`/`paused` 此前不被接受（整条声明被丢弃）。CSS 语义：暂停的动画停在暂停时刻，恢复后从该处继续；只改 play-state 不重启动画。
+
+修正：
+
+- 解析：`running`/`paused` 作为每组的一个关键字，最多一次，默认 `running`（`my_css.c`）。
+- 驱动状态：`my_theme_animation_state_t` 改为每组一个时钟 `my_theme_animation_group_t`（开始时刻、冻结时的已用时间、是否暂停），组数上限 `MY_THEME_ANIMATION_GROUPS`（8），`MY_CSS_MAX_ANIMATIONS` 与之相同（`my_theme.h`、`my_css.h`）。
+- `my_theme_animation_step`：`animation` 值变化时，若新旧列表除 play-state 外逐字段相同（名字、时长、延迟、easing、次数、方向、填充），只按组切换：变为暂停则冻结当前已用时间，恢复则把开始时刻设为「现在 − 冻结时间」；否则所有组重新开始，首次即暂停的组停在 0。各组按自己的已用时间求值，最后一个有值的组生效。
+- 公共的取值部分抽成 `css_animation_eval`，`my_theme_get_for_widget_var_animating` 仍按调用方给的单一已用时间求值，不处理 play-state。
+
+**TDD**：`test_myui_css` 新增 2 例（220 例）：暂停后保持、恢复后从暂停处继续；首次即暂停的组停在 0、列表中各组独立暂停与恢复、组数变化时重新开始；非法值新增 play-state 重复。旧实现丢弃含 `paused` 的声明（RED）。
+
+**变异**：9 项全部判红：不保留时钟、冻结为 0、恢复时从现在重新开始、首次暂停按运行处理、求值不用冻结时间、不查 play-state 重复、比较不含名字、比较不含组数。
+
+**验证**：`test_myui_css` 220/220；ASan+UBSan（含 LeakSanitizer）220/220；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。

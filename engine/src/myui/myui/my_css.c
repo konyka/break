@@ -1289,6 +1289,7 @@ typedef struct {
   double iterations;            /* INFINITY for `infinite` */
   int direction;
   int fill;
+  bool paused;
 } css_animation_spec_t;
 
 static bool css_token_is(const char* token, size_t len, const char* word) {
@@ -1305,7 +1306,7 @@ static bool css_animation_parse(const char* text, css_animation_spec_t* spec) {
   size_t start = 0u;
   size_t t;
   bool have_easing = false, have_delay = false, have_count = false;
-  bool have_direction = false, have_fill = false;
+  bool have_direction = false, have_fill = false, have_play = false;
   memset(spec, 0, sizeof(*spec));
   spec->timing.x1 = 1.0 / 3.0;
   spec->timing.y1 = 1.0 / 3.0;
@@ -1367,7 +1368,11 @@ static bool css_animation_parse(const char* text, css_animation_spec_t* spec) {
       fill = CSS_ANIMATION_FILL_BACKWARDS;
     }
     if (css_token_is(tok, tl, "both")) fill = CSS_ANIMATION_FILL_BOTH;
-    if (direction >= 0) {
+    if (css_token_is(tok, tl, "running") || css_token_is(tok, tl, "paused")) {
+      if (have_play) return false;
+      have_play = true;
+      spec->paused = css_token_is(tok, tl, "paused");
+    } else if (direction >= 0) {
       if (have_direction) return false;
       have_direction = true;
       spec->direction = direction;
@@ -8071,27 +8076,15 @@ static bool css_probe_full_value(const char* text, my_value_t* out) {
   return c_peek(&probe) < 0;
 }
 
-bool my_theme_get_for_widget_var_animating(const my_theme_t* theme,
-                                           const struct my_widget_t* widget,
-                                           my_widget_state_t state,
-                                           const char* key,
-                                           double elapsed_ms,
-                                           my_value_t* out) {
-  const my_value_t* av;
-  const my_theme_property_def_t* def;
-  css_animation_spec_t specs[MY_CSS_MAX_ANIMATIONS];
-  size_t count;
-  size_t i;
+/* Evaluates `key` for a parsed animation list, each group at its own
+ * elapsed time; the last group applying a value wins. */
+static bool css_animation_eval(const my_theme_t* theme,
+                               const css_animation_spec_t* specs,
+                               size_t count, const double* elapsed,
+                               const char* key, my_value_t* out) {
+  const my_theme_property_def_t* def = css_theme_property_def(theme, key);
   char blended[CSS_VAR_MAX_SUBST_BYTES];
-  if (theme == NULL || widget == NULL || key == NULL || out == NULL) {
-    return false;
-  }
-  av = my_theme_get_for_widget(theme, widget, state, MY_STYLE_ANIMATION);
-  if (av == NULL || my_value_type(av) != MY_VALUE_STR ||
-      !css_animation_list_parse(my_value_get_str(av), specs, &count)) {
-    return false;
-  }
-  def = css_theme_property_def(theme, key);
+  size_t i;
   if (def == NULL) {
     return false;
   }
@@ -8100,7 +8093,8 @@ bool my_theme_get_for_widget_var_animating(const my_theme_t* theme,
     const my_css_keyframes_t* keyframes =
         my_theme_keyframes_find(theme, spec->name);
     double t;
-    if (keyframes == NULL || !css_animation_progress(spec, elapsed_ms, &t)) {
+    if (keyframes == NULL ||
+        !css_animation_progress(spec, elapsed[i - 1u], &t)) {
       continue;
     }
     if (css_keyframes_sample_eased(keyframes, key, def->syntax, t,
@@ -8110,6 +8104,29 @@ bool my_theme_get_for_widget_var_animating(const my_theme_t* theme,
     }
   }
   return false;
+}
+
+bool my_theme_get_for_widget_var_animating(const my_theme_t* theme,
+                                           const struct my_widget_t* widget,
+                                           my_widget_state_t state,
+                                           const char* key,
+                                           double elapsed_ms,
+                                           my_value_t* out) {
+  const my_value_t* av;
+  css_animation_spec_t specs[MY_CSS_MAX_ANIMATIONS];
+  double elapsed[MY_CSS_MAX_ANIMATIONS];
+  size_t count;
+  size_t i;
+  if (theme == NULL || widget == NULL || key == NULL || out == NULL) {
+    return false;
+  }
+  av = my_theme_get_for_widget(theme, widget, state, MY_STYLE_ANIMATION);
+  if (av == NULL || my_value_type(av) != MY_VALUE_STR ||
+      !css_animation_list_parse(my_value_get_str(av), specs, &count)) {
+    return false;
+  }
+  for (i = 0u; i < count; i++) elapsed[i] = elapsed_ms;
+  return css_animation_eval(theme, specs, count, elapsed, key, out);
 }
 
 
@@ -8171,6 +8188,29 @@ bool my_theme_transition_step(const my_theme_t* theme,
   return css_probe_full_value(current, out);
 }
 
+/* Whether two parsed lists differ in anything but play state. */
+static bool css_animation_lists_same_but_play(const css_animation_spec_t* a,
+                                              size_t a_count,
+                                              const css_animation_spec_t* b,
+                                              size_t b_count) {
+  size_t i;
+  if (a_count != b_count) return false;
+  for (i = 0u; i < a_count; i++) {
+    const css_transition_spec_t* x = &a[i].timing;
+    const css_transition_spec_t* y = &b[i].timing;
+    if (!my_str_eq(a[i].name, b[i].name) ||
+        a[i].iterations != b[i].iterations ||
+        a[i].direction != b[i].direction || a[i].fill != b[i].fill ||
+        x->duration_ms != y->duration_ms || x->delay_ms != y->delay_ms ||
+        x->x1 != y->x1 || x->y1 != y->y1 || x->x2 != y->x2 ||
+        x->y2 != y->y2 || x->steps_count != y->steps_count ||
+        x->steps_pos != y->steps_pos) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool my_theme_animation_step(const my_theme_t* theme,
                              const struct my_widget_t* widget,
                              my_widget_state_t state, const char* key,
@@ -8178,6 +8218,8 @@ bool my_theme_animation_step(const my_theme_t* theme,
                              my_theme_animation_state_t* state_box) {
   const my_value_t* av;
   const char* animation;
+  css_animation_spec_t specs[MY_CSS_MAX_ANIMATIONS];
+  size_t count = 0u;
   if (theme == NULL || widget == NULL || key == NULL || out == NULL ||
       state_box == NULL) {
     return false;
@@ -8186,18 +8228,45 @@ bool my_theme_animation_step(const my_theme_t* theme,
   animation = av != NULL && my_value_type(av) == MY_VALUE_STR
                   ? my_value_get_str(av)
                   : NULL;
-  if (animation == NULL) {
+  if (animation == NULL || !css_animation_list_parse(animation, specs, &count)) {
     state_box->animation[0] = '\0';
+    count = 0u;
   } else if (!my_str_eq(state_box->animation, animation)) {
-    /* a zeroed box holds "", which no valid animation value equals */
+    css_animation_spec_t old_specs[MY_CSS_MAX_ANIMATIONS];
+    size_t old_count = 0u;
+    size_t i;
+    /* a zeroed box holds "", which never parses */
+    bool keep = css_animation_list_parse(state_box->animation, old_specs,
+                                         &old_count) &&
+                css_animation_lists_same_but_play(old_specs, old_count, specs,
+                                                  count);
+    for (i = 0u; i < count; i++) {
+      my_theme_animation_group_t* group = &state_box->groups[i];
+      if (!keep) {
+        group->start_ms = now_ms;
+        group->frozen_ms = 0.0;
+        group->paused = specs[i].paused;
+      } else if (specs[i].paused && !group->paused) {
+        group->frozen_ms = now_ms - group->start_ms;
+        group->paused = true;
+      } else if (!specs[i].paused && group->paused) {
+        group->start_ms = now_ms - group->frozen_ms;
+        group->paused = false;
+      }
+    }
     snprintf(state_box->animation, sizeof(state_box->animation), "%s",
              animation);
-    state_box->start_ms = now_ms;
   }
-  if (animation != NULL &&
-      my_theme_get_for_widget_var_animating(
-          theme, widget, state, key, now_ms - state_box->start_ms, out)) {
-    return true;
+  if (count > 0u) {
+    double elapsed[MY_CSS_MAX_ANIMATIONS];
+    size_t i;
+    for (i = 0u; i < count; i++) {
+      const my_theme_animation_group_t* group = &state_box->groups[i];
+      elapsed[i] = group->paused ? group->frozen_ms : now_ms - group->start_ms;
+    }
+    if (css_animation_eval(theme, specs, count, elapsed, key, out)) {
+      return true;
+    }
   }
   {
     char current[MY_THEME_MAX_PROPERTY_VALUE_BYTES + 1u];

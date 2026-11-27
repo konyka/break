@@ -298,20 +298,33 @@ bool my_theme_transition_step(const my_theme_t* theme,
 /** @brief Host-side animation driver state: the widget's last seen
  * `animation` value text and the host clock time it was first seen.
  * Reset with memset(0). */
+#define MY_THEME_ANIMATION_GROUPS 8u
+
+/** @brief Clock of one animation group: started at start_ms on the host
+ * clock; while paused, frozen at frozen_ms elapsed. */
+typedef struct {
+  double start_ms;
+  double frozen_ms;
+  bool paused;
+} my_theme_animation_group_t;
+
 typedef struct {
   char animation[MY_THEME_MAX_PROPERTY_VALUE_BYTES + 1u]; /* "" = none */
-  double start_ms;
+  my_theme_animation_group_t groups[MY_THEME_ANIMATION_GROUPS];
 } my_theme_animation_state_t;
 
 /** @brief Step one animated key: reads the widget's `animation` value for
- * `state`; when it differs from the stored one (or none was stored) the
- * clock restarts at now_ms. Returns the animated value from
- * my_theme_get_for_widget_var_animating at now_ms - start, or, when no
- * animation applies a value, the plain var value typed like the animated
- * one (as my_theme_transition_step does). Without any `animation`
- * the stored value is cleared, so the same animation later restarts.
- * Returns false when the key has no value at all or
- * state_box is NULL. Implemented in my_css.c. */
+ * `state`. When the value changes in anything but play state (or first
+ * appears) every group's clock restarts at now_ms. A group whose play
+ * state turns `paused` freezes at its current elapsed time; turning
+ * `running` again continues from there. A group first seen paused stays
+ * at elapsed 0. Returns the animated value at each group's own elapsed
+ * time (the last group applying a value wins), or, when none applies,
+ * the plain var value typed like the animated one (as
+ * my_theme_transition_step does). Without any `animation` the stored value
+ * is cleared, so the same animation later restarts. Returns false when
+ * the key has no value at all or state_box is NULL. Implemented in
+ * my_css.c. */
 bool my_theme_animation_step(const my_theme_t* theme,
                              const struct my_widget_t* widget,
                              my_widget_state_t state, const char* key,

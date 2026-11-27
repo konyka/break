@@ -14855,3 +14855,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **实现**：`my_theme_animation_state_t` 与 `my_theme_animation_step`：`animation` 值首次出现或变化时以当前时刻开始计时，返回动画值，否则回退为类型化的普通 var 值；动画消失时清空，再出现时重新开始。
 - **TDD 与变异**：`test_myui_css` 新增 1 例（218 例），旧实现 RED；4 项定向变异全部判红，多余的 `active` 标志经变异证明后删除。
 - **验证**：普通与 ASan+UBSan（含 LeakSanitizer）下 218/218；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
+
+## CSS animation 的 play-state（2026-11-27）
+
+- **缺口**：`running`/`paused` 不被接受，无法暂停动画。
+- **实现**：每组解析 play-state；`my_theme_animation_state_t` 改为每组独立时钟；`my_theme_animation_step` 在只有 play-state 变化时冻结或恢复各组，其他变化重新开始。
+- **TDD 与变异**：`test_myui_css` 新增 2 例（220 例），旧实现 RED；9 项定向变异全部判红。
+- **验证**：普通与 ASan+UBSan（含 LeakSanitizer）下 220/220；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
