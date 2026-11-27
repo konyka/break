@@ -14876,3 +14876,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **实现**：`my_widget_set_style_clock` / `_clear_style_clock` / `_style_clock_active`；设置时钟后颜色与整数查询按本地覆盖 → 动画 → 过渡 → 普通值的顺序取值；新增 `my_theme_get_for_widget_var_animating_at`。时钟仍由宿主推进，window manager 帧循环的自动接入未做。
 - **TDD 与变异**：`test_myui_css` 新增 2 例（223 例），旧实现 RED；7 项定向变异全部判红。
 - **验证**：普通与 ASan+UBSan（含 LeakSanitizer）下 223/223；ASan 下 `test_myui_window_manager` 245/245；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
+
+## CSS 动画时钟接入帧循环（2026-11-27）
+
+- **缺口**：控件动画时钟需要宿主逐控件推进，推进后也不触发重绘。
+- **实现**：`my_widget_tick_style_clocks` / `my_window_tick_style_clocks` / `my_window_manager_tick_style_clocks` 推进时钟、同步驱动、让仍在变化的控件失效（结束时再失效一次）并返回运行数；自动重绘定时器在绘制前调用；新增 `my_theme_motion_running` 与 `my_theme_animation_sync`。tick 不感知控件私有的按下状态。
+- **TDD 与变异**：`test_myui_window_manager` 新增 2 例（247 例），旧实现 RED；10 项定向变异全部判红。
+- **验证**：普通与 ASan+UBSan 下 `test_myui_window_manager` 247/247、`test_myui_css` 223/223；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。

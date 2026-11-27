@@ -443,12 +443,29 @@ static void wm_callback_end(my_window_manager_t* wm) {
 /** @brief ~60fps repaint tick: paint every window that collected dirty
  * rects since the last frame (no-op for clean windows). Covers redraws
  * triggered outside event dispatch (animations, timers, model changes). */
+size_t my_window_manager_tick_style_clocks(my_window_manager_t* wm) {
+  my_window_t** windows = NULL;
+  size_t i, n = 0, running = 0;
+  double now_ms;
+  if (wm == NULL ||
+      my_window_manager_snapshot_windows(wm, &windows, &n) != MY_RET_OK) {
+    return 0u;
+  }
+  now_ms = (double)my_pal_time_now_ms(wm->pal);
+  for (i = 0; i < n; i++) {
+    running += my_window_tick_style_clocks(windows[i], now_ms);
+  }
+  my_window_manager_release_snapshot(wm, windows, n);
+  return running;
+}
+
 static my_ret_t wm_paint_tick(void* ctx) {
   my_window_manager_t* wm = (my_window_manager_t*)ctx;
   my_window_t** windows = NULL;
   size_t i, n = 0;
   uint64_t epoch;
   wm->callback_depth++;
+  (void)my_window_manager_tick_style_clocks(wm);
   if (my_window_manager_snapshot_windows(wm, &windows, &n) != MY_RET_OK) {
     wm_callback_end(wm);
     return MY_RET_OK;

@@ -119,6 +119,12 @@ my_ret_t my_window_manager_remove_destroy_listener(my_window_manager_t* wm,
  */
 void my_window_manager_set_auto_paint(my_window_manager_t* wm, bool on);
 
+/** @brief Tick every open window's style clocks to the PAL clock
+ * (my_window_tick_style_clocks); returns the number of widgets whose CSS
+ * motion is still running. The auto-paint tick calls this before
+ * painting; hosts that drive painting themselves call it each frame. */
+size_t my_window_manager_tick_style_clocks(my_window_manager_t* wm);
+
 /**
  * @brief Route one PAL event through the manager's modal-window rules.
  *

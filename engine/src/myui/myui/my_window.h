@@ -107,6 +107,9 @@ static inline my_widget_t* my_window_widget(my_window_t* win) {
                                               : (my_widget_t*)win;
 }
 
+/** @brief my_widget_tick_style_clocks over the window's widget tree. */
+size_t my_window_tick_style_clocks(my_window_t* win, double now_ms);
+
 /**
  * @brief Paint if dirty: relayout when needed, then for each dirty rect
  * clip and repaint the tree; commits dirty consumption only after the canvas

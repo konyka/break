@@ -1476,9 +1476,20 @@ static bool theme_widget_resolve_var(my_widget_t* widget,
 /* CSS motion: per-widget clock and the two host-side driver boxes. */
 struct my_widget_style_motion_t {
   double now_ms;
+  bool was_running; /* the previous tick saw motion still running */
   my_theme_animation_state_t animation;
   my_theme_transition_state_t transition;
 };
+
+/* The nearest themed ancestor's theme, NULL without one. */
+static const my_theme_t* theme_widget_theme(const my_widget_t* widget) {
+  const my_widget_t* w = widget;
+  while (w != NULL) {
+    if (w->theme != NULL) return w->theme;
+    w = w->parent;
+  }
+  return NULL;
+}
 
 my_ret_t my_widget_set_style_clock(my_widget_t* widget, double now_ms) {
   if (widget == NULL) {
@@ -1492,6 +1503,14 @@ my_ret_t my_widget_set_style_clock(my_widget_t* widget, double now_ms) {
     }
   }
   widget->style_motion->now_ms = now_ms;
+  {
+    const my_theme_t* theme = theme_widget_theme(widget);
+    if (theme != NULL) {
+      my_theme_animation_sync(theme, widget,
+                              my_widget_current_state(widget, false), now_ms,
+                              &widget->style_motion->animation);
+    }
+  }
   return MY_RET_OK;
 }
 
@@ -1507,14 +1526,47 @@ bool my_widget_style_clock_active(const my_widget_t* widget) {
   return widget != NULL && widget->style_motion != NULL;
 }
 
-/* The nearest themed ancestor's theme, NULL without one. */
-static const my_theme_t* theme_widget_theme(const my_widget_t* widget) {
-  const my_widget_t* w = widget;
-  while (w != NULL) {
-    if (w->theme != NULL) return w->theme;
-    w = w->parent;
+
+/* A widget's motion state: its pressed flag is private to each widget, so
+ * the tick uses the hover/normal/disabled derivation. */
+static size_t theme_widget_tick(my_widget_t* widget, double now_ms,
+                                size_t depth) {
+  size_t running = 0u;
+  size_t i, n;
+  if (widget == NULL || depth > 64u) {
+    return 0u;
   }
-  return NULL;
+  if (widget->style_motion != NULL) {
+    const my_theme_t* theme = theme_widget_theme(widget);
+    my_widget_state_t state = my_widget_current_state(widget, false);
+    widget->style_motion->now_ms = now_ms;
+    if (theme != NULL) {
+      my_theme_animation_sync(theme, widget, state, now_ms,
+                              &widget->style_motion->animation);
+    }
+    if (theme != NULL &&
+        my_theme_motion_running(theme, widget, state, now_ms,
+                                &widget->style_motion->animation,
+                                &widget->style_motion->transition)) {
+      my_widget_invalidate(widget, NULL);
+      widget->style_motion->was_running = true;
+      running++;
+    } else if (widget->style_motion->was_running) {
+      /* motion just ended: one more frame shows the settled value */
+      my_widget_invalidate(widget, NULL);
+      widget->style_motion->was_running = false;
+    }
+  }
+  n = my_widget_child_count(widget);
+  for (i = 0u; i < n; i++) {
+    running += theme_widget_tick(my_widget_get_child(widget, i), now_ms,
+                                 depth + 1u);
+  }
+  return running;
+}
+
+size_t my_widget_tick_style_clocks(my_widget_t* root, double now_ms) {
+  return theme_widget_tick(root, now_ms, 0u);
 }
 
 /* With a motion clock and no local override, resolve `key` through the

@@ -8265,18 +8265,16 @@ static bool css_animation_lists_same_but_play(const css_animation_spec_t* a,
   return true;
 }
 
-bool my_theme_get_for_widget_var_animating_at(
-    const my_theme_t* theme, const struct my_widget_t* widget,
-    my_widget_state_t state, const char* key, double now_ms,
-    my_theme_animation_state_t* state_box, my_value_t* out) {
+/* Brings the driver state up to date with the widget's current
+ * `animation` value at now_ms and parses it into specs. */
+static void css_animation_sync(const my_theme_t* theme,
+                               const struct my_widget_t* widget,
+                               my_widget_state_t state, double now_ms,
+                               my_theme_animation_state_t* state_box,
+                               css_animation_spec_t* specs, size_t* count_out) {
   const my_value_t* av;
   const char* animation;
-  css_animation_spec_t specs[MY_CSS_MAX_ANIMATIONS];
   size_t count = 0u;
-  if (theme == NULL || widget == NULL || key == NULL || out == NULL ||
-      state_box == NULL) {
-    return false;
-  }
   av = my_theme_get_for_widget(theme, widget, state, MY_STYLE_ANIMATION);
   animation = av != NULL && my_value_type(av) == MY_VALUE_STR
                   ? my_value_get_str(av)
@@ -8310,6 +8308,32 @@ bool my_theme_get_for_widget_var_animating_at(
     snprintf(state_box->animation, sizeof(state_box->animation), "%s",
              animation);
   }
+  *count_out = count;
+}
+
+void my_theme_animation_sync(const my_theme_t* theme,
+                             const struct my_widget_t* widget,
+                             my_widget_state_t state, double now_ms,
+                             my_theme_animation_state_t* state_box) {
+  css_animation_spec_t specs[MY_CSS_MAX_ANIMATIONS];
+  size_t count;
+  if (theme == NULL || widget == NULL || state_box == NULL) {
+    return;
+  }
+  css_animation_sync(theme, widget, state, now_ms, state_box, specs, &count);
+}
+
+bool my_theme_get_for_widget_var_animating_at(
+    const my_theme_t* theme, const struct my_widget_t* widget,
+    my_widget_state_t state, const char* key, double now_ms,
+    my_theme_animation_state_t* state_box, my_value_t* out) {
+  css_animation_spec_t specs[MY_CSS_MAX_ANIMATIONS];
+  size_t count = 0u;
+  if (theme == NULL || widget == NULL || key == NULL || out == NULL ||
+      state_box == NULL) {
+    return false;
+  }
+  css_animation_sync(theme, widget, state, now_ms, state_box, specs, &count);
   if (count > 0u) {
     double elapsed[MY_CSS_MAX_ANIMATIONS];
     size_t i;
@@ -8341,6 +8365,54 @@ bool my_theme_animation_step(const my_theme_t* theme,
     return false;
   }
   return css_probe_full_value(current, out);
+}
+
+bool my_theme_motion_running(const my_theme_t* theme,
+                              const struct my_widget_t* widget,
+                              my_widget_state_t state, double now_ms,
+                              const my_theme_animation_state_t* animation,
+                              const my_theme_transition_state_t* transition) {
+  const my_value_t* v;
+  size_t i;
+  if (theme == NULL || widget == NULL) {
+    return false;
+  }
+  v = my_theme_get_for_widget(theme, widget, state, MY_STYLE_ANIMATION);
+  if (v != NULL && my_value_type(v) == MY_VALUE_STR) {
+    css_animation_spec_t specs[MY_CSS_MAX_ANIMATIONS];
+    size_t count;
+    if (css_animation_list_parse(my_value_get_str(v), specs, &count)) {
+      /* not yet seen by the driver: it starts on the next lookup */
+      if (animation == NULL ||
+          !my_str_eq(animation->animation, my_value_get_str(v))) {
+        return true;
+      }
+      for (i = 0u; i < count; i++) {
+        const my_theme_animation_group_t* group = &animation->groups[i];
+        double end = specs[i].timing.delay_ms +
+                     specs[i].timing.duration_ms * specs[i].iterations;
+        if (!group->paused && now_ms - group->start_ms < end) {
+          return true;
+        }
+      }
+    }
+  }
+  if (transition != NULL) {
+    v = my_theme_get_for_widget(theme, widget, state, "transition");
+    for (i = 0u; i < MY_THEME_TRANSITION_TRACKED; i++) {
+      const my_theme_transition_slot_t* slot = &transition->slots[i];
+      css_transition_spec_t spec;
+      if (!slot->active || my_str_eq(slot->from, slot->to) || v == NULL ||
+          my_value_type(v) != MY_VALUE_STR ||
+          !css_transition_targets(my_value_get_str(v), slot->key, &spec)) {
+        continue;
+      }
+      if (now_ms - slot->start_ms < spec.delay_ms + spec.duration_ms) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 my_ret_t my_theme_load_css_ex(my_theme_t* theme, const char* css,

@@ -15,6 +15,7 @@
 #include "myr/my_text_layout.h"
 #include "myr/my_ui_metrics.h"
 #include "myr/my_vgcanvas_soft.h"
+#include "myui/my_css.h"
 #include "myui/my_layout.h"
 #include "myui/my_ui_command.h"
 #include "myui/my_window_manager.h"
@@ -6794,6 +6795,146 @@ TEST(button_cooldown_remaining_samples_clock_once)
   my_pal_destroy(pal);
 }
 
+TEST(window_style_clock_tick_advances_and_invalidates)
+{
+  /* Ticking a window advances every widget's style clock to the given
+   * time and marks widgets dirty while their CSS motion is still running,
+   * so the next paint shows the new value; settled widgets stay clean. */
+  my_pal_t* pal = my_pal_dummy_create(NULL);
+  my_window_t* win = my_window_create(NULL, pal, 160, 100, "motion");
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* moving = my_widget_create(NULL, "moving");
+  my_widget_t* still = my_widget_create(NULL, "still");
+  const char* css =
+      "@keyframes grow { from { font-size: 10; } to { font-size: 20; } }"
+      "moving { font-size: 12; animation: grow 100ms linear; }"
+      "still { font-size: 12; }";
+
+  ASSERT_NOT_NULL(win);
+  moving->widget_type = "moving";
+  still->widget_type = "still";
+  ASSERT_EQ(my_theme_load_css(theme, css), MY_RET_OK);
+  ASSERT_EQ(my_widget_apply_theme(my_window_widget(win), theme), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_rect(moving, &(my_rect_t){0, 0, 40, 20}),
+            MY_RET_OK);
+  ASSERT_EQ(my_widget_set_rect(still, &(my_rect_t){0, 40, 40, 20}),
+            MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(my_window_widget(win), moving), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(my_window_widget(win), still), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_style_clock(moving, 0.0), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_style_clock(still, 0.0), MY_RET_OK);
+
+  my_dirty_rects_clear(&win->dirty);
+  moving->dirty = false;
+  still->dirty = false;
+  ASSERT_EQ(my_window_tick_style_clocks(win, 50.0), 1u);
+  ASSERT_TRUE(moving->dirty);
+  ASSERT_FALSE(still->dirty);
+  ASSERT_TRUE(my_dirty_rects_count(&win->dirty) > 0);
+  ASSERT_EQ(my_widget_style_get_int(moving, MY_STATE_NORMAL,
+                                    MY_STYLE_FONT_SIZE, 0), 15);
+
+  /* the tick after the animation ends repaints once more so the settled
+   * value replaces the last animated frame, but reports nothing running. */
+  moving->dirty = false;
+  ASSERT_EQ(my_window_tick_style_clocks(win, 150.0), 0u);
+  ASSERT_TRUE(moving->dirty);
+  ASSERT_EQ(my_widget_style_get_int(moving, MY_STATE_NORMAL,
+                                    MY_STYLE_FONT_SIZE, 0), 12);
+  /* after that it stays clean. */
+  my_dirty_rects_clear(&win->dirty);
+  moving->dirty = false;
+  ASSERT_EQ(my_window_tick_style_clocks(win, 200.0), 0u);
+  ASSERT_FALSE(moving->dirty);
+  ASSERT_EQ(my_dirty_rects_count(&win->dirty), 0u);
+  ASSERT_EQ(my_window_tick_style_clocks(NULL, 1.0), 0u);
+
+  /* a new animation value appearing between ticks starts its clock at the
+   * tick that first sees it, not at the next style lookup. */
+  ASSERT_EQ(my_theme_load_css(
+                theme,
+                "@keyframes rise { from { font-size: 0; } to { font-size: 100; } }"
+                "moving { animation: rise 100ms linear; }"),
+            MY_RET_OK);
+  ASSERT_EQ(my_window_tick_style_clocks(win, 300.0), 1u);
+  ASSERT_EQ(my_window_tick_style_clocks(win, 340.0), 1u);
+  ASSERT_EQ(my_widget_style_get_int(moving, MY_STATE_NORMAL,
+                                    MY_STYLE_FONT_SIZE, 0), 40);
+
+  /* the public check also reports an animation no driver has seen. */
+  {
+    my_theme_animation_state_t fresh;
+    memset(&fresh, 0, sizeof(fresh));
+    ASSERT_TRUE(my_theme_motion_running(theme, still, MY_STATE_NORMAL, 0.0,
+                                        &fresh, NULL) == false);
+    ASSERT_TRUE(my_theme_motion_running(theme, moving, MY_STATE_NORMAL, 0.0,
+                                        &fresh, NULL));
+    ASSERT_TRUE(my_theme_motion_running(theme, moving, MY_STATE_NORMAL, 0.0,
+                                        NULL, NULL));
+  }
+
+  my_widget_unref(moving);
+  my_widget_unref(still);
+  my_widget_unref((my_widget_t*)win);
+  my_theme_destroy(theme);
+  my_pal_destroy(pal);
+}
+
+TEST(window_manager_paint_tick_drives_style_clocks)
+{
+  /* The manager's paint tick reads the PAL clock and ticks every open
+   * window before painting. */
+  my_pal_t* pal = my_pal_dummy_create(NULL);
+  my_pal_main_loop_t* loop = my_pal_main_loop_create(pal);
+  my_window_manager_t* wm = my_window_manager_create(NULL, pal, loop);
+  my_window_t* win = my_window_create(NULL, pal, 160, 100, "motion-wm");
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* moving = my_widget_create(NULL, "moving");
+  const char* css =
+      "@keyframes grow { from { font-size: 10; } to { font-size: 20; } }"
+      "moving { font-size: 12; animation: grow 100ms linear; }";
+
+  moving->widget_type = "moving";
+  ASSERT_EQ(my_theme_load_css(theme, css), MY_RET_OK);
+  ASSERT_EQ(my_widget_apply_theme(my_window_widget(win), theme), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(my_window_widget(win), moving), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_style_clock(moving, 1000.0), MY_RET_OK);
+  ASSERT_EQ(my_window_manager_open(wm, win), MY_RET_OK);
+  my_pal_dummy_set_now_ms(pal, 1000u);
+  ASSERT_EQ(my_window_manager_tick_style_clocks(wm), 1u);
+  /* 50 ms into the animation on the PAL clock: halfway. */
+  my_pal_dummy_set_now_ms(pal, 1050u);
+  ASSERT_EQ(my_window_manager_tick_style_clocks(wm), 1u);
+  ASSERT_EQ(my_widget_style_get_int(moving, MY_STATE_NORMAL,
+                                    MY_STYLE_FONT_SIZE, 0), 15);
+  /* past the end: settled, nothing running. */
+  my_pal_dummy_set_now_ms(pal, 1200u);
+  ASSERT_EQ(my_window_manager_tick_style_clocks(wm), 0u);
+  ASSERT_EQ(my_widget_style_get_int(moving, MY_STATE_NORMAL,
+                                    MY_STYLE_FONT_SIZE, 0), 12);
+  ASSERT_EQ(my_window_manager_tick_style_clocks(NULL), 0u);
+
+  /* the auto-paint timer runs the same tick: a new animation appearing
+   * starts on the clock of the timer firing that first sees it. */
+  ASSERT_EQ(my_theme_load_css(
+                theme,
+                "@keyframes rise { from { font-size: 0; } to { font-size: 100; } }"
+                "moving { animation: rise 1000ms linear; }"),
+            MY_RET_OK);
+  my_pal_dummy_set_now_ms(pal, 2000u);
+  ASSERT_EQ(my_pal_main_loop_run(loop), MY_RET_OK);
+  my_pal_dummy_set_now_ms(pal, 2100u);
+  ASSERT_EQ(my_widget_set_style_clock(moving, 2100.0), MY_RET_OK);
+  ASSERT_EQ(my_widget_style_get_int(moving, MY_STATE_NORMAL,
+                                    MY_STYLE_FONT_SIZE, 0), 10);
+  my_widget_unref(moving);
+  my_widget_unref((my_widget_t*)win);
+  my_window_manager_destroy(wm);
+  my_pal_main_loop_destroy(loop);
+  my_theme_destroy(theme);
+  my_pal_destroy(pal);
+}
+
 TEST(button_cooldown_paint_samples_clock_once)
 {
   my_pal_t* pal = my_pal_dummy_create(NULL);
@@ -9336,6 +9477,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(button_cooldown_respects_reduced_motion_uses_completion_timer);
     RUN_TEST(button_cooldown_remaining_samples_clock_once);
     RUN_TEST(button_cooldown_paint_samples_clock_once);
+    RUN_TEST(window_style_clock_tick_advances_and_invalidates);
+    RUN_TEST(window_manager_paint_tick_drives_style_clocks);
     RUN_TEST(button_release_preserves_minimum_press_after_clock_rollback);
     RUN_TEST(button_cooldown_remains_active_at_clock_upper_bound);
     RUN_TEST(button_release_timer_failure_does_not_stick_pressed_state);

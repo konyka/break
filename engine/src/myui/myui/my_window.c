@@ -1036,6 +1036,11 @@ void my_window_restore_dirty(my_window_t* win,
   }
 }
 
+size_t my_window_tick_style_clocks(my_window_t* win, double now_ms) {
+  return win != NULL ? my_widget_tick_style_clocks(my_window_widget(win), now_ms)
+                     : 0u;
+}
+
 void my_window_paint(my_window_t* win) {
   my_vgcanvas_t* vg;
   my_dirty_rects_t frame_dirty;

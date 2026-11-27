@@ -325,6 +325,16 @@ typedef struct {
  * is cleared, so the same animation later restarts. Returns false when
  * the key has no value at all or state_box is NULL. Implemented in
  * my_css.c. */
+/** @brief Bring the animation driver state up to date with the widget's
+ * `animation` value at now_ms without sampling any key: a new or changed
+ * value starts its clock now, play-state changes freeze or resume groups.
+ * Lets a host start the clock when the animation first appears rather
+ * than at the first lookup. Implemented in my_css.c. */
+void my_theme_animation_sync(const my_theme_t* theme,
+                             const struct my_widget_t* widget,
+                             my_widget_state_t state, double now_ms,
+                             my_theme_animation_state_t* state_box);
+
 /** @brief The animation half of my_theme_animation_step: advances the
  * driver state the same way but returns false (out untouched) when no
  * animation applies a value, so the caller can try other sources such as
@@ -339,6 +349,18 @@ bool my_theme_animation_step(const my_theme_t* theme,
                              my_widget_state_t state, const char* key,
                              double now_ms, my_value_t* out,
                              my_theme_animation_state_t* state_box);
+
+/** @brief Whether the widget's CSS motion still changes values after
+ * now_ms: an `animation` the driver has not started yet, a running group
+ * whose delay plus iterations has not elapsed (`infinite` always runs),
+ * or a transition slot still inside its delay plus duration. Paused
+ * groups do not count. Either state pointer may be NULL. Implemented in
+ * my_css.c. */
+bool my_theme_motion_running(const my_theme_t* theme,
+                             const struct my_widget_t* widget,
+                             my_widget_state_t state, double now_ms,
+                             const my_theme_animation_state_t* animation,
+                             const my_theme_transition_state_t* transition);
 
 /** @brief R670/R673: evaluate a deferred @container condition for an
  * element — walk from `anchor` upward (inclusive) for the nearest

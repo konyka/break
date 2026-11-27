@@ -2982,10 +2982,29 @@ CSS transition 与 animation 只有 `my_theme_*` 层的查询与宿主驱动，�
 - 设置时钟后，`my_widget_style_get_color` / `_int` 先看本地覆盖（本地覆盖优先且不做动画），否则在最近的有主题祖先上依次取 `my_theme_get_for_widget_var_animating_at`（动画有值时）与 `my_theme_transition_step`（目标变化时过渡），都不适用时回到原有查询。未设置时钟的控件行为不变。
 - `my_theme_get_for_widget_var_animating_at`（`my_theme.h`）：`my_theme_animation_step` 的动画部分，推进同一份驱动状态，但没有动画值时返回 false 且不写 out，便于调用方再尝试 transition。`my_theme_animation_step` 改为调用它再回退普通值，行为不变。
 
-宿主每帧推进时钟并在 `my_widget_style_clock_active` 为真时重绘；把时钟接到 window manager 的帧循环（自动推进、动画结束后停止重绘）尚未完成。
+宿主推进时钟；帧循环接入见下一节。
 
 **TDD**：`test_myui_css` 新增 2 例（223 例）：动画进行中与结束后的字号、颜色目标变化后的过渡、无时钟控件不受影响、清除时钟、通过有主题祖先查找主题；本地覆盖优先。旧实现缺少接口（RED）。
 
 **变异**：7 项全部判红：本地覆盖不优先、不取动画、不取过渡、颜色查询跳过时钟、整数查询跳过时钟、不向上找主题祖先（据此补充子控件用例）。
 
 **验证**：`test_myui_css` 223/223；ASan+UBSan（含 LeakSanitizer）223/223；ASan 下 `test_myui_window_manager` 245/245；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。
+
+## 本轮补充：CSS 动画时钟接入帧循环（2026-11-27）
+
+上一节让控件样式查询能读动画时钟，但时钟要宿主逐控件推进，推进后也不会触发重绘。
+
+新增：
+
+- `my_widget_tick_style_clocks(root, now_ms)`（`my_widget.h`，实现在 `my_theme.c`）：遍历子树，把每个已设置时钟的控件推进到 `now_ms`，先用 `my_theme_animation_sync` 让驱动状态跟上当前 `animation` 值（新出现的动画从这一刻开始），再用 `my_theme_motion_running` 判断是否仍在变化；仍在变化的控件 `my_widget_invalidate`。动画刚结束的那一次再失效一次，让结束值替换最后一帧。返回仍在变化的控件数，0 表示可以停止调度动画帧。遍历深度上限 64。
+- `my_window_tick_style_clocks(win, now_ms)` 与 `my_window_manager_tick_style_clocks(wm)`：后者用 PAL 时钟推进所有打开的窗口。window manager 的自动重绘定时器在绘制前调用它，自行驱动绘制的宿主（如 BreakUI）每帧调用。
+- `my_theme_motion_running`（`my_theme.h`）：驱动尚未见过的 animation、未暂停且延迟加全部迭代尚未结束的组（`infinite` 一直算在运行）、或仍在延迟加时长内的 transition 槽，都算在运行。
+- `my_theme_animation_sync`（`my_theme.h`）：只推进 animation 驱动状态、不取值。`my_widget_set_style_clock` 设置时钟时也调用它，动画从设置时钟时开始计时，而不是从第一次查询开始。
+
+控件状态按 `my_widget_current_state(widget, false)` 推导（悬停/普通/禁用）；按下状态由各控件私有，tick 不感知，按下状态下的动画仍按查询时的状态求值。
+
+**TDD**：`test_myui_window_manager` 新增 2 例（247 例）：tick 推进时钟并只让仍在运行的控件失效、动画结束后的一次收尾失效、之后保持干净、新动画从首次看到它的 tick 开始、未见过的动画算在运行；manager 按 PAL 时钟推进、结束后返回 0、自动重绘定时器经 `my_pal_main_loop_run` 实际执行 tick。旧实现缺少接口（RED）。
+
+**变异**：10 项全部判红：不失效、不做收尾失效、不遍历子控件、tick 不同步、设置时钟不同步、结束时刻恒为 0、未见过的动画不算运行（测试进程崩溃）、manager 用 0 作时钟、定时器不调用 tick。
+
+**验证**：`test_myui_window_manager` 247/247 与 `test_myui_css` 223/223；ASan+UBSan 下两者通过（`test_myui_css` 含 LeakSanitizer）；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。
