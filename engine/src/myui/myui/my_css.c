@@ -3106,6 +3106,289 @@ fail:
   return NULL;
 }
 
+/* ---------------- @keyframes ---------------- */
+
+typedef struct css_keyframe_stop_t {
+  double offset;
+  my_css_rule_t* body; /* declarations only, no selectors */
+} css_keyframe_stop_t;
+
+struct my_css_keyframes_t {
+  char name[MY_CSS_NAME_LEN];
+  size_t stop_count;
+  css_keyframe_stop_t stops[MY_CSS_MAX_KEYFRAME_STOPS];
+};
+
+static void css_keyframes_destroy(const my_allocator_t* allocator,
+                                  my_css_keyframes_t* keyframes) {
+  size_t i;
+  if (keyframes == NULL) return;
+  for (i = 0u; i < keyframes->stop_count; i++) {
+    /* a comma list shares one body between its stops */
+    size_t j;
+    bool shared = false;
+    for (j = 0u; j < i; j++) {
+      if (keyframes->stops[j].body == keyframes->stops[i].body) {
+        shared = true;
+        break;
+      }
+    }
+    if (!shared) css_rule_destroy(allocator, keyframes->stops[i].body);
+  }
+  my_mem_free(allocator, keyframes);
+}
+
+/* One keyframe selector: `from`, `to` or a percentage in [0, 100]. */
+static bool css_keyframe_offset(css_p_t* p, double* offset) {
+  char word[8];
+  c_ws(p);
+  if (c_peek(p) >= '0' && c_peek(p) <= '9') {
+    char digits[32];
+    size_t n = 0u;
+    char* end = NULL;
+    double value;
+    while ((c_peek(p) >= '0' && c_peek(p) <= '9') || c_peek(p) == '.') {
+      if (n + 1u >= sizeof(digits)) return false;
+      digits[n++] = (char)c_next(p);
+    }
+    digits[n] = '\0';
+    if (c_peek(p) != '%') return false;
+    c_next(p);
+    value = my_strtod_c(digits, &end);
+    if (end == NULL || *end != '\0' || !(value >= 0.0) || value > 100.0) {
+      return false;
+    }
+    *offset = value / 100.0;
+    return true;
+  }
+  if (!c_ident(p, word, sizeof(word))) return false;
+  if (my_str_eq(word, "from")) {
+    *offset = 0.0;
+    return true;
+  }
+  if (my_str_eq(word, "to")) {
+    *offset = 1.0;
+    return true;
+  }
+  return false;
+}
+
+static bool css_keyframes_insert_stop(my_css_keyframes_t* keyframes,
+                                      double offset, my_css_rule_t* body) {
+  size_t at = keyframes->stop_count;
+  if (keyframes->stop_count >= MY_CSS_MAX_KEYFRAME_STOPS) return false;
+  while (at > 0u && keyframes->stops[at - 1u].offset > offset) {
+    keyframes->stops[at] = keyframes->stops[at - 1u];
+    at--;
+  }
+  keyframes->stops[at].offset = offset;
+  keyframes->stops[at].body = body;
+  keyframes->stop_count++;
+  return true;
+}
+
+static bool css_keyframes_publish(css_p_t* p, my_css_sheet_t* sheet,
+                                  my_css_keyframes_t* keyframes) {
+  size_t i, n = my_darray_size(sheet->keyframes);
+  for (i = 0u; i < n; i++) {
+    my_css_keyframes_t* old =
+        (my_css_keyframes_t*)my_darray_get(sheet->keyframes, i);
+    if (my_str_eq(old->name, keyframes->name)) {
+      /* swap contents so the slot keeps its first-definition position;
+       * the caller's object then owns the old stops and frees them. */
+      my_css_keyframes_t tmp = *old;
+      *old = *keyframes;
+      *keyframes = tmp;
+      css_keyframes_destroy(sheet->allocator, keyframes);
+      return true;
+    }
+  }
+  if (n >= MY_CSS_MAX_KEYFRAMES) {
+    css_fail(p, "@keyframes count exceeded");
+    return false;
+  }
+  if (my_darray_push(sheet->keyframes, keyframes) != MY_RET_OK) {
+    css_fail(p, "oom");
+    return false;
+  }
+  return true;
+}
+
+static bool css_parse_keyframes_atrule(css_p_t* p, my_css_sheet_t* sheet) {
+  my_css_keyframes_t* keyframes;
+  c_ws(p);
+  keyframes = (my_css_keyframes_t*)my_mem_calloc(p->allocator, 1,
+                                                 sizeof(*keyframes));
+  if (keyframes == NULL) {
+    css_fail(p, "oom");
+    return false;
+  }
+  if (!c_ident(p, keyframes->name, sizeof(keyframes->name))) {
+    css_fail(p, "expected @keyframes name");
+    goto fail;
+  }
+  c_ws(p);
+  if (c_peek(p) != '{') {
+    css_fail(p, "expected '{' after @keyframes name");
+    goto fail;
+  }
+  c_next(p);
+  for (;;) {
+    double offsets[MY_CSS_MAX_KEYFRAME_STOPS];
+    size_t offset_count = 0u;
+    size_t i;
+    size_t pending_before;
+    my_css_rule_t* body;
+    c_ws(p);
+    if (c_failed(p)) goto fail;
+    if (c_peek(p) == '}') {
+      c_next(p);
+      break;
+    }
+    if (c_peek(p) < 0) {
+      css_fail(p, "unterminated @keyframes block");
+      goto fail;
+    }
+    for (;;) {
+      if (offset_count >= MY_CSS_MAX_KEYFRAME_STOPS) {
+        css_fail(p, "@keyframes stop count exceeded");
+        goto fail;
+      }
+      if (!css_keyframe_offset(p, &offsets[offset_count])) {
+        css_fail(p, "invalid keyframe selector");
+        goto fail;
+      }
+      offset_count++;
+      c_ws(p);
+      if (c_peek(p) != ',') break;
+      c_next(p);
+    }
+    if (c_peek(p) != '{') {
+      css_fail(p, "expected '{' after keyframe selector");
+      goto fail;
+    }
+    c_next(p);
+    body = css_rule_new(p->allocator, MY_CSS_UNLAYERED_ORDER);
+    if (body == NULL) {
+      css_fail(p, "oom");
+      goto fail;
+    }
+    pending_before =
+        p->nest_pending != NULL ? my_darray_size(p->nest_pending) : 0u;
+    if (!css_parse_decl_block(p, body, sheet, 0u, 0u)) {
+      css_rule_destroy(p->allocator, body);
+      goto fail;
+    }
+    if (p->nest_pending != NULL &&
+        my_darray_size(p->nest_pending) != pending_before) {
+      css_rule_destroy(p->allocator, body);
+      css_fail(p, "unsupported nested rule in keyframe");
+      goto fail;
+    }
+    if (keyframes->stop_count + offset_count > MY_CSS_MAX_KEYFRAME_STOPS) {
+      css_rule_destroy(p->allocator, body);
+      css_fail(p, "@keyframes stop count exceeded");
+      goto fail;
+    }
+    for (i = 0u; i < offset_count; i++) {
+      (void)css_keyframes_insert_stop(keyframes, offsets[i], body);
+    }
+  }
+  if (!css_keyframes_publish(p, sheet, keyframes)) goto fail;
+  return true;
+fail:
+  css_keyframes_destroy(p->allocator, keyframes);
+  return false;
+}
+
+size_t my_css_keyframes_count(const my_css_sheet_t* sheet) {
+  return sheet != NULL && sheet->keyframes != NULL
+             ? my_darray_size(sheet->keyframes)
+             : 0u;
+}
+
+const my_css_keyframes_t* my_css_keyframes_at(const my_css_sheet_t* sheet,
+                                              size_t index) {
+  if (index >= my_css_keyframes_count(sheet)) return NULL;
+  return (const my_css_keyframes_t*)my_darray_get(sheet->keyframes, index);
+}
+
+const my_css_keyframes_t* my_css_keyframes_find(const my_css_sheet_t* sheet,
+                                                const char* name) {
+  size_t i, n = my_css_keyframes_count(sheet);
+  if (name == NULL) return NULL;
+  for (i = 0u; i < n; i++) {
+    const my_css_keyframes_t* keyframes = my_css_keyframes_at(sheet, i);
+    if (my_str_eq(keyframes->name, name)) return keyframes;
+  }
+  return NULL;
+}
+
+const char* my_css_keyframes_name(const my_css_keyframes_t* keyframes) {
+  return keyframes != NULL ? keyframes->name : NULL;
+}
+
+size_t my_css_keyframes_stop_count(const my_css_keyframes_t* keyframes) {
+  return keyframes != NULL ? keyframes->stop_count : 0u;
+}
+
+double my_css_keyframes_stop_offset(const my_css_keyframes_t* keyframes,
+                                    size_t stop) {
+  if (keyframes == NULL || stop >= keyframes->stop_count) return -1.0;
+  return keyframes->stops[stop].offset;
+}
+
+const char* my_css_keyframes_stop_value(const my_css_keyframes_t* keyframes,
+                                        size_t stop, const char* key) {
+  size_t i, n;
+  const char* found = NULL;
+  if (keyframes == NULL || key == NULL || stop >= keyframes->stop_count) {
+    return NULL;
+  }
+  n = my_darray_size(keyframes->stops[stop].body->decls);
+  for (i = 0u; i < n; i++) {
+    const my_css_decl_t* decl = (const my_css_decl_t*)my_darray_get(
+        keyframes->stops[stop].body->decls, i);
+    if (my_str_eq(decl->key, key) && decl->value.type == MY_VALUE_STR) {
+      found = my_value_get_str(&decl->value);
+    }
+  }
+  return found;
+}
+
+bool my_css_keyframes_sample(const my_css_keyframes_t* keyframes,
+                             const char* key, const char* syntax, double t,
+                             char* out, size_t cap) {
+  size_t i;
+  size_t before = SIZE_MAX;
+  size_t after = SIZE_MAX;
+  const char* from;
+  const char* to;
+  double span;
+  if (keyframes == NULL || key == NULL || syntax == NULL || out == NULL ||
+      cap == 0u) {
+    return false;
+  }
+  for (i = 0u; i < keyframes->stop_count; i++) {
+    if (my_css_keyframes_stop_value(keyframes, i, key) == NULL) continue;
+    if (keyframes->stops[i].offset <= t) {
+      before = i;
+    } else if (after == SIZE_MAX) {
+      after = i;
+    }
+  }
+  if (before == SIZE_MAX && after == SIZE_MAX) return false;
+  if (before == SIZE_MAX) before = after;
+  if (after == SIZE_MAX) after = before;
+  from = my_css_keyframes_stop_value(keyframes, before, key);
+  to = my_css_keyframes_stop_value(keyframes, after, key);
+  span = keyframes->stops[after].offset - keyframes->stops[before].offset;
+  return my_css_property_interpolate(
+      syntax, from, to,
+      span > 0.0 ? (t - keyframes->stops[before].offset) / span : 0.0, out,
+      cap);
+}
+
 /* ---------------- sheet ---------------- */
 
 static bool css_parse_rules(css_p_t* p, my_css_sheet_t* sheet,
@@ -5774,6 +6057,10 @@ static bool css_parse_atrule(css_p_t* p, my_css_sheet_t* sheet,
     if (!nested) p->import_window_closed = true;
     return css_parse_scope_atrule(p, sheet, media_depth, layer_id);
   }
+  if (my_str_eq(name, "keyframes")) {
+    if (!nested) p->import_window_closed = true;
+    return css_parse_keyframes_atrule(p, sheet);
+  }
   return css_skip_or_reject_atrule(p);
 }
 
@@ -5896,12 +6183,17 @@ my_css_sheet_t* my_css_parse_with_options(
   sheet->allocator = allocator;
   sheet->rules = my_darray_create(allocator, 0);
   sheet->property_defs = my_darray_create(allocator, 0);
-  if (sheet->rules == NULL || sheet->property_defs == NULL) {
+  sheet->keyframes = my_darray_create(allocator, 0);
+  if (sheet->rules == NULL || sheet->property_defs == NULL ||
+      sheet->keyframes == NULL) {
     if (sheet->rules != NULL) {
       my_darray_destroy(sheet->rules);
     }
     if (sheet->property_defs != NULL) {
       my_darray_destroy(sheet->property_defs);
+    }
+    if (sheet->keyframes != NULL) {
+      my_darray_destroy(sheet->keyframes);
     }
     my_mem_free(allocator, sheet);
     return NULL;
@@ -5967,7 +6259,8 @@ const my_css_capabilities_t* my_css_capabilities(void) {
                  MY_CSS_FEATURE_AT_RULES | MY_CSS_FEATURE_CONDITIONAL_MEDIA |
                  MY_CSS_FEATURE_SUPPORTS | MY_CSS_FEATURE_LAYERS |
                  MY_CSS_FEATURE_IMPORTS | MY_CSS_FEATURE_SCOPE |
-                 MY_CSS_FEATURE_NESTING | MY_CSS_FEATURE_CONTAINER),
+                 MY_CSS_FEATURE_NESTING | MY_CSS_FEATURE_CONTAINER |
+                 MY_CSS_FEATURE_KEYFRAMES),
       (uint32_t)MY_CSS_PARSE_STRICT_AT_RULES, MY_CSS_MAX_BYTES,
       MY_CSS_MAX_ANCESTORS};
   return &capabilities;
@@ -5991,6 +6284,15 @@ void my_css_sheet_destroy(my_css_sheet_t* sheet) {
                                                         i));
   }
   my_darray_destroy(sheet->property_defs);
+  if (sheet->keyframes != NULL) {
+    n = my_darray_size(sheet->keyframes);
+    for (i = 0; i < n; i++) {
+      css_keyframes_destroy(
+          sheet->allocator,
+          (my_css_keyframes_t*)my_darray_get(sheet->keyframes, i));
+    }
+    my_darray_destroy(sheet->keyframes);
+  }
   my_mem_free(sheet->allocator, sheet);
 }
 

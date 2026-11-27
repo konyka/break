@@ -14813,3 +14813,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **实现**：含 RTL 的 JUSTIFY 行总是构造 bidi layout；新增 `ta_draw_justify_word`，在词内按 visual 顺序合并同 kind item 并按各段 visual 偏移分色绘制；段循环至少前进一个 item。
 - **TDD 与变异**：`test_myui_window_manager` 新增 `text_area_rtl_justify_syntax_colors_tokens`（245 例，四组输入），旧实现 RED；4 项定向变异全部判红。
 - **验证**：普通与 ASan+UBSan 下 245/245；`build-myui-tests` 全量 ctest 482/482。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
+
+## CSS `@keyframes` 解析与采样（2026-11-27）
+
+- **缺口**：`@keyframes` 被当作未知 at-rule（宽松跳过、严格拒绝），已有的 transition 与插值无法按多个 stop 采样。
+- **实现**：`my_css` 解析有界 `@keyframes`（`from`/`to`/百分比、逗号列表、同名替换、按 offset 稳定排序，64 个名字、每个 32 个 stop），提供查询与 `my_css_keyframes_sample`；capability 新增 `MY_CSS_FEATURE_KEYFRAMES`。不进入 theme 级联，无 `animation` 属性与计时。
+- **TDD 与变异**：`test_myui_css` 新增 4 例（209 例），旧实现 RED；6 项定向变异全部判红。
+- **验证**：普通与 ASan+UBSan（含 LeakSanitizer）下 209/209；`build-myui-tests` 全量 ctest 482/482。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。

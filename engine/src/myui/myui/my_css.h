@@ -58,6 +58,8 @@
 #define MY_CSS_SCOPE_ROOT_IMPLICIT MY_CSS_MAX_ANCESTORS
 #define MY_CSS_LAYER_SPECIFICITY_STRIDE 100000
 #define MY_CSS_UNLAYERED_ORDER UINT32_MAX
+#define MY_CSS_MAX_KEYFRAMES 64u
+#define MY_CSS_MAX_KEYFRAME_STOPS 32u
 
 typedef enum my_css_parse_flags_t {
   MY_CSS_PARSE_DEFAULT = 0u,
@@ -77,7 +79,8 @@ typedef enum my_css_feature_t {
   MY_CSS_FEATURE_IMPORTS = 1u << 8,
   MY_CSS_FEATURE_SCOPE = 1u << 9,
   MY_CSS_FEATURE_NESTING = 1u << 10,
-  MY_CSS_FEATURE_CONTAINER = 1u << 11
+  MY_CSS_FEATURE_CONTAINER = 1u << 11,
+  MY_CSS_FEATURE_KEYFRAMES = 1u << 12
 } my_css_feature_t;
 
 /** @brief Device capabilities available to conditional media evaluation. */
@@ -273,10 +276,13 @@ typedef struct my_css_rule_t {
 } my_css_rule_t;
 
 /** @brief Parsed sheet (opaque-ish; use the accessors). */
+typedef struct my_css_keyframes_t my_css_keyframes_t;
+
 typedef struct my_css_sheet_t {
   const my_allocator_t* allocator;
   my_darray_t* rules; /**< my_css_rule_t* */
   my_darray_t* property_defs; /**< my_theme_property_def_t* (R671) */
+  my_darray_t* keyframes; /**< my_css_keyframes_t*, one per name */
 } my_css_sheet_t;
 
 /** @brief Parse a CSS subset sheet within MY_CSS_MAX_BYTES. NULL on
@@ -287,7 +293,8 @@ my_css_sheet_t* my_css_parse(const my_allocator_t* allocator,
                              my_css_error_t* err);
 
 /** @brief Parse with explicit policy flags. Strict at-rule mode accepts only
- * supported `@media`/`@supports`/`@layer`/`@import`/`@scope` containers and
+ * supported `@media`/`@supports`/`@layer`/`@import`/`@scope` containers,
+ * `@keyframes`, and
  * rejects every other @-rule
  * instead of skipping it with a warning. At-rule nesting is bounded by
  * MY_CSS_MAX_AT_RULE_NESTING. `@supports` accepts bounded `and`/`or`/`not`
@@ -417,6 +424,49 @@ const my_css_selector_t* my_css_selector(const my_css_rule_t* rule,
                                          size_t index);
 size_t my_css_decl_count(const my_css_rule_t* rule);
 const my_css_decl_t* my_css_decl(const my_css_rule_t* rule, size_t index);
+
+/* ---------------- @keyframes ---------------- */
+
+/** @brief Number of distinct `@keyframes` names on the sheet. A later
+ * rule with the same name replaces the earlier one, as in CSS. At most
+ * MY_CSS_MAX_KEYFRAMES names, each with at most MY_CSS_MAX_KEYFRAME_STOPS
+ * stops; larger sheets fail to parse. Offsets are `from`, `to` or a
+ * percentage in [0, 100]; a comma list adds one stop per offset. Stop
+ * bodies hold declarations only and are not cascaded into the theme. */
+size_t my_css_keyframes_count(const my_css_sheet_t* sheet);
+
+/** @brief Keyframes rule by index in first-definition order. */
+const my_css_keyframes_t* my_css_keyframes_at(const my_css_sheet_t* sheet,
+                                              size_t index);
+
+/** @brief Keyframes rule by name; NULL when absent. */
+const my_css_keyframes_t* my_css_keyframes_find(const my_css_sheet_t* sheet,
+                                                const char* name);
+
+/** @brief Name of a keyframes rule. */
+const char* my_css_keyframes_name(const my_css_keyframes_t* keyframes);
+
+/** @brief Number of stops; stops are sorted by offset (stable for equal
+ * offsets, so a later stop at the same offset comes after). */
+size_t my_css_keyframes_stop_count(const my_css_keyframes_t* keyframes);
+
+/** @brief Offset of a stop in [0, 1]; -1 for an invalid index. */
+double my_css_keyframes_stop_offset(const my_css_keyframes_t* keyframes,
+                                    size_t stop);
+
+/** @brief Raw declared text of `key` in a stop; NULL when the stop does
+ * not declare it. Later declarations in the same stop win. */
+const char* my_css_keyframes_stop_value(const my_css_keyframes_t* keyframes,
+                                        size_t stop, const char* key);
+
+/** @brief Sample `key` at progress t: picks the two stops around t among
+ * the stops that declare the key and blends them with
+ * my_css_property_interpolate(syntax, ...). t below the first or above
+ * the last such stop clamps to it. Returns false when no stop declares
+ * the key or interpolation fails (the caller then jump-cuts). */
+bool my_css_keyframes_sample(const my_css_keyframes_t* keyframes,
+                             const char* key, const char* syntax, double t,
+                             char* out, size_t cap);
 
 /* ---------------- theme bridge ---------------- */
 

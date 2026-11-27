@@ -2836,3 +2836,24 @@ graphics 与 present queue。`RE_VK_DEVICE_INDEX` 现在也必须通过同一门
 **变异**：4 项全部判红：去掉 JUSTIFY 的 layout 条件、不读 token、段偏移恒为 0、token 查找不加起始列。最后一项首轮让段循环原地不前进，测试卡死；据此把段循环改为 do-while，重跑后该变异以断言失败判红。
 
 **验证**：`test_myui_window_manager` 245/245，ASan+UBSan 245/245；`build-myui-tests` 全量 ctest 482/482。
+
+## 本轮补充：`@keyframes` 解析与采样（2026-11-27）
+
+「未完成能力」表中「完整 CSS/YAML UI」一行的主要风险列有「其他 at-rule 语义」。CSS 已有 `transition`（R686/R687）与已注册自定义属性的插值，但 `@keyframes` 被当作未知 at-rule：宽松模式跳过，严格模式拒绝。
+
+实现（`engine/src/myui/myui/my_css.c`、`my_css.h`）：
+
+- `@keyframes <name> { <stop-list> { decls } ... }`：stop 选择器为 `from`、`to` 或 [0%, 100%] 的百分比，逗号列表每个 offset 一个 stop，共享同一份声明体。声明复用 `css_parse_decl_block`；stop 内的嵌套 `&` 规则拒绝。
+- stop 按 offset 稳定排序。同名 `@keyframes` 后者整体替换前者，保留首次定义的序号。
+- 有界：每表最多 `MY_CSS_MAX_KEYFRAMES`（64）个名字，每个最多 `MY_CSS_MAX_KEYFRAME_STOPS`（32）个 stop；超限解析失败。
+- 查询：`my_css_keyframes_count/at/find/name/stop_count/stop_offset/stop_value`。
+- `my_css_keyframes_sample(keyframes, key, syntax, t, ...)`：只在声明了该 key 的 stop 中找 t 两侧的 stop，按 `my_css_property_interpolate` 混合；t 越界时取最近的 stop。
+- capability registry 新增 `MY_CSS_FEATURE_KEYFRAMES`。
+
+边界：keyframes 不进入 theme 级联，也没有 `animation` 属性、计时、timing function 与迭代控制；调用方负责时钟和进度，采样只覆盖可插值的已注册语法。
+
+**TDD**：`test_myui_css` 新增 4 例（209 例）：stop 排序/逗号列表/同名替换、跨 stop 采样与越界、6 种非法输入与超过 32 个 stop、capability 位。旧实现在严格模式下拒绝 `@keyframes`（RED，3 例失败）。
+
+**变异**：6 项全部判红：不排序、同名不替换、百分比上限放宽到 1000、stop 上限放宽、采样下界不夹取、不跳过未声明 key 的 stop。
+
+**验证**：`test_myui_css` 209/209；ASan+UBSan（含 LeakSanitizer）209/209；`build-myui-tests` 全量 ctest 482/482。

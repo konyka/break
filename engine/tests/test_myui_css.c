@@ -10520,6 +10520,130 @@ TEST(css_layer_rejects_empty_duplicate_and_oversized_names)
                               &error) == NULL);
 }
 
+TEST(css_keyframes_parse_stops_in_offset_order)
+{
+  /* Stops are sorted by offset, from/to map to 0/1, a comma list makes
+   * one stop per offset, and the last @keyframes of a name wins. */
+  const char* css =
+      "@keyframes pulse { to { --glow: 10; } }"
+      "@keyframes fade {"
+      "  to { --alpha: 1; }"
+      "  50%, 25% { --alpha: 0.4; }"
+      "  from { --alpha: 0; --glow: 2; }"
+      "}"
+      "@keyframes pulse { from { --glow: 1; } }"
+      "button { color: red; }";
+  my_css_error_t err = {0};
+  my_css_sheet_t* sheet =
+      my_css_parse_ex(NULL, css, strlen(css), MY_CSS_PARSE_STRICT_AT_RULES,
+                      &err);
+  const my_css_keyframes_t* fade;
+  const my_css_keyframes_t* pulse;
+
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  ASSERT_EQ(my_css_keyframes_count(sheet), 2u);
+  fade = my_css_keyframes_find(sheet, "fade");
+  ASSERT_NOT_NULL(fade);
+  ASSERT_EQ(my_css_keyframes_stop_count(fade), 4u);
+  ASSERT_TRUE(my_css_keyframes_stop_offset(fade, 0u) == 0.0);
+  ASSERT_TRUE(my_css_keyframes_stop_offset(fade, 1u) == 0.25);
+  ASSERT_TRUE(my_css_keyframes_stop_offset(fade, 2u) == 0.5);
+  ASSERT_TRUE(my_css_keyframes_stop_offset(fade, 3u) == 1.0);
+  ASSERT_STR_EQ(my_css_keyframes_stop_value(fade, 0u, "--glow"), "2");
+  ASSERT_TRUE(my_css_keyframes_stop_value(fade, 3u, "--glow") == NULL);
+  pulse = my_css_keyframes_find(sheet, "pulse");
+  ASSERT_NOT_NULL(pulse);
+  ASSERT_EQ(my_css_keyframes_stop_count(pulse), 1u);
+  ASSERT_TRUE(my_css_keyframes_stop_offset(pulse, 0u) == 0.0);
+  ASSERT_TRUE(my_css_keyframes_find(sheet, "missing") == NULL);
+  my_css_sheet_destroy(sheet);
+}
+
+TEST(css_keyframes_sample_interpolates_between_stops)
+{
+  const char* css =
+      "@keyframes fade {"
+      "  from { --alpha: 0; --tint: red; }"
+      "  25% { --alpha: 0.4; }"
+      "  to { --alpha: 1; --tint: blue; }"
+      "}";
+  my_css_sheet_t* sheet = my_css_parse(NULL, css, strlen(css), NULL);
+  const my_css_keyframes_t* fade;
+  char out[64];
+
+  ASSERT_NOT_NULL(sheet);
+  fade = my_css_keyframes_find(sheet, "fade");
+  ASSERT_NOT_NULL(fade);
+  ASSERT_TRUE(my_css_keyframes_sample(fade, "--alpha", "<number>", 0.125,
+                                      out, sizeof(out)));
+  ASSERT_STR_EQ(out, "0.2");
+  ASSERT_TRUE(my_css_keyframes_sample(fade, "--alpha", "<number>", 0.625,
+                                      out, sizeof(out)));
+  ASSERT_STR_EQ(out, "0.7");
+  /* Stops without the property are skipped: --tint blends from to to. */
+  ASSERT_TRUE(my_css_keyframes_sample(fade, "--tint", "<color>", 0.5, out,
+                                      sizeof(out)));
+  ASSERT_STR_EQ(out, "#800080ff");
+  /* Progress clamps to the first and last stop holding the property. */
+  ASSERT_TRUE(my_css_keyframes_sample(fade, "--alpha", "<number>", -1.0,
+                                      out, sizeof(out)));
+  ASSERT_STR_EQ(out, "0");
+  ASSERT_TRUE(my_css_keyframes_sample(fade, "--alpha", "<number>", 2.0,
+                                      out, sizeof(out)));
+  ASSERT_STR_EQ(out, "1");
+  ASSERT_FALSE(my_css_keyframes_sample(fade, "--absent", "<number>", 0.5,
+                                       out, sizeof(out)));
+  ASSERT_FALSE(my_css_keyframes_sample(NULL, "--alpha", "<number>", 0.5,
+                                       out, sizeof(out)));
+  my_css_sheet_destroy(sheet);
+}
+
+TEST(css_keyframes_reject_malformed_and_oversized)
+{
+  static const char* const bad[] = {
+      "@keyframes { from { --a: 1; } }",
+      "@keyframes fade { 120% { --a: 1; } }",
+      "@keyframes fade { -5% { --a: 1; } }",
+      "@keyframes fade { middle { --a: 1; } }",
+      "@keyframes fade { from { --a: 1; }",
+      "@keyframes fade { from { --a: 1; } } x",
+  };
+  char big[8192];
+  size_t i;
+  size_t at = 0u;
+  my_css_error_t err;
+
+  for (i = 0u; i < sizeof(bad) / sizeof(bad[0]); i++) {
+    my_css_sheet_t* sheet;
+    memset(&err, 0, sizeof(err));
+    sheet = my_css_parse_ex(NULL, bad[i], strlen(bad[i]),
+                            MY_CSS_PARSE_STRICT_AT_RULES, &err);
+    if (sheet != NULL) {
+      printf("  accepted: %s\n", bad[i]);
+    }
+    ASSERT_TRUE(sheet == NULL);
+    ASSERT_NEQ(err.code, MY_CSS_ERROR_NONE);
+  }
+  /* MY_CSS_MAX_KEYFRAME_STOPS + 1 stops in one rule. */
+  at += (size_t)snprintf(big + at, sizeof(big) - at, "@keyframes many {");
+  for (i = 0u; i <= MY_CSS_MAX_KEYFRAME_STOPS; i++) {
+    at += (size_t)snprintf(big + at, sizeof(big) - at, " %zu%% { --a: 1; }",
+                           i);
+  }
+  at += (size_t)snprintf(big + at, sizeof(big) - at, " }");
+  ASSERT_TRUE(at < sizeof(big));
+  memset(&err, 0, sizeof(err));
+  ASSERT_TRUE(my_css_parse(NULL, big, at, &err) == NULL);
+  ASSERT_NEQ(err.code, MY_CSS_ERROR_NONE);
+}
+
+TEST(css_keyframes_capability_is_registered)
+{
+  ASSERT_TRUE((my_css_capabilities()->supported_features &
+               MY_CSS_FEATURE_KEYFRAMES) != 0u);
+}
+
 TEST(css_capability_registry_is_static_and_explicit)
 {
   const my_css_capabilities_t* first = my_css_capabilities();
@@ -11082,6 +11206,10 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_layer_rejects_empty_duplicate_and_oversized_names);
     RUN_TEST(css_anonymous_layers_get_unique_orders);
     RUN_TEST(css_capability_registry_is_static_and_explicit);
+    RUN_TEST(css_keyframes_parse_stops_in_offset_order);
+    RUN_TEST(css_keyframes_sample_interpolates_between_stops);
+    RUN_TEST(css_keyframes_reject_malformed_and_oversized);
+    RUN_TEST(css_keyframes_capability_is_registered);
     RUN_TEST(css_strict_error_identifies_missing_capability);
     RUN_TEST(css_error_codes_distinguish_policy_and_budget);
     RUN_TEST(css_parse_rejects_unknown_policy_flags);
