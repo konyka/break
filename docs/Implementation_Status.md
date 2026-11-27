@@ -14927,3 +14927,12 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **修复**：记录换行时的内部宽度，取 visual line 前比较，变化则整篇重建；只改高度不重排。
 - **TDD 与变异**：`test_myui_window_manager` 新增 1 例（253 例），旧实现 RED；2 项定向变异判红。
 - **验证**：普通与 ASan+UBSan 下 253/253；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。宽度变化仍整篇重排，按可见区域增量重排未做。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
+
+## 换行 text area 宽度变化时重排全部物理行（更正，2026-11-27）
+
+- **缺陷**：`90e08ddb` 的宽度变化修复只重排首个物理行，因为 `ta_vlines_rebuild_from` 在物理行数未变时复用了其余 visual line。20000 行缩窄后 visual line 数只从 59991 变为 59993。
+- **修复**：新增 `vlines_full_rebuild` 标志，宽度变化时禁用三处复用路径，重建成功后清除。
+- **TDD 与变异**：加强 1 例、新增 1 例（254 例），旧修复 RED；5 项定向变异判红，其中 1 项由 LeakSanitizer 检出。
+- **测量**：20000 行缩窄耗时 1.5 s，visual line 数 59991→80001，为整篇重排；按可见区域增量重排未做。
+- **验证**：普通与 ASan+UBSan 下 254/254；`build-myui-tests` 全量 ctest 482 项无失败；`build-current-vk` 构建通过、28 项相关 ctest 通过。详见 `docs/myui_remaining_work.md` 同日更正。本提交自身的远端工作流结果不在此预写。
+

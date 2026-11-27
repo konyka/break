@@ -1047,7 +1047,7 @@ static my_ret_t ta_vlines_rebuild_from(my_text_area_t* ta, size_t from) {
   size_t old_suffix_start = 0u;
   size_t old_physical_count = 0u;
   size_t candidate_end = 0u;
-  bool reuse_suffix = ta->vlines_reuse_suffix &&
+  bool reuse_suffix = !ta->vlines_full_rebuild && ta->vlines_reuse_suffix &&
                       ta->vlines_reuse_old_line_index <=
                           my_darray_size(old_lines) &&
                       ta->vlines_reuse_new_phys >= from &&
@@ -1143,8 +1143,10 @@ static my_ret_t ta_vlines_rebuild_from(my_text_area_t* ta, size_t from) {
                      (line->phys - ta->vlines_reuse_old_phys);
       }
     }
-  } else if (my_darray_size(ta->fold_ranges) == 0u &&
-      old_physical_count == ta_line_count(ta) && from < ta_line_count(ta)) {
+  } else if (!ta->vlines_full_rebuild &&
+             my_darray_size(ta->fold_ranges) == 0u &&
+             old_physical_count == ta_line_count(ta) &&
+             from < ta_line_count(ta)) {
     size_t i = prefix_count;
     while (i < old_count) {
       const my_visual_line_t* line =
@@ -1154,8 +1156,9 @@ static my_ret_t ta_vlines_rebuild_from(my_text_area_t* ta, size_t from) {
     }
     old_suffix_start = i;
   }
-  if (!reuse_suffix && my_darray_size(ta->fold_ranges) == 0u &&
-      old_physical_count == n && from < n) {
+  if (!reuse_suffix && !ta->vlines_full_rebuild &&
+      my_darray_size(ta->fold_ranges) == 0u && old_physical_count == n &&
+      from < n) {
     my_text_paragraph_t* paragraph;
     size_t suffix_start = ta_line_start(ta, from);
     size_t suffix_end = from + 1u < n ? ta_line_start(ta, from + 1u)
@@ -1266,10 +1269,12 @@ static void ta_vlines_ensure(my_text_area_t* ta) {
   width = ta_inner_width(ta);
   if (width != ta->vlines_width) {
     ta_vlines_invalidate_from(ta, 0);
+    ta->vlines_full_rebuild = true;
   }
   if (ta->vlines_dirty) {
     if (ta_vlines_rebuild_from(ta, ta->vlines_dirty_from) == MY_RET_OK) {
       ta->vlines_dirty = false;
+      ta->vlines_full_rebuild = false;
       ta->vlines_width = width;
     }
   }

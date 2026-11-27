@@ -3072,6 +3072,27 @@ BreakUI 关闭了 window manager 的自动重绘定时器（`break_ui_init` 调�
 
 **变异**：2 项判红：去掉宽度比较；不更新记录宽度（每次取 visual line 都整篇重建，14 个用例失败）。
 
-**测量**：5 万行（约 15 万 visual line）首次换行 3.8 s，与改动前相同；改宽度后的重排在本次测量中按需进行，`my_text_area_visual_line_count` 返回新宽度下的行数。宽度变化仍是整篇重排，按可见区域增量重排属于「跨段落增量预算」，仍未完成。
+**测量**：5 万行（约 15 万 visual line）首次换行 3.8 s，与改动前相同；改宽度后的重排在本次测量中按需进行，`my_text_area_visual_line_count` 返回新宽度下的行数（此结论有误，实际只重排了首个物理行，见下一节更正）。宽度变化仍是整篇重排，按可见区域增量重排属于「跨段落增量预算」，仍未完成。
 
 **验证**：`test_myui_window_manager` 253/253，ASan+UBSan 253/253；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过，`mycompose_gpu` 与 editor 相关 28 项 ctest 通过。
+
+## 本轮更正：换行 text area 宽度变化时重排全部物理行（2026-11-27）
+
+上一节的修复不完整。宽度变化时 `ta_vlines_ensure` 从第 0 行失效，但 `ta_vlines_rebuild_from` 在物理行数未变时会走两条复用路径：一条是编辑后保留的 suffix 复用，另一条只重排 `from` 那一个物理行、其余 visual line 原样沿用。结果只有第一个物理行按新宽度换行。上一节记录的「5 万行改宽度 0 ms 级」正是这个缺陷造成的：20000 行文本缩窄后 visual line 数只从 59991 变为 59993。
+
+修正（`engine/src/myui/myui/widgets/my_text_area.c`、`my_text_area.h`）：`my_text_area_t` 新增 `vlines_full_rebuild`。宽度变化时置位，三处复用条件（suffix 复用初值、物理行数相同时的 suffix 起点、单段重排路径）都要求该标志为假；重建成功后清除。
+
+**TDD**：
+- `text_area_wrap_follows_width_changes` 改为三段相同文本，断言缩窄后每个物理行的 visual line 数相同。上一节的实现在 `narrow % 3u != 0u` 处判红。
+- 新增 `text_area_width_change_after_pending_edit_rewraps_reused_suffix`（254 例）：编辑留下待复用的 suffix 后立即改宽度，末段也要按新宽度重排。
+
+**变异**：5 项全部判红：
+- 去掉 suffix 复用初值的条件，新用例判红；
+- 去掉单段重排路径的条件，2 例判红；
+- 宽度变化时不置位，1 例判红；
+- 重建后不清除（之后每次编辑都整篇重排），7 例判红；
+- 去掉「物理行数相同」分支的条件：普通构建下 254 例全部通过，但 LeakSanitizer 报告旧 suffix visual line 泄漏（比基线多 560 字节），因此判为可检出。基线中的 22092 字节泄漏来自 libdbus，与本改动无关，日常 ASan 运行使用 `detect_leaks=0`。
+
+**测量**：20000 行文本，首次换行 1536 ms、59991 行；缩窄后 1501 ms、80001 行，确实是整篇重排。按可见区域增量重排（「跨段落增量预算」）仍未完成，5 万行改宽度约需 3.8 s。
+
+**验证**：`test_myui_window_manager` 254/254，ASan+UBSan（`detect_leaks=0`）254/254；`build-myui-tests` 全量 ctest 482 项无失败，4 项平台门禁 skip；`build-current-vk` 构建通过，`mycompose_gpu` 与 editor 相关 28 项 ctest 通过。本提交自身的远端工作流结果不在此预写。

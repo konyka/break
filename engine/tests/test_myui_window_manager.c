@@ -3979,13 +3979,32 @@ TEST(text_area_wrap_follows_width_changes)
   ASSERT_EQ(my_text_area_set_wrap(area, true), MY_RET_OK);
   ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 200, 400}),
             MY_RET_OK);
-  ASSERT_EQ(my_text_area_set_text(area, "aa bb cc dd ee ff gg hh ii jj kk ll"),
+  /* several physical lines: every one must rewrap, not only the first. */
+  ASSERT_EQ(my_text_area_set_text(area,
+                                  "aa bb cc dd ee ff gg hh ii jj kk ll\n"
+                                  "aa bb cc dd ee ff gg hh ii jj kk ll\n"
+                                  "aa bb cc dd ee ff gg hh ii jj kk ll"),
             MY_RET_OK);
   wide = my_text_area_visual_line_count(area);
+  ASSERT_EQ(wide % 3u, 0u);
   ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 100, 400}),
             MY_RET_OK);
   narrow = my_text_area_visual_line_count(area);
   ASSERT_TRUE(narrow > wide);
+  ASSERT_EQ(narrow % 3u, 0u);
+  {
+    size_t i;
+    size_t per_line[3] = {0u, 0u, 0u};
+    for (i = 0u; i < narrow; i++) {
+      const my_visual_line_t* vl = my_text_area_visual_line_at(area, i);
+      ASSERT_NOT_NULL(vl);
+      ASSERT_TRUE(vl->phys < 3u);
+      per_line[vl->phys]++;
+    }
+    ASSERT_EQ(per_line[0], narrow / 3u);
+    ASSERT_EQ(per_line[1], narrow / 3u);
+    ASSERT_EQ(per_line[2], narrow / 3u);
+  }
   ASSERT_EQ(my_widget_set_layout_rect(area, &(my_rect_t){0, 0, 200, 400}),
             MY_RET_OK);
   ASSERT_EQ(my_text_area_visual_line_count(area), wide);
@@ -4018,6 +4037,54 @@ TEST(text_area_wrap_reuses_unchanged_prefix_after_edit)
   ASSERT_STR_EQ(my_text_area_get_text(area), "aa\nbxb\ncc");
   ASSERT_TRUE(my_text_area_visual_line_at(area, 0) == prefix);
   my_widget_unref(area);
+}
+
+TEST(text_area_width_change_after_pending_edit_rewraps_reused_suffix)
+{
+  /* An edit leaves a reusable suffix pending; a width change before the
+   * next query must still rewrap that suffix at the new width. */
+  my_widget_t* area = my_text_area_create(NULL);
+  my_font_t* font = my_font_bitmap_create(NULL);
+  my_event_t event = my_event_init(MY_EVENT_KEY_DOWN);
+  size_t wide_last = 0u;
+  size_t narrow_last = 0u;
+  size_t narrow_middle = 0u;
+  size_t i;
+
+  ASSERT_NOT_NULL(area);
+  my_text_area_set_font(area, font, 8);
+  ASSERT_EQ(my_text_area_set_wrap(area, true), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 200, 400}),
+            MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_text(area,
+                                  "aa bb cc dd ee ff gg hh ii jj kk ll\n"
+                                  "aa bb cc dd ee ff gg hh ii jj kk ll\n"
+                                  "aa bb cc dd ee ff gg hh ii jj kk ll"),
+            MY_RET_OK);
+  for (i = 0u; i < my_text_area_visual_line_count(area); i++) {
+    const my_visual_line_t* vl = my_text_area_visual_line_at(area, i);
+    ASSERT_NOT_NULL(vl);
+    if (vl->phys == 2u) wide_last++;
+  }
+  ((my_text_area_t*)area)->cursor_row = 0u;
+  ((my_text_area_t*)area)->cursor_col = 1u;
+  ((my_text_area_t*)area)->anchor_row = 0u;
+  ((my_text_area_t*)area)->anchor_col = 1u;
+  ((my_text_area_t*)area)->focused = true;
+  event.u.key.key = 'x';
+  ASSERT_EQ(area->vtable->on_event(area, &event), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 100, 400}),
+            MY_RET_OK);
+  for (i = 0u; i < my_text_area_visual_line_count(area); i++) {
+    const my_visual_line_t* vl = my_text_area_visual_line_at(area, i);
+    ASSERT_NOT_NULL(vl);
+    if (vl->phys == 1u) narrow_middle++;
+    if (vl->phys == 2u) narrow_last++;
+  }
+  ASSERT_TRUE(narrow_last > wide_last);
+  ASSERT_EQ(narrow_last, narrow_middle);
+  my_widget_unref(area);
+  my_font_destroy(font);
 }
 
 TEST(text_area_wrap_reuses_unchanged_suffix_after_single_line_edit)
@@ -9630,6 +9697,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_area_rtl_syntax_keeps_shaped_glyph_runs);
     RUN_TEST(text_area_wrap_reuses_unchanged_prefix_after_edit);
     RUN_TEST(text_area_wrap_follows_width_changes);
+    RUN_TEST(text_area_width_change_after_pending_edit_rewraps_reused_suffix);
     RUN_TEST(text_area_wrap_reuses_unchanged_suffix_after_single_line_edit);
     RUN_TEST(text_area_wrap_reuses_suffix_after_newline_edit);
     RUN_TEST(text_area_wrap_reuses_suffix_after_newline_delete);

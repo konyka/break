@@ -68,6 +68,7 @@ typedef struct my_text_area_t {
   bool vlines_dirty;        /**< vlines need a rebuild */
   size_t vlines_dirty_from; /**< first physical row requiring rebuild */
   float vlines_width;       /**< inner width the vlines were wrapped at */
+  bool vlines_full_rebuild; /**< every row needs rewrapping (width change) */
   bool vlines_reuse_suffix;
   size_t vlines_reuse_old_line_index;
   size_t vlines_reuse_old_phys;
