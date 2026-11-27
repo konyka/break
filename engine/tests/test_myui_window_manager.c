@@ -3707,6 +3707,98 @@ TEST(text_area_rtl_syntax_keeps_shaped_glyph_runs)
 #endif
 }
 
+static void justify_syntax_case(const char* text, int32_t width,
+                                size_t first_len_cp, int32_t keyword_x0,
+                                int32_t keyword_x1)
+{
+  /* A wrapped, justified YAML line: the keyword must keep its color and
+   * the words after it must stay where the plain justified path puts
+   * them, so only the keyword's pixels may differ from the plain area. */
+  my_widget_t* plain = my_text_area_create(NULL);
+  my_widget_t* highlighted = my_text_area_create(NULL);
+  my_font_t* font = my_font_bitmap_create(NULL);
+  my_lcd_t* plain_lcd = my_lcd_mem_create(NULL, 100, 60, MY_PIXEL_FORMAT_BGRA8888);
+  my_lcd_t* highlighted_lcd =
+      my_lcd_mem_create(NULL, 100, 60, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* plain_canvas = my_vgcanvas_soft_create(NULL, plain_lcd);
+  my_vgcanvas_t* highlighted_canvas =
+      my_vgcanvas_soft_create(NULL, highlighted_lcd);
+  const uint8_t* a;
+  const uint8_t* b;
+  uint32_t stride;
+  size_t x, y;
+  size_t keyword_pixels = 0u;
+  size_t diff_outside_keyword = 0u;
+
+  ASSERT_NOT_NULL(plain);
+  ASSERT_NOT_NULL(highlighted);
+  ASSERT_NOT_NULL(font);
+  ASSERT_NOT_NULL(plain_canvas);
+  ASSERT_NOT_NULL(highlighted_canvas);
+  ASSERT_EQ(my_widget_set_rect(plain, &(my_rect_t){0, 0, width, 50}), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_rect(highlighted, &(my_rect_t){0, 0, width, 50}),
+            MY_RET_OK);
+  my_text_area_set_font(plain, font, 8);
+  my_text_area_set_font(highlighted, font, 8);
+  ASSERT_EQ(my_vgcanvas_set_font(plain_canvas, font, 8), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_set_font(highlighted_canvas, font, 8), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_wrap(plain, true), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_wrap(highlighted, true), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_align(plain, MY_TEXT_ALIGN_JUSTIFY), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_align(highlighted, MY_TEXT_ALIGN_JUSTIFY),
+            MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_text(plain, text), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_text(highlighted, text), MY_RET_OK);
+  ASSERT_EQ(my_text_area_visual_line_count(plain), 2u);
+  ASSERT_EQ(my_text_area_visual_line_at(plain, 0u)->len_cp, first_len_cp);
+  ASSERT_EQ(my_text_area_set_syntax_enabled(highlighted, true), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_syntax_language(highlighted, MY_SYNTAX_YAML),
+            MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_begin_frame(plain_canvas, NULL), MY_RET_OK);
+  plain->vtable->on_paint(plain, plain_canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(plain_canvas), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_begin_frame(highlighted_canvas, NULL), MY_RET_OK);
+  highlighted->vtable->on_paint(highlighted, highlighted_canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(highlighted_canvas), MY_RET_OK);
+  a = my_lcd_mem_get_buffer(plain_lcd);
+  b = my_lcd_mem_get_buffer(highlighted_lcd);
+  stride = my_lcd_mem_get_stride(plain_lcd);
+  ASSERT_EQ(stride, my_lcd_mem_get_stride(highlighted_lcd));
+  for (y = 0u; y < 60u; y++) {
+    for (x = 0u; x < 100u; x++) {
+      const uint8_t* pa = a + y * stride + x * 4u;
+      const uint8_t* pb = b + y * stride + x * 4u;
+      bool in_keyword = y < 14u && (int32_t)x >= keyword_x0 &&
+                        (int32_t)x < keyword_x1;
+      if (pb[0] == 0xB6u && pb[1] == 0x59u && pb[2] == 0x9Bu) {
+        keyword_pixels++;
+      }
+      if (!in_keyword && memcmp(pa, pb, 4u) != 0) diff_outside_keyword++;
+    }
+  }
+  ASSERT_TRUE(keyword_pixels > 0u);
+  ASSERT_EQ(diff_outside_keyword, 0u);
+  my_vgcanvas_destroy(plain_canvas);
+  my_vgcanvas_destroy(highlighted_canvas);
+  my_lcd_destroy(plain_lcd);
+  my_lcd_destroy(highlighted_lcd);
+  my_font_destroy(font);
+  my_widget_unref(plain);
+  my_widget_unref(highlighted);
+}
+
+TEST(text_area_justify_syntax_colors_tokens)
+{
+  /* Bitmap font at size 8: 8 px cells, content starts at x=4, inner width
+   * 64 px. "true aa" (56 px) stretches its one space by 8 px. */
+  justify_syntax_case("true aa bb", 72, 7u, 4, 4 + 32);
+  /* "aa true" puts the keyword after the stretched space: 4 + 16 + 16. */
+  justify_syntax_case("aa true bb", 72, 7u, 36, 36 + 32);
+  /* Two stretched spaces (4 px each): the plain word "b" after the keyword
+   * must not pick up the keyword color through a codepoint drift. */
+  justify_syntax_case("a true b cc", 80, 8u, 24, 24 + 32);
+}
+
 TEST(text_area_rtl_syntax_colors_tokens)
 {
   my_widget_t* plain = my_text_area_create(NULL);
@@ -8998,6 +9090,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_area_rtl_cache_survives_edits_on_other_physical_lines);
     RUN_TEST(text_area_rtl_cache_rejects_prefix_of_longer_cached_line);
     RUN_TEST(text_area_rtl_syntax_colors_tokens);
+    RUN_TEST(text_area_justify_syntax_colors_tokens);
     RUN_TEST(text_area_rtl_syntax_keeps_shaped_glyph_runs);
     RUN_TEST(text_area_wrap_reuses_unchanged_prefix_after_edit);
     RUN_TEST(text_area_wrap_reuses_unchanged_suffix_after_single_line_edit);

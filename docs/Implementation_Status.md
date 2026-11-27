@@ -14799,3 +14799,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **实现**：`ta_draw_syntax_line` 按 visual 顺序合并同 token kind 的连续 item，每段整行整形绘制并用水平 clip 限定到该段范围；开放边界用 float 可精确表示的 `TA_OPEN_CLIP_EXTENT`。
 - **TDD**：`test_myui_window_manager` 新增 `text_area_rtl_syntax_keeps_shaped_glyph_runs`（243 例），要求高亮与无高亮像素逐字节相同；旧实现 RED。
 - **验证**：普通与 ASan+UBSan 下 243/243；`build-myui-tests` 全量 ctest 482/482。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
+
+## JUSTIFY 行的 syntax token 着色（2026-11-27）
+
+- **缺口**：wrap + JUSTIFY 的 LTR 行走逐词拉伸分支，不读 syntax cache，高亮开启后仍为默认颜色。
+- **实现**：新增 `ta_draw_syntax_span`，按 token 边界在给定字节/码点范围内分色绘制；逐词拉伸循环跟踪每个词的起始码点并逐词调用，词宽和拉伸空格不变。
+- **TDD 与变异**：`test_myui_window_manager` 新增 `text_area_justify_syntax_colors_tokens`（244 例），旧实现 RED；3 项定向变异全部判红。
+- **验证**：普通与 ASan+UBSan 下 244/244；`build-myui-tests` 全量 ctest 482/482。RTL JUSTIFY 的 token 着色仍未接入。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。

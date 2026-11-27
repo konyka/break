@@ -1507,6 +1507,79 @@ static bool ta_draw_syntax_line(my_text_area_t* ta, my_vgcanvas_t* vg,
   return true;
 }
 
+static float ta_draw_colored_piece(my_text_area_t* ta, my_vgcanvas_t* vg,
+                                   char* line, size_t byte0, size_t byte1,
+                                   size_t cps, uint32_t color, float x,
+                                   int32_t ty) {
+  char saved;
+  int32_t width = 0;
+  if (byte1 <= byte0) return x;
+  saved = line[byte1];
+  line[byte1] = '\0';
+  my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(color));
+  ta_draw_text(ta, vg, line + byte0, x, (float)ty);
+  if (ta->font != NULL) {
+    my_vgcanvas_measure_text(vg, line + byte0, &width, NULL);
+  } else {
+    width = ta_sat_size_mul(cps, TA_CELL_W);
+  }
+  line[byte1] = saved;
+  return x + (float)width;
+}
+
+/* Draws the bytes [byte0, byte1) of an LTR visual line, which hold the
+ * codepoints [cp0, cp0 + cps) of the line, in their token colors. Text
+ * that no token covers keeps the default color. Returns false when the
+ * line has no tokens yet, leaving the caller to draw it plainly. */
+static bool ta_draw_syntax_span(my_text_area_t* ta, my_vgcanvas_t* vg,
+                                const my_visual_line_t* vl, char* line,
+                                size_t byte0, size_t byte1, size_t cp0,
+                                size_t cps, float x, int32_t ty,
+                                uint32_t normal) {
+  size_t count = 0u, i;
+  size_t span_start = ta_sat_size_add(vl->start_cp, cp0);
+  size_t span_end = ta_sat_size_add(span_start, cps);
+  size_t cursor_cp = span_start;
+  size_t cursor_byte = byte0;
+  const my_syntax_token_t* tokens;
+  if (ta->font == NULL || ta->syntax_cache == NULL ||
+      !my_syntax_cache_line_ready(ta->syntax_cache, vl->phys)) {
+    return false;
+  }
+  tokens = my_syntax_cache_line_tokens(ta->syntax_cache, vl->phys, &count);
+  if (tokens == NULL || count == 0u) return false;
+  for (i = 0u; i < count && cursor_cp < span_end; i++) {
+    size_t start = tokens[i].start_cp;
+    size_t end = ta_sat_size_add(start, tokens[i].len_cp);
+    size_t piece_byte0;
+    size_t piece_byte1;
+    if (end <= cursor_cp) continue;
+    if (start >= span_end) break;
+    if (start > cursor_cp) {
+      size_t gap_byte = tokens[i].start_byte - vl->start_byte;
+      x = ta_draw_colored_piece(ta, vg, line, cursor_byte, gap_byte,
+                                start - cursor_cp, normal, x, ty);
+      cursor_byte = gap_byte;
+      cursor_cp = start;
+    }
+    piece_byte0 = cursor_byte;
+    piece_byte1 = end >= span_end
+                      ? byte1
+                      : tokens[i].start_byte + tokens[i].len_bytes -
+                            vl->start_byte;
+    if (end > span_end) end = span_end;
+    x = ta_draw_colored_piece(ta, vg, line, piece_byte0, piece_byte1,
+                              end - cursor_cp,
+                              ta_syntax_color(normal, tokens[i].kind), x, ty);
+    cursor_byte = piece_byte1;
+    cursor_cp = end;
+  }
+  (void)ta_draw_colored_piece(ta, vg, line, cursor_byte, byte1,
+                              span_end - cursor_cp, normal, x, ty);
+  my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(normal));
+  return true;
+}
+
 static void ta_cursor_to_offset(my_text_area_t* ta, size_t offset) {
   ta_pos_of(ta, offset, &ta->cursor_row, &ta->cursor_col);
   ta->anchor_row = ta->cursor_row;
@@ -3128,6 +3201,7 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
             float space_extra = (float)(inner_w - lw) / (float)nseps;
             float space_w = (float)TA_CELL_W;
             char* p = line;
+            size_t word_cp = 0u;
             if (ta->font != NULL) {
               int32_t spw = 0;
               my_vgcanvas_measure_text(vg, " ", &spw, NULL);
@@ -3146,10 +3220,14 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
               }
               wlen = (size_t)(p - wstart);
               if (wlen > 0) {
-                char separator = *p;
+                char separator;
                 int32_t ww = 0;
+                bool colored = ta_draw_syntax_span(
+                    ta, vg, vl, line, (size_t)(wstart - line),
+                    (size_t)(p - line), word_cp, word_count, x, ty, fg);
+                separator = *p;
                 *p = '\0';
-                ta_draw_text(ta, vg, wstart, x, (float)ty);
+                if (!colored) ta_draw_text(ta, vg, wstart, x, (float)ty);
                 if (ta->font != NULL) {
                   my_vgcanvas_measure_text(vg, wstart, &ww, NULL);
                 } else {
@@ -3158,12 +3236,14 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
                 x += (float)ww;
                 *p = separator;
               }
+              word_cp += word_count;
               while (*p != '\0') {
                 const char* next = p;
                 uint32_t cp = my_utf8_next(&next);
                 if (!my_line_break_is_breaking_space(cp)) break;
                 x += space_w + space_extra;
                 p = (char*)next;
+                word_cp++;
               }
             }
           } else {
