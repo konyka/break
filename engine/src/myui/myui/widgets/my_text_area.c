@@ -676,10 +676,79 @@ static size_t ta_layout_justify_rects(
   return count;
 }
 
+static uint32_t ta_syntax_color(uint32_t normal,
+                                my_syntax_token_kind_t kind);
+static my_syntax_token_kind_t ta_syntax_kind_at(
+    const my_syntax_token_t* tokens, size_t count, size_t logical);
+
+static my_syntax_token_kind_t ta_layout_token_kind(
+    const my_text_layout_t* layout, size_t visual_index,
+    const my_syntax_token_t* tokens, size_t token_count,
+    size_t line_start_cp) {
+  return ta_syntax_kind_at(
+      tokens, token_count,
+      layout->visual_to_logical[visual_index] + line_start_cp);
+}
+
+/* Draws the visual items [first, last) of a justified layout word whose
+ * left edge is at x. With tokens, the word is split where the token kind
+ * changes and each piece is drawn in its token color. */
+static void ta_draw_justify_word(my_text_area_t* ta, my_vgcanvas_t* vg,
+                                 my_text_layout_t* layout, size_t first,
+                                 size_t last, size_t first_byte,
+                                 size_t last_byte, float x, float y,
+                                 const my_syntax_token_t* tokens,
+                                 size_t token_count, size_t line_start_cp,
+                                 uint32_t normal) {
+  int32_t word_x0;
+  size_t piece = first;
+  size_t piece_byte = first_byte;
+  if (tokens == NULL || token_count == 0u) {
+    char saved = layout->visual_utf8[last_byte];
+    layout->visual_utf8[last_byte] = '\0';
+    ta_draw_text(ta, vg, layout->visual_utf8 + first_byte, x, y);
+    layout->visual_utf8[last_byte] = saved;
+    return;
+  }
+  word_x0 = my_text_layout_visual_boundary_x_ex(
+      layout, ta->font, ta->font_size, first, &ta->shaping_params);
+  while (piece < last) {
+    my_syntax_token_kind_t kind =
+        ta_layout_token_kind(layout, piece, tokens, token_count, line_start_cp);
+    size_t end = piece;
+    size_t end_byte = piece_byte;
+    char saved;
+    do {
+      const char* next = layout->visual_utf8 + end_byte;
+      (void)my_utf8_next(&next);
+      end_byte = (size_t)(next - layout->visual_utf8);
+      end++;
+    } while (end < last &&
+             ta_layout_token_kind(layout, end, tokens, token_count,
+                                  line_start_cp) == kind);
+    if (end_byte > last_byte) end_byte = last_byte;
+    saved = layout->visual_utf8[end_byte];
+    layout->visual_utf8[end_byte] = '\0';
+    my_vgcanvas_set_fill_color(
+        vg, my_color_from_rgba32(ta_syntax_color(normal, kind)));
+    ta_draw_text(ta, vg, layout->visual_utf8 + piece_byte,
+                 x + (float)(my_text_layout_visual_boundary_x_ex(
+                                 layout, ta->font, ta->font_size, piece,
+                                 &ta->shaping_params) -
+                             word_x0),
+                 y);
+    layout->visual_utf8[end_byte] = saved;
+    piece = end;
+    piece_byte = end_byte;
+  }
+  my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(normal));
+}
+
 static void ta_draw_justify_layout(
     my_text_area_t* ta, my_vgcanvas_t* vg, my_text_layout_t* layout,
     float base_x, float y, size_t space_count, int32_t line_width,
-    int32_t inner_width) {
+    int32_t inner_width, const my_syntax_token_t* tokens,
+    size_t token_count, size_t line_start_cp, uint32_t normal) {
   size_t i;
   size_t word_start = 0u;
   size_t word_start_byte = 0u;
@@ -696,10 +765,9 @@ static void ta_draw_justify_layout(
     size_t current_byte = visual_offset;
     if (separator || i == layout->len) {
       if (current_byte > word_start_byte) {
-        char saved = layout->visual_utf8[current_byte];
-        layout->visual_utf8[current_byte] = '\0';
-        ta_draw_text(ta, vg, layout->visual_utf8 + word_start_byte, x, y);
-        layout->visual_utf8[current_byte] = saved;
+        ta_draw_justify_word(ta, vg, layout, word_start, i, word_start_byte,
+                             current_byte, x, y, tokens, token_count,
+                             line_start_cp, normal);
         x += (float)(my_text_layout_visual_boundary_x_ex(
                          layout, ta->font, ta->font_size, i,
                          &ta->shaping_params) -
@@ -3100,7 +3168,8 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
           }
           nseps = ta_justify_space_count(line, len);
           if (my_text_layout_may_need_bidi(line) &&
-              (ta->align == MY_TEXT_ALIGN_LEFT || has_sel ||
+              (ta->align == MY_TEXT_ALIGN_LEFT ||
+               ta->align == MY_TEXT_ALIGN_JUSTIFY || has_sel ||
                (ta->syntax_cache != NULL &&
                 my_syntax_cache_line_ready(ta->syntax_cache, vl->phys)))) {
             line_layout = ta_layout_rtl(ta, vl);
@@ -3193,8 +3262,16 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
           }
           my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(fg));
           if (justify && line_layout != NULL) {
+            size_t token_count = 0u;
+            const my_syntax_token_t* tokens = NULL;
+            if (ta->font != NULL && ta->syntax_cache != NULL &&
+                my_syntax_cache_line_ready(ta->syntax_cache, vl->phys)) {
+              tokens = my_syntax_cache_line_tokens(ta->syntax_cache, vl->phys,
+                                                   &token_count);
+            }
             ta_draw_justify_layout(ta, vg, line_layout, (float)base_x,
-                                   (float)ty, (size_t)nseps, lw, inner_w);
+                                   (float)ty, (size_t)nseps, lw, inner_w,
+                                   tokens, token_count, vl->start_cp, fg);
           } else if (justify) {
             /* draw word by word, stretching each separating space */
             float x = (float)base_x;

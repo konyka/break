@@ -2015,7 +2015,7 @@ Canvas 状态 setter 现拒绝 NaN、Inf 和非正 line width，避免非法数�
 | --- | --- | --- | --- |
 | OpenType shaping | 可选 HarfBuzz + FreeType glyph-run 已接入四个 canvas；字体 API 支持 direction/script/language/features；BiDi 构建复用 SheenBidi Unicode 17 primary Script 与仓库内 Unicode 17 Script_Extensions 表，paragraph 按 resolved Script 拆分 run，并保留 byte cluster 与失败回滚；无 BiDi 构建复用静态扩展表和常用 primary fallback；Common 标点、Inherited、variation selector 与假名归属已修正；非 shaping fallback 不产生独立 VS glyph；OpenType provider 清理未消费的 VS15/VS16 并保留 ZWJ 组合；字体链已支持 provider 可确认的跨 face variation glyph 覆盖选择；公共 feature 边界、规范化、冲突覆盖、GSUB/GPOS feature 存在性和 HarfBuzz buffer allocation 检查已统一；provider、字体链和 text-layout 聚合层共享 `MY_FONT_SHAPE_MAX_GLYPHS` 输出预算；每个 layout 提供固定 4 槽 LRU glyph-run cache | glyph/advance 与逻辑边界错配、字体缓存跨 key 污染、复杂 RTL 视觉顺序错误、未知 provider 的 variation 能力、font lifetime 不满足缓存契约 | 保持 glyph-id/codepoint 独立缓存；golden glyph/advance、超大 provider 输出、禁用依赖回退和四后端构建；后续补完整跨字体 variation corpus、language-specific feature 选择和完整 RTL GSUB |
 | 复杂 RTL rebreaking | paragraph 按逻辑范围生成 cluster-safe wrapped lines，并在断行测量时复用 visual bidi glyph-run；text area 已消费该模型，RTL 行内映射、同一物理行及相邻物理行之间的全局 visual-line 水平导航、跨 face glyph-run、paragraph shaping 参数、全局 logical ↔ 局部 visual boundary 包装及单段落 JUSTIFY 的绘制/选区/光标联动已接入；跨 visual-line navigation cursor 解决共享 logical boundary 的连续箭头归属；GSUB/GPOS language-system 与 requested feature 存在性可查询；跨物理段落 visual rebreaking、跨段落增量预算和复杂多段落 JUSTIFY 联动仍未完成 | 光标、选区和 line hit-test 在 bidi run/换行边界错位 | 段落模型 golden visual order、重排后逻辑映射、跨 visual-line selection 契约；后续补完整 script/features run shaping 与跨物理段落增量 mapping |
-| 高级编辑器 | 物理行折叠支持严格包含嵌套、有界 YAML v1 状态快照、legacy v0/无版本快照显式升级、可见行缓存 O(rows+ranges) 构建、OOM 正确性回退、行号栏、wrap 增量缓存、visual-line 分页、绘制 scratch 复用、行级 lexer、LTR/RTL 受限 token 着色已实现；完整 RTL GSUB、跨 face token shaping 和 RTL JUSTIFY token 联动未实现（LTR JUSTIFY token 着色已于 2026-11-27 接入） | 大文档单帧 O(n) 卡顿、折叠后索引失效、token 状态跨行污染 | 继续保持 lexer/cache 单帧预算，并补齐 paragraph/run 级 RTL shaping |
+| 高级编辑器 | 物理行折叠支持严格包含嵌套、有界 YAML v1 状态快照、legacy v0/无版本快照显式升级、可见行缓存 O(rows+ranges) 构建、OOM 正确性回退、行号栏、wrap 增量缓存、visual-line 分页、绘制 scratch 复用、行级 lexer、LTR/RTL 受限 token 着色已实现；完整 RTL GSUB、跨 face token shaping 未实现（LTR 与 RTL JUSTIFY token 着色已于 2026-11-27 接入） | 大文档单帧 O(n) 卡顿、折叠后索引失效、token 状态跨行污染 | 继续保持 lexer/cache 单帧预算，并补齐 paragraph/run 级 RTL shaping |
 | 真 partial present | 已完成后端无关的 `SKIP/PARTIAL/FULL` 决策、RHI 有界 damage 帧接口、Wayland EGL buffer-age/damage-present 接入和 dxx 集成；Wayland 在 `EGL_BUFFER_PRESERVED` 成功协商后使用固定容量 history 合并 age>1 重绘区域，history 仅在 swap 成功后更新，失败/resize 自动清除；Vulkan 仍安全全屏，`VK_KHR_incremental_present` 不作为像素保留能力位，因为该扩展不保证 present 后 swapchain image 内容可被 `LOAD`（2026-11-27 起只作为 damage 提示启用，见文末同日补充）；Win32/macOS 仍安全全屏 | 未损伤区域内容丢失、WSI 内容保留语义误用、Vulkan 缺少标准 buffer-age/内容保留契约、真实平台能力未覆盖 | Weston 与真实 Wayland runtime 只覆盖其实际执行项；仍需更多 Wayland buffer-age 轮转、Win32/macOS retained-buffer 语义、异常 present 及具备明确 image 保留保证的 Vulkan/WSI 方案 |
 | 完整 UAX#14 默认规则 | Unicode 17 `LineBreakTest.txt` 已通过 60,487/60,487 边界；SA dictionary 基础 callback 和 paragraph/wrap 接入已完成；核心状态机固定内存、无分配、无锁 | locale-specific tailoring、调用方 SA dictionary 质量和真实平台语言策略 | 版本化 UCD golden corpus 已完成；后续补 locale dictionary corpus、超长输入预算和产品级 tailoring 契约 |
 | 完整 CSS/YAML UI | CSS 已支持最多 4 级祖先路径、descendant/direct-child 链及祖先 type/class/id；主题桥接和 YAML 窗口 style 已有严格诊断与失败回滚；CSS 现提供只读 capability registry 和稳定错误码；`@media all`/`@media screen` 在解析期展开且嵌套有界；新增带一次性上下文的条件媒体解析期评估，支持有界 viewport、orientation、颜色方案、reduced-motion、width/height range，以及 hover、pointer、any-pointer、color-gamut、dynamic-range 设备能力条件；受限 `@media not` 仅修饰单个媒体特性并保留 unknown 语义，查询热路径无媒体分支；YAML UI loader 已替代 XML、采用类型化 schema，支持有界 schema version/migration chain、动态 owned schema，并提供 loader 级 capability registry/error code；query 结果复制到调用者固定存储，动态 schema 替换以跨平台读写租约保护并等待在途加载/查询结束；class registry 已支持冻结后的不可变 table snapshot 运行期新增、替换和删除，loader factory/schema 也支持冻结后的低频运行期新增、替换和删除，旧 descriptor 指针保持进程期稳定；运行期动态 schema 在校验和完整 owned copy 成功后才发布，OOM/非法参数保持旧条目；CSS/YAML/JSON/TOML/BSON 入口均有 4 MiB 输入预算 | 其他 at-rule 语义、HDR/P3 等缺少明确证据的设备能力、全平台 runtime CI；动态 class/factory 回调代码卸载仍需调用方 quiesce 实例和读者 | 将 registry/error 契约扩展到更细 schema 定位；补媒体能力 golden corpus 与真实平台上下文接入，并完成真实平台 runtime 证据 |
@@ -2812,4 +2812,27 @@ graphics 与 present queue。`RE_VK_DEVICE_INDEX` 现在也必须通过同一门
 
 **验证**：`test_myui_window_manager` 244/244，ASan+UBSan 244/244；`build-myui-tests` 全量 ctest 482/482。
 
-边界：RTL 行的 JUSTIFY 绘制（`ta_draw_justify_layout`）仍按整行默认颜色绘制，未与 token 着色联动。
+边界：RTL 行的 JUSTIFY token 着色见下一节。
+
+## 本轮补充：RTL JUSTIFY 行的 syntax token 着色（2026-11-27）
+
+上一节只覆盖 LTR。RTL 的 JUSTIFY 行有两处缺口：
+
+- 开启高亮后，只有 `align == LEFT`、有选区或 syntax 行已就绪时才构造 bidi layout。JUSTIFY 行在高亮未就绪的第一帧与无高亮控件上不构造 layout，走 LTR 逐词分支，RTL 段落顺序错误（无高亮的 JUSTIFY 控件把 "true" 画在右侧）。
+- 有 layout 时，`ta_draw_justify_layout` 逐词绘制 `visual_utf8` 子串，全部使用默认颜色。
+
+修正（`engine/src/myui/myui/widgets/my_text_area.c`）：
+
+- 含 RTL 文本的 JUSTIFY 行总是构造 bidi layout，高亮与否都按 visual 顺序拉伸绘制。
+- `ta_draw_justify_layout` 增加 token 参数。新增 `ta_draw_justify_word`：在词内按 visual 顺序合并相同 token kind 的 item，每段按其 visual boundary 相对词左边界的偏移绘制并设置 token 颜色；无 token 时保持原整词绘制。token 查找用 `ta_layout_token_kind`，把 visual line 的起始列加到逻辑下标上。
+- 段内循环用 do-while，至少前进一个 item，避免 token 查找出错时停在原地。
+
+**TDD**：`test_myui_window_manager` 新增 `text_area_rtl_justify_syntax_colors_tokens`（245 例），四组输入：
+
+- "אב true הו"：高亮区域与无高亮区域的差异像素必须全部是 keyword 颜色；另两条断言固定无高亮时 "true" 在左、Hebrew 方块在右。修正前无高亮控件的字形位置错误，高亮控件没有 keyword 像素（RED）。
+- "א (true הו"：同一个词内有 punctuation 与 keyword 两个 token，keyword 段必须画在自己的 visual 偏移处。
+- 第二条、同样被拉伸的 visual line 上的 keyword：token 查找必须加上 visual line 的起始列。
+
+**变异**：4 项全部判红：去掉 JUSTIFY 的 layout 条件、不读 token、段偏移恒为 0、token 查找不加起始列。最后一项首轮让段循环原地不前进，测试卡死；据此把段循环改为 do-while，重跑后该变异以断言失败判红。
+
+**验证**：`test_myui_window_manager` 245/245，ASan+UBSan 245/245；`build-myui-tests` 全量 ctest 482/482。

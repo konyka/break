@@ -14805,4 +14805,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **缺口**：wrap + JUSTIFY 的 LTR 行走逐词拉伸分支，不读 syntax cache，高亮开启后仍为默认颜色。
 - **实现**：新增 `ta_draw_syntax_span`，按 token 边界在给定字节/码点范围内分色绘制；逐词拉伸循环跟踪每个词的起始码点并逐词调用，词宽和拉伸空格不变。
 - **TDD 与变异**：`test_myui_window_manager` 新增 `text_area_justify_syntax_colors_tokens`（244 例），旧实现 RED；3 项定向变异全部判红。
-- **验证**：普通与 ASan+UBSan 下 244/244；`build-myui-tests` 全量 ctest 482/482。RTL JUSTIFY 的 token 着色仍未接入。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
+- **验证**：普通与 ASan+UBSan 下 244/244；`build-myui-tests` 全量 ctest 482/482。RTL JUSTIFY 的 token 着色见下一节。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
+
+## RTL JUSTIFY 行的 syntax token 着色（2026-11-27）
+
+- **缺口**：含 RTL 文本的 JUSTIFY 行在无高亮或高亮未就绪时不构造 bidi layout，段落顺序错误；有 layout 时逐词绘制不读 token，全部为默认颜色。
+- **实现**：含 RTL 的 JUSTIFY 行总是构造 bidi layout；新增 `ta_draw_justify_word`，在词内按 visual 顺序合并同 kind item 并按各段 visual 偏移分色绘制；段循环至少前进一个 item。
+- **TDD 与变异**：`test_myui_window_manager` 新增 `text_area_rtl_justify_syntax_colors_tokens`（245 例，四组输入），旧实现 RED；4 项定向变异全部判红。
+- **验证**：普通与 ASan+UBSan 下 245/245；`build-myui-tests` 全量 ctest 482/482。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。

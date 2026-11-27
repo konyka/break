@@ -3799,6 +3799,113 @@ TEST(text_area_justify_syntax_colors_tokens)
   justify_syntax_case("a true b cc", 80, 8u, 24, 24 + 32);
 }
 
+/* Paints text in a plain and a YAML-highlighted justified, wrapped RTL
+ * area. Every pixel that differs between the two must carry the keyword
+ * color, and at least one must. Unless probe_x is SIZE_MAX, the plain
+ * pixel at row 9, x = probe_x must equal probe_value, which pins where the
+ * plain glyphs land. */
+static void rtl_justify_syntax_case(const char* text, size_t first_len_cp,
+                                    size_t probe_x, uint8_t probe_value)
+{
+  my_widget_t* plain = my_text_area_create(NULL);
+  my_widget_t* highlighted = my_text_area_create(NULL);
+  my_font_t* font = my_font_bitmap_create(NULL);
+  my_lcd_t* plain_lcd = my_lcd_mem_create(NULL, 100, 60, MY_PIXEL_FORMAT_BGRA8888);
+  my_lcd_t* highlighted_lcd =
+      my_lcd_mem_create(NULL, 100, 60, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* plain_canvas = my_vgcanvas_soft_create(NULL, plain_lcd);
+  my_vgcanvas_t* highlighted_canvas =
+      my_vgcanvas_soft_create(NULL, highlighted_lcd);
+  const uint8_t* a;
+  const uint8_t* b;
+  uint32_t stride;
+  size_t x, y;
+  size_t keyword_pixels = 0u;
+  size_t other_diff = 0u;
+
+  ASSERT_NOT_NULL(plain);
+  ASSERT_NOT_NULL(highlighted);
+  ASSERT_NOT_NULL(font);
+  ASSERT_NOT_NULL(plain_canvas);
+  ASSERT_NOT_NULL(highlighted_canvas);
+  ASSERT_EQ(my_widget_set_rect(plain, &(my_rect_t){0, 0, 72, 50}), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_rect(highlighted, &(my_rect_t){0, 0, 72, 50}),
+            MY_RET_OK);
+  my_text_area_set_font(plain, font, 8);
+  my_text_area_set_font(highlighted, font, 8);
+  ASSERT_EQ(my_vgcanvas_set_font(plain_canvas, font, 8), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_set_font(highlighted_canvas, font, 8), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_wrap(plain, true), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_wrap(highlighted, true), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_align(plain, MY_TEXT_ALIGN_JUSTIFY), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_align(highlighted, MY_TEXT_ALIGN_JUSTIFY),
+            MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_text(plain, text), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_text(highlighted, text), MY_RET_OK);
+  ASSERT_TRUE(my_text_area_visual_line_count(plain) >= 2u);
+  ASSERT_EQ(my_text_area_visual_line_at(plain, 0u)->len_cp, first_len_cp);
+  ASSERT_EQ(my_text_area_set_syntax_enabled(highlighted, true), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_syntax_language(highlighted, MY_SYNTAX_YAML),
+            MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_begin_frame(plain_canvas, NULL), MY_RET_OK);
+  plain->vtable->on_paint(plain, plain_canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(plain_canvas), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_begin_frame(highlighted_canvas, NULL), MY_RET_OK);
+  highlighted->vtable->on_paint(highlighted, highlighted_canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(highlighted_canvas), MY_RET_OK);
+  a = my_lcd_mem_get_buffer(plain_lcd);
+  b = my_lcd_mem_get_buffer(highlighted_lcd);
+  stride = my_lcd_mem_get_stride(plain_lcd);
+  ASSERT_EQ(stride, my_lcd_mem_get_stride(highlighted_lcd));
+  for (y = 0u; y < 60u; y++) {
+    for (x = 0u; x < 100u; x++) {
+      const uint8_t* pa = a + y * stride + x * 4u;
+      const uint8_t* pb = b + y * stride + x * 4u;
+      if (memcmp(pa, pb, 4u) == 0) continue;
+      if (pb[0] == 0xB6u && pb[1] == 0x59u && pb[2] == 0x9Bu) {
+        keyword_pixels++;
+      } else {
+        other_diff++;
+      }
+    }
+  }
+  if (probe_x != SIZE_MAX) {
+    ASSERT_EQ(a[9u * stride + probe_x * 4u], probe_value);
+  }
+  ASSERT_TRUE(keyword_pixels > 0u);
+  ASSERT_EQ(other_diff, 0u);
+  my_vgcanvas_destroy(plain_canvas);
+  my_vgcanvas_destroy(highlighted_canvas);
+  my_lcd_destroy(plain_lcd);
+  my_lcd_destroy(highlighted_lcd);
+  my_font_destroy(font);
+  my_widget_unref(plain);
+  my_widget_unref(highlighted);
+}
+
+TEST(text_area_rtl_justify_syntax_colors_tokens)
+{
+  /* Bitmap font at size 8: 8 px cells, content from x = 4, inner width 64.
+   * The RTL paragraph puts "true" on the left and the two Hebrew tofu
+   * boxes (bottom edge on row 9) after the stretched space on the right,
+   * also without highlighting. */
+  rtl_justify_syntax_case("\xD7\x90\xD7\x91 true \xD7\x94\xD7\x95", 7u,
+                          5u, 255u);
+  rtl_justify_syntax_case("\xD7\x90\xD7\x91 true \xD7\x94\xD7\x95", 7u,
+                          53u, 33u);
+  /* "(true" mixes a punctuation and a keyword token inside one word: the
+   * keyword piece must be drawn at its own visual offset, not at the
+   * word's left edge. The bidi placement of "(" is not pinned here. */
+  rtl_justify_syntax_case("\xD7\x90 (true \xD7\x94\xD7\x95", 7u,
+                          SIZE_MAX, 0u);
+  /* The keyword on the second, also justified, visual line: token lookup
+   * must add the visual line's start column. */
+  rtl_justify_syntax_case(
+      "\xD7\x90\xD7\x91 \xD7\x92\xD7\x93\xD7\x94 \xD7\x95 true "
+      "\xD7\x96\xD7\x97 \xD7\x98\xD7\x99",
+      8u, SIZE_MAX, 0u);
+}
+
 TEST(text_area_rtl_syntax_colors_tokens)
 {
   my_widget_t* plain = my_text_area_create(NULL);
@@ -9091,6 +9198,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_area_rtl_cache_rejects_prefix_of_longer_cached_line);
     RUN_TEST(text_area_rtl_syntax_colors_tokens);
     RUN_TEST(text_area_justify_syntax_colors_tokens);
+    RUN_TEST(text_area_rtl_justify_syntax_colors_tokens);
     RUN_TEST(text_area_rtl_syntax_keeps_shaped_glyph_runs);
     RUN_TEST(text_area_wrap_reuses_unchanged_prefix_after_edit);
     RUN_TEST(text_area_wrap_reuses_unchanged_suffix_after_single_line_edit);
