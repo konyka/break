@@ -3812,6 +3812,84 @@ TEST(css_animation_list_is_bounded_and_validated)
   my_widget_unref(button);
 }
 
+TEST(css_keyframes_stop_timing_function_eases_its_segment)
+{
+  /* A stop's animation-timing-function eases the segment that starts at
+   * it, replacing the animation's own easing there. */
+  const char* css =
+      "@property --size { syntax: \"<number>\"; inherits: false;"
+      " initial-value: 0; }"
+      "@keyframes hop {"
+      "  from { --size: 0; animation-timing-function: steps(2, jump-end); }"
+      "  50% { --size: 10; }"
+      "  to { --size: 20; }"
+      "}"
+      "button { animation: hop 100ms linear; }";
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* button = my_widget_create(NULL, "button");
+  const my_css_keyframes_t* hop;
+  my_value_t out;
+  char text[64];
+
+  ASSERT_NOT_NULL(theme);
+  button->widget_type = "button";
+  my_value_init(&out, NULL);
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  hop = my_theme_keyframes_find(theme, "hop");
+  ASSERT_NOT_NULL(hop);
+  /* the declaration is kept on the stop, not treated as a property. */
+  ASSERT_STR_EQ(my_css_keyframes_stop_value(hop, 0u,
+                                            "animation-timing-function"),
+                "steps(2, jump-end)");
+  /* first segment, steps(2): local 0.4 -> 0, local 0.6 -> 0.5. */
+  ASSERT_TRUE(my_css_keyframes_sample(hop, "--size", "<number>", 0.2, text,
+                                      sizeof(text)));
+  ASSERT_STR_EQ(text, "0");
+  ASSERT_TRUE(my_theme_get_for_widget_var_animating(
+      theme, button, MY_STATE_NORMAL, "--size", 30.0, &out));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 5.0, 1e-9);
+  my_value_reset(&out);
+  /* second segment keeps the animation's linear easing. */
+  ASSERT_TRUE(my_theme_get_for_widget_var_animating(
+      theme, button, MY_STATE_NORMAL, "--size", 70.0, &out));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 14.0, 1e-9);
+  my_value_reset(&out);
+  /* The animation's easing applies per segment, not across the whole
+   * animation: with steps(2) on the animation, 30 ms is local 0.6 of the
+   * first segment (the stop's own steps(2) still wins there) and 70 ms is
+   * local 0.4 of the second, held at the segment start. */
+  ASSERT_EQ(my_theme_load_css_ex(
+                theme, "button { animation: hop 100ms steps(2, jump-end); }",
+                MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget_var_animating(
+      theme, button, MY_STATE_NORMAL, "--size", 70.0, &out));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 10.0, 1e-9);
+  my_value_reset(&out);
+  ASSERT_TRUE(my_theme_get_for_widget_var_animating(
+      theme, button, MY_STATE_NORMAL, "--size", 80.0, &out));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 15.0, 1e-9);
+  my_value_reset(&out);
+  my_widget_unref(button);
+  my_theme_destroy(theme);
+}
+
+TEST(css_keyframes_reject_invalid_stop_timing_function)
+{
+  const char* css =
+      "@keyframes hop { from { --a: 0; animation-timing-function: wobbly; }"
+      " to { --a: 1; } }";
+  my_css_sheet_t* sheet = my_css_parse(NULL, css, strlen(css), NULL);
+  const my_css_keyframes_t* hop;
+  ASSERT_NOT_NULL(sheet);
+  hop = my_css_keyframes_find(sheet, "hop");
+  ASSERT_NOT_NULL(hop);
+  ASSERT_TRUE(my_css_keyframes_stop_value(hop, 0u,
+                                          "animation-timing-function") == NULL);
+  my_css_sheet_destroy(sheet);
+}
+
 TEST(css_animation_declaration_rejects_malformed_values)
 {
   static const char* const bad[] = {
@@ -11426,6 +11504,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_animation_direction_and_fill_mode);
     RUN_TEST(css_animation_list_last_active_wins);
     RUN_TEST(css_animation_list_is_bounded_and_validated);
+    RUN_TEST(css_keyframes_stop_timing_function_eases_its_segment);
+    RUN_TEST(css_keyframes_reject_invalid_stop_timing_function);
     RUN_TEST(css_animation_declaration_rejects_malformed_values);
     RUN_TEST(css_theme_keyframes_survive_clone_and_reload);
     RUN_TEST(css_percentage_length_resolution);

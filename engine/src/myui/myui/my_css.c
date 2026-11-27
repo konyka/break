@@ -1238,6 +1238,32 @@ static bool css_transition_value_ok(const char* text) {
   return groups > 0u;
 }
 
+/* Parses a whole value text (surrounding whitespace allowed) as one
+ * easing into a linear-default spec. */
+static bool css_easing_text_parse(const char* text,
+                                  css_transition_spec_t* spec) {
+  size_t len = strlen(text);
+  size_t start = 0u;
+  memset(spec, 0, sizeof(*spec));
+  spec->x1 = 1.0 / 3.0;
+  spec->y1 = 1.0 / 3.0;
+  spec->x2 = 2.0 / 3.0;
+  spec->y2 = 2.0 / 3.0;
+  while (start < len && (text[start] == ' ' || text[start] == '\t')) start++;
+  while (len > start && (text[len - 1u] == ' ' || text[len - 1u] == '\t')) {
+    len--;
+  }
+  return len > start &&
+         css_transition_easing_token(text + start, len - start, &spec->x1,
+                                     &spec->y1, &spec->x2, &spec->y2,
+                                     &spec->steps_count, &spec->steps_pos);
+}
+
+static bool css_easing_text_ok(const char* text) {
+  css_transition_spec_t spec;
+  return css_easing_text_parse(text, &spec);
+}
+
 /* The `animation` declaration: one group of
  * `<keyframes-name> <duration> [easing] [delay] [<count>|infinite]
  * [direction] [fill-mode]`. The name and duration come first. After them,
@@ -1397,8 +1423,9 @@ static bool css_animation_iteration_reversed(const css_animation_spec_t* spec,
   }
 }
 
-/* Keyframe progress for the spec at `elapsed_ms`, or false when the
- * fill mode applies no animated value at that time. */
+/* Linear keyframe progress (direction applied, easing not) for the spec at
+ * `elapsed_ms`, or false when the fill mode applies no animated value at
+ * that time. Easing applies per keyframe segment when sampling. */
 static bool css_animation_progress(const css_animation_spec_t* spec,
                                    double elapsed_ms, double* progress) {
   double duration = spec->timing.duration_ms;
@@ -1429,7 +1456,6 @@ static bool css_animation_progress(const css_animation_spec_t* spec,
       t = (active - index * duration) / duration;
     }
   }
-  t = css_transition_ease(&spec->timing, t);
   *progress = css_animation_iteration_reversed(spec, index) ? 1.0 - t : t;
   return true;
 }
@@ -2977,6 +3003,13 @@ static bool css_parse_decl_block(css_p_t* p, my_css_rule_t* r,
           my_value_reset(&d->value);
           value_ok = false;
         }
+      } else if (my_str_eq(key, "animation-timing-function")) {
+        value_ok = css_custom_value(p, &d->value, &d->important);
+        if (value_ok &&
+            !css_easing_text_ok(my_value_get_str(&d->value))) {
+          my_value_reset(&d->value);
+          value_ok = false;
+        }
       } else if (my_str_eq(key, "animation")) {
         value_ok = css_custom_value(p, &d->value, &d->important);
         if (value_ok &&
@@ -3600,15 +3633,23 @@ const char* my_css_keyframes_stop_value(const my_css_keyframes_t* keyframes,
   return found;
 }
 
-bool my_css_keyframes_sample(const my_css_keyframes_t* keyframes,
-                             const char* key, const char* syntax, double t,
-                             char* out, size_t cap) {
+/* Samples `key` at keyframe progress t. The segment between the two
+ * stops around t is eased by the starting stop's
+ * animation-timing-function, or by `fallback` (linear when NULL). */
+static bool css_keyframes_sample_eased(const my_css_keyframes_t* keyframes,
+                                       const char* key, const char* syntax,
+                                       double t,
+                                       const css_transition_spec_t* fallback,
+                                       char* out, size_t cap) {
   size_t i;
   size_t before = SIZE_MAX;
   size_t after = SIZE_MAX;
   const char* from;
   const char* to;
+  const char* easing_text;
   double span;
+  double local;
+  css_transition_spec_t easing;
   if (keyframes == NULL || key == NULL || syntax == NULL || out == NULL ||
       cap == 0u) {
     return false;
@@ -3627,10 +3668,22 @@ bool my_css_keyframes_sample(const my_css_keyframes_t* keyframes,
   from = my_css_keyframes_stop_value(keyframes, before, key);
   to = my_css_keyframes_stop_value(keyframes, after, key);
   span = keyframes->stops[after].offset - keyframes->stops[before].offset;
-  return my_css_property_interpolate(
-      syntax, from, to,
-      span > 0.0 ? (t - keyframes->stops[before].offset) / span : 0.0, out,
-      cap);
+  local = span > 0.0 ? (t - keyframes->stops[before].offset) / span : 0.0;
+  easing_text = my_css_keyframes_stop_value(keyframes, before,
+                                            "animation-timing-function");
+  if (easing_text != NULL && css_easing_text_parse(easing_text, &easing)) {
+    local = css_transition_ease(&easing, local);
+  } else if (fallback != NULL) {
+    local = css_transition_ease(fallback, local);
+  }
+  return my_css_property_interpolate(syntax, from, to, local, out, cap);
+}
+
+bool my_css_keyframes_sample(const my_css_keyframes_t* keyframes,
+                             const char* key, const char* syntax, double t,
+                             char* out, size_t cap) {
+  return css_keyframes_sample_eased(keyframes, key, syntax, t, NULL, out,
+                                    cap);
 }
 
 /* ---------------- sheet ---------------- */
@@ -8050,8 +8103,9 @@ bool my_theme_get_for_widget_var_animating(const my_theme_t* theme,
     if (keyframes == NULL || !css_animation_progress(spec, elapsed_ms, &t)) {
       continue;
     }
-    if (my_css_keyframes_sample(keyframes, key, def->syntax, t, blended,
-                                sizeof(blended))) {
+    if (css_keyframes_sample_eased(keyframes, key, def->syntax, t,
+                                   &spec->timing, blended,
+                                   sizeof(blended))) {
       return css_probe_full_value(blended, out);
     }
   }
