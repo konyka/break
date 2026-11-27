@@ -3078,7 +3078,7 @@ BreakUI 关闭了 window manager 的自动重绘定时器（`break_ui_init` 调�
 
 ## 本轮更正：换行 text area 宽度变化时重排全部物理行（2026-11-27）
 
-上一节的修复不完整。宽度变化时 `ta_vlines_ensure` 从第 0 行失效，但 `ta_vlines_rebuild_from` 在物理行数未变时会走两条复用路径：一条是编辑后保留的 suffix 复用，另一条只重排 `from` 那一个物理行、其余 visual line 原样沿用。结果只有第一个物理行按新宽度换行。上一节记录的「5 万行改宽度 0 ms 级」正是这个缺陷造成的：20000 行文本缩窄后 visual line 数只从 59991 变为 59993。
+上一节的修复不完整。宽度变化时 `ta_vlines_ensure` 从第 0 行失效，但 `ta_vlines_rebuild_from` 在物理行数未变时会走两条复用路径：一条是编辑后保留的 suffix 复用，另一条只重排 `from` 那一个物理行、其余 visual line 原样沿用。结果只有第一个物理行按新宽度换行。上一节「改宽度后的重排按需进行」的结论因此不准确：20000 行文本缩窄只用了 0.7 ms，visual line 数只从 59991 变为 59993。
 
 修正（`engine/src/myui/myui/widgets/my_text_area.c`、`my_text_area.h`）：`my_text_area_t` 新增 `vlines_full_rebuild`。宽度变化时置位，三处复用条件（suffix 复用初值、物理行数相同时的 suffix 起点、单段重排路径）都要求该标志为假；重建成功后清除。
 
