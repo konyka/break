@@ -23,12 +23,16 @@ typedef struct {
     u64 held_publication_epoch;
     bool retry_publish;
     bool publish_ready;
+    bool has_reader;
+    bool log_blocked; /* terminal log result; cleared by the next notice */
+    BreakWorldSnapshotReaderId reader;
 } RuntimeWorldConnection;
 
 struct BreakRuntimeWorldSession {
     BreakWorldSession *session;
     BreakRuntimeBus *bus;
     BreakWorldSnapshotPublication *publication;
+    BreakWorldSnapshotLog *log;
     BreakRuntimeQueue *queue;
     PlatformMutex mutex;
     u32 subscriber_id;
@@ -178,6 +182,32 @@ static void runtime_world_clear_publish(BreakRuntimeWorldSession *adapter, bool 
     }
 }
 
+static void runtime_world_drop_reader(BreakRuntimeWorldSession *adapter,
+                                      RuntimeWorldConnection *connection)
+{
+    if (!connection->has_reader) return;
+    (void)break_world_snapshot_log_remove_reader(adapter->log, connection->reader);
+    connection->has_reader = false;
+    connection->reader = 0u;
+}
+
+/* A rebaselined level must not receive the old level's unread epochs: the
+ * reader is replaced and the new one starts at the next published epoch. A
+ * failed add (the log is at max_readers) leaves the connection without a
+ * reader; it then receives nothing until it is closed and opened again. */
+static void runtime_world_replace_reader(BreakRuntimeWorldSession *adapter,
+                                         RuntimeWorldConnection *connection)
+{
+    BreakWorldSnapshotReaderId reader = 0u;
+    if (connection->key == 0u || !adapter->log) return;
+    runtime_world_drop_reader(adapter, connection);
+    connection->log_blocked = false;
+    if (break_world_snapshot_log_add_reader(adapter->log, &reader)) {
+        connection->has_reader = true;
+        connection->reader = reader;
+    }
+}
+
 static BreakRuntimeError runtime_world_apply(BreakRuntimeWorldSession *adapter,
                                              const BreakRuntimeWorldCommand *command,
                                              u64 correlation_id)
@@ -195,6 +225,7 @@ static BreakRuntimeError runtime_world_apply(BreakRuntimeWorldSession *adapter,
         }
         for (usize i = 0u; i < adapter->max_connections; ++i) {
             runtime_world_clear_connection_publish(&adapter->connections[i]);
+            runtime_world_replace_reader(adapter, &adapter->connections[i]);
         }
         /* Adapter-level request/continuation/cursor/observed epoch only: per-connection
          * attempt scalars are healed by the Session rebaseline and the monotonic epoch,
@@ -205,6 +236,7 @@ static BreakRuntimeError runtime_world_apply(BreakRuntimeWorldSession *adapter,
     }
     if (command->kind == BREAK_RUNTIME_WORLD_COMMAND_OPEN) {
         u64 epoch;
+        BreakWorldSnapshotReaderId reader = 0u;
         if (runtime_world_find_connection(adapter, command->connection_key) !=
             adapter->max_connections) {
             return BREAK_RUNTIME_REJECTED;
@@ -216,10 +248,18 @@ static BreakRuntimeError runtime_world_apply(BreakRuntimeWorldSession *adapter,
         if (slot == adapter->max_connections) return BREAK_RUNTIME_REJECTED;
         if (adapter->next_connection_epoch == 0u) return BREAK_RUNTIME_REJECTED;
         epoch = adapter->next_connection_epoch;
+        if (adapter->log &&
+            !break_world_snapshot_log_add_reader(adapter->log, &reader)) {
+            return BREAK_RUNTIME_REJECTED;
+        }
         if (!break_world_session_open(adapter->session, command->connection_key)) {
+            if (adapter->log) (void)break_world_snapshot_log_remove_reader(adapter->log, reader);
             return BREAK_RUNTIME_REJECTED;
         }
         runtime_world_clear_connection_publish(&adapter->connections[slot]);
+        adapter->connections[slot].has_reader = adapter->log != NULL;
+        adapter->connections[slot].log_blocked = false;
+        adapter->connections[slot].reader = reader;
         adapter->connections[slot].key = command->connection_key;
         adapter->connections[slot].epoch = epoch;
         adapter->connections[slot].publish_ready = !adapter->publish_requires_ready;
@@ -238,6 +278,7 @@ static BreakRuntimeError runtime_world_apply(BreakRuntimeWorldSession *adapter,
             return BREAK_RUNTIME_REJECTED;
         }
         runtime_world_clear_connection_publish(&adapter->connections[slot]);
+        runtime_world_drop_reader(adapter, &adapter->connections[slot]);
         memset(&adapter->connections[slot], 0, sizeof(adapter->connections[slot]));
         return BREAK_RUNTIME_OK;
     }
@@ -255,6 +296,9 @@ static BreakRuntimeError runtime_world_apply_notice(
     }
     adapter->publish_request = true;
     adapter->publish_request_level = notice->level_generation;
+    for (usize i = 0u; i < adapter->max_connections; ++i) {
+        adapter->connections[i].log_blocked = false;
+    }
     return BREAK_RUNTIME_OK;
 }
 
@@ -442,6 +486,77 @@ static bool runtime_world_recompute_continuation(
     return false;
 }
 
+static bool runtime_world_log_eligible(const RuntimeWorldConnection *connection)
+{
+    return connection->key != 0u && connection->publish_ready && connection->has_reader &&
+           !connection->log_blocked;
+}
+
+static bool runtime_world_log_continuation(BreakRuntimeWorldSession *adapter)
+{
+    for (usize i = 0u; i < adapter->max_connections; ++i) {
+        const RuntimeWorldConnection *connection = &adapter->connections[i];
+        BreakWorldSessionSenderState state;
+        if (!runtime_world_log_eligible(connection)) continue;
+        if (connection->retry_publish ||
+            break_world_snapshot_log_backlog(adapter->log, connection->reader) != 0u) {
+            return true;
+        }
+        if (break_world_session_sender_state(adapter->session, connection->key, &state) &&
+            state.attempt_pending) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Log source: each eligible connection drains its own reader in order until
+ * it is up to date, its transport is full (OVERLOAD, resumed by the
+ * continuation) or the per-drain budget of sent epochs is spent. */
+static BreakRuntimeError runtime_world_publish_log(BreakRuntimeWorldSession *adapter)
+{
+    BreakRuntimeError result = BREAK_RUNTIME_OK;
+    u64 level = break_world_session_level_generation(adapter->session);
+    u32 budget = adapter->publish_connection_budget;
+    u32 calls = 0u;
+    usize scanned = 0u;
+    adapter->publish_request = false;
+    adapter->publish_request_level = 0u;
+    if (adapter->publish_cursor >= adapter->max_connections) adapter->publish_cursor = 0u;
+    while (scanned < adapter->max_connections && calls < budget) {
+        usize slot = adapter->publish_cursor;
+        RuntimeWorldConnection *connection = &adapter->connections[slot];
+        while (runtime_world_log_eligible(connection) && calls < budget) {
+            BreakWorldSessionLogResult sent = break_world_session_publish_from_log(
+                adapter->session, connection->key, adapter->log, connection->reader, level,
+                NULL);
+            if (sent == BREAK_WORLD_SESSION_LOG_IDLE) break;
+            calls++;
+            if (sent == BREAK_WORLD_SESSION_LOG_SENT) {
+                connection->retry_publish = false;
+                continue;
+            }
+            if (sent == BREAK_WORLD_SESSION_LOG_OVERLOAD) {
+                adapter->publish_overloads++;
+                connection->retry_publish = true;
+                if (result == BREAK_RUNTIME_OK) result = BREAK_RUNTIME_OVERLOAD;
+                break;
+            }
+            adapter->publish_terminal++;
+            connection->retry_publish = false;
+            connection->log_blocked = true;
+            if (result == BREAK_RUNTIME_OK) {
+                result = sent == BREAK_WORLD_SESSION_LOG_CLOSED ? BREAK_RUNTIME_CLOSED
+                                                                : BREAK_RUNTIME_INVALID;
+            }
+        }
+        adapter->publish_cursor = (slot + 1u) % adapter->max_connections;
+        scanned++;
+    }
+    adapter->publish_continuation = runtime_world_log_continuation(adapter);
+    return result;
+}
+
 static BreakRuntimeError runtime_world_publish_current(
     BreakRuntimeWorldSession *adapter)
 {
@@ -452,6 +567,7 @@ static BreakRuntimeError runtime_world_publish_current(
     u32 calls = 0u;
     usize scanned = 0u;
     if (!runtime_world_publish_pending_locked(adapter)) return BREAK_RUNTIME_OK;
+    if (adapter->log) return runtime_world_publish_log(adapter);
 
     memset(&lease, 0, sizeof(lease));
     acquired = break_world_snapshot_publication_acquire(adapter->publication, &lease);
@@ -527,7 +643,11 @@ BreakRuntimeWorldSession *break_runtime_world_session_create(
     u32 capacity;
     u32 max_connections;
     if (!config || !config->session || !config->bus) return NULL;
-    if (!config->publication &&
+    if (config->log && (config->publication || config->publish_waits_for_ack ||
+                        config->publish_keep)) {
+        return NULL;
+    }
+    if (!config->publication && !config->log &&
         (config->publish_connection_budget != 0u || config->publish_requires_ready ||
          config->publish_waits_for_ack || config->publish_keep)) {
         return NULL;
@@ -552,6 +672,7 @@ BreakRuntimeWorldSession *break_runtime_world_session_create(
     adapter->session = config->session;
     adapter->bus = config->bus;
     adapter->publication = config->publication;
+    adapter->log = config->log;
     adapter->max_connections = max_connections;
     adapter->publish_connection_budget = config->publish_connection_budget == 0u
         ? 8u : config->publish_connection_budget;
@@ -708,6 +829,9 @@ bool break_runtime_world_session_destroy(BreakRuntimeWorldSession *adapter)
     adapter->lifecycle_bound = false;
     adapter->lifecycle_destroying = false;
     adapter->lifecycle_binding = NULL;
+    for (usize i = 0u; i < adapter->max_connections; ++i) {
+        runtime_world_drop_reader(adapter, &adapter->connections[i]);
+    }
     platform_mutex_unlock(&adapter->mutex);
     break_runtime_queue_destroy(adapter->queue);
     platform_mutex_destroy(&adapter->mutex);
@@ -778,7 +902,7 @@ BreakRuntimeError break_runtime_world_session_submit_publish_current(
         platform_mutex_unlock(&adapter->mutex);
         return BREAK_RUNTIME_CLOSED;
     }
-    if (!adapter->publication) {
+    if (!adapter->publication && !adapter->log) {
         adapter->rejected++;
         platform_mutex_unlock(&adapter->mutex);
         return BREAK_RUNTIME_REJECTED;

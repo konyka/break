@@ -1,6 +1,7 @@
 #pragma once
 
 #include <ecs/world_session.h>
+#include <ecs/world_snapshot_log.h>
 #include <ecs/world_snapshot_publication.h>
 #include <runtime/runtime_bus.h>
 
@@ -70,6 +71,20 @@ typedef struct {
     BreakWorldSnapshotEntityFilter publish_keep;
     void *(*publish_keep_user_for)(void *ctx, u64 connection_key);
     void *publish_keep_ctx;
+    /* Optional reliable per-epoch source (borrowed), mutually exclusive with
+     * publication. Each open connection owns one reader of the log: OPEN adds
+     * it (the connection starts at the next epoch published after it opened),
+     * CLOSE and a successful destroy remove it, and REBASELINE replaces it so
+     * epochs of the old level that were not read yet are dropped. A
+     * publish-current notice sends every connection all of its unread epochs
+     * in order through break_world_session_publish_from_log, instead of only
+     * the latest one. publish_connection_budget caps the epochs sent per drain
+     * (the rest continues on the next drain without a new notice) and
+     * publish_requires_ready works as with a publication. publish_waits_for_ack
+     * and publish_keep are rejected with a log. A connection whose next epoch
+     * fails terminally (INVALID/CLOSED) is not retried until the next notice.
+     * The publication-epoch fields of the connection snapshots stay 0. */
+    BreakWorldSnapshotLog *log;
 } BreakRuntimeWorldSessionConfig;
 
 typedef struct {

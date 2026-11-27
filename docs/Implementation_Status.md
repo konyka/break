@@ -14602,3 +14602,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：先加 `deps` trace 检查与 `deps_bscn` 夹具并确认失败；关闭建图失败检查的变异被 `deps_bscn` 判红。
 - **验证**：`build-current-vk` 非 fuzz 470/470，fuzz 24/24；联网构建 `test_core_app` 56/56；Windows 实机 MSVC 全量构建通过，`core_app_lifecycle|asset` 18/18。ASan 构建中 `load_unload` 的 LD_PRELOAD 故障注入子场景在改动前后同样失败，属已有环境限制。
 - **仍未完成**：图尚未接到热重载协调器；编辑器尚未调用。本提交自身的远端工作流结果不在此预写。
+
+## Runtime adapter 的日志发布路径（2026-11-27）
+
+- **缺口**：`BreakRuntimeWorldSession` 只能从 coalesce 的 publication 发布。
+- **实现**：配置新增可选 `log`（`BreakWorldSnapshotLog`，与 `publication` 互斥）；每个连接一个读者，随 OPEN/CLOSE/REBASELINE/destroy 管理；通知触发时按序发送每个连接的全部未读 epoch，预算限制每次 drain 的发送数，终止结果等下一个通知再试。设计见 `docs/design/ecs_snapshot_replication_aoi.md` 2026-11-27「Runtime adapter 的日志发布路径」。
+- **TDD 与变异**：新增 8 例（共 68 例），先以编译失败为 RED；11 项变异全部判红。
+- **验证**：联网构建 `runtime|world|core_app` 96/96；ASan 68/68；`build-current-vk` 非 fuzz 470/470，fuzz 24/24；Windows 实机 MSVC 全量构建通过（未开 Snowflake，本模块不在其中编译）。
+- **仍未完成**：core_app 的 adapter 尚未改用日志模式。本提交自身的远端工作流结果不在此预写。

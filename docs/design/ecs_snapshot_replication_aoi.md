@@ -585,3 +585,30 @@ core_app 的接线见 `docs/design/core_app_integration.md` 2026-11-27「可靠�
 
 本提交自身的远端工作流结果不在此预写。
 
+## 补充（2026-11-27）：Runtime adapter 的日志发布路径
+
+**缺口**：`BreakRuntimeWorldSession`（`engine/src/runtime/runtime_world_session.{h,c}`）只能从 coalesce 的 `BreakWorldSnapshotPublication` 发布，慢连接会跳过中间 epoch。
+
+**实现**：`BreakRuntimeWorldSessionConfig` 新增可选字段 `log`（借用的 `BreakWorldSnapshotLog`），与 `publication` 互斥。
+- **读者跟随连接**：OPEN 时为连接添加一个日志读者，从打开之后发布的下一个 epoch 开始读；读者添加失败时 OPEN 以 REJECTED 拒绝，会话也不打开。CLOSE 和成功的 destroy 移除读者。REBASELINE 替换读者，旧关卡未读的 epoch 不会发到新关卡。
+- **发布**：publish-current 通知触发时，对每个就绪连接循环调用 `break_world_session_publish_from_log`，直到 IDLE、OVERLOAD 或预算用完。`publish_connection_budget` 在日志模式下表示每次 drain 最多发送的 epoch 数，剩余部分由 continuation 在下一次 drain 继续，不需要新的通知。OVERLOAD 计入 `publish_overloads` 并在下一次 drain 续发。
+- **终止结果**：INVALID/CLOSED 计入 `publish_terminal`，该连接标记为阻塞，直到下一个通知才再次尝试同一个 epoch，避免每次 drain 空转重试。
+- **配置约束**：`log` 与 `publication`、`publish_waits_for_ack`、`publish_keep` 同时出现时 create 返回 NULL；`publish_requires_ready` 与预算可用。日志模式下连接快照中的 publication epoch 字段保持 0。
+
+**测试**：`test_runtime_world_session` 新增 8 例，共 68 例，先以编译失败（配置无 `log` 字段）为 RED：
+- 配置互斥与不支持的门控被拒绝。
+- 一次 drain 把 3 个已发布 epoch 全部发出（日志 `delivered` 为 3），coalesce 的 publication 只会发最新一个。
+- 读者随 OPEN/CLOSE/destroy 增减；后打开的连接从下一个 epoch 开始。
+- 预算为 1 时 3 个 epoch 分 3 次 drain 发完，期间 pending 为 1。
+- OVERLOAD 后续发，再发剩余 epoch。
+- REBASELINE 丢弃旧关卡未读 epoch。
+- 未就绪连接保留积压，就绪后一次补发。
+- 包构建失败（超过包大小）为终止结果，无新通知时不重试，下一个通知再次尝试。
+
+**变异**：11 项全部判红：每连接只发一个 epoch、CLOSE/REBASELINE/destroy 不处理读者、不设置 continuation、忽略就绪门控、不走日志路径、通知不清除阻塞、终止结果不阻塞。
+
+**验证**：联网构建 `-R "runtime|world|core_app"` 96/96；ASan 构建 `test_runtime_world_session` 68/68；`build-current-vk` 非 fuzz 470/470，fuzz 24/24。Windows 实机 MSVC 全量构建通过，`runtime_world_session|world_session|world_snapshot` 3/3；Windows 构建未开 Snowflake，本模块不在其中编译。
+
+**仍未完成**：core_app 的 Runtime adapter 仍传入 `publication`；`--world-reliable` 路径直接驱动日志，尚未改为经 adapter 的日志模式。
+
+本提交自身的远端工作流结果不在此预写。
