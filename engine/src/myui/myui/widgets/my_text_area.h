@@ -35,6 +35,7 @@ typedef struct my_visual_line_t {
   size_t len_bytes;  /**< byte length of the visual line */
   size_t start_cp; /**< start column (codepoints) within the physical line */
   size_t len_cp;   /**< visual line length in codepoints */
+  float width;     /**< measured advance width in pixels */
 } my_visual_line_t;
 
 #define MY_TEXT_AREA_RTL_CACHE_CAPACITY 4u

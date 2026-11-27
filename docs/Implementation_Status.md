@@ -14957,3 +14957,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **测量**：2 万行文档放宽 518 ms → 274 ms；缩窄未变。
 - **验证**：普通与 ASan+UBSan 下 258/258；全量 ctest 482 项无失败；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
 
+## text area 缩窄时保留仍能放下的段落（2026-11-27）
+
+- **改动**：paragraph 行与 visual line 记录实测宽度；宽度变化时，单行且宽度不超过新换行宽度的段落直接复用，其余重排。放宽与缩窄共用 `ta_vlines_rewrap_width`。
+- **TDD 与变异**：`test_myui_text_layout` 新增 1 例（144 例）并让 replace 等价检查比较行宽；`test_myui_window_manager` 新增 1 例（259 例）；13 项变异全部判红。
+- **测量**：2 万行文档缩窄约 0.5 s → 280 ms，放宽 283 ms。
+- **验证**：普通与 ASan+UBSan 下两者通过；全量 ctest 482 项无失败；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
+

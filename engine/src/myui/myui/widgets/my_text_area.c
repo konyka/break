@@ -932,7 +932,7 @@ static float ta_inner_width(const my_text_area_t* ta) {
 
 static my_ret_t ta_vline_push(my_text_area_t* ta, size_t phys,
                               size_t start_byte, size_t end_byte,
-                              size_t start, size_t len) {
+                              size_t start, size_t len, float width) {
   my_visual_line_t* v =
       (my_visual_line_t*)my_mem_calloc(ta->allocator, 1,
                                        sizeof(my_visual_line_t));
@@ -944,6 +944,7 @@ static my_ret_t ta_vline_push(my_text_area_t* ta, size_t phys,
   v->len_bytes = end_byte - start_byte;
   v->start_cp = start;
   v->len_cp = len;
+  v->width = width;
   if (my_darray_push(ta->vlines, v) != MY_RET_OK) {
     my_mem_free(ta->allocator, v);
     return MY_RET_OOM;
@@ -1032,7 +1033,7 @@ static my_ret_t ta_vlines_append_paragraph(
     start_cp = line->start_cp - physical_cp_base;
     if (ta_vline_push(ta, phys, global_start - physical_start,
                       global_end - physical_start, start_cp,
-                      line->cp_count) != MY_RET_OK) {
+                      line->cp_count, line->width) != MY_RET_OK) {
       return MY_RET_OOM;
     }
   }
@@ -1110,7 +1111,8 @@ static my_ret_t ta_vlines_rebuild_from(my_text_area_t* ta, size_t from) {
             my_text_paragraph_line_at(paragraph, i);
         if (line != NULL &&
             ta_vline_push(ta, pi, line->start_byte, line->end_byte,
-                          line->start_cp, line->cp_count) != MY_RET_OK) {
+                          line->start_cp, line->cp_count,
+                          line->width) != MY_RET_OK) {
           my_text_paragraph_destroy(paragraph);
           ta->vlines = old_lines;
           ta_vlines_destroy_range(ta, new_lines, prefix_count);
@@ -1229,7 +1231,8 @@ static my_ret_t ta_vlines_rebuild_from(my_text_area_t* ta, size_t from) {
           my_text_paragraph_line_at(paragraph, i);
       if (line != NULL) {
         if (ta_vline_push(ta, pi, line->start_byte, line->end_byte,
-                          line->start_cp, line->cp_count) != MY_RET_OK) {
+                          line->start_cp, line->cp_count,
+                          line->width) != MY_RET_OK) {
           my_text_paragraph_destroy(paragraph);
           ta->vlines = old_lines;
           ta_vlines_destroy_range(ta, new_lines, prefix_count);
@@ -1268,26 +1271,25 @@ static size_t ta_vline_phys_at(const my_darray_t* lines, size_t i) {
   return ((const my_visual_line_t*)my_darray_get(lines, i))->phys;
 }
 
-/** @brief Whether lines[i] is the only visual line of its paragraph. */
-static bool ta_vline_is_single(const my_darray_t* lines, size_t i,
-                               size_t count) {
-  size_t phys = ta_vline_phys_at(lines, i);
-  return (i == 0u || ta_vline_phys_at(lines, i - 1u) != phys) &&
-         (i + 1u == count || ta_vline_phys_at(lines, i + 1u) != phys);
-}
-
-/** @brief Rewrap a clean cache at a larger width: a paragraph that fit on
- * one visual line still fits, so its line is kept and only paragraphs that
- * wrapped are shaped again. The old cache stays intact on failure. */
-static my_ret_t ta_vlines_rewrap_wider(my_text_area_t* ta) {
+/** @brief Rewrap a clean cache at a new width: a one-line paragraph whose
+ * measured width fits the new wrap width stays one line with the same
+ * content, so its line is kept; every other paragraph is shaped again.
+ * The old cache stays intact on failure. */
+static my_ret_t ta_vlines_rewrap_width(my_text_area_t* ta) {
   my_darray_t* old_lines = ta->vlines;
   my_darray_t* new_lines;
   size_t old_count = my_darray_size(old_lines);
   size_t n = ta_line_count(ta);
   size_t i = 0u;
-  size_t j;
+  float wrap_width = (float)(int32_t)ta_inner_width(ta);
+  bool* kept;
+  kept = (bool*)my_mem_calloc(ta->allocator, old_count, sizeof(bool));
+  if (kept == NULL) return MY_RET_OOM;
   new_lines = my_darray_create(ta->allocator, old_count);
-  if (new_lines == NULL) return MY_RET_OOM;
+  if (new_lines == NULL) {
+    my_mem_free(ta->allocator, kept);
+    return MY_RET_OOM;
+  }
   ta->vlines = new_lines;
   while (i < old_count) {
     my_visual_line_t* first = (my_visual_line_t*)my_darray_get(old_lines, i);
@@ -1297,8 +1299,9 @@ static my_ret_t ta_vlines_rewrap_wider(my_text_area_t* ta) {
            ta_vline_phys_at(old_lines, group_end) == pi) {
       group_end++;
     }
-    if (group_end == i + 1u) {
+    if (group_end == i + 1u && first->width <= wrap_width) {
       if (my_darray_push(new_lines, first) != MY_RET_OK) goto oom;
+      kept[i] = true;
     } else {
       size_t start_off = ta_line_start(ta, pi);
       size_t end_off = pi + 1u < n ? ta_line_start(ta, pi + 1u)
@@ -1316,7 +1319,8 @@ static my_ret_t ta_vlines_rewrap_wider(my_text_area_t* ta) {
             my_text_paragraph_line_at(paragraph, k);
         if (line != NULL &&
             ta_vline_push(ta, pi, line->start_byte, line->end_byte,
-                          line->start_cp, line->cp_count) != MY_RET_OK) {
+                          line->start_cp, line->cp_count,
+                          line->width) != MY_RET_OK) {
           my_text_paragraph_destroy(paragraph);
           goto oom;
         }
@@ -1325,36 +1329,29 @@ static my_ret_t ta_vlines_rewrap_wider(my_text_area_t* ta) {
     }
     i = group_end;
   }
-  /* a line is single when neither neighbour shares its row; read both
-   * neighbours before freeing anything */
-  {
-    bool prev_shares = false;
-    for (i = 0u; i < old_count; i++) {
-      bool next_shares = i + 1u < old_count &&
-                         ta_vline_phys_at(old_lines, i + 1u) ==
-                             ta_vline_phys_at(old_lines, i);
-      if (prev_shares || next_shares) {
-        my_mem_free(ta->allocator, my_darray_get(old_lines, i));
-      }
-      prev_shares = next_shares;
-    }
+  for (i = 0u; i < old_count; i++) {
+    if (!kept[i]) my_mem_free(ta->allocator, my_darray_get(old_lines, i));
   }
   my_darray_destroy(old_lines);
+  my_mem_free(ta->allocator, kept);
   return MY_RET_OK;
 oom:
-  /* reused lines appear in new_lines in their old order, so one forward
-   * cursor over the old single lines tells them from fresh ones */
-  j = 0u;
-  for (i = 0u; i < my_darray_size(new_lines); i++) {
-    void* line = my_darray_get(new_lines, i);
-    while (j < old_count && !ta_vline_is_single(old_lines, j, old_count)) j++;
-    if (j < old_count && my_darray_get(old_lines, j) == line) {
-      j++;
-    } else {
-      my_mem_free(ta->allocator, line);
+  /* kept lines appear in new_lines in their old order, so one forward
+   * cursor over the kept old lines tells them from fresh ones */
+  {
+    size_t j = 0u;
+    for (i = 0u; i < my_darray_size(new_lines); i++) {
+      void* line = my_darray_get(new_lines, i);
+      while (j < old_count && !kept[j]) j++;
+      if (j < old_count && my_darray_get(old_lines, j) == line) {
+        j++;
+      } else {
+        my_mem_free(ta->allocator, line);
+      }
     }
   }
   my_darray_destroy(new_lines);
+  my_mem_free(ta->allocator, kept);
   ta->vlines = old_lines;
   return MY_RET_OOM;
 }
@@ -1367,9 +1364,9 @@ static void ta_vlines_ensure(my_text_area_t* ta) {
    * set_rect, a layouter, a gutter change): rewrap when the width does */
   width = ta_inner_width(ta);
   if (width != ta->vlines_width) {
-    if (width > ta->vlines_width && !ta->vlines_dirty &&
-        ta->vlines != NULL && my_darray_size(ta->vlines) > 0u &&
-        ta_vlines_rewrap_wider(ta) == MY_RET_OK) {
+    if (!ta->vlines_dirty && ta->vlines != NULL &&
+        my_darray_size(ta->vlines) > 0u &&
+        ta_vlines_rewrap_width(ta) == MY_RET_OK) {
       ta_vlines_invalidate_index(ta);
       ta->vlines_width = width;
     } else {

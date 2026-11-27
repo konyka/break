@@ -13,7 +13,7 @@
 static my_ret_t paragraph_add_line(my_text_paragraph_t* paragraph,
                                    size_t* capacity, size_t start_byte,
                                    size_t end_byte, size_t start_cp,
-                                   size_t cp_count) {
+                                   size_t cp_count, float width) {
   if (paragraph->line_count == *capacity) {
     size_t next = *capacity > 0 ? *capacity * 2 : 8;
     if (next < *capacity || next > SIZE_MAX / sizeof(*paragraph->lines)) {
@@ -27,8 +27,18 @@ static my_ret_t paragraph_add_line(my_text_paragraph_t* paragraph,
     *capacity = next;
   }
   paragraph->lines[paragraph->line_count++] =
-      (my_text_paragraph_line_t){start_byte, end_byte, start_cp, cp_count};
+      (my_text_paragraph_line_t){start_byte, end_byte, start_cp, cp_count,
+                                 width};
   return MY_RET_OK;
+}
+
+/* Advance sum of [from, to): the width the line occupies. */
+static float paragraph_sum_widths(const float* widths, size_t from,
+                                  size_t to) {
+  float total = 0.0f;
+  size_t i;
+  for (i = from; i < to; i++) total += widths[i];
+  return total;
 }
 
 static my_text_paragraph_t* paragraph_process_n_break_profile_callback_ex(
@@ -194,7 +204,7 @@ static my_ret_t paragraph_build_segment(my_text_paragraph_t* paragraph,
 
   if (count == 0) {
     return paragraph_add_line(paragraph, capacity, start_byte, end_byte,
-                              start_cp, 0);
+                              start_cp, 0, 0.0f);
   }
   if (count > SIZE_MAX / sizeof(uint32_t) ||
       count > SIZE_MAX / sizeof(size_t) ||
@@ -245,7 +255,8 @@ static my_ret_t paragraph_build_segment(my_text_paragraph_t* paragraph,
 
   if (max_width <= 0) {
     ret = paragraph_add_line(paragraph, capacity, start_byte, end_byte,
-                             start_cp, count);
+                             start_cp, count,
+                             paragraph_sum_widths(widths, 0u, count));
     goto done;
   }
   while (col < count) {
@@ -278,7 +289,8 @@ static my_ret_t paragraph_build_segment(my_text_paragraph_t* paragraph,
         ret = paragraph_add_line(
             paragraph, capacity, start_byte + offsets[line_start],
             start_byte + offsets[line_end], start_cp + line_start,
-            line_end - line_start);
+            line_end - line_start,
+            paragraph_sum_widths(widths, line_start, line_end));
         if (ret != MY_RET_OK) goto done;
         line_start = next_start;
         col = next_start;
@@ -293,7 +305,8 @@ static my_ret_t paragraph_build_segment(my_text_paragraph_t* paragraph,
   if (line_start < count || paragraph->line_count == 0) {
     ret = paragraph_add_line(
         paragraph, capacity, start_byte + offsets[line_start], end_byte,
-        start_cp + line_start, count - line_start);
+        start_cp + line_start, count - line_start,
+        paragraph_sum_widths(widths, line_start, count));
   }
 
 done:
@@ -810,7 +823,8 @@ my_ret_t my_text_paragraph_replace(my_text_paragraph_t* paragraph,
          old_lines[prefix_count].start_byte < region_lo) {
     const my_text_paragraph_line_t* line = &old_lines[prefix_count];
     ret = paragraph_add_line(paragraph, &capacity, line->start_byte,
-                             line->end_byte, line->start_cp, line->cp_count);
+                             line->end_byte, line->start_cp, line->cp_count,
+                             line->width);
     if (ret != MY_RET_OK) goto rollback;
     prefix_count++;
   }
@@ -848,7 +862,8 @@ my_ret_t my_text_paragraph_replace(my_text_paragraph_t* paragraph,
         paragraph, &capacity,
         (size_t)((ptrdiff_t)line->start_byte + byte_delta),
         (size_t)((ptrdiff_t)line->end_byte + byte_delta),
-        (size_t)((ptrdiff_t)line->start_cp + cp_delta), line->cp_count);
+        (size_t)((ptrdiff_t)line->start_cp + cp_delta), line->cp_count,
+        line->width);
     if (ret != MY_RET_OK) goto rollback;
     suffix_count++;
   }

@@ -1116,6 +1116,39 @@ TEST(paragraph_destroy_releases_owned_shaping_parameters_once)
   ASSERT_EQ(state.live, 0u);
 }
 
+TEST(paragraph_lines_report_their_measured_width)
+{
+  /* Each line reports the advance sum of the codepoints it keeps (trailing
+   * breaking spaces excluded); the bitmap font advances 8 px per glyph. */
+  my_font_t* font = my_font_bitmap_create(NULL);
+  my_text_paragraph_t* paragraph;
+  const my_text_paragraph_line_t* line;
+
+  ASSERT_NOT_NULL(font);
+  paragraph = my_text_paragraph_process(NULL, "abc def", font, 8, 0);
+  ASSERT_NOT_NULL(paragraph);
+  ASSERT_EQ(paragraph->line_count, 1u);
+  line = my_text_paragraph_line_at(paragraph, 0u);
+  ASSERT_FLOAT_EQ(line->width, 56.0, 1e-6);
+  my_text_paragraph_destroy(paragraph);
+
+  paragraph = my_text_paragraph_process(NULL, "abc def", font, 8, 40);
+  ASSERT_NOT_NULL(paragraph);
+  ASSERT_EQ(paragraph->line_count, 2u);
+  ASSERT_FLOAT_EQ(my_text_paragraph_line_at(paragraph, 0u)->width, 24.0,
+                  1e-6);
+  ASSERT_FLOAT_EQ(my_text_paragraph_line_at(paragraph, 1u)->width, 24.0,
+                  1e-6);
+  my_text_paragraph_destroy(paragraph);
+
+  paragraph = my_text_paragraph_process(NULL, "", font, 8, 40);
+  ASSERT_NOT_NULL(paragraph);
+  ASSERT_FLOAT_EQ(my_text_paragraph_line_at(paragraph, 0u)->width, 0.0,
+                  1e-6);
+  my_text_paragraph_destroy(paragraph);
+  my_font_destroy(font);
+}
+
 TEST(paragraph_line_layout_lazily_caches_visual_mapping)
 {
   my_font_t* font = my_font_bitmap_create(NULL);
@@ -3733,6 +3766,7 @@ static void paragraph_expect_equivalent(const my_text_paragraph_t* paragraph) {
     ASSERT_EQ(paragraph->lines[i].end_byte, fresh->lines[i].end_byte);
     ASSERT_EQ(paragraph->lines[i].start_cp, fresh->lines[i].start_cp);
     ASSERT_EQ(paragraph->lines[i].cp_count, fresh->lines[i].cp_count);
+    ASSERT_FLOAT_EQ(paragraph->lines[i].width, fresh->lines[i].width, 1e-6);
   }
   my_text_paragraph_destroy(fresh);
 }
@@ -3974,6 +4008,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(paragraph_process_ex_parameter_copy_is_transactional);
     RUN_TEST(paragraph_destroy_releases_owned_shaping_parameters_once);
     RUN_TEST(paragraph_line_layout_lazily_caches_visual_mapping);
+    RUN_TEST(paragraph_lines_report_their_measured_width);
     RUN_TEST(paragraph_line_layout_cache_isolated_and_retriable_after_oom);
     RUN_TEST(paragraph_line_layout_rejects_corrupt_line_range);
     RUN_TEST(paragraph_line_layout_cache_is_bounded_and_lru);

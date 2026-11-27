@@ -3148,3 +3148,24 @@ BreakUI 关闭了 window manager 的自动重绘定时器（`break_ui_init` 调�
 
 **验证**：`test_myui_window_manager` 258/258，ASan+UBSan（`detect_leaks=0`）258/258；`build-myui-tests` 全量 ctest 482 项无失败；`build-current-vk` 构建通过，28 项相关 ctest 通过。本提交自身的远端工作流结果不在此预写。
 
+## 本轮补充：text area 缩窄时保留仍能放下的段落（2026-11-27）
+
+上一节只处理放宽，缩窄仍整篇重排。缩窄时同样有安全条件：只占一个 visual line 且实测宽度不超过新换行宽度的段落，在新宽度下仍是同一行。这需要每行的实测宽度。
+
+改动：
+- `my_text_paragraph_line_t` 新增 `width`（`engine/src/myui/myr/my_text_paragraph.h`）：该行覆盖的码点的 advance 之和（换行处的断行空格不计入）。断行时由已有的逐码点宽度数组求和，不增加整形调用；`my_text_paragraph_replace` 复用的前后缀行原样保留宽度，因为它们的文本没有变化。
+- `my_visual_line_t` 新增 `width`，由 text area 从 paragraph 行复制。
+- `ta_vlines_rewrap_wider` 改为 `ta_vlines_rewrap_width`，宽度变大或变小都走这条路径：单行且 `width <= 新换行宽度` 的段落直接复用，其余段落重新整形。保留与否逐行记录在一个临时布尔数组里，成功路径与 OOM 路径都按它决定释放哪些对象。
+
+**TDD**：
+- `test_myui_text_layout` 新增 `paragraph_lines_report_their_measured_width`（144 例）：不换行、换行（断行空格不计）、空段落三种情况下的行宽。字段缺失时编译失败（RED）。`paragraph_expect_equivalent` 增加行宽比较，使 replace 系列用例校验复用行的宽度与完整重建一致。
+- `test_myui_window_manager` 新增 `text_area_narrowing_keeps_paragraphs_that_still_fit`（259 例）：从 400 px 缩到 60 px 时只整形六字形段落；缩到恰好等于 "BB" 宽度（48 px 宽、内宽 40 px）时 "BB" 仍保留；再缩窄后 "BB" 才换行。修正前整形次数断言判红。上一节的放宽用例中「缩回时整形 8 次」随之改为 6 次。
+
+**变异**（13 项，全部判红）：
+- text area：复用不看宽度；`<=` 改为 `<`（边界用例判红）；不复制宽度；不标记保留（use-after-free）；成功路径不释放被替换对象（泄漏）；OOM 路径游标不跳过未保留的行（double free）。前两项和第三项的首个写法因 `-Werror` 不可编译，改用等价可编译写法。
+- paragraph：求和越界（ASan heap-buffer-overflow）；宽度改为计入断行空格；replace 前缀或后缀行丢弃宽度（3 个 replace 用例判红）；末行宽度置 0。
+
+**测量**（2 万行，每 10 行一段长段落）：放宽 283 ms、缩窄 280 ms（此前缩窄约 0.5 s，放宽 518 ms）。剩余耗时主要在长段落本身的整形；按可见区域分帧预算仍未完成。
+
+**验证**：`test_myui_window_manager` 259/259、`test_myui_text_layout` 144/144，ASan+UBSan（`detect_leaks=0`）下均通过；`build-myui-tests` 全量 ctest 482 项无失败；`build-current-vk` 构建通过，28 项相关 ctest 通过。本提交自身的远端工作流结果不在此预写。
+

@@ -3547,7 +3547,7 @@ TEST(text_area_rtl_cache_survives_edits_on_other_physical_lines)
   for (i = 0u; i < MY_TEXT_AREA_RTL_CACHE_CAPACITY; i++) {
     const my_text_area_rtl_cache_entry_t* entry = &text_area->rtl_cache[i];
     const my_visual_line_t vl = {entry->phys, entry->start_byte,
-                                 entry->len_bytes, 0u, 0u};
+                                 entry->len_bytes, 0u, 0u, 0.0f};
     size_t start = 0u;
     if (entry->layout == NULL) continue;
     size_t j;
@@ -4322,10 +4322,49 @@ TEST(text_area_wrap_suffix_reuse_oom_preserves_old_objects)
   my_allocator_debug_destroy(allocator);
 }
 
+TEST(text_area_narrowing_keeps_paragraphs_that_still_fit)
+{
+  /* Narrowing reshapes only the paragraphs that wrapped or no longer fit
+   * on one line; a one-line paragraph within the new width is kept. */
+  text_area_variable_font_t font = {{&text_area_variable_font_vtable}, 0, 0};
+  my_widget_t* area = my_text_area_create(NULL);
+  size_t before;
+
+  ASSERT_NOT_NULL(area);
+  my_text_area_set_font(area, (my_font_t*)&font, 16);
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 400, 400}),
+            MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_wrap(area, true), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_text(area, "BB\nBBBBBB\nB\n"), MY_RET_OK);
+  ASSERT_EQ(my_text_area_visual_line_count(area), 4u);
+  ASSERT_TRUE(my_text_area_visual_line_of_pos(area, 2u, 0u, NULL) == 2u);
+  before = font.glyph_calls;
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 60, 400}), MY_RET_OK);
+  ASSERT_TRUE(my_text_area_visual_line_count(area) > 4u);
+  /* "BB" (40 px), "B" and the empty row still fit in the narrower width */
+  ASSERT_EQ(font.glyph_calls - before, 6u);
+  ASSERT_EQ(my_text_area_visual_line_at(area, 0u)->len_cp, 2u);
+  ASSERT_EQ(my_text_area_visual_line_of_pos(area, 2u, 0u, NULL),
+            my_text_area_visual_line_count(area) - 2u);
+  /* exactly the width of "BB" (48 - 2 * 4 px padding = 40): still fits */
+  before = font.glyph_calls;
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 48, 400}), MY_RET_OK);
+  (void)my_text_area_visual_line_count(area);
+  ASSERT_EQ(font.glyph_calls - before, 6u);
+  ASSERT_EQ(my_text_area_visual_line_at(area, 0u)->len_cp, 2u);
+  /* narrower than "BB": that paragraph wraps now */
+  before = font.glyph_calls;
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 30, 400}), MY_RET_OK);
+  ASSERT_EQ(my_text_area_visual_line_count(area), 10u);
+  ASSERT_EQ(font.glyph_calls - before, 8u);
+  ASSERT_EQ(my_text_area_visual_line_at(area, 0u)->len_cp, 1u);
+  my_widget_unref(area);
+}
+
 TEST(text_area_widening_reshapes_only_wrapped_paragraphs)
 {
   /* Widening keeps every single-line paragraph on one line, so only the
-   * paragraphs that wrapped are shaped again; narrowing reshapes all. */
+   * paragraphs that wrapped are shaped again. */
   text_area_variable_font_t font = {{&text_area_variable_font_vtable}, 0, 0};
   my_widget_t* area = my_text_area_create(NULL);
   size_t before;
@@ -4357,7 +4396,8 @@ TEST(text_area_widening_reshapes_only_wrapped_paragraphs)
   before = font.glyph_calls;
   ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 60, 400}), MY_RET_OK);
   ASSERT_TRUE(my_text_area_visual_line_count(area) > 4u);
-  ASSERT_EQ(font.glyph_calls - before, 8u);
+  /* narrowing back: the one-glyph rows still fit and are kept */
+  ASSERT_EQ(font.glyph_calls - before, 6u);
   my_widget_unref(area);
 }
 
@@ -9942,6 +9982,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_area_wrap_suffix_reuse_oom_preserves_old_objects);
     RUN_TEST(text_area_wrap_single_line_edit_shapes_only_changed_row);
     RUN_TEST(text_area_widening_reshapes_only_wrapped_paragraphs);
+    RUN_TEST(text_area_narrowing_keeps_paragraphs_that_still_fit);
     RUN_TEST(text_area_widening_after_pending_edit_reshapes_edited_paragraph);
     RUN_TEST(text_area_wrap_preserves_trailing_empty_line_on_single_line_edit);
     RUN_TEST(text_area_wrap_represents_empty_document_as_empty_visual_line);

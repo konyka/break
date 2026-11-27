@@ -23,6 +23,9 @@ typedef struct my_text_paragraph_line_t {
   size_t end_byte;
   size_t start_cp;
   size_t cp_count;
+  /** @brief Advance sum in pixels of the codepoints the line covers; a
+   * wrapped line does not cover the breaking spaces at its break. */
+  float width;
 } my_text_paragraph_line_t;
 
 typedef struct my_text_paragraph_line_layout_cache_entry_t {
