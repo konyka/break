@@ -4368,6 +4368,7 @@ TEST(text_area_widening_after_pending_edit_reshapes_edited_paragraph)
   text_area_variable_font_t font = {{&text_area_variable_font_vtable}, 0, 0};
   my_widget_t* area = my_text_area_create(NULL);
   my_event_t event = my_event_init(MY_EVENT_KEY_DOWN);
+  size_t before;
 
   ASSERT_NOT_NULL(area);
   my_text_area_set_font(area, (my_font_t*)&font, 16);
@@ -4403,7 +4404,11 @@ TEST(text_area_widening_after_pending_edit_reshapes_edited_paragraph)
   ASSERT_STR_EQ(my_text_area_get_text(area), "BBBBBBB\nB");
   ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 400, 400}),
             MY_RET_OK);
+  before = font.glyph_calls;
   ASSERT_EQ(my_text_area_visual_line_count(area), 2u);
+  /* one rewrap of both rows at the new width, not a widening pass over
+   * the stale lines followed by a second rebuild */
+  ASSERT_EQ(font.glyph_calls - before, 8u);
   ASSERT_EQ(my_text_area_visual_line_at(area, 0u)->len_cp, 7u);
   ASSERT_EQ(my_text_area_visual_line_at(area, 1u)->phys, 1u);
   ASSERT_EQ(my_text_area_visual_line_at(area, 1u)->len_cp, 1u);
