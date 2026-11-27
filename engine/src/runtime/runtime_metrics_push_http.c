@@ -25,7 +25,11 @@ static BreakRuntimeError push_http_post(const BreakRuntimeMetricsPushHttp *ctx, 
     int status = 0;
     BreakHttpError http = break_http_post(&ctx->cfg, url, body, len, content_type, resp,
                                           sizeof(resp), &resp_len, &status);
-    return http == BHTTP_OK && status == 200 ? BREAK_RUNTIME_OK : BREAK_RUNTIME_FAILED;
+    /* The answer body carries nothing the push needs: a 200 whose body does
+     * not fit the buffer (TOO_BIG is decided after the status line) is still
+     * a delivery. */
+    if (status == 200 && (http == BHTTP_OK || http == BHTTP_ERR_TOO_BIG)) return BREAK_RUNTIME_OK;
+    return BREAK_RUNTIME_FAILED;
 }
 
 BreakRuntimeError break_runtime_metrics_push_http(const BreakRuntimeMetricsPushHttp *ctx,

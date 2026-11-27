@@ -14964,3 +14964,13 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **测量**：2 万行文档缩窄约 0.5 s → 280 ms，放宽 283 ms。
 - **验证**：普通与 ASan+UBSan 下两者通过；全量 ctest 482 项无失败；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
 
+## 指标推送：200 应答体超过缓冲不再判为失败（2026-11-27）
+
+- **缺陷**（此前审查记录的次要问题）：`break_runtime_metrics_push_http` 与 `_push_alerts_http` 用 256 字节缓冲接收应答体，`break_http_post` 对更大的应答体返回 `BHTTP_ERR_TOO_BIG`，适配层因此把采集器已经接收的 200 报为 `FAILED`，调用方会重发同一份快照或告警边沿。
+- **修复**（`engine/src/runtime/runtime_metrics_push_http.c`）：状态码为 200 且结果为 `BHTTP_OK` 或 `BHTTP_ERR_TOO_BIG` 时返回 `OK`。`break_http` 在解析状态行之后才判断应答体大小，所以此时的 200 可信；非 200 仍为 `FAILED`。
+- **TDD**：`test_runtime_metrics_push_http` 新增 `a_200_answer_with_a_large_body_is_still_ok`（13 例）：2000 字节应答体的 200 对 `/metrics` 与 `/alerts` 都是 `OK`，带 1000 字节应答体的 503 仍是 `FAILED`。修复前第一处断言判红。
+- **变异**：3 项判红：只接受 `BHTTP_OK`；把 503 也当作成功；任何传输结果都接受。
+- **验证**：`test_runtime_metrics_push_http` 13/13，ASan+UBSan 13/13；`build-myui-tests` 全量 ctest 482 项无失败。
+- **未改动**：`break_crash_upload_http` 有同样的 256 字节应答缓冲。它的头文件明确把「过大的应答」列为失败，`test_break_crash_upload_http` 的 `a_200_with_broken_framing_is_failure` 也固定了这一行为。改为成功会改变 spool 的重试语义（失败时记录保留并重传，服务端可能收到重复记录），属于契约变更，本提交不做，留待确认服务端去重策略。
+- 本提交自身的远端工作流结果不在此预写。
+

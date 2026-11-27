@@ -32,7 +32,8 @@ typedef struct BreakRuntimeMetricsPushHttp {
 /* Encodes `metrics` and POSTs it. Must run on the registry's owner thread
  * (encode is owner-only) and blocks for at most the break_http budgets, so
  * call it from a diagnostics thread step, never a hot path.
- *   OK       — the collector answered HTTP 200.
+ *   OK       — the collector answered HTTP 200 (its body is ignored,
+ *              whatever its size).
  *   INVALID  — NULL ctx/metrics, empty, unterminated or '/'-terminated base
  *              URL, or a URL that does not fit; nothing is sent.
  *   REJECTED — called off the registry's owner thread; nothing is sent.

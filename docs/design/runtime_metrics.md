@@ -149,7 +149,7 @@
 `break_runtime_metrics_push_http(ctx, metrics)`（`engine/src/runtime/runtime_metrics_push_http.{c,h}`）把注册表当前编码 POST 到 `<base_url>/metrics`，`Content-Type: text/x-break-metrics`。它是独立静态库 `runtime_metrics_push_http`（依赖 `runtime_core` 与 `break_http`），与 `break_crash_upload_http` 同构：`runtime_core` 归档保持无网络符号，engine/engine_demo/dxx_break/editor 不链接它。
 
 - 传输规则沿用 `break_http`：https 必须给 CA 文件，明文 http 只允许回环地址，不跟随重定向，连接与总 I/O 时间有界。
-- 只有完整的 HTTP 200 回答算 `OK`；连接/TLS 失败、超时、URL 被拒、非 200、畸形回答一律 `FAILED`，重试由调用方安排。
+- 只有完整的 HTTP 200 回答算 `OK`；连接/TLS 失败、超时、URL 被拒、非 200、畸形回答一律 `FAILED`，重试由调用方安排。200 的应答体不被读取：超过内部 256 字节缓冲（`break_http` 报 `BHTTP_ERR_TOO_BIG`，状态码此时已解析）仍算 `OK`；非 200 即使带大应答体也是 `FAILED`。`/alerts` 推送同样如此。
 - 本地拒绝且不发起连接：ctx/metrics 为 NULL、base URL 为空/无 NUL/以 `/` 结尾/拼接后超长 → `INVALID`；非注册表拥有线程 → `REJECTED`；编码超过 `BREAK_RUNTIME_METRICS_PUSH_HTTP_MAX_BYTES`（64 KiB）→ `OVERLOAD`；编码缓冲分配失败 → `OOM`。
 - 先以零容量 encode 取所需长度，再按长度一次分配并编码；空注册表推送空 body。
 - 调用阻塞至多 `break_http` 的时间预算，应放在诊断线程步进中，不能在热路径调用。POSIX 与 Windows 均可用（同 `break_http`，Windows 移植见第 36 节）。告警投递见第 21 节。

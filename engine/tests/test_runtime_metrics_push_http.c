@@ -330,6 +330,39 @@ TEST(alert_edges_are_posted_to_the_alerts_endpoint) {
     ASSERT_EQ(f.got_len, strlen(f.got));
 }
 
+/* The collector's answer body carries nothing the push needs: a 200 with a
+ * body larger than any fixed response buffer is still a delivery. */
+static char g_big_answer[2400];
+
+static const char *big_ok_answer(void) {
+    static const char head[] = "HTTP/1.1 200 OK\r\nContent-Length: 2000\r\nConnection: close\r\n\r\n";
+    size_t n = strlen(head);
+    memcpy(g_big_answer, head, n);
+    memset(g_big_answer + n, 'x', 2000u);
+    g_big_answer[n + 2000u] = '\0';
+    return g_big_answer;
+}
+
+TEST(a_200_answer_with_a_large_body_is_still_ok) {
+    static Fake f;
+    BreakRuntimeMetricsPushHttp c;
+    BreakRuntimeMetrics *m = sample_registry();
+    const BreakRuntimeMetricAlertEdge edges[] = {BREAK_RUNTIME_METRIC_ALERT_STEADY,
+                                                 BREAK_RUNTIME_METRIC_ALERT_CLEARED};
+    int port = 0;
+    ASSERT_NOT_NULL(m);
+    ASSERT_EQ(push_against(big_ok_answer(), m, &f), BREAK_RUNTIME_OK);
+    ASSERT_TRUE(fake_start(&f, big_ok_answer(), &port));
+    ctx_for(&c, port);
+    ASSERT_EQ(break_runtime_metrics_push_alerts_http(&c, kRules, edges, 2u), BREAK_RUNTIME_OK);
+    fake_stop(&f);
+    /* a large body on a non-200 answer is still a failure */
+    ASSERT_EQ(push_against("HTTP/1.1 503 Busy\r\nContent-Length: 1000\r\nConnection: close\r\n\r\n",
+                           m, &f),
+              BREAK_RUNTIME_FAILED);
+    break_runtime_metrics_destroy(m);
+}
+
 TEST(all_steady_edges_send_nothing_and_succeed) {
     static Fake f;
     BreakRuntimeMetricsPushHttp c;
@@ -588,6 +621,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(plain_http_off_loopback_and_https_without_a_ca_are_failed);
     RUN_TEST(a_silent_collector_is_cut_off_at_the_io_timeout);
     RUN_TEST(alert_edges_are_posted_to_the_alerts_endpoint);
+    RUN_TEST(a_200_answer_with_a_large_body_is_still_ok);
     RUN_TEST(all_steady_edges_send_nothing_and_succeed);
     RUN_TEST(alert_delivery_failures_and_local_refusals);
     RUN_TEST(a_failed_push_is_parked_and_a_later_drain_delivers_it);
