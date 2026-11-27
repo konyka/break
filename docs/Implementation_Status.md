@@ -14644,3 +14644,13 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
   - `build-rws-asan` ASan+UBSan 75/75。
   - `build-current-vk` 非 fuzz 466/466，fuzz 未在此构建树跑。
 - **仍未完成**：编辑器热重载协调器接入；core_app 每连接诊断 World 的 `BreakWorldMerge` 接入。本提交自身的远端工作流结果不在此预写。
+
+## `break_editor_scene_deps_dependents_of_path`（2026-11-27）
+
+- **缺口**：`BreakEditorSceneDeps` 能查出某文件对应的 id（`ids_for_path`），但无法直接得到「文件变更后需要重建哪些 id，按什么顺序」。热重载协调器接线需要这个信息。
+- **实现**：`engine/src/editor/editor_scene_deps.{h,c}` 新增 `break_editor_scene_deps_dependents_of_path(deps, path, out, cap)`。对该文件对应的每个 id，调用 `break_asset_graph_dependents` 得到其直接/间接依赖者，合并去重后按场景的 `load_order` 重新排序（依赖在前，各 id 恰好出现一次）；该文件本身重载的 id 不输出（它们由文件重载本身覆盖）。内部分配一次 `4n` 的临时缓冲区，调用结束后释放；`n` 取 `graph.nodes`。等价变异说明已写入代码注释。
+- **TDD 与变异**：
+  - 新增 2 例（`dependents_of_path_returns_the_rebuild_chain`、`dependents_of_path_handles_capacity_and_empty_graph`），先以编译失败为 RED，共 7 例。
+  - 8 项定向变异：4 项判红（dedup 守卫、`!hit continue`、越界写入、load_order 循环不跳第一个），3 项等价变异（循环从 1 开始：等价，纹理节点排首位且不在 `wanted` 里；`wanted` 大小守卫：已由 `ids_for_path` 保证不超 n；`wanted_count != 0` 检查：等价，`load_order` 结果不会命中空 `wanted`），1 项等价（移除 `direct_count > n` 守卫：已由 `ids_for_path` 保证）。
+- **验证**：`test_editor_scene_deps` 7/7；`test_editor_shell` 189/189；`build-current-vk` 非 fuzz 466/466。
+- **仍未完成**：`dependents_of_path` 还没有被 `BreakEditorHotReload` 的 commit hook 调用。本提交自身的远端工作流结果不在此预写。

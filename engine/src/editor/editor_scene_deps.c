@@ -135,3 +135,68 @@ u32 break_editor_scene_deps_ids_for_path(const BreakEditorSceneDeps *deps, const
     }
     return total;
 }
+
+u32 break_editor_scene_deps_dependents_of_path(const BreakEditorSceneDeps *deps,
+                                               const char *path,
+                                               BreakAssetId *out, u32 cap) {
+    BreakAssetGraphStats gs;
+    BreakAssetId *buf;
+    BreakAssetId *direct;
+    BreakAssetId *wanted;
+    BreakAssetId *order;
+    BreakAssetId *scratch;
+    u32 n, direct_count, wanted_count = 0u, order_count = 0u, total = 0u;
+    BreakAssetId problem = 0u;
+
+    if (!deps || !deps->graph || !path) return 0u;
+    break_asset_graph_stats(deps->graph, &gs);
+    n = gs.nodes;
+    if (n == 0u) return 0u;
+    buf = (BreakAssetId *)malloc((usize)n * 4u * sizeof(BreakAssetId));
+    if (!buf) return 0u;
+    direct = buf;
+    wanted = buf + n;
+    order = buf + 2u * (usize)n;
+    scratch = buf + 3u * (usize)n;
+
+    direct_count = break_editor_scene_deps_ids_for_path(deps, path, direct, n);
+    /* the union of everything depending on any id the file reloads; ids the
+     * same file reloads are excluded, since that reload already covers them.
+     * The output is filtered through the scene's load order below, which
+     * lists each id once, so the duplicate check does not change the result;
+     * it keeps `wanted` within its n slots. There is one path record per
+     * declared id, so direct_count is at most n. */
+    for (u32 d = 0u; d < direct_count; ++d) {
+        u32 count = 0u;
+        if (break_asset_graph_dependents(deps->graph, direct[d], scratch, n, &count) !=
+            BREAK_ASSET_GRAPH_OK) {
+            continue;
+        }
+        for (u32 i = 0u; i < count; ++i) {
+            bool seen = false;
+            for (u32 j = 0u; j < direct_count && !seen; ++j) seen = direct[j] == scratch[i];
+            for (u32 j = 0u; j < wanted_count && !seen; ++j) seen = wanted[j] == scratch[i];
+            if (!seen) wanted[wanted_count++] = scratch[i];
+        }
+    }
+    /* Every dependent is under the scene node (the scene depends on every
+     * material and mesh), so the scene's load order is one dependency order
+     * for the whole union, even when it came from several changed ids. */
+    if (break_asset_graph_load_order(deps->graph, deps->scene_id, order, n, &order_count,
+                                     &problem) == BREAK_ASSET_GRAPH_OK) {
+        /* Texture nodes have no dependencies, so they sort first in
+         * load_order. They are either `path`'s own direct ids (excluded from
+         * `wanted`) or unrelated textures (never dependents of a changed id).
+         * Equivalent-mutant note: starting the loop at i=1 instead of i=0
+         * is equivalent because order[0] is never in `wanted`. */
+        for (u32 i = 0u; i < order_count; ++i) {
+            bool hit = false;
+            for (u32 j = 0u; j < wanted_count && !hit; ++j) hit = wanted[j] == order[i];
+            if (!hit) continue;
+            if (out && total < cap) out[total] = order[i];
+            total++;
+        }
+    }
+    free(buf);
+    return total;
+}

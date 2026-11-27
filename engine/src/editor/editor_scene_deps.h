@@ -56,6 +56,17 @@ void break_editor_scene_deps_free(BreakEditorSceneDeps *deps);
 u32 break_editor_scene_deps_ids_for_path(const BreakEditorSceneDeps *deps, const char *path,
                                          BreakAssetId *out, u32 cap);
 
+/* Everything to rebuild after the file `path` changed: every asset that
+ * depends, directly or not, on an id whose reload path is exactly `path`,
+ * in the scene's load order (dependencies before dependents, each once).
+ * Ids that `path` itself reloads are not listed, since that reload covers
+ * them. Returns the true count and copies up to `cap` into `out` (`out` may
+ * be NULL). 0 for NULL deps/path, an unbuilt struct, a path that matches
+ * nothing, or an allocation failure. */
+u32 break_editor_scene_deps_dependents_of_path(const BreakEditorSceneDeps *deps,
+                                               const char *path,
+                                               BreakAssetId *out, u32 cap);
+
 #ifdef __cplusplus
 }
 #endif

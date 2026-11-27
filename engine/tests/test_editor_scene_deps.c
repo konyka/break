@@ -211,6 +211,95 @@ TEST(texture_paths_resolve_against_the_scene_directory) {
     remove(path);
 }
 
+/* Changing a texture file must rebuild the materials using it and the scene,
+ * in dependency order (materials before scene). */
+TEST(dependents_of_path_returns_the_rebuild_chain) {
+    char path[512], tex_a[600], tex_b[600];
+    BreakEditorSceneDeps deps;
+    BreakAssetId out[16];
+    u32 count = 0u;
+    tmp_path(path, sizeof(path), "scene_deps_rebuild.bscn");
+    ASSERT_TRUE(save_textured_scene(path, true));
+    BreakEditorDoc *doc = doc_from(path);
+    ASSERT_NOT_NULL(doc);
+    ASSERT_EQ(break_editor_scene_deps_build(doc, path, &deps), BREAK_EDITOR_SCENE_DEPS_OK);
+    snprintf(tex_b, sizeof(tex_b), "%s/sub/b.png", test_tmp_root());
+
+    SceneResource *res = NULL;
+    u32 res_count = 0u;
+    ASSERT_TRUE(manifest_of(doc, &res, &res_count));
+    const SceneResource *mat0 = find_res(res, res_count, (u32)BSCN_RES_MATERIAL, 0u);
+    const SceneResource *mat1 = find_res(res, res_count, (u32)BSCN_RES_MATERIAL, 1u);
+    ASSERT_NOT_NULL(mat0);
+    ASSERT_NOT_NULL(mat1);
+
+    /* b.png is used by both materials: both, then the scene that uses them */
+    count = break_editor_scene_deps_dependents_of_path(&deps, tex_b, out, 16u);
+    ASSERT_EQ(count, 3u);
+    ASSERT_TRUE(contains_id(out, 2u, mat0->guid));
+    ASSERT_TRUE(contains_id(out, 2u, mat1->guid));
+    ASSERT_EQ(out[2], deps.scene_id);
+
+    /* a.png is used by material 0 only */
+    snprintf(tex_a, sizeof(tex_a), "%s/a.png", test_tmp_root());
+    count = break_editor_scene_deps_dependents_of_path(&deps, tex_a, out, 16u);
+    ASSERT_EQ(count, 2u);
+    ASSERT_EQ(out[0], mat0->guid);
+    ASSERT_EQ(out[1], deps.scene_id);
+
+    /* the scene file reloads the materials and the scene itself, so nothing
+     * else has to be rebuilt after it */
+    ASSERT_EQ(break_editor_scene_deps_dependents_of_path(&deps, path, out, 16u), 0u);
+    free(res);
+
+    /* a path that matches nothing returns 0 */
+    ASSERT_EQ(break_editor_scene_deps_dependents_of_path(&deps, "unknown.png", out, 16u), 0u);
+
+    /* NULL inputs return 0 */
+    ASSERT_EQ(break_editor_scene_deps_dependents_of_path(NULL, tex_b, out, 16u), 0u);
+    ASSERT_EQ(break_editor_scene_deps_dependents_of_path(&deps, NULL, out, 16u), 0u);
+
+    break_editor_scene_deps_free(&deps);
+    break_editor_doc_destroy(doc);
+    remove(path);
+}
+
+TEST(dependents_of_path_handles_capacity_and_empty_graph) {
+    char path[512], tex_b[600];
+    BreakEditorSceneDeps deps;
+    BreakAssetId out[2];
+    u32 count;
+    tmp_path(path, sizeof(path), "scene_deps_rebuild_cap.bscn");
+    ASSERT_TRUE(save_textured_scene(path, true));
+    BreakEditorDoc *doc = doc_from(path);
+    ASSERT_NOT_NULL(doc);
+    ASSERT_EQ(break_editor_scene_deps_build(doc, path, &deps), BREAK_EDITOR_SCENE_DEPS_OK);
+    snprintf(tex_b, sizeof(tex_b), "%s/sub/b.png", test_tmp_root());
+
+    /* small capacity: returns the true count, copies only up to cap */
+    out[0] = out[1] = 0u;
+    count = break_editor_scene_deps_dependents_of_path(&deps, tex_b, out, 1u);
+    ASSERT_EQ(count, 3u);
+    ASSERT_TRUE(out[0] != 0u);
+    ASSERT_EQ(out[1], 0u);
+
+    /* NULL output: just counts, whatever the capacity */
+    ASSERT_EQ(break_editor_scene_deps_dependents_of_path(&deps, tex_b, NULL, 0u), 3u);
+    ASSERT_EQ(break_editor_scene_deps_dependents_of_path(&deps, tex_b, NULL, 4u), 3u);
+
+    /* a struct whose path records are gone matches nothing */
+    BreakEditorSceneDeps stripped = deps;
+    stripped.internal = NULL;
+    ASSERT_EQ(break_editor_scene_deps_dependents_of_path(&stripped, tex_b, out, 2u), 0u);
+
+    break_editor_scene_deps_free(&deps);
+
+    /* freed deps returns 0 */
+    ASSERT_EQ(break_editor_scene_deps_dependents_of_path(&deps, tex_b, out, 2u), 0u);
+
+    break_editor_doc_destroy(doc);
+    remove(path);
+}
 TEST(a_scene_without_resources_has_only_the_scene_node) {
     char path[512];
     tmp_path(path, sizeof(path), "scene_deps_empty.bscn");
@@ -299,6 +388,8 @@ TEST(scene_id_follows_the_core_app_rule) {
 TEST_MAIN_BEGIN()
     RUN_TEST(build_declares_the_manifest_of_a_real_bscn);
     RUN_TEST(texture_paths_resolve_against_the_scene_directory);
+    RUN_TEST(dependents_of_path_returns_the_rebuild_chain);
+    RUN_TEST(dependents_of_path_handles_capacity_and_empty_graph);
     RUN_TEST(a_scene_without_resources_has_only_the_scene_node);
     RUN_TEST(invalid_arguments_leave_nothing_built);
     RUN_TEST(scene_id_follows_the_core_app_rule);
