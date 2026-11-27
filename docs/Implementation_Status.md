@@ -14594,3 +14594,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：`test_scene_manifest_graph` 10 例，先以链接失败为 RED；37 项变异全部判红。
 - **验证**：ASan+UBSan/TSan 10/10；`build-current-vk` 非 fuzz 470/470，fuzz 24/24；Windows 实机 MSVC 全量构建通过，本测试 10/10。
 - **仍未完成**：场景加载的消费者（编辑器等）尚未调用。本提交自身的远端工作流结果不在此预写。
+
+## core_app 关卡加载的依赖图阶段 `deps`（2026-11-27）
+
+- **缺口**：`scene_manifest_graph` 没有消费者。
+- **实现**：core_app 关卡加载在 `render` 后新增 `deps` 阶段，从 BSCN 资源 manifest 建立属于该关卡的依赖图；建不起来时以 `stage=deps` 拒绝候选关卡，旧关卡继续；提交时写 `event=deps` trace 行（正式关卡 9 节点 9 边）。设计见 `docs/design/core_app_integration.md` 2026-11-27 补充。
+- **TDD 与变异**：先加 `deps` trace 检查与 `deps_bscn` 夹具并确认失败；关闭建图失败检查的变异被 `deps_bscn` 判红。
+- **验证**：`build-current-vk` 非 fuzz 470/470，fuzz 24/24；联网构建 `test_core_app` 56/56；Windows 实机 MSVC 全量构建通过，`core_app_lifecycle|asset` 18/18。ASan 构建中 `load_unload` 的 LD_PRELOAD 故障注入子场景在改动前后同样失败，属已有环境限制。
+- **仍未完成**：图尚未接到热重载协调器；编辑器尚未调用。本提交自身的远端工作流结果不在此预写。

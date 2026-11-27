@@ -1982,3 +1982,22 @@ arm64 lane 新增 `test_core_app_network`（25/25）和 `test_core_app_network_o
 
 本提交自身的远端工作流结果不在此预写。
 
+
+## 补充（2026-11-27）：关卡加载的资产依赖图阶段 `deps`
+
+关卡加载在 `render` 之后、`crossref` 之前新增 `deps` 阶段（`stage_deps`）。它用 `break_scene_manifest_graph_build` 把候选关卡 BSCN 的资源 manifest 声明进一个属于该关卡的 `BreakAssetGraph`（`CoreLevel.deps`，随关卡销毁），场景节点 id 取所有条目 guid 中最大值加 1；最大值是 u64 上限时，从 1 开始找第一个未用的 id。图的容量按条目数计算：节点为条目数加 1，边为条目数乘 6 加 1，因为场景最多依赖每个条目，一个材质最多依赖 5 个纹理槽。条目数超出图的上限时返回 OVERLOAD。
+
+- 图建不起来（例如两个材质占用同一个材质槽，网格对它的链接会有歧义）时，以 `stage=deps` 拒绝候选关卡，旧关卡继续运行，与其他 staging 阶段一致。
+- 提交成功时，在 `level_loaded` 之前写一行 `COREAPPTRACE version=1 event=deps generation=G nodes=N edges=E textures=T materials=M meshes=S dangling=D`。正式关卡为 `nodes=9 edges=9 textures=0 materials=7 meshes=1 dangling=0`：1 个网格、7 个材质，场景节点依赖这 8 个条目，网格依赖它的材质。
+
+**TDD**：先在 `test_core_app_lifecycle_load_unload` 中加入 `deps` trace 行的检查和 `deps_bscn` 夹具（把第二个材质的 ref_index 改成与第一个相同），确认测试失败后再实现。夹具最初把 guid 改成重复，结果在 `render` 阶段就被拒绝（渲染资源要求 id 唯一），因此改为重复的 ref_index，它只在 `deps` 阶段被拒绝。实现后，把 `stage_deps` 的建图失败检查改为永不失败，测试再次变红（`deps_bscn` 未被拒绝），恢复后通过。
+
+**验证**：
+- `build-current-vk` 非 fuzz 470/470，fuzz 24/24。
+- 联网构建 `build-core-app-net` 中 `-R test_core_app` 56/56。
+- ASan 构建的 12 个 lifecycle 测试中 11 个通过。`load_unload` 只有 LD_PRELOAD 故障注入的几个子场景失败（ASan 运行时不在 preload 首位）；改动前的同一提交也是这些子场景失败，属已有的环境限制，与本切片无关。
+- Windows 实机 MSVC 全量构建通过，`core_app_lifecycle|asset` 18/18；`load_unload` 在 Windows 上执行了 `deps_bscn`，只跳过仅限 Linux 的 LD_PRELOAD 故障注入。
+
+仍未完成：图建好后还没有接到热重载协调器；core_app 不监视资产文件，也没有使用 `runtime_reload_deps`。
+
+本提交自身的远端工作流结果不在此预写。

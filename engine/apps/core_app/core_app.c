@@ -13,6 +13,7 @@
 #include <animation/animation.h>
 #include <animation/facial.h>
 #include <renderer/lod_skin.h>
+#include <asset/scene_manifest_graph.h>
 #include <asset/vfs.h>
 #include <audio/audio_extended.h>
 #include <kernel/break_flow.h>
@@ -88,6 +89,9 @@ typedef struct CoreLevel {
     BreakAiRuntime *ai;
     AnimClip animation;
     CoreAppRenderLevel render;
+    /* The scene's asset dependency graph, built from its RESOURCES manifest. */
+    BreakAssetGraph *deps;
+    BreakSceneManifestGraphStats deps_stats;
     BreakRuntimeIoRequest *request;
     PhysicsBodyHandle ground_body;
     CoreAppSimulation *simulation;
@@ -592,6 +596,7 @@ static void core_app_level_destroy(CoreLevel *level) {
     free(level->scene.materials);
     level->scene.materials = NULL;
     level->scene.material_count = 0u;
+    break_asset_graph_destroy(level->deps);
     scene_serial_free(&level->scene);
     if (level->world) world_destroy(level->world);
     free(level->scene_bytes);
@@ -1422,6 +1427,50 @@ static BreakRuntimeError stage_render(CoreLevel *candidate) {
                                    candidate->generation, &candidate->render);
 }
 
+/* An id for the scene node that no manifest entry uses: the smallest one
+ * above every entry guid, or (when a guid is the u64 maximum) the first free
+ * id counting up from 1. */
+static BreakAssetId app_scene_node_id(const Scene *scene) {
+    BreakAssetId top = 0u;
+    for (u32 i = 0u; i < scene->resource_count; ++i) {
+        if (scene->resources[i].guid > top) top = scene->resources[i].guid;
+    }
+    if (top != UINT64_MAX) return top + 1u;
+    for (BreakAssetId id = 1u;; ++id) {
+        bool used = false;
+        for (u32 i = 0u; i < scene->resource_count && !used; ++i) {
+            used = scene->resources[i].guid == id;
+        }
+        if (!used) return id;
+    }
+}
+
+static BreakRuntimeError stage_deps(CoreLevel *candidate, const char *scene_name) {
+    BreakAssetGraphConfig graph_config;
+    BreakSceneManifestGraphConfig manifest_config;
+    u32 count = candidate->scene.resource_count;
+    if (count >= BREAK_ASSET_GRAPH_MAX_NODES || count > (BREAK_ASSET_GRAPH_MAX_EDGES - 1u) / 6u) {
+        return BREAK_RUNTIME_OVERLOAD;
+    }
+    memset(&graph_config, 0, sizeof(graph_config));
+    /* every entry plus the scene node; the scene needs at most every entry
+     * and a material at most its 5 texture slots */
+    graph_config.capacity = count + 1u;
+    graph_config.max_edges = count * 6u + 1u;
+    if (break_asset_graph_create(&graph_config, &candidate->deps) != BREAK_ASSET_GRAPH_OK) {
+        return BREAK_RUNTIME_OOM;
+    }
+    memset(&manifest_config, 0, sizeof(manifest_config));
+    manifest_config.scene_id = app_scene_node_id(&candidate->scene);
+    manifest_config.scene_path = scene_name;
+    if (break_scene_manifest_graph_build(&manifest_config, candidate->scene.resources, count,
+                                         candidate->deps, &candidate->deps_stats) !=
+        BREAK_ASSET_GRAPH_OK) {
+        return BREAK_RUNTIME_FAILED;
+    }
+    return BREAK_RUNTIME_OK;
+}
+
 static const SceneResource *app_find_resource(const CoreLevel *candidate,
                                                BscnResourceType type, u32 ref_index) {
     for (u32 i = 0u; i < candidate->scene.resource_count; ++i) {
@@ -1518,6 +1567,10 @@ static BreakRuntimeError core_app_level_stage(CoreApp *app,
     result = stage_render(candidate);
     if (result != BREAK_RUNTIME_OK) goto reject;
 
+    *failed_stage = "deps";
+    result = stage_deps(candidate, source->scene_name);
+    if (result != BREAK_RUNTIME_OK) goto reject;
+
     *failed_stage = "crossref";
     result = app_validate_crossrefs(candidate);
     if (result != BREAK_RUNTIME_OK) goto reject;
@@ -1612,6 +1665,18 @@ static BreakRuntimeError core_app_level_commit(CoreApp *app, CoreLevel *candidat
         result = app_trace(app,
             "COREAPPTRACE version=1 event=level_destroyed generation=%" PRIu64 "\n",
             previous_generation);
+        if (result != BREAK_RUNTIME_OK) return result;
+    }
+    {
+        BreakAssetGraphStats graph_stats;
+        memset(&graph_stats, 0, sizeof(graph_stats));
+        break_asset_graph_stats(candidate->deps, &graph_stats);
+        result = app_trace(app,
+            "COREAPPTRACE version=1 event=deps generation=%" PRIu64
+            " nodes=%u edges=%u textures=%u materials=%u meshes=%u dangling=%u\n",
+            candidate->generation, graph_stats.nodes, graph_stats.edges,
+            candidate->deps_stats.textures, candidate->deps_stats.materials,
+            candidate->deps_stats.meshes, candidate->deps_stats.dangling_links);
         if (result != BREAK_RUNTIME_OK) return result;
     }
     result = app_trace(app,

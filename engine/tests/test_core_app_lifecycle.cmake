@@ -1392,7 +1392,7 @@ endif()
 
 file(REMOVE_RECURSE "${WORK}")
 file(MAKE_DIRECTORY "${WORK}")
-foreach(fixture good missing_bscn bad_flow unknown_actor missing_lua timeout_bscn crossref_bscn)
+foreach(fixture good missing_bscn bad_flow unknown_actor missing_lua timeout_bscn crossref_bscn deps_bscn)
     file(COPY "${ASSET_ROOT}/" DESTINATION "${WORK}/${fixture}")
 endforeach()
 file(REMOVE "${WORK}/missing_bscn/level.bscn")
@@ -1421,6 +1421,50 @@ execute_process(COMMAND "${Python3_EXECUTABLE}" -c "${patch_crossref}"
     RESULT_VARIABLE patch_result ERROR_VARIABLE patch_error)
 if(NOT patch_result EQUAL 0)
     message(FATAL_ERROR "failed to construct crossref fixture: ${patch_error}")
+endif()
+# Two materials claiming one material slot (distinct guids, same ref_index):
+# the scene loads and its render resources are distinct, but a mesh link to
+# that slot would be ambiguous, so the asset dependency graph is refused and
+# the candidate is rejected at the deps stage.
+set(patch_deps [=[
+import struct
+import sys
+path = sys.argv[1]
+with open(path, "rb") as source:
+    data = bytearray(source.read())
+magic, version, count = struct.unpack_from("<III", data, 0)
+if magic != 0x4E534342 or version != 3:
+    raise SystemExit("not a BSCN v3 fixture")
+for index in range(count):
+    kind, offset, size = struct.unpack_from("<III", data, 12 + index * 12)
+    if kind == 4:
+        break
+else:
+    raise SystemExit("RESOURCES chunk not found")
+entries = struct.unpack_from("<I", data, offset)[0]
+cursor = offset + 4
+materials = []
+for _ in range(entries):
+    guid, rtype, ref, flags = struct.unpack_from("<QIII", data, cursor)
+    if rtype == 3:
+        materials.append(cursor)
+    cursor += 20
+    if flags & 1:
+        cursor += 4 * 8 + 4 * 12
+    plen = struct.unpack_from("<I", data, cursor)[0]
+    cursor += 4 + plen
+if len(materials) < 2:
+    raise SystemExit("fewer than two materials")
+first_ref = struct.unpack_from("<I", data, materials[0] + 12)[0]
+struct.pack_into("<I", data, materials[1] + 12, first_ref)
+with open(path, "wb") as output:
+    output.write(data)
+]=])
+execute_process(COMMAND "${Python3_EXECUTABLE}" -c "${patch_deps}"
+    "${WORK}/deps_bscn/level.bscn"
+    RESULT_VARIABLE patch_result ERROR_VARIABLE patch_error)
+if(NOT patch_result EQUAL 0)
+    message(FATAL_ERROR "failed to construct deps fixture: ${patch_error}")
 endif()
 file(READ "${WORK}/unknown_actor/actors.sidecar" sidecar)
 string(REPLACE "2 User" "2 UnknownUser" changed_sidecar "${sidecar}")
@@ -1565,6 +1609,16 @@ else()
     if(normal_trace MATCHES "event=load_rejected")
         record_error("load_unload: formal assets were unexpectedly rejected: ${normal_trace}")
     endif()
+    # The formal level: 1 mesh and 7 materials, no textures. The scene node
+    # needs all 8 and the mesh its material: 9 nodes, 9 edges.
+    if(NOT normal_trace MATCHES "event=deps generation=1 nodes=9 edges=9 textures=0 materials=7 meshes=1 dangling=0\n")
+        record_error("load_unload: no asset dependency graph for generation 1: ${normal_trace}")
+    endif()
+    string(FIND "${normal_trace}" "event=deps generation=1 " deps_at)
+    string(FIND "${normal_trace}" "event=level_loaded generation=1" deps_loaded_at)
+    if(deps_at LESS 0 OR deps_loaded_at LESS deps_at)
+        record_error("load_unload: the dependency graph was not built before the level committed")
+    endif()
 endif()
 
 set(legacy_scenario "${WORK}/legacy.scenario")
@@ -1584,6 +1638,7 @@ expect_initial_failure(missing_bscn bscn "${WORK}/missing_bscn")
 expect_initial_failure(bad_flow flow "${WORK}/bad_flow")
 expect_initial_failure(unknown_actor actor "${WORK}/unknown_actor")
 expect_initial_failure(missing_lua lua "${WORK}/missing_lua")
+expect_initial_failure(deps_bscn deps "${WORK}/deps_bscn")
 
 set(replacement_scenario "${WORK}/replacement.scenario")
 file(WRITE "${replacement_scenario}"

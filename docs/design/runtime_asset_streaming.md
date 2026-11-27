@@ -508,3 +508,11 @@ focused 测试 **22/22**，包含三流过期/复位、交织 pending 字节、d
 仍未完成：场景加载流程（`scene_load_binary` 的调用方，如编辑器）还没有调用本函数，加载 manifest 后建立依赖图并登记重载路径仍需在消费者中接线。
 
 本提交自身的远端工作流结果不在此预写。
+
+## 补充（2026-11-27）：core_app 加载时建立依赖图
+
+`scene_manifest_graph` 的第一个消费者是 core_app：关卡加载新增 `deps` 阶段，从候选关卡的资源 manifest 建立依赖图，建不起来时以 `stage=deps` 拒绝候选关卡，提交时写 `event=deps` trace 行。详见 `docs/design/core_app_integration.md` 2026-11-27「关卡加载的资产依赖图阶段 `deps`」。
+
+仍未完成：编辑器尚未调用；core_app 中的图还没有接到热重载协调器。
+
+本提交自身的远端工作流结果不在此预写。
