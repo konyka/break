@@ -1,5 +1,6 @@
 #pragma once
 #include <core/types.h>
+#include <rhi/rhi.h>
 
 /* 纯函数 Vulkan 探测/协商逻辑——不包含 <vulkan/vulkan.h>。数值常量与
  * VkPhysicalDeviceType / VkPresentModeKHR / VkFormat / VkColorSpaceKHR /
@@ -176,4 +177,47 @@ static inline u32 vk_probe_feature_bits(bool accel, bool rt_pipeline,
     return (accel ? VK_PROBE_FEATURE_ACCELERATION_STRUCTURE : 0u) |
            (rt_pipeline ? VK_PROBE_FEATURE_RAY_TRACING_PIPELINE : 0u) |
            (ray_query ? VK_PROBE_FEATURE_RAY_QUERY : 0u);
+}
+
+/* VkRectLayerKHR 的无头镜像：offset{x,y}、extent{w,h}、layer。 */
+typedef struct VkProbeRectLayer {
+    i32 x;
+    i32 y;
+    u32 w;
+    u32 h;
+    u32 layer;
+} VkProbeRectLayer;
+
+/* 帧 damage -> VK_KHR_incremental_present 的 VkPresentRegionKHR 矩形。
+ * RHIPresentRect 与 Vulkan 同为左上原点，不翻转；每个矩形裁到交换链
+ * extent 内（规范要求矩形落在 imageExtent 内），裁空的丢弃，layer 固定 0。
+ * 返回 false 表示不挂 regions、按整幅 present：指针为 NULL、count 超过
+ * capacity，或裁剪后一个都不剩（count、width、height 为 0 都落在这一条）。
+ * false 时 *out_count 为 0。
+ * 64 位中间值，x+w 溢出 i32/u32 也不会回绕。 */
+static inline bool vk_probe_present_regions(const RHIPresentRect *damage,
+                                            u32 count, u32 width, u32 height,
+                                            VkProbeRectLayer *out, u32 capacity,
+                                            u32 *out_count) {
+    u32 i, n = 0u;
+    if (out_count != NULL) *out_count = 0u;
+    if (damage == NULL || out == NULL || out_count == NULL || count > capacity)
+        return false;
+    for (i = 0u; i < count; i++) {
+        i64 x0 = damage[i].x, y0 = damage[i].y;
+        i64 x1 = x0 + (i64)damage[i].w, y1 = y0 + (i64)damage[i].h;
+        if (x0 < 0) x0 = 0;
+        if (y0 < 0) y0 = 0;
+        if (x1 > (i64)width) x1 = (i64)width;
+        if (y1 > (i64)height) y1 = (i64)height;
+        if (x1 <= x0 || y1 <= y0) continue;
+        out[n].x = (i32)x0;
+        out[n].y = (i32)y0;
+        out[n].w = (u32)(x1 - x0);
+        out[n].h = (u32)(y1 - y0);
+        out[n].layer = 0u;
+        n++;
+    }
+    *out_count = n;
+    return n != 0u;
 }

@@ -393,6 +393,7 @@ typedef struct {
     bool             validation_layer_present;  /* R635: VK_LAYER_KHRONOS_validation loaded */
     bool             feat_depth_stencil_resolve;
     bool             has_device_fault; /* R576: VK_EXT_device_fault enabled */
+    bool             has_incremental_present; /* VK_KHR_incremental_present enabled */
     bool             device_lost;      /* R578: latched VK_ERROR_DEVICE_LOST — all
                                         * blocking waits fail fast once set (a
                                         * WDDM TDR reset can leave fences
@@ -2392,7 +2393,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         vk->feat_uab_sampled_image = true;
     }
 
-    const char *dev_extensions[8];
+    const char *dev_extensions[12];
     u32 dev_extension_count = 0u;
     if (!vk_device_extension_available(vk->physical, VK_KHR_SWAPCHAIN_EXTENSION_NAME)) {
         LOG_FATAL("VK: required device extension unavailable: %s",
@@ -2432,6 +2433,16 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         return false;
     }
 #endif
+    /* Frame damage is forwarded to the compositor as VkPresentRegionsKHR.
+     * This is a hint only: the swapchain pass still CLEARs from UNDEFINED, so
+     * present_target_preserved stays false and callers keep redrawing the
+     * whole image (same contract as D3D12 Present1 dirty rects). */
+    vk->has_incremental_present = vk_device_extension_available(
+        vk->physical, VK_KHR_INCREMENTAL_PRESENT_EXTENSION_NAME);
+    if (vk->has_incremental_present)
+        dev_extensions[dev_extension_count++] =
+            VK_KHR_INCREMENTAL_PRESENT_EXTENSION_NAME;
+    dev->capabilities.present_damage_supported = vk->has_incremental_present;
     /* R576: enable VK_EXT_device_fault when offered (vendor fault forensics —
      * after a DEVICE_LOST, vkGetDeviceFaultInfoEXT reports the faulting
      * pipeline-stage/address info; see vk_dump_device_fault). */
@@ -3811,6 +3822,34 @@ void rhi_present(RHIDevice *dev) {
     pi.swapchainCount = 1;
     pi.pSwapchains = &vk->swapchain;
     pi.pImageIndices = &vk->image_index;
+
+    VkProbeRectLayer probe_rects[RHI_MAX_PRESENT_DAMAGE_RECTS];
+    VkRectLayerKHR region_rects[RHI_MAX_PRESENT_DAMAGE_RECTS];
+    VkPresentRegionKHR region = {0};
+    VkPresentRegionsKHR regions = {0};
+    u32 region_count = 0u;
+    /* frame_damage_count is non-zero only between rhi_frame_begin_damage and
+     * the present below, so plain rhi_frame_begin frames present in full. */
+    if (vk->has_incremental_present &&
+        vk_probe_present_regions(dev->frame_damage, dev->frame_damage_count,
+                                 vk->swap_extent.width, vk->swap_extent.height,
+                                 probe_rects, RHI_MAX_PRESENT_DAMAGE_RECTS,
+                                 &region_count)) {
+        for (u32 i = 0u; i < region_count; i++) {
+            region_rects[i].offset.x = probe_rects[i].x;
+            region_rects[i].offset.y = probe_rects[i].y;
+            region_rects[i].extent.width = probe_rects[i].w;
+            region_rects[i].extent.height = probe_rects[i].h;
+            region_rects[i].layer = probe_rects[i].layer;
+        }
+        region.rectangleCount = region_count;
+        region.pRectangles = region_rects;
+        regions.sType = VK_STRUCTURE_TYPE_PRESENT_REGIONS_KHR;
+        regions.swapchainCount = 1u;
+        regions.pRegions = &region;
+        pi.pNext = &regions;
+        vk->sync_counters.present_regions++;
+    }
 
     VkResult res = vkQueuePresentKHR(vk->present_queue, &pi);
     if (res == VK_ERROR_DEVICE_LOST) {

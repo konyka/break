@@ -72,13 +72,16 @@ void rhi_vk_validation_message_count_reset(void);
  * queue_wait_idle count every vkDeviceWaitIdle / vkQueueWaitIdle the backend
  * issues; deferred_destroys counts objects queued for fence-retired release,
  * deferred_pending the ones not yet released; layout_batches counts
- * submissions of the batched initial-layout command buffer. */
+ * submissions of the batched initial-layout command buffer;
+ * present_regions counts vkQueuePresentKHR calls that carried a
+ * VkPresentRegionsKHR built from frame damage (VK_KHR_incremental_present). */
 typedef struct {
     u64 device_wait_idle;
     u64 queue_wait_idle;
     u64 deferred_destroys;
     u64 deferred_pending;
     u64 layout_batches;
+    u64 present_regions;
 } RHIVkSyncCounters;
 bool rhi_vk_sync_counters(const RHIDevice *dev, RHIVkSyncCounters *out);
 bool rhi_vk_validation_gate_active(void);

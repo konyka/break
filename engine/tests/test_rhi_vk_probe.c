@@ -116,6 +116,79 @@ TEST(feature_bits_compose_rhi_feature_values) {
               VK_PROBE_FEATURE_RAY_QUERY);
 }
 
+TEST(present_regions_pass_through_in_bounds_rects_on_layer_zero) {
+    RHIPresentRect damage[2] = { { 0, 0, 10, 20 }, { 30, 40, 5, 6 } };
+    VkProbeRectLayer out[2];
+    u32 count = 99u;
+    ASSERT_TRUE(vk_probe_present_regions(damage, 2u, 100u, 80u, out, 2u, &count));
+    ASSERT_EQ(count, 2u);
+    ASSERT_EQ(out[0].x, 0); ASSERT_EQ(out[0].y, 0);
+    ASSERT_EQ(out[0].w, 10u); ASSERT_EQ(out[0].h, 20u); ASSERT_EQ(out[0].layer, 0u);
+    ASSERT_EQ(out[1].x, 30); ASSERT_EQ(out[1].y, 40);
+    ASSERT_EQ(out[1].w, 5u); ASSERT_EQ(out[1].h, 6u); ASSERT_EQ(out[1].layer, 0u);
+}
+
+TEST(present_regions_clip_to_swapchain_extent) {
+    RHIPresentRect damage[2] = { { 90, 70, 20, 30 }, { -5, -3, 10, 10 } };
+    VkProbeRectLayer out[2];
+    u32 count = 0u;
+    ASSERT_TRUE(vk_probe_present_regions(damage, 2u, 100u, 80u, out, 2u, &count));
+    ASSERT_EQ(count, 2u);
+    ASSERT_EQ(out[0].x, 90); ASSERT_EQ(out[0].y, 70);
+    ASSERT_EQ(out[0].w, 10u); ASSERT_EQ(out[0].h, 10u);
+    ASSERT_EQ(out[1].x, 0); ASSERT_EQ(out[1].y, 0);
+    ASSERT_EQ(out[1].w, 5u); ASSERT_EQ(out[1].h, 7u);
+}
+
+TEST(present_regions_drop_empty_and_outside_rects) {
+    RHIPresentRect damage[4] = { { 100, 0, 5, 5 }, { 0, 80, 5, 5 },
+                                 { 3, 4, 0, 5 }, { 7, 8, 2, 3 } };
+    VkProbeRectLayer out[4];
+    u32 count = 0u;
+    ASSERT_TRUE(vk_probe_present_regions(damage, 4u, 100u, 80u, out, 4u, &count));
+    ASSERT_EQ(count, 1u);
+    ASSERT_EQ(out[0].x, 7); ASSERT_EQ(out[0].y, 8);
+    ASSERT_EQ(out[0].w, 2u); ASSERT_EQ(out[0].h, 3u);
+}
+
+TEST(present_regions_fall_back_to_full_present_when_nothing_usable) {
+    RHIPresentRect outside[2] = { { 200, 0, 5, 5 }, { -10, 0, 10, 5 } };
+    RHIPresentRect one[1] = { { 0, 0, 4, 4 } };
+    VkProbeRectLayer out[2];
+    u32 count = 7u;
+    ASSERT_FALSE(vk_probe_present_regions(outside, 2u, 100u, 80u, out, 2u, &count));
+    ASSERT_EQ(count, 0u);
+    count = 7u;
+    ASSERT_FALSE(vk_probe_present_regions(one, 0u, 100u, 80u, out, 2u, &count));
+    ASSERT_EQ(count, 0u);
+    ASSERT_FALSE(vk_probe_present_regions(NULL, 1u, 100u, 80u, out, 2u, &count));
+    ASSERT_FALSE(vk_probe_present_regions(one, 1u, 0u, 80u, out, 2u, &count));
+    ASSERT_FALSE(vk_probe_present_regions(one, 1u, 100u, 0u, out, 2u, &count));
+    ASSERT_FALSE(vk_probe_present_regions(one, 1u, 100u, 80u, NULL, 2u, &count));
+    ASSERT_FALSE(vk_probe_present_regions(one, 1u, 100u, 80u, out, 2u, NULL));
+}
+
+TEST(present_regions_reject_more_rects_than_capacity) {
+    RHIPresentRect damage[3] = { { 0, 0, 1, 1 }, { 2, 2, 1, 1 }, { 4, 4, 1, 1 } };
+    VkProbeRectLayer out[3];
+    u32 count = 7u;
+    ASSERT_FALSE(vk_probe_present_regions(damage, 3u, 100u, 80u, out, 2u, &count));
+    ASSERT_EQ(count, 0u);
+    ASSERT_TRUE(vk_probe_present_regions(damage, 3u, 100u, 80u, out, 3u, &count));
+    ASSERT_EQ(count, 3u);
+}
+
+TEST(present_regions_clip_huge_extents_without_overflow) {
+    RHIPresentRect damage[1] = { { 2147483000, 0, 4000000000u, 10 } };
+    RHIPresentRect wide[1] = { { 10, 0, 4294967295u, 10 } };
+    VkProbeRectLayer out[1];
+    u32 count = 0u;
+    ASSERT_FALSE(vk_probe_present_regions(damage, 1u, 100u, 80u, out, 1u, &count));
+    ASSERT_TRUE(vk_probe_present_regions(wide, 1u, 100u, 80u, out, 1u, &count));
+    ASSERT_EQ(count, 1u);
+    ASSERT_EQ(out[0].x, 10); ASSERT_EQ(out[0].w, 90u);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(adapter_score_orders_discrete_over_integrated_over_software);
     RUN_TEST(adapter_unsuitable_scores_negative_and_never_selected);
@@ -127,4 +200,10 @@ TEST_MAIN_BEGIN()
     RUN_TEST(surface_format_prefers_bgra_unorm_then_rgba_unorm_then_first);
     RUN_TEST(surface_format_undefined_sentinel_means_any);
     RUN_TEST(feature_bits_compose_rhi_feature_values);
+    RUN_TEST(present_regions_pass_through_in_bounds_rects_on_layer_zero);
+    RUN_TEST(present_regions_clip_to_swapchain_extent);
+    RUN_TEST(present_regions_drop_empty_and_outside_rects);
+    RUN_TEST(present_regions_fall_back_to_full_present_when_nothing_usable);
+    RUN_TEST(present_regions_reject_more_rects_than_capacity);
+    RUN_TEST(present_regions_clip_huge_extents_without_overflow);
 TEST_MAIN_END()

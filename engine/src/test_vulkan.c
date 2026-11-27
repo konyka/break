@@ -6651,6 +6651,100 @@ static bool tv_test_capability_contract(RHIDevice *dev) {
     return false;
 }
 
+/* VK_KHR_incremental_present: frame damage reaches vkQueuePresentKHR as
+ * VkPresentRegionsKHR. The swapchain pass still clears, so the backend must
+ * never claim preserved targets; the suite validation gate catches malformed
+ * regions (rects outside imageExtent, wrong swapchainCount). */
+static bool tv_test_present_damage_regions(RHIDevice *dev, u32 w, u32 h) {
+    RHICapabilities caps = {0};
+    if (!rhi_device_get_capabilities(dev, &caps)) {
+        LOG_ERROR("FAIL: present damage capability query");
+        return false;
+    }
+    if (caps.backend != RHI_BACKEND_VULKAN) return true;
+    if (caps.present_target_preserved) {
+        LOG_ERROR("FAIL: VK claims present_target_preserved with a clearing "
+                  "swapchain pass");
+        return false;
+    }
+    if (!caps.present_damage_supported) {
+        LOG_INFO("SKIP: VK_KHR_incremental_present unavailable");
+        return true;
+    }
+    if (w < 8u || h < 8u) {
+        LOG_ERROR("FAIL: present damage drawable too small (%ux%u)", w, h);
+        return false;
+    }
+#ifdef ENGINE_VULKAN
+    u32 validation_before = rhi_vk_validation_message_count();
+    RHIVkSyncCounters counters_before = {0}, counters_after = {0};
+    if (!rhi_vk_sync_counters(dev, &counters_before)) {
+        LOG_ERROR("FAIL: present damage sync counters unavailable");
+        return false;
+    }
+#endif
+    RHIPresentRect damage[2] = { { 0, 0, w / 4u, h / 4u },
+                                 { (i32)(w / 2u), (i32)(h / 2u), w - w / 2u,
+                                   h - h / 2u } };
+    for (u32 frame = 0u; frame < 3u; frame++) {
+        bool partial = true;
+        RHICmdBuffer *cmd = rhi_frame_begin_damage(dev, damage, 2u, &partial);
+        if (cmd == NULL) {
+            LOG_ERROR("FAIL: present damage frame %u begin", frame);
+            return false;
+        }
+        if (partial) {
+            LOG_ERROR("FAIL: VK reported a partial frame without preserved "
+                      "targets");
+            rhi_frame_end(dev);
+            rhi_present(dev);
+            return false;
+        }
+        rhi_frame_end(dev);
+        RHIResult result = rhi_present_ex(dev);
+        if (result != RHI_RESULT_OK && result != RHI_RESULT_OUT_OF_DATE) {
+            LOG_ERROR("FAIL: present damage frame %u present result=%d", frame,
+                      (int)result);
+            return false;
+        }
+    }
+#ifdef ENGINE_VULKAN
+    if (!rhi_vk_sync_counters(dev, &counters_after) ||
+        counters_after.present_regions - counters_before.present_regions != 3u) {
+        LOG_ERROR("FAIL: present damage regions attached %llu of 3 presents",
+                  (unsigned long long)(counters_after.present_regions -
+                                       counters_before.present_regions));
+        return false;
+    }
+    {
+        bool full = true;
+        RHICmdBuffer *cmd = rhi_frame_begin(dev);
+        if (cmd == NULL) {
+            LOG_ERROR("FAIL: present damage full-frame begin");
+            return false;
+        }
+        rhi_frame_end(dev);
+        RHIResult result = rhi_present_ex(dev);
+        full = result == RHI_RESULT_OK || result == RHI_RESULT_OUT_OF_DATE;
+        if (!full || !rhi_vk_sync_counters(dev, &counters_before) ||
+            counters_before.present_regions != counters_after.present_regions) {
+            LOG_ERROR("FAIL: a frame without damage carried present regions");
+            return false;
+        }
+    }
+    if (rhi_vk_validation_gate_active()) {
+        u32 messages = rhi_vk_validation_message_count() - validation_before;
+        if (messages != 0u) {
+            LOG_ERROR("FAIL: present damage regions raised %u validation "
+                      "message(s)", messages);
+            return false;
+        }
+    }
+#endif
+    LOG_INFO("PASS: present damage regions (3 frames, 2 rects)");
+    return true;
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     log_set_level(LOG_DEBUG);
@@ -6720,6 +6814,10 @@ int main(int argc, char **argv) {
         }
     }
     bool capability_pass = tv_test_capability_contract(render.device);
+    u32 damage_w = 0u, damage_h = 0u;
+    platform_get_drawable_size(engine.platform, &damage_w, &damage_h);
+    bool present_damage_pass =
+        tv_test_present_damage_regions(render.device, damage_w, damage_h);
     bool acceleration_structure_pass =
         test_acceleration_structure_lifecycle(render.device);
     bool blas_size_query_pass =
@@ -7089,7 +7187,7 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
 
         /* R442: GL has no validation-layers concept — the VK VALIDATION GATE
          * is intentionally absent here; the pixel gates above are the check. */
-        bool all_pass = capability_pass && motion_rt1_pass && f16rt_pass && mipup_pass && sampc_pass && rebind_pass && geom_pass && sgeom_pass && restore_pass && bufstaging_pass && gpuskin_pass && buforder_pass && golden_pass && ibl_pass && idraw_pass && matarr_pass && dfi_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrf_pass && pbrc_pass && psh_pass && bindings_parity_pass && ui_orient_pass;
+        bool all_pass = capability_pass && present_damage_pass && motion_rt1_pass && f16rt_pass && mipup_pass && sampc_pass && rebind_pass && geom_pass && sgeom_pass && restore_pass && bufstaging_pass && gpuskin_pass && buforder_pass && golden_pass && ibl_pass && idraw_pass && matarr_pass && dfi_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrf_pass && pbrc_pass && psh_pass && bindings_parity_pass && ui_orient_pass;
         if (rhi_handle_valid(ibo)) rhi_buffer_destroy(render.device, ibo);
         if (rhi_handle_valid(vbo)) rhi_buffer_destroy(render.device, vbo);
         test_render_shutdown(&render);
@@ -8200,7 +8298,7 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
     }
 #endif
 
-    bool all_pass = capability_pass && acceleration_structure_pass && blas_size_query_pass && motion_rt1_pass && f16rt_pass && mipup_pass && sampc_pass && rebind_pass && geom_pass && sgeom_pass && restore_pass && bufstaging_pass && gpuskin_pass && buforder_pass && stress_pass && draw_pass && inst_pass && fbo_pass &&
+    bool all_pass = capability_pass && present_damage_pass && acceleration_structure_pass && blas_size_query_pass && motion_rt1_pass && f16rt_pass && mipup_pass && sampc_pass && rebind_pass && geom_pass && sgeom_pass && restore_pass && bufstaging_pass && gpuskin_pass && buforder_pass && stress_pass && draw_pass && inst_pass && fbo_pass &&
 msaa_pass && ui_orient_pass && fs6_pass &&
 compute_pass && combined_pass && ibl_pass && pbrf_pass && unified_pass &&
 idraw_pass && matarr_pass && dfi_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrc_pass && psh_pass && golden_pass && bindings_parity_pass &&

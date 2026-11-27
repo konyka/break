@@ -772,9 +772,16 @@ API 边界。
 
 Wayland EGL 只有在 buffer-age、damage-present、运行时函数入口和固定容量 history 同时可用时
 才声明像素保留能力；Win32 WGL、Vulkan、macOS 继续使用全屏 composite。这是有意的安全默认值，
-不是未检查的性能开关。Vulkan 仍不启用 `VK_KHR_incremental_present`：该扩展是 compositor
-优化提示，并不保证 present 后 swapchain image 内容可被 `LOAD`，所以不能满足 retained-buffer
-的硬前提。
+不是未检查的性能开关。Vulkan 不把 `VK_KHR_incremental_present` 当作像素保留能力：该扩展是
+compositor 优化提示，并不保证 present 后 swapchain image 内容可被 `LOAD`，所以不能满足
+retained-buffer 的硬前提。
+
+2026-11-27 起，设备支持该扩展时 Vulkan 后端会启用它，并只把它用作提示：
+`present_damage_supported=true`，`present_target_preserved` 仍为 false。效果与 D3D12
+`Present1` dirty rects 相同：`rhi_frame_begin_damage` 给出的矩形经 `vk_probe_present_regions`
+（`engine/src/rhi/rhi_vk_probe.h`）裁到交换链 extent 内，作为 `VkPresentRegionsKHR` 挂在
+`vkQueuePresentKHR` 上。myui 的 `break_ui_present_frame_decide` 要求两个能力位同时为真才走
+PARTIAL，所以 Vulkan 仍然每帧全屏重绘，交换链 pass 仍从 UNDEFINED 开始 CLEAR。
 
 ## Vulkan vgcanvas 质量事务
 

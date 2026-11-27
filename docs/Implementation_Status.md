@@ -14734,3 +14734,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **实现**：`platform_display_read_connector_edid`、`platform_display_outputs_media`（`engine/src/platform/platform_display_media.{h,c}`，仅 Linux）按 DRM 连接器名读取 `/sys/class/drm/card<N>-<name>/edid`，多输出取交集；`wayland_output.h` 新增 `connector` 字段与 `wl_out_set_connector`、`wl_out_entered_connectors`、`wl_out_media_outputs`；`window_wayland.c` 记录 xdg-output 名，enter/leave/改名时使媒体上下文失效，重新计算时并入 EDID 事实。
 - **TDD 与变异**：新增 8 例，先以编译失败为 RED；22 项定向变异全部判红。
 - **验证**：本机真实 Wayland 窗口的媒体上下文由 sRGB 变为 sRGB+P3（色域 known，HDR 未知）；相关测试普通与 ASan+UBSan 均通过；`build-current-vk` 非 fuzz 466/466。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
+
+## Vulkan 把帧 damage 交给 compositor（2026-11-27）
+
+- **缺口**：`docs/myui_remaining_work.md`「真 partial present」一行中 Vulkan 仍全屏刷新，帧 damage 不传给 compositor。
+- **实现**：设备支持 `VK_KHR_incremental_present` 时启用该扩展，`present_damage_supported=true`，`present_target_preserved` 仍为 false（与 D3D12 相同，myui 仍全屏重绘）。新增纯函数 `vk_probe_present_regions`（`engine/src/rhi/rhi_vk_probe.h`）做裁剪和转换；`rhi_present` 在有 damage 时挂 `VkPresentRegionsKHR`；`RHIVkSyncCounters` 新增 `present_regions`。
+- **TDD 与变异**：`test_rhi_vk_probe` 新增 6 例（16 例），先以编译失败为 RED；`test_vulkan` 新增真实窗口检查；17 项定向变异全部判红，首轮 3 项存活的多余守卫已删除。
+- **验证**：本机 RTX A5000 上 `test_vulkan`（验证层开启）通过，新检查 0 条验证消息；ASan+UBSan 下新增测试通过，LeakSanitizer 的驱动泄漏与基线相同；`build-current-vk` 非 fuzz 466/466。详见 `docs/myui_remaining_work.md` 同日补充。
+- **仍未完成**：Vulkan 持久离屏 image 的真正 partial present、Win32/macOS retained-buffer。本提交自身的远端工作流结果不在此预写。
