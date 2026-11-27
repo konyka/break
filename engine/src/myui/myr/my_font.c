@@ -308,10 +308,15 @@ static size_t chain_cluster_end(const char* text, size_t start) {
   return (size_t)(cursor - text);
 }
 
+/* BASE_ONLY: every codepoint has a glyph but the face reports a variation
+ * selector as unsupported. Such a face renders the base form (HarfBuzz
+ * drops an unmatched selector), which beats picking a face by the first
+ * codepoint alone and losing the rest of the cluster to .notdef. */
 typedef enum chain_cluster_coverage_t {
   CHAIN_CLUSTER_UNCOVERED = 0,
-  CHAIN_CLUSTER_UNKNOWN_VARIATION = 1,
-  CHAIN_CLUSTER_CONFIRMED = 2
+  CHAIN_CLUSTER_BASE_ONLY = 1,
+  CHAIN_CLUSTER_UNKNOWN_VARIATION = 2,
+  CHAIN_CLUSTER_CONFIRMED = 3
 } chain_cluster_coverage_t;
 
 static chain_cluster_coverage_t chain_face_cluster_coverage(
@@ -319,6 +324,7 @@ static chain_cluster_coverage_t chain_face_cluster_coverage(
   const char* cursor = text + start;
   uint32_t variation_base = 0u;
   bool unknown_variation = false;
+  bool unsupported_variation = false;
   while ((size_t)(cursor - text) < end) {
     const char* next = cursor;
     uint32_t codepoint = my_utf8_next(&next);
@@ -331,7 +337,7 @@ static chain_cluster_coverage_t chain_face_cluster_coverage(
           variation_support = face->vtable->variation_support(
               face, variation_base, codepoint);
           if (variation_support == MY_FONT_VARIATION_UNSUPPORTED) {
-            return CHAIN_CLUSTER_UNCOVERED;
+            unsupported_variation = true;
           }
           if (variation_support == MY_FONT_VARIATION_SUPPORT_UNKNOWN) {
             unknown_variation = true;
@@ -353,6 +359,7 @@ static chain_cluster_coverage_t chain_face_cluster_coverage(
     }
     cursor = next;
   }
+  if (unsupported_variation) return CHAIN_CLUSTER_BASE_ONLY;
   return unknown_variation ? CHAIN_CLUSTER_UNKNOWN_VARIATION
                            : CHAIN_CLUSTER_CONFIRMED;
 }
@@ -364,6 +371,7 @@ static my_font_t* chain_face_for_cluster(my_font_chain_t* chain,
   const char* next = cursor;
   uint32_t first = my_utf8_next(&next);
   my_font_t* unknown_face = NULL;
+  my_font_t* base_face = NULL;
   size_t i;
 
   if (end == (size_t)(next - text)) return chain_face_for(chain, first);
@@ -377,7 +385,11 @@ static my_font_t* chain_face_for_cluster(my_font_chain_t* chain,
     if (coverage == CHAIN_CLUSTER_UNKNOWN_VARIATION && unknown_face == NULL) {
       unknown_face = chain->faces[i];
     }
+    if (coverage == CHAIN_CLUSTER_BASE_ONLY && base_face == NULL) {
+      base_face = chain->faces[i];
+    }
   }
+  if (unknown_face == NULL) unknown_face = base_face;
   if (unknown_face != NULL) {
     if (unknown_face != chain->faces[0]) my_ui_metrics_record_fallback();
     return unknown_face;
@@ -391,6 +403,7 @@ static my_font_t* chain_face_for_cluster_shape(
     const my_font_shape_support_t* supports) {
   my_font_t* unknown_face = NULL;
   my_font_t* unknown_variation_face = NULL;
+  my_font_t* base_face = NULL;
   const char* next = text + start;
   uint32_t first = my_utf8_next(&next);
   size_t i;
@@ -414,9 +427,15 @@ static my_font_t* chain_face_for_cluster_shape(
         if (i != 0u) my_ui_metrics_record_fallback();
         return chain->faces[i];
       }
-      if (unknown_variation_face == NULL) {
+      if (coverage == CHAIN_CLUSTER_UNKNOWN_VARIATION &&
+          unknown_variation_face == NULL) {
         unknown_variation_face = chain->faces[i];
       }
+    }
+    /* Like the first-codepoint fallback below, base coverage ignores the
+     * language system: rendering every codepoint beats .notdef. */
+    if (coverage == CHAIN_CLUSTER_BASE_ONLY && base_face == NULL) {
+      base_face = chain->faces[i];
     }
     if (coverage == CHAIN_CLUSTER_CONFIRMED && unknown_face == NULL &&
         (ret != MY_RET_OK || support == MY_FONT_SHAPE_SUPPORT_UNKNOWN)) {
@@ -432,6 +451,10 @@ static my_font_t* chain_face_for_cluster_shape(
       my_ui_metrics_record_fallback();
     }
     return unknown_variation_face;
+  }
+  if (base_face != NULL) {
+    if (base_face != chain->faces[0]) my_ui_metrics_record_fallback();
+    return base_face;
   }
   return chain_face_for(chain, first);
 }

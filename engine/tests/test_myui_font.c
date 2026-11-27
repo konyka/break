@@ -3460,6 +3460,69 @@ TEST(font_chain_selects_face_with_cjk_variation_glyph)
 #endif
 }
 
+TEST(font_chain_prefers_base_coverage_over_unsupported_presentation)
+{
+#if defined(MYUI_FONT_FREETYPE) && defined(MYUI_FONT_HARFBUZZ)
+  /* Keycap 1 (U+0031 U+FE0F U+20E3): Cantarell has no U+20E3, and Noto
+   * Emoji's cmap14 does not list 1+FE0F although its GSUB forms the keycap.
+   * No face confirms the sequence, so the chain must still pick the face
+   * that covers every base codepoint instead of falling back to the first
+   * codepoint and losing U+20E3 to .notdef. */
+  const char* text_path =
+      "/usr/share/fonts/abattis-cantarell-fonts/Cantarell-Regular.otf";
+  const char* emoji_path =
+      "/usr/share/fonts/google-noto-emoji-fonts/NotoEmoji-Regular.ttf";
+  const my_font_source_t sources[] = {{text_path, 0}, {emoji_path, 0}};
+  const char* keycap = "\x31\xEF\xB8\x8F\xE2\x83\xA3";
+  my_font_shape_params_t explicit_params = {false, 0u, "en", NULL};
+  my_font_shape_result_t expected = {0};
+  my_font_shape_result_t actual = {0};
+  my_font_shape_result_t actual_ex = {0};
+  my_font_t* emoji;
+  my_font_t* chain;
+  FILE* text_file = fopen(text_path, "rb");
+  FILE* emoji_file = fopen(emoji_path, "rb");
+  size_t i;
+
+  if (text_file == NULL || emoji_file == NULL) {
+    if (text_file != NULL) fclose(text_file);
+    if (emoji_file != NULL) fclose(emoji_file);
+    printf("  SKIP: no Cantarell/Noto Emoji test fonts\n");
+    return;
+  }
+  fclose(text_file);
+  fclose(emoji_file);
+  emoji = my_font_ft_create(NULL, emoji_path, 0, 8);
+  chain = my_font_create_chain_ex(NULL, sources, 2u, 8u);
+  ASSERT_NOT_NULL(emoji);
+  ASSERT_NOT_NULL(chain);
+  ASSERT_EQ(my_font_shape(emoji, keycap, 24, false, NULL, &expected),
+            MY_RET_OK);
+  ASSERT_EQ(my_font_shape(chain, keycap, 24, false, NULL, &actual),
+            MY_RET_OK);
+  ASSERT_EQ(my_font_shape_ex(chain, keycap, 24, &explicit_params, NULL,
+                             &actual_ex),
+            MY_RET_OK);
+  ASSERT_TRUE(expected.count > 0u);
+  ASSERT_EQ(actual.count, expected.count);
+  ASSERT_EQ(actual_ex.count, expected.count);
+  for (i = 0u; i < expected.count; i++) {
+    ASSERT_EQ(actual.glyphs[i].glyph_id, expected.glyphs[i].glyph_id);
+    ASSERT_EQ(actual_ex.glyphs[i].glyph_id, expected.glyphs[i].glyph_id);
+    ASSERT_EQ(actual.glyphs[i].cluster, 0u);
+    ASSERT_EQ(actual_ex.glyphs[i].cluster, 0u);
+  }
+  ASSERT_TRUE(actual.glyphs[0].glyph_id != 0u);
+  my_font_shape_destroy(&actual_ex);
+  my_font_shape_destroy(&actual);
+  my_font_shape_destroy(&expected);
+  my_font_destroy(chain);
+  my_font_destroy(emoji);
+#else
+  printf("  SKIP: FreeType/HarfBuzz shaping is unavailable\n");
+#endif
+}
+
 TEST(shaped_glyph_id_rasterization_is_separate_from_unicode)
 {
 #ifdef MYUI_FONT_FREETYPE
@@ -3971,6 +4034,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(freetype_shaping_preserves_zwj_sequence);
     RUN_TEST(freetype_shaping_selects_cjk_variation_glyph);
     RUN_TEST(font_chain_selects_face_with_cjk_variation_glyph);
+    RUN_TEST(font_chain_prefers_base_coverage_over_unsupported_presentation);
     RUN_TEST(shaped_glyph_id_rasterization_is_separate_from_unicode);
     RUN_TEST(font_chain_preserves_face_identity_in_shaped_runs);
     RUN_TEST(font_chain_aggregates_script_capability);

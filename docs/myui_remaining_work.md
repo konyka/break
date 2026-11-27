@@ -2715,3 +2715,23 @@ graphics 与 present queue。`RE_VK_DEVICE_INDEX` 现在也必须通过同一门
 **验证**：`test_myui_font` 85/85，ASan+UBSan 85/85；`build-current-vk` 非 fuzz 477/477。
 
 该行其余判据（完整跨字体 variation corpus、完整 RTL GSUB）不变。
+
+## 本轮补充：字体链在 variation 不被确认时按 base 覆盖选 face（2026-11-27）
+
+「未完成能力」表中「OpenType shaping」一行的判据有「完整跨字体 variation corpus」。用本机 Cantarell、Noto Emoji、Symbola、Noto Sans CJK 组合字体链逐条检查 VS15/VS16、IVS 与 keycap 序列时，发现一个选 face 错误：
+
+- keycap 1（U+0031 U+FE0F U+20E3）在 Cantarell + Noto Emoji 链中得到 `[one, .notdef]`。Cantarell 没有 U+20E3。Noto Emoji 有全部 base 字形，keycap 也由 GSUB 组成，但它的 cmap14 没有列出 `1+FE0F`，`variation_support` 返回 UNSUPPORTED。`chain_face_cluster_coverage` 把它判为 UNCOVERED，两个 face 都不合格，最后退回按首码点选 face，选中 Cantarell，U+20E3 变成 .notdef。
+
+修正（`engine/src/myui/myr/my_font.c`）：
+
+- `chain_cluster_coverage_t` 新增 `CHAIN_CLUSTER_BASE_ONLY`：cluster 的每个码点都有字形，但某个 variation selector 被 face 明确判为不支持。这样的 face 至少能画出 base 字形（HarfBuzz 会丢弃不匹配的 selector），优于只按首码点选 face。
+- 优先级：CONFIRMED > UNKNOWN_VARIATION > BASE_ONLY > 首码点回退。`chain_face_for_cluster` 与带显式参数的 `chain_face_for_cluster_shape` 都按此顺序选。显式参数路径里，BASE_ONLY 与首码点回退一样不看 language system 支持：Cantarell 与 Noto Emoji 对 `en` 都不是 SUPPORTED，若要求 SUPPORTED 就会再次退回 Cantarell。
+- 选 face 的结果只在原本会落到首码点回退时改变，已确认或 variation 未知的 face 的选择不变。
+
+**TDD**：`test_myui_font` 新增 `font_chain_prefers_base_coverage_over_unsupported_presentation`（86 例），以链的整形结果与 Noto Emoji 单独整形的结果逐 glyph 比较，普通整形与 `language=en` 显式整形各一次，字体缺失时 SKIP。旧实现上 glyph 数不符（RED）；第一版修正只改了普通路径，显式路径仍失败，第二步修正后转 GREEN。
+
+**变异**：7 项全部判红：BASE_ONLY 退回 UNCOVERED、不返回 BASE_ONLY、误报 CONFIRMED、两条选择路径各自不记录或不使用 base face。首版在显式路径要求 language 支持不为 UNSUPPORTED 的条件，被变异证明对结果无影响，已删除，改为与首码点回退相同的规则并写明注释。
+
+**验证**：`test_myui_font` 86/86、`test_myui_text_layout` 142/142，ASan+UBSan 下相同且无报错；`build-current-vk` 非 fuzz 477/477。
+
+同一轮检查的其他序列结果正确：心形 U+2764 加 VS16 在 Cantarell + Symbola + Noto Emoji 链中选 Symbola，加 VS15 选 Noto Emoji（其 cmap14 确认 VS15）；IVS U+9089 U+E0101 选 Noto Sans CJK 的变体字形 62913，前后 Latin 字母仍由 Cantarell 整形。该行其余判据（完整 RTL GSUB）不变。
