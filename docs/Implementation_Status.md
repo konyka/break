@@ -14896,3 +14896,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **实现**：主题记录 `has_motion`（`my_theme_has_motion`）；tick 为主题给出 `animation` 或 `transition` 的控件自动设置时钟，无动画主题只做一次标志判断。
 - **TDD 与变异**：`test_myui_window_manager` 新增 2 例（249 例），旧实现 RED；8 项定向变异判红，1 项为去掉快速路径的等价变异。
 - **验证**：普通与 ASan+UBSan 下 `test_myui_window_manager` 249/249、`test_myui_css` 223/223；`build-myui-tests` 全量 ctest 482/482；`test_mycompose_gpu_opengl` / `_vulkan` 通过且 `idle_allocs=0`；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
+
+## 动画时钟识别按下状态（2026-11-27）
+
+- **缺口**：按下状态是控件私有字段，动画 tick 看不到，`:pressed` 规则的动画不生效。
+- **实现**：`my_widget_t` 新增可选 `is_pressed` 回调与 `my_widget_pressed`；button、checkbox、slider、scroll bar 在工厂中设置；tick、自动启用与设置时钟都按含按下的状态推导。
+- **TDD 与变异**：`test_myui_window_manager` 新增 2 例（251 例），旧实现 RED；9 项定向变异全部判红。
+- **验证**：普通与 ASan+UBSan 下 `test_myui_window_manager` 251/251、`test_myui_css` 223/223；`build-myui-tests` 全量 ctest 482/482；`test_mycompose_gpu_opengl` / `_vulkan` 通过且 `idle_allocs=0`；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。

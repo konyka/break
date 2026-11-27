@@ -1512,7 +1512,9 @@ my_ret_t my_widget_set_style_clock(my_widget_t* widget, double now_ms) {
     const my_theme_t* theme = theme_widget_theme(widget);
     if (theme != NULL) {
       my_theme_animation_sync(theme, widget,
-                              my_widget_current_state(widget, false), now_ms,
+                              my_widget_current_state(
+                                  widget, my_widget_pressed(widget)),
+                              now_ms,
                               &widget->style_motion->animation);
     }
   }
@@ -1545,7 +1547,8 @@ static size_t theme_widget_tick(my_widget_t* widget, double now_ms,
     /* enroll widgets the theme gives CSS motion; the flag keeps themes
      * without any motion from costing lookups on every frame */
     const my_theme_t* theme = theme_widget_theme(widget);
-    my_widget_state_t state = my_widget_current_state(widget, false);
+    my_widget_state_t state =
+        my_widget_current_state(widget, my_widget_pressed(widget));
     if (my_theme_has_motion(theme) &&
         (my_theme_get_for_widget(theme, widget, state, MY_STYLE_ANIMATION) !=
              NULL ||
@@ -1556,7 +1559,8 @@ static size_t theme_widget_tick(my_widget_t* widget, double now_ms,
   }
   if (widget->style_motion != NULL) {
     const my_theme_t* theme = theme_widget_theme(widget);
-    my_widget_state_t state = my_widget_current_state(widget, false);
+    my_widget_state_t state =
+        my_widget_current_state(widget, my_widget_pressed(widget));
     widget->style_motion->now_ms = now_ms;
     if (theme != NULL) {
       my_theme_animation_sync(theme, widget, state, now_ms,

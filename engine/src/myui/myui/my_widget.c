@@ -373,6 +373,11 @@ my_ret_t my_widget_set_visible(my_widget_t* widget, bool visible) {
   return MY_RET_OK;
 }
 
+bool my_widget_pressed(const my_widget_t* widget) {
+  return widget != NULL && widget->is_pressed != NULL &&
+         widget->is_pressed(widget);
+}
+
 my_widget_state_t my_widget_current_state(const my_widget_t* widget,
                                           bool pressed) {
   if (widget == NULL || !widget->enable) {

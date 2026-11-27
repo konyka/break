@@ -152,6 +152,10 @@ static void sb_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
   }
 }
 
+static bool sb_is_pressed(const my_widget_t* widget) {
+  return ((const my_scroll_bar_t*)widget)->dragging;
+}
+
 static const my_widget_vtable_t s_sb_vtable = {sb_on_paint, sb_on_event, NULL, NULL};
 
 bool my_scroll_bar_is_instance(const my_widget_t* widget) {
@@ -169,6 +173,7 @@ my_widget_t* my_scroll_bar_create(const my_allocator_t* allocator) {
     my_mem_free(allocator, b);
     return NULL;
   }
+  ((my_widget_t*)b)->is_pressed = sb_is_pressed;
   b->page_size = 0.2f;
   ((my_widget_t*)b)->widget_type = "scroll_bar";
   ((my_widget_t*)b)->focusable = true;

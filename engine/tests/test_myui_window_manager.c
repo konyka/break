@@ -6955,6 +6955,119 @@ TEST(theme_has_motion_tracks_motion_declarations)
   my_theme_destroy(motion);
 }
 
+TEST(window_style_clock_tick_sees_pressed_state)
+{
+  /* Pressed-state CSS motion: a pointer-down button reports itself
+   * pressed, so the tick enrolls and runs the `:pressed` animation. */
+  my_pal_t* pal = my_pal_dummy_create(NULL);
+  my_pal_main_loop_t* loop = my_pal_main_loop_create(pal);
+  my_window_manager_t* wm = my_window_manager_create(NULL, pal, loop);
+  my_window_t* win = my_window_create(NULL, pal, 160, 100, "pressed");
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* button = my_button_create(NULL, "ok");
+  my_widget_t* attached;
+  my_event_t event;
+  const char* css =
+      "@keyframes squeeze { from { font-size: 10; } to { font-size: 20; } }"
+      "button { font-size: 14; }"
+      "button:pressed { animation: squeeze 100ms linear; }";
+
+  ASSERT_EQ(my_theme_load_css(theme, css), MY_RET_OK);
+  ASSERT_EQ(my_widget_apply_theme(my_window_widget(win), theme), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_rect(button, &(my_rect_t){10, 10, 80, 32}),
+            MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(my_window_widget(win), button), MY_RET_OK);
+  my_widget_unref(button);
+  ASSERT_EQ(my_window_manager_open(wm, win), MY_RET_OK);
+  my_widget_unref((my_widget_t*)win);
+  attached = my_widget_get_child(my_window_widget(win), 0);
+
+  ASSERT_FALSE(my_widget_pressed(attached));
+  ASSERT_EQ(my_window_tick_style_clocks(win, 0.0), 0u);
+  ASSERT_FALSE(my_widget_style_clock_active(attached));
+
+  event = my_event_init(MY_EVENT_POINTER_DOWN);
+  event.u.pointer.x = 20;
+  event.u.pointer.y = 20;
+  event.u.pointer.button = 1;
+  (void)my_window_manager_dispatch_surface_event(wm, &event);
+  ASSERT_TRUE(my_widget_pressed(attached));
+  ASSERT_EQ(my_window_tick_style_clocks(win, 100.0), 1u);
+  ASSERT_TRUE(my_widget_style_clock_active(attached));
+  ASSERT_EQ(my_window_tick_style_clocks(win, 150.0), 1u);
+  ASSERT_EQ(my_widget_style_get_int(attached, MY_STATE_PRESSED,
+                                    MY_STYLE_FONT_SIZE, 0), 15);
+  /* a host setting the clock by hand on a pressed widget starts the
+   * pressed animation at that time too. */
+  my_widget_clear_style_clock(attached);
+  ASSERT_EQ(my_widget_set_style_clock(attached, 500.0), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_style_clock(attached, 525.0), MY_RET_OK);
+  ASSERT_EQ(my_widget_style_get_int(attached, MY_STATE_PRESSED,
+                                    MY_STYLE_FONT_SIZE, 0), 12);
+
+  /* release after the button's minimum press time so it lets go at once
+   * (a quicker release keeps the pressed look for the remainder). */
+  my_pal_dummy_set_now_ms(pal, 10000u);
+  event.type = MY_EVENT_POINTER_UP;
+  (void)my_window_manager_dispatch_surface_event(wm, &event);
+  ASSERT_FALSE(my_widget_pressed(attached));
+  /* released: the normal state has no animation, nothing runs. */
+  ASSERT_EQ(my_window_tick_style_clocks(win, 160.0), 0u);
+  ASSERT_FALSE(my_widget_pressed(NULL));
+
+  my_window_manager_destroy(wm);
+  my_pal_main_loop_destroy(loop);
+  my_theme_destroy(theme);
+  my_pal_destroy(pal);
+}
+
+TEST(pressable_widgets_report_pressed_state)
+{
+  /* Checkbox press, slider drag and scroll bar thumb drag report through
+   * my_widget_pressed; a plain widget never does. */
+  my_widget_t* checkbox = my_checkbox_create(NULL, "c");
+  my_widget_t* slider = my_slider_create(NULL);
+  my_widget_t* bar = my_scroll_bar_create(NULL);
+  my_widget_t* plain = my_widget_create(NULL, "plain");
+  my_event_t down = my_event_init(MY_EVENT_POINTER_DOWN);
+  my_event_t up = my_event_init(MY_EVENT_POINTER_UP);
+
+  ASSERT_NOT_NULL(checkbox);
+  ASSERT_NOT_NULL(slider);
+  ASSERT_NOT_NULL(bar);
+  ASSERT_EQ(my_widget_set_rect(slider, &(my_rect_t){0, 0, 100, 20}),
+            MY_RET_OK);
+  ASSERT_EQ(my_widget_set_rect(bar, &(my_rect_t){0, 0, 10, 100}), MY_RET_OK);
+  down.u.pointer.x = 5;
+  down.u.pointer.y = 2;
+  down.u.pointer.button = 1;
+  up.u.pointer = down.u.pointer;
+
+  ASSERT_FALSE(my_widget_pressed(checkbox));
+  ASSERT_EQ(checkbox->vtable->on_event(checkbox, &down), MY_RET_OK);
+  ASSERT_TRUE(my_widget_pressed(checkbox));
+  ASSERT_EQ(checkbox->vtable->on_event(checkbox, &up), MY_RET_OK);
+  ASSERT_FALSE(my_widget_pressed(checkbox));
+
+  ASSERT_FALSE(my_widget_pressed(slider));
+  ASSERT_EQ(slider->vtable->on_event(slider, &down), MY_RET_OK);
+  ASSERT_TRUE(my_widget_pressed(slider));
+  ASSERT_EQ(slider->vtable->on_event(slider, &up), MY_RET_OK);
+  ASSERT_FALSE(my_widget_pressed(slider));
+
+  ASSERT_FALSE(my_widget_pressed(bar));
+  ASSERT_EQ(bar->vtable->on_event(bar, &down), MY_RET_OK);
+  ASSERT_TRUE(my_widget_pressed(bar));
+  ASSERT_EQ(bar->vtable->on_event(bar, &up), MY_RET_OK);
+  ASSERT_FALSE(my_widget_pressed(bar));
+
+  ASSERT_FALSE(my_widget_pressed(plain));
+  my_widget_unref(checkbox);
+  my_widget_unref(slider);
+  my_widget_unref(bar);
+  my_widget_unref(plain);
+}
+
 TEST(window_manager_paint_tick_drives_style_clocks)
 {
   /* The manager's paint tick reads the PAL clock and ticks every open
@@ -9556,6 +9669,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(window_manager_paint_tick_drives_style_clocks);
     RUN_TEST(window_style_clock_tick_enrolls_themed_motion);
     RUN_TEST(theme_has_motion_tracks_motion_declarations);
+    RUN_TEST(window_style_clock_tick_sees_pressed_state);
+    RUN_TEST(pressable_widgets_report_pressed_state);
     RUN_TEST(button_release_preserves_minimum_press_after_clock_rollback);
     RUN_TEST(button_cooldown_remains_active_at_clock_upper_bound);
     RUN_TEST(button_release_timer_failure_does_not_stick_pressed_state);

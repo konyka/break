@@ -3001,7 +3001,7 @@ CSS transition 与 animation 只有 `my_theme_*` 层的查询与宿主驱动，�
 - `my_theme_motion_running`（`my_theme.h`）：驱动尚未见过的 animation、未暂停且延迟加全部迭代尚未结束的组（`infinite` 一直算在运行）、或仍在延迟加时长内的 transition 槽，都算在运行。
 - `my_theme_animation_sync`（`my_theme.h`）：只推进 animation 驱动状态、不取值。`my_widget_set_style_clock` 设置时钟时也调用它，动画从设置时钟时开始计时，而不是从第一次查询开始。
 
-控件状态按 `my_widget_current_state(widget, false)` 推导（悬停/普通/禁用）；按下状态由各控件私有，tick 不感知，按下状态下的动画仍按查询时的状态求值。
+控件状态最初按 `my_widget_current_state(widget, false)` 推导（不含按下），按下状态的接入见后续一节。
 
 **TDD**：`test_myui_window_manager` 新增 2 例（247 例）：tick 推进时钟并只让仍在运行的控件失效、动画结束后的一次收尾失效、之后保持干净、新动画从首次看到它的 tick 开始、未见过的动画算在运行；manager 按 PAL 时钟推进、结束后返回 0、自动重绘定时器经 `my_pal_main_loop_run` 实际执行 tick。旧实现缺少接口（RED）。
 
@@ -3028,10 +3028,26 @@ BreakUI 关闭了 window manager 的自动重绘定时器（`break_ui_init` 调�
 - `my_theme_t` 新增 `has_motion`：加载的任一规则声明了 `animation` 或 `transition` 即为真；随 `my_theme_clone` 复制，事务式加载成功才提交，失败保持原值。查询 `my_theme_has_motion`（`my_theme.h`、`my_css.c`、`my_theme.c`）。
 - `my_widget_tick_style_clocks`：没有时钟的控件，若其主题 `has_motion` 且当前状态下有 `animation` 或 `transition` 值，就在本次 tick 为它设置时钟（随后按原逻辑同步、判断运行与失效）。没有动画声明的主题只做一次标志判断，空闲帧不增加查询。
 
-控件状态仍按 `my_widget_current_state(widget, false)` 推导；只在按下状态才有动画的控件，要到对应查询时才会参与（与上一节相同的边界）。
+按下状态见下一节。
 
 **TDD**：`test_myui_window_manager` 新增 2 例（249 例）：tick 自动为有 `animation` 与有 `transition` 的控件设置时钟、无动画控件不设置、自动启用后动画按时推进；`has_motion` 在纯静态主题为假、`transition`/`animation` 声明为真、克隆保留、加载失败保持原值、NULL 为假。旧实现缺少接口（RED）。
 
 **变异**：8 项判红、1 项为等价变异：不自动设置时钟、不看 `animation`、不看 `transition`、克隆不复制、提交不复制、扫描不认 `transition`、扫描不认 `animation`（据此补了只有 `animation` 的主题用例）。去掉 `has_motion` 判断只是去掉快速路径，结果相同，属于性能而非行为。
 
 **验证**：`test_myui_window_manager` 249/249 与 `test_myui_css` 223/223；ASan+UBSan 下两者通过；`build-myui-tests` 全量 ctest 482/482；`test_mycompose_gpu_opengl` 与 `_vulkan` 通过且 `idle_allocs=0`；`build-current-vk` 构建通过。
+
+## 本轮补充：动画时钟识别按下状态（2026-11-27）
+
+按下状态是各控件的私有字段（button 的 `pressed`，checkbox 的 `pressed`，slider 与 scroll bar 的 `dragging`），动画 tick 看不到，`:pressed` 规则里的 animation/transition 不会被启用也不会推进。
+
+修正：
+
+- `my_widget_t` 新增可选回调 `is_pressed`（类型 `my_widget_pressed_fn_t`），`my_widget_pressed(widget)` 查询，没有回调时为 false（`my_widget.h`、`my_widget.c`）。没有放进 vtable：vtable 在约 50 处以花括号初始化，`-Wextra -Werror` 下新增成员会让每处都报缺少初始化。
+- button、checkbox、slider、scroll bar 在工厂函数中设置该回调（`widgets/my_button.c` 等）。
+- 动画 tick、自动启用与 `my_widget_set_style_clock` 的同步都改用 `my_widget_current_state(widget, my_widget_pressed(widget))`（`my_theme.c`）。
+
+**TDD**：`test_myui_window_manager` 新增 2 例（251 例）：按下 button 后 tick 启用并推进 `:pressed` 动画、手动设置时钟时同样按按下状态开始、释放后不再运行（释放发生在按钮最短按下时间 120 ms 之后，否则按钮会继续保持按下外观）；checkbox、slider、scroll bar 的按下与释放经 `my_widget_pressed` 报告，普通控件为 false。旧实现缺少接口（RED）。
+
+**变异**：9 项全部判红：四个控件各自不设置回调、`my_widget_pressed` 恒为 false、三处状态推导各自改回不含按下。首轮手动设置时钟那一处存活，据此补了手动设置时钟的用例。
+
+**验证**：`test_myui_window_manager` 251/251 与 `test_myui_css` 223/223；ASan+UBSan 下两者通过；`build-myui-tests` 全量 ctest 482/482；`test_mycompose_gpu_opengl` 与 `_vulkan` 通过且 `idle_allocs=0`；`build-current-vk` 构建通过。

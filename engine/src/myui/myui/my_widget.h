@@ -69,6 +69,9 @@ typedef struct my_widget_vtable_t {
   void (*on_measure)(my_widget_t* widget);
 } my_widget_vtable_t;
 
+/** @brief Optional per-widget pressed query (see my_widget_pressed). */
+typedef bool (*my_widget_pressed_fn_t)(const my_widget_t* widget);
+
 struct my_layouter_t;
 
 /** @brief Root-only hook: a subtree is about to be removed (M3b). */
@@ -112,6 +115,11 @@ struct my_widget_t {
   /** @brief Owned CSS animation/transition clock and driver state; NULL
    * until my_widget_set_style_clock (see there). */
   struct my_widget_style_motion_t* style_motion;
+  /** @brief Whether the widget is in its pressed state (button press,
+   * checkbox press, slider or scroll bar drag), for code outside the
+   * widget such as the CSS motion tick; set by those widgets' factories,
+   * NULL = never pressed. */
+  my_widget_pressed_fn_t is_pressed;
   my_widget_removed_hook_t removed_hook; /**< root only: subtree removed */
   my_widget_child_removed_hook_t child_removed_hook; /**< optional parent hook */
 };
@@ -243,6 +251,9 @@ my_ret_t my_widget_set_visible(my_widget_t* widget, bool visible);
 my_widget_state_t my_widget_current_state(const my_widget_t* widget,
                                           bool pressed);
 
+/** @brief The widget's is_pressed hook; false without one. */
+bool my_widget_pressed(const my_widget_t* widget);
+
 /** @brief Rename a widget (name is used by theme [name] selectors). */
 my_ret_t my_widget_set_name(my_widget_t* widget, const char* name);
 
@@ -335,7 +346,8 @@ uint32_t my_widget_style_get_color(my_widget_t* widget, my_widget_state_t state,
 my_ret_t my_widget_set_style_clock(my_widget_t* widget, double now_ms);
 
 /** @brief Advance the style clock of `root` and every descendant that has
- * one to now_ms. A widget without a clock gets one when its theme (with
+ * one to now_ms. Widget state includes my_widget_pressed. A widget without
+ * a clock gets one when its theme (with
  * my_theme_has_motion) gives it an `animation` or `transition` for its
  * current state. A widget whose CSS motion is still running for its
  * current state (my_theme_motion_running) is invalidated so the next

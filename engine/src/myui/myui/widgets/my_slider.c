@@ -118,6 +118,10 @@ static my_ret_t slider_on_event(my_widget_t* widget, const my_event_t* event) {
   }
 }
 
+static bool slider_is_pressed(const my_widget_t* widget) {
+  return ((const my_slider_t*)widget)->dragging;
+}
+
 static const my_widget_vtable_t s_slider_vtable = {slider_on_paint,
                                                    slider_on_event, NULL, NULL};
 
@@ -135,6 +139,7 @@ my_widget_t* my_slider_create(const my_allocator_t* allocator) {
     my_mem_free(allocator, s);
     return NULL;
   }
+  ((my_widget_t*)s)->is_pressed = slider_is_pressed;
   s->min = 0.0f;
   s->max = 100.0f;
   ((my_widget_t*)s)->focusable = true;

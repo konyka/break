@@ -78,6 +78,10 @@ static my_ret_t checkbox_on_event(my_widget_t* widget, const my_event_t* event) 
   }
 }
 
+static bool checkbox_is_pressed(const my_widget_t* widget) {
+  return ((const my_checkbox_t*)widget)->pressed;
+}
+
 static const my_widget_vtable_t s_checkbox_vtable = {checkbox_on_paint,
                                                      checkbox_on_event, NULL, NULL};
 
@@ -105,6 +109,7 @@ my_widget_t* my_checkbox_create(const my_allocator_t* allocator,
     return NULL;
   }
   ((my_object_t*)c)->destroy = checkbox_destroy_chain;
+  ((my_widget_t*)c)->is_pressed = checkbox_is_pressed;
   c->allocator = allocator;
   if (text != NULL) {
     c->text = my_strdup(allocator, text);

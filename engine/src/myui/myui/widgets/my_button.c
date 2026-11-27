@@ -432,6 +432,10 @@ static my_ret_t button_on_event(my_widget_t* widget, const my_event_t* event) {
   return result;
 }
 
+static bool button_is_pressed(const my_widget_t* widget) {
+  return ((const my_button_t*)widget)->pressed;
+}
+
 static const my_widget_vtable_t s_button_vtable = {button_on_paint,
                                                    button_on_event, NULL, NULL};
 
@@ -457,6 +461,7 @@ my_widget_t* my_button_create(const my_allocator_t* allocator, const char* text)
     return NULL;
   }
   ((my_object_t*)b)->destroy = button_destroy_chain;
+  ((my_widget_t*)b)->is_pressed = button_is_pressed;
   if (text != NULL) {
     b->text = my_strdup(allocator, text);
     if (b->text == NULL) {
