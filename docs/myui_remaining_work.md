@@ -2850,10 +2850,27 @@ graphics 与 present queue。`RE_VK_DEVICE_INDEX` 现在也必须通过同一门
 - `my_css_keyframes_sample(keyframes, key, syntax, t, ...)`：只在声明了该 key 的 stop 中找 t 两侧的 stop，按 `my_css_property_interpolate` 混合；t 越界时取最近的 stop。
 - capability registry 新增 `MY_CSS_FEATURE_KEYFRAMES`。
 
-边界：keyframes 不进入 theme 级联，也没有 `animation` 属性、计时、timing function 与迭代控制；调用方负责时钟和进度，采样只覆盖可插值的已注册语法。
+边界：keyframes 本身不进入 theme 级联；`animation` 声明与时间驱动的查询见下一节。采样只覆盖可插值的已注册语法。
 
 **TDD**：`test_myui_css` 新增 4 例（209 例）：stop 排序/逗号列表/同名替换、跨 stop 采样与越界、6 种非法输入与超过 32 个 stop、capability 位。旧实现在严格模式下拒绝 `@keyframes`（RED，3 例失败）。
 
 **变异**：6 项全部判红：不排序、同名不替换、百分比上限放宽到 1000、stop 上限放宽、采样下界不夹取、不跳过未声明 key 的 stop。
 
 **验证**：`test_myui_css` 209/209；ASan+UBSan（含 LeakSanitizer）209/209；`build-myui-tests` 全量 ctest 482/482。
+
+## 本轮补充：`animation` 声明与按时间的 keyframes 查询（2026-11-27）
+
+上一节只让 sheet 能解析与采样 `@keyframes`。本节把它接到 theme 与控件：
+
+- theme 新增 `keyframe_sheet`：`my_theme_load_css*` 加载时把 sheet 的 keyframes 合并进去（同名原位替换，全部成功才提交，与 `@property` 一样累积）；`my_theme_clone` 深拷贝，事务式加载失败时保持旧值。查询 `my_theme_keyframes_find`。
+- 新声明 `animation: <keyframes-name> <duration> [easing] [delay] [<count>|infinite]`，单组；easing 与 `transition` 的语法相同（关键字、`cubic-bezier`、`steps`），次数为正整数，默认 1。值不合法时与 `transition` 一样跳过该声明。
+- `my_theme_get_for_widget_var_animating(theme, widget, state, key, elapsed_ms, out)`：延迟期保持首帧；每次迭代按 easing 映射进度；所有迭代结束后保持末帧；key 必须是已注册属性，按其 syntax 在声明了该 key 的 stop 之间插值。返回 false 时调用方回退普通查询。
+- `transition` 的 easing 映射抽成 `css_transition_ease`，两条路径共用。
+
+边界：只支持单组 animation，不支持 `animation-direction`、`fill-mode`、`play-state` 与多组；起始时间由调用方记录。
+
+**TDD**：`test_myui_css` 新增 3 例（212 例）：按时间采样（颜色与经过 50% stop 的数值、延迟、两次迭代后保持末帧、`infinite` 循环、未知 keyframes 与未声明 key 回退）、6 种非法 `animation` 值被跳过、theme 克隆与二次加载累积。旧实现缺少接口，编译即失败（RED）。
+
+**变异**：9 项全部判红：忽略延迟、忽略迭代次数、不取模、加载时不合并、提交时不交换、不校验声明、接受次数 0、接受 `--` 名字、接受多余 token。
+
+**验证**：`test_myui_css` 212/212；ASan+UBSan（含 LeakSanitizer）212/212；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 全量构建通过。

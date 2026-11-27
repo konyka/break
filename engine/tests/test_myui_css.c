@@ -3510,6 +3510,153 @@ TEST(css_transition_declaration_storage)
   my_theme_destroy(theme);
 }
 
+static double css_test_number(const my_value_t* v)
+{
+  if (my_value_type(v) == MY_VALUE_INT32) return (double)my_value_get_int32(v);
+  if (my_value_type(v) == MY_VALUE_DOUBLE) return my_value_get_double(v);
+  return -12345.0;
+}
+
+TEST(css_animating_var_lookup_samples_keyframes)
+{
+  /* `animation: <keyframes> <duration> [easing] [delay] [count|infinite]`
+   * on the widget picks a @keyframes rule; the host supplies elapsed
+   * time and the engine samples the key between the stops. */
+  const char* css =
+      "@property --accent { syntax: \"<color>\"; inherits: true;"
+      " initial-value: red; }"
+      "@property --size { syntax: \"<number>\"; inherits: false;"
+      " initial-value: 0; }"
+      "@keyframes pulse {"
+      "  from { --accent: #ff0000ff; --size: 0; }"
+      "  50% { --size: 10; }"
+      "  to { --accent: #0000ffff; --size: 4; }"
+      "}"
+      "button { animation: pulse 200ms; }"
+      "label { animation: pulse 100ms linear 50ms 2; }"
+      "slider { animation: pulse 100ms linear infinite; }"
+      "check { animation: missing 100ms; }";
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* button = my_widget_create(NULL, "button");
+  my_widget_t* label = my_widget_create(NULL, "label");
+  my_widget_t* slider = my_widget_create(NULL, "slider");
+  my_widget_t* check = my_widget_create(NULL, "check");
+  my_value_t out;
+
+  ASSERT_NOT_NULL(theme);
+  button->widget_type = "button";
+  label->widget_type = "label";
+  slider->widget_type = "slider";
+  check->widget_type = "check";
+  my_value_init(&out, NULL);
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+
+  /* halfway through the color track: from and to only. */
+  ASSERT_TRUE(my_theme_get_for_widget_var_animating(
+      theme, button, MY_STATE_NORMAL, "--accent", 100.0, &out));
+  ASSERT_EQ(my_value_get_uint32(&out), 0x800080FFu);
+  my_value_reset(&out);
+  /* --size passes through the 50% stop. */
+  ASSERT_TRUE(my_theme_get_for_widget_var_animating(
+      theme, button, MY_STATE_NORMAL, "--size", 50.0, &out));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 5.0, 1e-9);
+  my_value_reset(&out);
+  ASSERT_TRUE(my_theme_get_for_widget_var_animating(
+      theme, button, MY_STATE_NORMAL, "--size", 150.0, &out));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 7.0, 1e-9);
+  my_value_reset(&out);
+  /* one iteration by default: past the end holds the last stop. */
+  ASSERT_TRUE(my_theme_get_for_widget_var_animating(
+      theme, button, MY_STATE_NORMAL, "--size", 900.0, &out));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 4.0, 1e-9);
+  my_value_reset(&out);
+
+  /* delay holds the first stop; two iterations then hold the end. */
+  ASSERT_TRUE(my_theme_get_for_widget_var_animating(
+      theme, label, MY_STATE_NORMAL, "--size", 20.0, &out));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 0.0, 1e-9);
+  my_value_reset(&out);
+  /* 50 ms into the first 100 ms iteration is the 50% stop ... */
+  ASSERT_TRUE(my_theme_get_for_widget_var_animating(
+      theme, label, MY_STATE_NORMAL, "--size", 100.0, &out));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 10.0, 1e-9);
+  my_value_reset(&out);
+  /* ... and 25 ms into the second iteration restarts from `from`. */
+  ASSERT_TRUE(my_theme_get_for_widget_var_animating(
+      theme, label, MY_STATE_NORMAL, "--size", 175.0, &out));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 5.0, 1e-9);
+  my_value_reset(&out);
+  ASSERT_TRUE(my_theme_get_for_widget_var_animating(
+      theme, label, MY_STATE_NORMAL, "--size", 400.0, &out));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 4.0, 1e-9);
+  my_value_reset(&out);
+
+  /* infinite keeps cycling. */
+  ASSERT_TRUE(my_theme_get_for_widget_var_animating(
+      theme, slider, MY_STATE_NORMAL, "--size", 1025.0, &out));
+  ASSERT_FLOAT_EQ(css_test_number(&out), 5.0, 1e-9);
+  my_value_reset(&out);
+
+  /* unknown keyframes, unknown key, no animation -> fall back. */
+  ASSERT_FALSE(my_theme_get_for_widget_var_animating(
+      theme, check, MY_STATE_NORMAL, "--size", 10.0, &out));
+  ASSERT_FALSE(my_theme_get_for_widget_var_animating(
+      theme, button, MY_STATE_NORMAL, "--absent", 10.0, &out));
+  my_widget_unref(button);
+  my_widget_unref(label);
+  my_widget_unref(slider);
+  my_widget_unref(check);
+  my_theme_destroy(theme);
+}
+
+TEST(css_animation_declaration_rejects_malformed_values)
+{
+  static const char* const bad[] = {
+      "button { animation: 200ms; }",
+      "button { animation: pulse; }",
+      "button { animation: pulse fast; }",
+      "button { animation: pulse 1s linear 2s 3 extra; }",
+      "button { animation: pulse 1s 0; }",
+      "button { animation: --pulse 1s; }",
+  };
+  size_t i;
+  for (i = 0u; i < sizeof(bad) / sizeof(bad[0]); i++) {
+    my_theme_t* theme = my_theme_create(NULL);
+    my_widget_t* button = my_widget_create(NULL, "button");
+    button->widget_type = "button";
+    ASSERT_EQ(my_theme_load_css(theme, bad[i]), MY_RET_OK);
+    if (my_theme_get_for_widget(theme, button, MY_STATE_NORMAL,
+                                "animation") != NULL) {
+      printf("  kept: %s\n", bad[i]);
+    }
+    ASSERT_TRUE(my_theme_get_for_widget(theme, button, MY_STATE_NORMAL,
+                                        "animation") == NULL);
+    my_widget_unref(button);
+    my_theme_destroy(theme);
+  }
+}
+
+TEST(css_theme_keyframes_survive_clone_and_reload)
+{
+  const char* first = "@keyframes a { to { --x: 1; } }";
+  const char* second = "@keyframes b { to { --x: 2; } }";
+  my_theme_t* theme = my_theme_create(NULL);
+  my_theme_t* copy;
+  ASSERT_EQ(my_theme_load_css(theme, first), MY_RET_OK);
+  ASSERT_NOT_NULL(my_theme_keyframes_find(theme, "a"));
+  copy = my_theme_clone(theme);
+  ASSERT_NOT_NULL(copy);
+  ASSERT_NOT_NULL(my_theme_keyframes_find(copy, "a"));
+  /* a second sheet adds to the theme like @property does. */
+  ASSERT_EQ(my_theme_load_css(theme, second), MY_RET_OK);
+  ASSERT_NOT_NULL(my_theme_keyframes_find(theme, "a"));
+  ASSERT_NOT_NULL(my_theme_keyframes_find(theme, "b"));
+  ASSERT_TRUE(my_theme_keyframes_find(copy, "b") == NULL);
+  my_theme_destroy(copy);
+  my_theme_destroy(theme);
+}
+
 TEST(css_transitioning_var_lookup_blends_over_time)
 {
   /* R687 (interpolation project phase 3, engine side): a time-stamped
@@ -11067,6 +11214,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_property_interpolation_primitives);
     RUN_TEST(css_transition_declaration_storage);
     RUN_TEST(css_transitioning_var_lookup_blends_over_time);
+    RUN_TEST(css_animating_var_lookup_samples_keyframes);
+    RUN_TEST(css_animation_declaration_rejects_malformed_values);
+    RUN_TEST(css_theme_keyframes_survive_clone_and_reload);
     RUN_TEST(css_percentage_length_resolution);
     RUN_TEST(css_percentage_length_auto_reference);
     RUN_TEST(css_property_syntax_list_multipliers);

@@ -1238,6 +1238,109 @@ static bool css_transition_value_ok(const char* text) {
   return groups > 0u;
 }
 
+/* The `animation` declaration: one group of
+ * `<keyframes-name> <duration> [easing] [delay] [<count>|infinite]`.
+ * Tokens after the duration are classified by shape: a time is the
+ * delay, `infinite` or a positive integer the count, anything else must
+ * be an easing; each may appear once, in that relative order. */
+typedef struct {
+  char name[MY_CSS_NAME_LEN];
+  css_transition_spec_t timing; /* duration/delay/easing; name unused */
+  double iterations;            /* INFINITY for `infinite` */
+} css_animation_spec_t;
+
+static bool css_animation_parse(const char* text, css_animation_spec_t* spec) {
+  const char* tokens[5];
+  size_t lens[5];
+  size_t count = 0u;
+  size_t i = 0u;
+  size_t len = strlen(text);
+  size_t depth = 0u;
+  size_t start = 0u;
+  size_t t;
+  int stage = 0; /* 0 easing, 1 delay, 2 count, 3 done */
+  memset(spec, 0, sizeof(*spec));
+  spec->timing.x1 = 1.0 / 3.0;
+  spec->timing.y1 = 1.0 / 3.0;
+  spec->timing.x2 = 2.0 / 3.0;
+  spec->timing.y2 = 2.0 / 3.0;
+  spec->iterations = 1.0;
+  while (i <= len) {
+    char c = i < len ? text[i] : ' ';
+    if (c == ',' && depth == 0u) return false;
+    if (depth == 0u && (c == ' ' || c == '\t' || c == '\r' || c == '\n')) {
+      if (i > start) {
+        if (count >= 5u) return false;
+        tokens[count] = text + start;
+        lens[count] = i - start;
+        count++;
+      }
+      start = i + 1u;
+    } else if (c == '(') {
+      depth++;
+    } else if (c == ')') {
+      if (depth == 0u) return false;
+      depth--;
+    }
+    i++;
+  }
+  if (depth != 0u || count < 2u) return false;
+  if (lens[0] >= sizeof(spec->name) ||
+      (lens[0] >= 2u && tokens[0][0] == '-' && tokens[0][1] == '-')) {
+    return false;
+  }
+  for (t = 0u; t < lens[0]; t++) {
+    if (!c_ident_char((unsigned char)tokens[0][t])) return false;
+  }
+  if (lens[0] == 0u || (tokens[0][0] >= '0' && tokens[0][0] <= '9')) {
+    return false;
+  }
+  memcpy(spec->name, tokens[0], lens[0]);
+  spec->name[lens[0]] = '\0';
+  if (!css_transition_time_token(tokens[1], lens[1],
+                                 &spec->timing.duration_ms) ||
+      spec->timing.duration_ms < 0.0) {
+    return false;
+  }
+  for (t = 2u; t < count; t++) {
+    double ms;
+    if (stage <= 1 && css_transition_time_token(tokens[t], lens[t], &ms)) {
+      if (ms < 0.0) return false;
+      spec->timing.delay_ms = ms;
+      stage = 2;
+    } else if (stage <= 2 && lens[t] == 8u &&
+               memcmp(tokens[t], "infinite", 8u) == 0) {
+      spec->iterations = INFINITY;
+      stage = 3;
+    } else if (stage <= 2 && tokens[t][0] >= '0' && tokens[t][0] <= '9') {
+      size_t k;
+      double n = 0.0;
+      for (k = 0u; k < lens[t]; k++) {
+        if (tokens[t][k] < '0' || tokens[t][k] > '9') return false;
+        n = n * 10.0 + (double)(tokens[t][k] - '0');
+        if (n > 1000000.0) return false;
+      }
+      if (n < 1.0) return false;
+      spec->iterations = n;
+      stage = 3;
+    } else if (stage == 0 &&
+               css_transition_easing_token(
+                   tokens[t], lens[t], &spec->timing.x1, &spec->timing.y1,
+                   &spec->timing.x2, &spec->timing.y2,
+                   &spec->timing.steps_count, &spec->timing.steps_pos)) {
+      stage = 1;
+    } else {
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool css_animation_value_ok(const char* text) {
+  css_animation_spec_t spec;
+  return css_animation_parse(text, &spec);
+}
+
 /* R672: bounded @property syntax primitives — <color>/<length>/
  * <number>/<integer>/<string>/<percentage> and `*` (unknown syntax
  * strings carry no enforcement, documented). The text must parse as one
@@ -1516,6 +1619,7 @@ static const css_alias_t KEY_ALIASES[] = {
     {"container-type", MY_STYLE_CONTAINER_TYPE},
     {"container-name", MY_STYLE_CONTAINER_NAME},
     {"transition", MY_STYLE_TRANSITION},
+    {"animation", MY_STYLE_ANIMATION},
 };
 
 static void css_key_map(const char* key, char* out, size_t cap) {
@@ -2737,6 +2841,13 @@ static bool css_parse_decl_block(css_p_t* p, my_css_rule_t* r,
         if (value_ok &&
             !css_container_property_value_ok(key,
                                              my_value_get_str(&d->value))) {
+          my_value_reset(&d->value);
+          value_ok = false;
+        }
+      } else if (my_str_eq(key, "animation")) {
+        value_ok = css_custom_value(p, &d->value, &d->important);
+        if (value_ok &&
+            !css_animation_value_ok(my_value_get_str(&d->value))) {
           my_value_reset(&d->value);
           value_ok = false;
         }
@@ -6702,6 +6813,149 @@ static my_ret_t css_theme_register_property_def(
   }
 }
 
+static my_css_rule_t* css_rule_clone_decls(const my_allocator_t* allocator,
+                                           const my_css_rule_t* source) {
+  size_t i, n = my_darray_size(source->decls);
+  my_css_rule_t* copy = css_rule_new(allocator, source->layer_order);
+  if (copy == NULL) return NULL;
+  for (i = 0u; i < n; i++) {
+    const my_css_decl_t* d =
+        (const my_css_decl_t*)my_darray_get(source->decls, i);
+    my_css_decl_t* c =
+        (my_css_decl_t*)my_mem_calloc(allocator, 1, sizeof(*c));
+    if (c == NULL) {
+      css_rule_destroy(allocator, copy);
+      return NULL;
+    }
+    memcpy(c->key, d->key, sizeof(c->key));
+    c->important = d->important;
+    my_value_init(&c->value, allocator);
+    if (my_value_copy(&c->value, &d->value) != MY_RET_OK ||
+        my_darray_push(copy->decls, c) != MY_RET_OK) {
+      my_value_reset(&c->value);
+      my_mem_free(allocator, c);
+      css_rule_destroy(allocator, copy);
+      return NULL;
+    }
+  }
+  return copy;
+}
+
+static my_css_keyframes_t* css_keyframes_clone(
+    const my_allocator_t* allocator, const my_css_keyframes_t* source) {
+  size_t i;
+  my_css_keyframes_t* copy =
+      (my_css_keyframes_t*)my_mem_calloc(allocator, 1, sizeof(*copy));
+  if (copy == NULL) return NULL;
+  memcpy(copy->name, source->name, sizeof(copy->name));
+  for (i = 0u; i < source->stop_count; i++) {
+    size_t j;
+    copy->stops[i].offset = source->stops[i].offset;
+    copy->stops[i].body = NULL;
+    for (j = 0u; j < i; j++) {
+      if (source->stops[j].body == source->stops[i].body) {
+        copy->stops[i].body = copy->stops[j].body;
+        break;
+      }
+    }
+    if (copy->stops[i].body == NULL) {
+      copy->stops[i].body =
+          css_rule_clone_decls(allocator, source->stops[i].body);
+      if (copy->stops[i].body == NULL) {
+        copy->stop_count = i;
+        css_keyframes_destroy(allocator, copy);
+        return NULL;
+      }
+    }
+    copy->stop_count = i + 1u;
+  }
+  return copy;
+}
+
+static my_css_sheet_t* css_sheet_new_empty(const my_allocator_t* allocator) {
+  my_css_sheet_t* sheet =
+      (my_css_sheet_t*)my_mem_calloc(allocator, 1, sizeof(*sheet));
+  if (sheet == NULL) return NULL;
+  sheet->allocator = allocator;
+  sheet->rules = my_darray_create(allocator, 0);
+  sheet->property_defs = my_darray_create(allocator, 0);
+  sheet->keyframes = my_darray_create(allocator, 0);
+  if (sheet->rules == NULL || sheet->property_defs == NULL ||
+      sheet->keyframes == NULL) {
+    my_css_sheet_destroy(sheet);
+    return NULL;
+  }
+  return sheet;
+}
+
+/* Adds every keyframes rule of `source` to `target`, replacing same names
+ * in place. All-or-nothing: on failure `target` is unchanged. */
+static my_ret_t css_keyframes_merge(my_css_sheet_t* target,
+                                    const my_css_sheet_t* source) {
+  size_t i, n = my_css_keyframes_count(source);
+  size_t added = 0u;
+  my_css_keyframes_t* copies[MY_CSS_MAX_KEYFRAMES];
+  if (n > MY_CSS_MAX_KEYFRAMES) return MY_RET_FAIL;
+  for (i = 0u; i < n; i++) {
+    copies[i] = css_keyframes_clone(target->allocator,
+                                    my_css_keyframes_at(source, i));
+    if (copies[i] == NULL) {
+      while (i > 0u) css_keyframes_destroy(target->allocator, copies[--i]);
+      return MY_RET_OOM;
+    }
+    if (my_css_keyframes_find(target, copies[i]->name) == NULL) added++;
+  }
+  if (my_css_keyframes_count(target) + added > MY_CSS_MAX_KEYFRAMES) {
+    for (i = 0u; i < n; i++) css_keyframes_destroy(target->allocator, copies[i]);
+    return MY_RET_FAIL;
+  }
+  for (i = 0u; i < n; i++) {
+    size_t j, m = my_darray_size(target->keyframes);
+    bool replaced = false;
+    for (j = 0u; j < m; j++) {
+      my_css_keyframes_t* old =
+          (my_css_keyframes_t*)my_darray_get(target->keyframes, j);
+      if (my_str_eq(old->name, copies[i]->name)) {
+        my_css_keyframes_t tmp = *old;
+        *old = *copies[i];
+        *copies[i] = tmp;
+        css_keyframes_destroy(target->allocator, copies[i]);
+        replaced = true;
+        break;
+      }
+    }
+    if (!replaced && my_darray_push(target->keyframes, copies[i]) != MY_RET_OK) {
+      /* capacity was checked; a push failure here is OOM mid-commit */
+      size_t k;
+      css_keyframes_destroy(target->allocator, copies[i]);
+      for (k = i + 1u; k < n; k++) {
+        css_keyframes_destroy(target->allocator, copies[k]);
+      }
+      return MY_RET_OOM;
+    }
+  }
+  return MY_RET_OK;
+}
+
+my_css_sheet_t* my_css_keyframes_sheet_clone(const my_allocator_t* allocator,
+                                             const my_css_sheet_t* source) {
+  my_css_sheet_t* sheet;
+  if (source == NULL) return NULL;
+  sheet = css_sheet_new_empty(allocator);
+  if (sheet == NULL) return NULL;
+  if (css_keyframes_merge(sheet, source) != MY_RET_OK) {
+    my_css_sheet_destroy(sheet);
+    return NULL;
+  }
+  return sheet;
+}
+
+const my_css_keyframes_t* my_theme_keyframes_find(const my_theme_t* theme,
+                                                  const char* name) {
+  return theme != NULL ? my_css_keyframes_find(theme->keyframe_sheet, name)
+                       : NULL;
+}
+
 static my_ret_t my_theme_load_css_internal(
     my_theme_t* theme, const char* css,
     const my_css_parse_options_t* options) {
@@ -6875,6 +7129,14 @@ static my_ret_t my_theme_load_css_internal(
     }
     if (ret != MY_RET_OK) break;
   }
+  if (ret == MY_RET_OK && my_css_keyframes_count(sheet) > 0u) {
+    if (candidate->keyframe_sheet == NULL) {
+      candidate->keyframe_sheet = css_sheet_new_empty(candidate->allocator);
+    }
+    ret = candidate->keyframe_sheet == NULL
+              ? MY_RET_OOM
+              : css_keyframes_merge(candidate->keyframe_sheet, sheet);
+  }
   if (ret == MY_RET_OK) {
     for (di = 0u; di < my_darray_size(sheet->property_defs); di++) {
       ret = css_theme_register_property_def(
@@ -6895,8 +7157,11 @@ static my_ret_t my_theme_load_css_internal(
   candidate->entries = old_entries;
   {
     my_darray_t* old_defs = theme->property_defs;
+    struct my_css_sheet_t* old_keyframes = theme->keyframe_sheet;
     theme->property_defs = candidate->property_defs;
     candidate->property_defs = old_defs;
+    theme->keyframe_sheet = candidate->keyframe_sheet;
+    candidate->keyframe_sheet = old_keyframes;
   }
   my_theme_destroy(candidate);
   return ret;
@@ -7497,6 +7762,43 @@ static bool css_value_to_text(const my_value_t* v, char* buf, size_t cap) {
   }
 }
 
+/* R691/R699/R702: map linear progress t in [0, 1] through the spec's
+ * easing (cubic-bezier or steps), clamped to [0, 1]. */
+static double css_transition_ease(const css_transition_spec_t* spec,
+                                  double t) {
+  if (spec->steps_count > 0) {
+    /* R699/R702: the discrete staircase — jump-end holds
+     * floor(p*n)/n (p=1 reaches 1), jump-start jumps to
+     * (floor(p*n)+1)/n (y(0)=1/n), jump-none maps floor(p*n)/(n-1)
+     * (no jump at either end, n>=2), jump-both maps
+     * (floor(p*n)+1)/(n+1) (jumps at both ends). */
+    double n = (double)spec->steps_count;
+    double step;
+    if (spec->steps_pos == 2) {
+      step = t >= 1.0 ? n - 1.0 : floor(t * n);
+      t = step / (n - 1.0);
+    } else if (spec->steps_pos == 3) {
+      step = t >= 1.0 ? n + 1.0 : floor(t * n) + 1.0;
+      t = step / (n + 1.0);
+    } else if (spec->steps_pos == 1) {
+      step = t >= 1.0 ? n : floor(t * n) + 1.0;
+      t = step / n;
+    } else {
+      step = t >= 1.0 ? n : floor(t * n);
+      t = step / n;
+    }
+  } else {
+    t = css_transition_bezier_y(spec->x1, spec->y1, spec->x2, spec->y2, t);
+  }
+  if (!(t >= 0.0)) {
+    t = 0.0;
+  }
+  if (t > 1.0) {
+    t = 1.0;
+  }
+  return t;
+}
+
 bool my_theme_get_for_widget_var_transitioning(
     const my_theme_t* theme, const struct my_widget_t* widget,
     my_widget_state_t state, const char* key, const char* from_text,
@@ -7547,36 +7849,7 @@ bool my_theme_get_for_widget_var_transitioning(
   if (t > 1.0) {
     t = 1.0;
   }
-  if (spec.steps_count > 0) {
-    /* R699/R702: the discrete staircase — jump-end holds
-     * floor(p*n)/n (p=1 reaches 1), jump-start jumps to
-     * (floor(p*n)+1)/n (y(0)=1/n), jump-none maps floor(p*n)/(n-1)
-     * (no jump at either end, n>=2), jump-both maps
-     * (floor(p*n)+1)/(n+1) (jumps at both ends). */
-    double n = (double)spec.steps_count;
-    double step;
-    if (spec.steps_pos == 2) {
-      step = t >= 1.0 ? n - 1.0 : floor(t * n);
-      t = step / (n - 1.0);
-    } else if (spec.steps_pos == 3) {
-      step = t >= 1.0 ? n + 1.0 : floor(t * n) + 1.0;
-      t = step / (n + 1.0);
-    } else if (spec.steps_pos == 1) {
-      step = t >= 1.0 ? n : floor(t * n) + 1.0;
-      t = step / n;
-    } else {
-      step = t >= 1.0 ? n : floor(t * n);
-      t = step / n;
-    }
-  } else {
-    t = css_transition_bezier_y(spec.x1, spec.y1, spec.x2, spec.y2, t);
-  }
-  if (!(t >= 0.0)) {
-    t = 0.0;
-  }
-  if (t > 1.0) {
-    t = 1.0;
-  }
+  t = css_transition_ease(&spec, t);
   if (!my_css_property_interpolate(def->syntax, from_text, to_text, t,
                                    blended, sizeof(blended))) {
     /* uninterpolable sides: jump straight to the target. */
@@ -7611,6 +7884,50 @@ static bool css_probe_full_value(const char* text, my_value_t* out) {
   c_ws(&probe);
   return c_peek(&probe) < 0;
 }
+
+bool my_theme_get_for_widget_var_animating(const my_theme_t* theme,
+                                           const struct my_widget_t* widget,
+                                           my_widget_state_t state,
+                                           const char* key,
+                                           double elapsed_ms,
+                                           my_value_t* out) {
+  const my_value_t* av;
+  const my_theme_property_def_t* def;
+  const my_css_keyframes_t* keyframes;
+  css_animation_spec_t spec;
+  double active;
+  double t;
+  char blended[CSS_VAR_MAX_SUBST_BYTES];
+  if (theme == NULL || widget == NULL || key == NULL || out == NULL) {
+    return false;
+  }
+  av = my_theme_get_for_widget(theme, widget, state, MY_STYLE_ANIMATION);
+  if (av == NULL || my_value_type(av) != MY_VALUE_STR ||
+      !css_animation_parse(my_value_get_str(av), &spec)) {
+    return false;
+  }
+  keyframes = my_theme_keyframes_find(theme, spec.name);
+  def = css_theme_property_def(theme, key);
+  if (keyframes == NULL || def == NULL) {
+    return false;
+  }
+  active = elapsed_ms - spec.timing.delay_ms;
+  if (!(active > 0.0)) {
+    t = 0.0;
+  } else if (!(spec.timing.duration_ms > 0.0) ||
+             active >= spec.timing.duration_ms * spec.iterations) {
+    t = 1.0;
+  } else {
+    t = fmod(active, spec.timing.duration_ms) / spec.timing.duration_ms;
+  }
+  t = css_transition_ease(&spec.timing, t);
+  if (!my_css_keyframes_sample(keyframes, key, def->syntax, t, blended,
+                               sizeof(blended))) {
+    return false;
+  }
+  return css_probe_full_value(blended, out);
+}
+
 
 bool my_theme_transition_step(const my_theme_t* theme,
                               const struct my_widget_t* widget,

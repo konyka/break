@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "myc/my_str.h"
+#include "myui/my_css.h"
 #include "myui/my_widget.h"
 
 /* ---------------- entries ---------------- */
@@ -83,6 +84,7 @@ void my_theme_destroy(my_theme_t* theme) {
                                                         i));
   }
   my_darray_destroy(theme->property_defs);
+  my_css_sheet_destroy(theme->keyframe_sheet);
   my_mem_free(theme->allocator, theme);
 }
 
@@ -172,6 +174,15 @@ my_theme_t* my_theme_clone(const my_theme_t* source) {
     if (my_darray_push(candidate->property_defs, candidate_def) !=
         MY_RET_OK) {
       my_mem_free(candidate->allocator, candidate_def);
+      my_theme_destroy(candidate);
+      return NULL;
+    }
+  }
+  if (source->keyframe_sheet != NULL) {
+    candidate->keyframe_sheet =
+        my_css_keyframes_sheet_clone(candidate->allocator,
+                                     source->keyframe_sheet);
+    if (candidate->keyframe_sheet == NULL) {
       my_theme_destroy(candidate);
       return NULL;
     }

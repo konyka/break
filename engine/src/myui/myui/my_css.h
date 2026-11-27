@@ -468,6 +468,33 @@ bool my_css_keyframes_sample(const my_css_keyframes_t* keyframes,
                              const char* key, const char* syntax, double t,
                              char* out, size_t cap);
 
+/** @brief Copy only the @keyframes of `source` into a new sheet; NULL on
+ * allocation failure. Used by theme cloning. */
+my_css_sheet_t* my_css_keyframes_sheet_clone(const my_allocator_t* allocator,
+                                             const my_css_sheet_t* source);
+
+/** @brief Keyframes rule the theme loaded under `name`; NULL when absent. */
+const my_css_keyframes_t* my_theme_keyframes_find(const my_theme_t* theme,
+                                                  const char* name);
+
+/** @brief Time-stamped var lookup driven by the widget's `animation`
+ * declaration: `<keyframes-name> <duration> [easing] [delay]
+ * [<count>|infinite]` (one group; easing as in `transition`, count a
+ * positive integer, default 1). The host supplies the elapsed
+ * milliseconds since the animation started. The delay holds the first
+ * stop; each iteration maps through the easing; after the last
+ * iteration the end state holds. The key is sampled between the stops
+ * that declare it and blended with the property's registered syntax.
+ * Returns false when the widget has no animation, the keyframes name is
+ * unknown, no stop declares the key, or the key is unregistered; the
+ * caller then falls back to my_theme_get_for_widget_var. */
+bool my_theme_get_for_widget_var_animating(const my_theme_t* theme,
+                                           const struct my_widget_t* widget,
+                                           my_widget_state_t state,
+                                           const char* key,
+                                           double elapsed_ms,
+                                           my_value_t* out);
+
 /* ---------------- theme bridge ---------------- */
 
 /**

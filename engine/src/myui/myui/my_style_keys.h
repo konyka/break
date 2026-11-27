@@ -18,5 +18,6 @@
 #define MY_STYLE_CONTAINER_TYPE "container_type"
 #define MY_STYLE_CONTAINER_NAME "container_name"
 #define MY_STYLE_TRANSITION "transition"
+#define MY_STYLE_ANIMATION "animation"
 
 #endif /* MY_STYLE_KEYS_H */

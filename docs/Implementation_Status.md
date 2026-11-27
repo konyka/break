@@ -14820,3 +14820,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **实现**：`my_css` 解析有界 `@keyframes`（`from`/`to`/百分比、逗号列表、同名替换、按 offset 稳定排序，64 个名字、每个 32 个 stop），提供查询与 `my_css_keyframes_sample`；capability 新增 `MY_CSS_FEATURE_KEYFRAMES`。不进入 theme 级联，无 `animation` 属性与计时。
 - **TDD 与变异**：`test_myui_css` 新增 4 例（209 例），旧实现 RED；6 项定向变异全部判红。
 - **验证**：普通与 ASan+UBSan（含 LeakSanitizer）下 209/209；`build-myui-tests` 全量 ctest 482/482。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
+
+## CSS `animation` 声明与按时间的 keyframes 查询（2026-11-27）
+
+- **缺口**：`@keyframes` 只停留在 sheet 上，theme 不保存，控件无法引用。
+- **实现**：theme 累积保存加载过的 keyframes（克隆与事务加载均覆盖）；新增 `animation: <name> <duration> [easing] [delay] [count|infinite]` 与 `my_theme_get_for_widget_var_animating`，按延迟、迭代和 easing 计算进度后在 stop 间插值；easing 映射与 `transition` 共用。只支持单组，无 direction/fill-mode/play-state。
+- **TDD 与变异**：`test_myui_css` 新增 3 例（212 例），旧实现 RED；9 项定向变异全部判红。
+- **验证**：普通与 ASan+UBSan（含 LeakSanitizer）下 212/212；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。

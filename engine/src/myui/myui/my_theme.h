@@ -86,6 +86,9 @@ typedef struct my_theme_t {
   const my_allocator_t* allocator;
   my_darray_t* entries; /**< my_theme_entry_t* */
   my_darray_t* property_defs; /**< my_theme_property_def_t* (R671) */
+  /** @brief Keyframes-only sheet holding every @keyframes the theme has
+   * loaded (later loads add or replace by name); NULL until the first. */
+  struct my_css_sheet_t* keyframe_sheet;
 } my_theme_t;
 
 my_theme_t* my_theme_create(const my_allocator_t* allocator);
