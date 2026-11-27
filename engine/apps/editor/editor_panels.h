@@ -125,6 +125,7 @@
 #include <core/types.h>
 
 #include <editor/editor_doc.h>
+#include <editor/editor_scene_deps.h>
 #include <editor/editor_i18n.h>
 #include <editor/editor_plugin_cmds.h>
 #include <editor/editor_plugin_sections.h>
@@ -614,6 +615,12 @@ struct BreakEditorHotReload *break_editor_shell_hot_reload(
     BreakEditorShell *shell);
 /* Configured scene path (Ctrl+S target); "" when none is set. */
 const char *break_editor_shell_scene_path(const BreakEditorShell *shell);
+/* Dependency graph of the loaded scene's RESOURCES manifest
+ * (editor_scene_deps.h), rebuilt whenever the scene textures follow a new
+ * or reloaded scene; graph is NULL before a scene with a path is loaded or
+ * after a rejected manifest. Borrowed until the next scene change. NULL
+ * shell: NULL. */
+const BreakEditorSceneDeps *break_editor_shell_scene_deps(const BreakEditorShell *shell);
 
 /* ---------------- Phase 4 Task 3: network diagnostics panel --------------- */
 

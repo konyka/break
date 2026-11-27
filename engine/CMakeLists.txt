@@ -1897,12 +1897,13 @@ endif()
 # engine target (its platform siblings live there) and the editor
 # executable resolves platform_list_dir from libengine.a; editor tests
 # compile the TU inline instead (test_editor_assets).
-add_library(break_editor STATIC src/editor/editor_doc.c src/editor/editor_audio.c src/audio/audio_edit.c src/audio/audio_wav.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c src/editor/editor_i18n.c src/editor/editor_i18n_tables.c src/editor/editor_image.c src/editor/editor_scene_textures.c src/editor/editor_flow.c src/editor/editor_plugin_cmds.c src/editor/editor_plugin_host.c src/editor/editor_plugin_manifest.c src/editor/editor_plugin_sections.c src/editor/editor_plugin_panels.c)
+add_library(break_editor STATIC src/editor/editor_doc.c src/editor/editor_audio.c src/audio/audio_edit.c src/audio/audio_wav.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c src/editor/editor_i18n.c src/editor/editor_i18n_tables.c src/editor/editor_image.c src/editor/editor_scene_textures.c src/editor/editor_flow.c src/editor/editor_plugin_cmds.c src/editor/editor_plugin_host.c src/editor/editor_plugin_manifest.c src/editor/editor_plugin_sections.c src/editor/editor_plugin_panels.c src/editor/editor_scene_deps.c)
 set_property(TARGET break_editor PROPERTY C_STANDARD 11)
 target_include_directories(break_editor PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(break_editor PUBLIC break_ecs_replication)
 target_link_libraries(break_editor PUBLIC break_lua)
 target_link_libraries(break_editor PUBLIC break_flow)
+target_link_libraries(break_editor PUBLIC runtime_core)
 target_link_libraries(break_editor PRIVATE stb_image)
 
 # Vendored stb single-header implementations are shared by the engine asset
@@ -6479,7 +6480,7 @@ endif()
     # ENGINE_BUILD_TESTS) stays hook-free and is never linked into engine,
     # engine_demo, or dxx_break. The variant links break_lua_test (not
     # break_lua) so console-core tests share the Lua-side injection hooks.
-    add_library(break_editor_test STATIC src/editor/editor_doc.c src/editor/editor_audio.c src/audio/audio_edit.c src/audio/audio_wav.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c src/editor/editor_i18n.c src/editor/editor_i18n_tables.c src/editor/editor_image.c src/editor/editor_scene_textures.c src/editor/editor_flow.c src/editor/editor_plugin_cmds.c src/editor/editor_plugin_host.c src/editor/editor_plugin_manifest.c src/editor/editor_plugin_sections.c src/editor/editor_plugin_panels.c)
+    add_library(break_editor_test STATIC src/editor/editor_doc.c src/editor/editor_audio.c src/audio/audio_edit.c src/audio/audio_wav.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c src/editor/editor_i18n.c src/editor/editor_i18n_tables.c src/editor/editor_image.c src/editor/editor_scene_textures.c src/editor/editor_flow.c src/editor/editor_plugin_cmds.c src/editor/editor_plugin_host.c src/editor/editor_plugin_manifest.c src/editor/editor_plugin_sections.c src/editor/editor_plugin_panels.c src/editor/editor_scene_deps.c)
     set_property(TARGET break_editor_test PROPERTY C_STANDARD 11)
     target_include_directories(break_editor_test PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -6487,6 +6488,7 @@ endif()
     target_link_libraries(break_editor_test PUBLIC break_ecs_replication)
     target_link_libraries(break_editor_test PUBLIC break_lua_test)
     target_link_libraries(break_editor_test PUBLIC break_flow)
+    target_link_libraries(break_editor_test PUBLIC runtime_core)
     target_link_libraries(break_editor_test PRIVATE stb_image)
 
     add_executable(test_editor_doc tests/test_editor_doc.c)
@@ -6638,6 +6640,14 @@ endif()
     target_link_libraries(test_editor_image PRIVATE break_editor_test stb_image_write)
     add_test(NAME test_editor_image COMMAND test_editor_image)
     set_tests_properties(test_editor_image PROPERTIES LABELS "headless;editor")
+
+    # Editor scene dependency graph: the kept RESOURCES chunk declared in a
+    # BreakAssetGraph (docs/design/runtime_asset_streaming.md "编辑器的场景依赖图").
+    add_executable(test_editor_scene_deps tests/test_editor_scene_deps.c)
+    target_include_directories(test_editor_scene_deps PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_editor_scene_deps PRIVATE break_editor_test)
+    add_test(NAME test_editor_scene_deps COMMAND test_editor_scene_deps)
+    set_tests_properties(test_editor_scene_deps PROPERTIES LABELS "headless;editor")
 
     add_executable(test_editor_scene_textures tests/test_editor_scene_textures.c)
     target_include_directories(test_editor_scene_textures PRIVATE ${TEST_INCLUDE_DIRS})

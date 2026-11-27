@@ -25,6 +25,7 @@
 #include "editor_hot_reload.h"
 #include "editor_image_preview.h"
 #include "editor_scene_textures.h"
+#include <editor/editor_scene_deps.h>
 #include <asset/asset.h>
 #include <ecs/ecs.h>
 #include <scene/scene_serial.h>
@@ -14682,6 +14683,49 @@ static void shell_textures_cleanup(SceneTexFixture *fx, const char *const *files
     scenetex_close(fx, files, nfiles);
 }
 
+/* Opening a scene declares its RESOURCES manifest in the shell's dependency
+ * graph (docs/design/runtime_asset_streaming.md "编辑器的场景依赖图"): the
+ * texture files resolve against the scene directory, and the next scene
+ * replaces the graph. */
+TEST(open_scene_builds_the_scene_dependency_graph)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    SceneTexFixture fx;
+    static const char *const two[2] = {"tex0.png", "tex1.png"};
+    static const char *const one[1] = {"tex0.png"};
+    const BreakEditorSceneDeps *deps;
+    char tex1[820];
+    BreakAssetId ids[4];
+    ASSERT_NOT_NULL(shell);
+    ASSERT_TRUE(break_editor_shell_scene_deps(NULL) == NULL);
+    deps = break_editor_shell_scene_deps(shell);
+    ASSERT_NOT_NULL(deps);
+    ASSERT_TRUE(deps->graph == NULL); /* no scene yet */
+
+    scenetex_open(&fx, "editor_scene_deps_shell");
+    shell_textures_scratch_scene(&fx, two, 2u);
+    ASSERT_TRUE(break_editor_shell_open_scene(shell, fx.scene));
+    deps = break_editor_shell_scene_deps(shell);
+    ASSERT_NOT_NULL(deps->graph);
+    ASSERT_EQ(deps->stats.textures, 2u);
+    ASSERT_EQ(deps->stats.materials, 2u);
+    snprintf(tex1, sizeof(tex1), "%s/tex1.png", fx.root);
+    ASSERT_EQ(break_editor_scene_deps_ids_for_path(deps, tex1, ids, 4), 1u);
+    /* the materials and the scene reload from the scene file */
+    ASSERT_EQ(break_editor_scene_deps_ids_for_path(deps, fx.scene, ids, 4), 3u);
+
+    /* the next scene replaces the graph */
+    shell_textures_scratch_scene(&fx, one, 1u);
+    ASSERT_TRUE(break_editor_shell_open_scene(shell, fx.scene));
+    deps = break_editor_shell_scene_deps(shell);
+    ASSERT_NOT_NULL(deps->graph);
+    ASSERT_EQ(deps->stats.textures, 1u);
+    ASSERT_EQ(break_editor_scene_deps_ids_for_path(deps, tex1, ids, 4), 0u);
+
+    break_editor_shell_destroy(shell);
+    shell_textures_cleanup(&fx, NULL, 0u);
+}
+
 TEST(render_panel_lists_scene_textures_with_state_and_follows_hot_reload)
 {
     BreakEditorShell *shell = break_editor_shell_create_for_test();
@@ -14988,6 +15032,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(flow_panel_delay_and_action_properties_emit_undo_and_redo);
     RUN_TEST(flow_panel_emitters_edit_connections_properties_and_undo);
     RUN_TEST(shell_create_and_destroy);
+    RUN_TEST(open_scene_builds_the_scene_dependency_graph);
     RUN_TEST(scene_textures_load_list_and_hot_reload);
     RUN_TEST(scene_textures_bad_file_keeps_the_previous_image);
     RUN_TEST(scene_textures_unsafe_paths_are_listed_but_never_opened);

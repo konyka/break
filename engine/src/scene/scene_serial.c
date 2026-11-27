@@ -1003,6 +1003,26 @@ static bool load_resources_chunk(Scene *s, Reader *r, u32 file_version) {
     return true;
 }
 
+bool scene_resources_parse_chunk(const void *bytes, usize size, u32 version,
+                                 SceneResource **out_resources, u32 *out_count) {
+    if (out_resources) *out_resources = NULL;
+    if (out_count) *out_count = 0;
+    if (!bytes || !out_resources || !out_count) return false;
+    if (version < BSCN_VERSION_V1 || version > BSCN_VERSION) return false;
+    Scene staged;
+    memset(&staged, 0, sizeof(staged));
+    Reader r;
+    r.p = (const u8 *)bytes;
+    r.end = r.p + size;
+    if (!load_resources_chunk(&staged, &r, version) || r.p != r.end) {
+        scene_resources_free(&staged);
+        return false;
+    }
+    *out_resources = staged.resources;
+    *out_count = staged.resource_count;
+    return true;
+}
+
 /* R353: undo entities created by a failed load so World is not left polluted. */
 static void rollback_entities(World *w, Entity *ents, u32 count) {
     if (!w || !ents) return;

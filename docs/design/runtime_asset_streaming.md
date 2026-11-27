@@ -516,3 +516,21 @@ focused 测试 **22/22**，包含三流过期/复位、交织 pending 字节、d
 仍未完成：编辑器尚未调用；core_app 中的图还没有接到热重载协调器。
 
 本提交自身的远端工作流结果不在此预写。
+
+## 补充（2026-11-27）：编辑器的场景依赖图
+
+编辑器此前不建立场景依赖图。编辑器加载 BSCN 时传入 NULL Scene，资源 manifest 只以原样保留的 RESOURCES chunk 存在（`break_editor_doc_kept_chunk`）。本次接线分三层：
+
+- **公开的 chunk 解析**：`scene_serial.h` 新增 `scene_resources_parse_chunk(bytes, size, version, &resources, &count)`。它复用加载器自己的 `load_resources_chunk`，要求整段 payload 被读完，`version` 必须是 v1..`BSCN_VERSION`。成功时调用方释放数组（空 manifest 为 NULL），失败时两个输出都清零。
+- **`editor_scene_deps`**：`engine/src/editor/editor_scene_deps.{h,c}`，编入 `break_editor` 与 `break_editor_test`，二者改为 PUBLIC 链接 `runtime_core`（依赖图对象只需要 libc）。`break_editor_scene_deps_build(doc, scene_path, &deps)` 读取保留的 chunk，按 core_app 的规则选 `scene_id`（最大 guid 加一；最大 guid 为 `UINT64_MAX` 时取第一个未用 id），以场景文件所在目录为纹理 base（`/` 与 `\` 都算目录分隔符，与 `break_editor_scene_texture_resolve` 一致），调用 `break_scene_manifest_graph_build`，并记录每个 id 的重载路径。`break_editor_scene_deps_ids_for_path` 按路径查 id。没有 chunk 时视为空 manifest，只声明场景节点。`scene_path` 为空、过长（达到 `BREAK_SCENE_MANIFEST_MAX_PATH`）或参数为 NULL 返回 INVALID；manifest 被拒绝返回 FAILED。失败时结构体清零，`break_editor_scene_deps_free` 可重复调用。
+- **编辑器外壳**：`editor_shell_sync_scene_textures`（打开、新建、恢复和热重载场景时都会调用）在更新场景纹理后重建依赖图；有绝对路径时用绝对路径，否则用配置的场景路径。建图失败时写一行已翻译的 console 日志（`BREAK_EDITOR_TR_LOG_SCENE_DEPS_FAILED`，en-US 与 zh-CN）。`break_editor_shell_scene_deps` 返回当前图，外壳销毁时释放。
+
+**TDD**：`scene_resources_parse_chunk` 3 例，`test_editor_scene_deps` 5 例，`test_editor_shell` 新增 `open_scene_builds_the_scene_dependency_graph`；三者都先以编译失败为 RED。
+
+**变异**：解析函数 6 项、`editor_scene_deps` 26 项（含 4 项目录分隔符变异）、外壳接线 3 项。只泄漏内存的存活项（释放图、释放路径记录、重建前释放旧图）在 ASan 构建中由 LeakSanitizer 判红。`guid > top` 改为 `>=` 是等价变异。
+
+**验证**：`build-current-vk` 非 fuzz 全部通过，fuzz 24/24；ASan 下 `test_editor_scene_deps` 5/5、`test_editor_shell` 236/236、`test_scene_serial` 126/126；Windows 实机 MSVC 构建通过，相关 5 项测试 5/5（含 `\` 分隔符用例）。
+
+仍未完成：编辑器的图还没有接到热重载协调器，文件事件目前不会经它触发依赖者重建。
+
+本提交自身的远端工作流结果不在此预写。

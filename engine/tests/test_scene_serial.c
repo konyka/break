@@ -2054,6 +2054,78 @@ TEST(resources_texture_source_path_roundtrip)
     remove(path);
 }
 
+/* Public RESOURCES chunk parser (editor dependency graph): the kept chunk
+ * bytes decode into a SceneResource array with the loader's own rules. */
+static usize put_res_bytes(u8 *buf, usize at, const void *src, usize n)
+{
+    memcpy(buf + at, src, n);
+    return at + n;
+}
+
+static usize build_texture_chunk(u8 *buf, u64 guid, const char *path)
+{
+    u32 count = 1u, type = (u32)BSCN_RES_TEXTURE, ref = 0u, flags = 0u;
+    u32 plen = (u32)strlen(path);
+    usize at = 0;
+    at = put_res_bytes(buf, at, &count, 4);
+    at = put_res_bytes(buf, at, &guid, 8);
+    at = put_res_bytes(buf, at, &type, 4);
+    at = put_res_bytes(buf, at, &ref, 4);
+    at = put_res_bytes(buf, at, &flags, 4);
+    at = put_res_bytes(buf, at, &plen, 4);
+    return put_res_bytes(buf, at, path, plen);
+}
+
+TEST(resources_parse_chunk_decodes_entries)
+{
+    u8 buf[128];
+    usize size = build_texture_chunk(buf, 0xABCDull, "tex/a.png");
+    SceneResource *res = (SceneResource *)(uintptr_t)1;
+    u32 count = 99u;
+    ASSERT_TRUE(scene_resources_parse_chunk(buf, size, BSCN_VERSION, &res, &count));
+    ASSERT_EQ(count, 1u);
+    ASSERT_NOT_NULL(res);
+    ASSERT_EQ(res[0].guid, 0xABCDull);
+    ASSERT_EQ(res[0].type, (u32)BSCN_RES_TEXTURE);
+    ASSERT_STR_EQ(res[0].path, "tex/a.png");
+    free(res);
+}
+
+TEST(resources_parse_chunk_empty_manifest)
+{
+    u32 zero = 0u;
+    SceneResource *res = (SceneResource *)(uintptr_t)1;
+    u32 count = 99u;
+    ASSERT_TRUE(scene_resources_parse_chunk(&zero, sizeof zero, BSCN_VERSION, &res, &count));
+    ASSERT_EQ(count, 0u);
+    ASSERT_TRUE(res == NULL);
+}
+
+TEST(resources_parse_chunk_rejects_bad_input)
+{
+    u8 buf[128];
+    usize size = build_texture_chunk(buf, 0xABCDull, "tex/a.png");
+    SceneResource *res = (SceneResource *)(uintptr_t)1;
+    u32 count = 99u;
+    /* trailing byte, truncation, unknown version, NULL arguments */
+    buf[size] = 0u;
+    ASSERT_FALSE(scene_resources_parse_chunk(buf, size + 1u, BSCN_VERSION, &res, &count));
+    ASSERT_TRUE(res == NULL);
+    ASSERT_EQ(count, 0u);
+    ASSERT_FALSE(scene_resources_parse_chunk(buf, size - 1u, BSCN_VERSION, &res, &count));
+    ASSERT_FALSE(scene_resources_parse_chunk(buf, size, 0u, &res, &count));
+    ASSERT_FALSE(scene_resources_parse_chunk(buf, size, BSCN_VERSION + 1u, &res, &count));
+    ASSERT_FALSE(scene_resources_parse_chunk(NULL, size, BSCN_VERSION, &res, &count));
+    ASSERT_FALSE(scene_resources_parse_chunk(buf, size, BSCN_VERSION, NULL, &count));
+    ASSERT_FALSE(scene_resources_parse_chunk(buf, size, BSCN_VERSION, &res, NULL));
+    /* v1 and v2 layouts stay accepted (no descriptor: same wire bytes) */
+    ASSERT_TRUE(scene_resources_parse_chunk(buf, size, BSCN_VERSION_V1, &res, &count));
+    free(res);
+    ASSERT_TRUE(scene_resources_parse_chunk(buf, size, BSCN_VERSION_V2, &res, &count));
+    ASSERT_EQ(count, 1u);
+    free(res);
+}
+
 /* R585: a BSCN v1 file (f[8] material descriptors, no u2 presence bits) must
  * still load — the reader back-fills the v2 fields with glTF defaults. */
 TEST(load_binary_v1_resources_defaults)
@@ -4272,6 +4344,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(resources_material_extended_descriptor_roundtrip);
     RUN_TEST(resources_texture_source_path_roundtrip);
     RUN_TEST(load_binary_v1_resources_defaults);
+    RUN_TEST(resources_parse_chunk_decodes_entries);
+    RUN_TEST(resources_parse_chunk_empty_manifest);
+    RUN_TEST(resources_parse_chunk_rejects_bad_input);
     RUN_TEST(resources_material_partial_texture_links);
     RUN_TEST(load_binary_v2_resources_defaults);
     RUN_TEST(rebuild_materials_from_manifest_roundtrip);

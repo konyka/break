@@ -174,6 +174,7 @@ typedef enum {
     BREAK_EDITOR_TR_PREVIEW_FAILED,
     BREAK_EDITOR_TR_TEXTURES_HEADER_FMT,     /* %u textures */
     BREAK_EDITOR_TR_TEXTURES_HEADER_MORE_FMT,/* %u textures, only the first %u are loaded */
+    BREAK_EDITOR_TR_LOG_SCENE_DEPS_FAILED,   /* the scene dependency graph was not built */
     BREAK_EDITOR_TR_TEXTURE_ROW_FMT,         /* %s name, %ux%u, %s state */
     BREAK_EDITOR_TR_TEXTURE_ROW_NOSIZE_FMT,  /* %s name, %s state */
     BREAK_EDITOR_TR_TEXTURE_STATE_PENDING,

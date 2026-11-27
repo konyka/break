@@ -182,6 +182,15 @@ bool scene_probe_binary(const char *path);
 /* Free the RESOURCES manifest owned by a Scene (safe on NULL / empty). */
 void scene_resources_free(Scene *s);
 
+/* Decode a RESOURCES chunk payload (the bytes a chunk table entry points
+ * at, e.g. an editor document's kept chunk) with the loader's own rules:
+ * the whole payload must be consumed and `version` must be a BSCN file
+ * version the reader knows (v1..BSCN_VERSION). On success the caller frees
+ * *out_resources (NULL for an empty manifest). On failure both outputs are
+ * cleared. */
+bool scene_resources_parse_chunk(const void *bytes, usize size, u32 version,
+                                 SceneResource **out_resources, u32 *out_count);
+
 /* R383: teardown for a Scene populated by scene_load_binary / scene_load_json
  * outside the asset pipeline. Those loaders allocate both `nodes` and
  * `resources`, but asset_scene_free needs an AssetContext + RHI device, so a

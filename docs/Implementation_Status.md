@@ -14610,3 +14610,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：新增 8 例（共 68 例），先以编译失败为 RED；11 项变异全部判红。
 - **验证**：联网构建 `runtime|world|core_app` 96/96；ASan 68/68；`build-current-vk` 非 fuzz 470/470，fuzz 24/24；Windows 实机 MSVC 全量构建通过（未开 Snowflake，本模块不在其中编译）。
 - **仍未完成**：core_app 的 adapter 尚未改用日志模式。本提交自身的远端工作流结果不在此预写。
+
+## 编辑器的场景依赖图（2026-11-27）
+
+- **缺口**：编辑器加载场景后不建立资源依赖图，`scene_manifest_graph` 只有 core_app 一个消费者。
+- **实现**：`scene_serial` 新增公开的 `scene_resources_parse_chunk`；新增 `engine/src/editor/editor_scene_deps.{h,c}`，从文档保留的 RESOURCES chunk 建图并记录重载路径；编辑器外壳在每次场景纹理同步时重建图，失败时写翻译过的 console 行，`break_editor_shell_scene_deps` 对外提供。设计见 `docs/design/runtime_asset_streaming.md` 2026-11-27「编辑器的场景依赖图」。
+- **TDD 与变异**：新增 9 例（解析 3、`test_editor_scene_deps` 5、外壳 1），均先以编译失败为 RED；35 项变异中，只泄漏内存的存活项由 LeakSanitizer 判红，`>`/`>=` 一项为等价变异。
+- **验证**：`build-current-vk` 非 fuzz 全部通过，fuzz 24/24，编辑器与场景相关 29 项通过；ASan 下 `test_editor_scene_deps` 5/5、`test_editor_shell` 236/236；Windows 实机 MSVC 构建通过，`test_editor_scene_deps`、`test_scene_serial`、`test_editor_shell`、`test_editor_scene_textures`、`test_break_editor_target_contract` 5/5。
+- **仍未完成**：编辑器的图未接热重载协调器。本提交自身的远端工作流结果不在此预写。

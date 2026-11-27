@@ -11,6 +11,7 @@
 #include "editor_hot_reload.h"
 #include "editor_settings.h"
 #include "editor_scene_textures.h"
+#include <editor/editor_scene_deps.h>
 #include "editor_theme.h"
 
 #include <editor/editor_audio.h>
@@ -213,6 +214,8 @@ struct BreakEditorShell {
     /* textures named by the loaded scene, followed on disk (owned) */
     BreakEditorSceneTextures *scene_textures;
     u64 scene_textures_rev; /* last revision reflected in the render panel */
+    /* dependency graph of the loaded scene's manifest (owned) */
+    BreakEditorSceneDeps scene_deps;
 
     /* tool-window tab areas (0 bottom, 1 diagnostics): active page index
      * and the click contexts of their tab buttons */
@@ -2454,7 +2457,20 @@ void editor_shell_sync_scene_textures(BreakEditorShell *shell) {
     }
     (void)break_editor_scene_textures_set_scene(shell->scene_textures, shell->doc,
                                                 scene);
+    break_editor_scene_deps_free(&shell->scene_deps);
+    if (scene == NULL && shell->scene_path_set) {
+        scene = shell->scene_path;
+    }
+    if (scene != NULL &&
+        break_editor_scene_deps_build(shell->doc, scene, &shell->scene_deps) !=
+            BREAK_EDITOR_SCENE_DEPS_OK) {
+        editor_shell_log(shell, "%s", break_editor_tr(BREAK_EDITOR_TR_LOG_SCENE_DEPS_FAILED));
+    }
     editor_panel_render_invalidate(shell->render_panel);
+}
+
+const BreakEditorSceneDeps *break_editor_shell_scene_deps(const BreakEditorShell *shell) {
+    return shell != NULL ? &shell->scene_deps : NULL;
 }
 
 void editor_shell_refresh_all(BreakEditorShell *shell) {
@@ -3397,6 +3413,7 @@ bool break_editor_shell_destroy(BreakEditorShell *shell) {
         break_editor_scene_textures_destroy(shell->scene_textures);
         shell->scene_textures = NULL;
     }
+    break_editor_scene_deps_free(&shell->scene_deps);
     /* a still-attached remote (host destroyed the shell first) is orphaned
      * before anything is freed: it drops its back-pointer and its
      * doc-borrowing console, so its later destroy never reaches this shell */
