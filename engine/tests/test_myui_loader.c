@@ -1812,6 +1812,129 @@ TEST(yaml_loader_rejects_unterminated_type_query)
   ASSERT_TRUE(info.type == NULL);
 }
 
+TEST(yaml_conf_nodes_record_source_lines)
+{
+  const char* yaml =
+      "type: button\n"
+      "\n"
+      "text: OK\n"
+      "children:\n"
+      "  - type: label\n"
+      "    text: A\n"
+      "  - {type: label, text: B}\n"
+      "flow: [1, 2]\n";
+  my_conf_error_t error;
+  my_conf_node_t* root = my_conf_parse_yaml(NULL, yaml, strlen(yaml), &error);
+  my_conf_node_t* children;
+  my_conf_node_t* first;
+  my_conf_node_t* second;
+  my_conf_node_t* flow;
+  my_conf_node_t* manual;
+
+  ASSERT_NOT_NULL(root);
+  ASSERT_EQ(my_conf_line(root), 1);
+  ASSERT_EQ(my_conf_line(my_conf_get(root, "type")), 1);
+  ASSERT_EQ(my_conf_line(my_conf_get(root, "text")), 3);
+  children = my_conf_get(root, "children");
+  ASSERT_EQ(my_conf_line(children), 4);
+  first = my_conf_child(children, 0u);
+  second = my_conf_child(children, 1u);
+  ASSERT_EQ(my_conf_line(first), 5);
+  ASSERT_EQ(my_conf_line(my_conf_get(first, "type")), 5);
+  ASSERT_EQ(my_conf_line(my_conf_get(first, "text")), 6);
+  ASSERT_EQ(my_conf_line(second), 7);
+  ASSERT_EQ(my_conf_line(my_conf_get(second, "text")), 7);
+  flow = my_conf_get(root, "flow");
+  ASSERT_EQ(my_conf_line(flow), 8);
+  ASSERT_EQ(my_conf_line(my_conf_child(flow, 1u)), 8);
+  manual = my_conf_new_int64(NULL, 1);
+  ASSERT_EQ(my_conf_line(manual), 0);
+  my_conf_set_line(manual, 42);
+  ASSERT_EQ(my_conf_line(manual), 42);
+  my_conf_set_line(manual, -3);
+  ASSERT_EQ(my_conf_line(manual), 0);
+  my_conf_destroy(manual);
+  ASSERT_EQ(my_conf_line(NULL), 0);
+  my_conf_set_line(NULL, 5);
+  my_conf_destroy(root);
+}
+
+TEST(yaml_loader_schema_errors_report_source_line)
+{
+  const char* unknown = "type: button\ntext: OK\n\nunknown: 1\n";
+  const char* nested =
+      "type: button\n"
+      "text: OK\n"
+      "children:\n"
+      "  - type: label\n"
+      "    text: A\n"
+      "  - type: label\n"
+      "    bogus: 2\n";
+  const char* bad_type =
+      "type: button\n"
+      "children:\n"
+      "  - type: no_such_widget\n";
+  const char* missing_type =
+      "type: button\n"
+      "children:\n"
+      "  - text: A\n";
+  const char* not_a_map =
+      "type: button\n"
+      "children:\n"
+      "  - 7\n";
+  const char* inline_first =
+      "type: button\n"
+      "children:\n"
+      "  - bindings:\n"
+      "      a: 1\n"
+      "    type: label\n";
+  const char* inline_later =
+      "type: button\n"
+      "children:\n"
+      "  - type: label\n"
+      "    bindings:\n"
+      "      a: 1\n";
+  my_ui_error_t error;
+
+  ASSERT_TRUE(my_ui_load_str_ex(NULL, NULL, unknown, MY_UI_LOAD_STRICT_SCHEMA,
+                                &error) == NULL);
+  ASSERT_EQ(error.code, MY_UI_ERROR_SCHEMA);
+  ASSERT_STR_EQ(error.path, "unknown");
+  ASSERT_EQ(error.line, 4);
+
+  ASSERT_TRUE(my_ui_load_str_ex(NULL, NULL, nested, MY_UI_LOAD_STRICT_SCHEMA,
+                                &error) == NULL);
+  ASSERT_EQ(error.code, MY_UI_ERROR_SCHEMA);
+  ASSERT_STR_EQ(error.path, "children[1].bogus");
+  ASSERT_EQ(error.line, 7);
+
+  ASSERT_TRUE(my_ui_load_str_ex(NULL, NULL, bad_type, MY_UI_LOAD_STRICT_SCHEMA,
+                                &error) == NULL);
+  ASSERT_STR_EQ(error.path, "children[0].type");
+  ASSERT_EQ(error.line, 3);
+
+  ASSERT_TRUE(my_ui_load_str_ex(NULL, NULL, missing_type,
+                                MY_UI_LOAD_STRICT_SCHEMA, &error) == NULL);
+  ASSERT_STR_EQ(error.path, "children[0].type");
+  ASSERT_EQ(error.line, 3);
+
+  ASSERT_TRUE(my_ui_load_str_ex(NULL, NULL, not_a_map,
+                                MY_UI_LOAD_STRICT_SCHEMA, &error) == NULL);
+  ASSERT_STR_EQ(error.path, "children[0].widget");
+  ASSERT_EQ(error.line, 3);
+
+  /* A block value reports its key's line, not the block's first line, both
+   * for the inline first pair of a sequence item and for later pairs. */
+  ASSERT_TRUE(my_ui_load_str_ex(NULL, NULL, inline_first,
+                                MY_UI_LOAD_STRICT_SCHEMA, &error) == NULL);
+  ASSERT_STR_EQ(error.path, "children[0].bindings");
+  ASSERT_EQ(error.line, 3);
+  ASSERT_TRUE(my_ui_load_str_ex(NULL, NULL, inline_later,
+                                MY_UI_LOAD_STRICT_SCHEMA, &error) == NULL);
+  ASSERT_STR_EQ(error.path, "children[0].bindings");
+  ASSERT_EQ(error.line, 4);
+}
+
 TEST(yaml_loader_strict_schema_rejects_unknown_field)
 {
   const char* yaml = "type: button\ntext: OK\nunknown: 1\n";
@@ -3537,6 +3660,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(yaml_loader_dynamic_schema_releases_owned_storage);
     RUN_TEST(my_conf_object_set_oom_preserves_unattached_child);
     RUN_TEST(yaml_loader_rejects_unterminated_type_query);
+    RUN_TEST(yaml_conf_nodes_record_source_lines);
+    RUN_TEST(yaml_loader_schema_errors_report_source_line);
     RUN_TEST(yaml_loader_strict_schema_rejects_unknown_field);
     RUN_TEST(yaml_loader_strict_schema_validates_common_fields_before_factory);
     RUN_TEST(yaml_loader_strict_schema_rejects_window_fields_on_widget_root);

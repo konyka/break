@@ -14750,3 +14750,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **TDD 与变异**：语料先跑出 `not screen` 与预期不符，核对后确认是既有契约（`not` 只修饰单个特性），修正语料；对 `my_css.c` 的 19 项定向变异全部判红，首轮 2 项存活的色域等级隐含关系已补上下文。
 - **验证**：语料 72/72，反例全部失败；ASan+UBSan 无报错；`build-current-vk` 非 fuzz 470/470。详见 `docs/myui_remaining_work.md` 同日补充。
 - **仍未完成**：schema 定位级 registry/error 契约、全平台 runtime 证据。本提交自身的远端工作流结果不在此预写。
+
+## YAML schema 错误报告源码行（2026-11-27）
+
+- **缺口**：`docs/myui_remaining_work.md` CSS/YAML 一行的「registry/error 契约细化到 schema 定位」。schema 错误的 `my_ui_error_t.line` 一直为 0。
+- **实现**：`my_conf_node_t` 记录源码行（新增 `my_conf_line`、`my_conf_set_line`）；YAML 解析器给映射值、序列项、内联 map 和 flow 子树打行号；loader 的 schema 错误取出错键的行，键不存在时取 widget 节点的行。
+- **TDD 与变异**：`test_myui_loader` 新增 2 例（123 例），先以编译失败为 RED；13 项定向变异中 12 项判红，1 项为已说明的等价变异（第一次失败为准的守卫）。
+- **验证**：普通与 ASan+UBSan 下 123/123；`build-current-vk` 非 fuzz 470/470。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。

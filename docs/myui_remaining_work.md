@@ -2665,3 +2665,22 @@ graphics 与 present queue。`RE_VK_DEVICE_INDEX` 现在也必须通过同一门
 **验证**：语料 72/72；三个反例都失败；ASan+UBSan 下四个运行结果相同且无报错；`build-current-vk` 非 fuzz 470/470（新增 4 项）。
 
 该行其余判据（registry/error 契约细化到 schema 定位、全平台 runtime 证据）不变。
+
+## 本轮补充：YAML schema 错误报告源码行（2026-11-27）
+
+「未完成能力」表中「完整 CSS/YAML UI」一行的完成判据有「将 registry/error 契约扩展到更细 schema 定位」。此前 `my_ui_error_t` 的 `field`、`path` 已能指出出错的键和 `children[i].key` 路径，但 `line` 只在 YAML 语法错误时填写，schema 错误的 `line` 一直是 0，调用方无法跳到出错的源码行。
+
+- **节点记录行号**（`engine/src/myui/myc/myconf/my_conf.{h,c}`）：`my_conf_node_t` 新增 `line` 字段，并新增 `my_conf_line()` 与 `my_conf_set_line()` 两个函数。行号从 1 开始，0 表示未知；`<= 0` 的值会清空。NULL 安全。代码构建的节点和其他编解码器产生的节点行号为 0。
+- **YAML 解析器打行号**（`my_conf_yaml.c`）：块级映射的值取其键所在行，序列项取 `-` 所在行，序列项内联首对和后续对的值取各自的键行，块本身取首行。flow 集合（`[..]`、`{..}`）不跨行，整棵子树取所在行。
+- **loader 选行**（`my_ui_loader.c`）：`ui_fail_field_path` 多传一个 widget 节点。出错键在该节点中存在时取键的行，否则取 widget 节点的行（例如缺少 `type`、序列项不是 map）。和 message、field、path 一样，以第一次失败为准。迁移回调重建的节点没有行号，此时 `line` 仍为 0。
+
+**TDD**：`test_myui_loader` 新增 2 例（123 例），先以 `my_conf_line` 未声明的编译失败为 RED。一例直接检查解析树各节点的行号（映射、空行后的键、序列项、内联 map、flow 序列、代码构建节点、负值清空、NULL）；另一例检查 schema 错误：根级未知字段、`children[1].bogus`、未知 widget 类型、缺少 `type`、序列项不是 map，以及块值在内联首对与后续对两种位置报告键行而非块首行。
+
+**变异**：13 项全部判红或已说明。首轮存活 4 项：
+- 内联首对、后续对的 `set_line` 两项，已补「块值报告键行」的两个用例。
+- `y_stamp_line` 只在行号为 0 时写入的守卫，被证明多余，已删除。
+- 「只在第一次失败时写 `line`」的守卫仍存活，属于等价变异：现有调用方在第一次失败后都立即返回，不会再报第二次失败。保留该守卫，是为了让 `line` 与 message、field、path 同样遵守「第一次失败为准」，代码注释已写明。
+
+**验证**：`test_myui_loader` 123/123；ASan+UBSan 123/123，无报错；`build-current-vk` 非 fuzz 470/470。
+
+该行剩余判据只有全平台 runtime 证据，需要 Windows/macOS runner。

@@ -433,8 +433,22 @@ static void ui_fail_field(my_ui_error_t* err, const char* message,
   }
 }
 
-static void ui_fail_field_path(my_ui_error_t* err, const char* message,
-                               const char* field, const char* node_path) {
+static const my_conf_node_t* object_value(const my_conf_node_t* object,
+                                          const char* key);
+
+/* Source line for a schema failure: the line of the offending key when the
+ * widget map has it, else the line of the widget node itself. Migrated or
+ * code-built nodes carry no line, which leaves it 0. Like message, field and
+ * path, the first failure wins (no current caller reports a second one). */
+static void ui_fail_field_path(my_ui_error_t* err, const my_conf_node_t* node,
+                               const char* message, const char* field,
+                               const char* node_path) {
+  if (err != NULL && err->message[0] == '\0') {
+    const my_conf_node_t* key_node =
+        field != NULL ? object_value(node, field) : NULL;
+    err->line = my_conf_line(key_node) != 0 ? my_conf_line(key_node)
+                                            : my_conf_line(node);
+  }
   ui_fail(err, message);
   if (err != NULL && err->field[0] == '\0' && field != NULL) {
     snprintf(err->field, sizeof(err->field), "%s", field);
@@ -556,7 +570,7 @@ static bool ui_node_schema_valid(const my_conf_node_t* node,
     return true;
   }
   if (my_conf_type(node) != MY_CONF_OBJECT) {
-    ui_fail_field_path(err, "widget must be a map", "widget", node_path);
+    ui_fail_field_path(err, node, "widget must be a map", "widget", node_path);
     return false;
   }
   for (i = 0; i < my_conf_child_count(node); i++) {
@@ -566,22 +580,22 @@ static bool ui_node_schema_valid(const my_conf_node_t* node,
     bool known = ui_is_common_key(key);
     if (known && !ui_common_value_valid(key, child)) {
       if (my_str_eq(key, "type")) {
-        ui_fail_field_path(err, "widget requires a string type", key,
+        ui_fail_field_path(err, node, "widget requires a string type", key,
                            node_path);
       } else if (my_str_eq(key, "children")) {
-        ui_fail_field_path(err, "children must be a sequence", key,
+        ui_fail_field_path(err, node, "children must be a sequence", key,
                            node_path);
       } else if (my_str_eq(key, "bindings") &&
                  my_conf_type(child) != MY_CONF_OBJECT) {
-        ui_fail_field_path(err, "bindings must be a map", key, node_path);
+        ui_fail_field_path(err, node, "bindings must be a map", key, node_path);
       } else if (my_str_eq(key, "bindings")) {
-        ui_fail_field_path(err, "binding values must be strings", key,
+        ui_fail_field_path(err, node, "binding values must be strings", key,
                            node_path);
       } else if (my_str_eq(key, "layout") &&
                  my_conf_type(child) == MY_CONF_STR) {
-        ui_fail_field_path(err, "invalid layout syntax", key, node_path);
+        ui_fail_field_path(err, node, "invalid layout syntax", key, node_path);
       } else {
-        ui_fail_field_path(err, "invalid common widget property", key,
+        ui_fail_field_path(err, node, "invalid common widget property", key,
                            node_path);
       }
       return false;
@@ -590,7 +604,7 @@ static bool ui_node_schema_valid(const my_conf_node_t* node,
       known = true;
       prop = ui_find_property(UI_WINDOW_PROPERTIES, key);
       if (!ui_property_value_valid(prop->type, child)) {
-        ui_fail_field_path(err,
+        ui_fail_field_path(err, node,
                            my_str_eq(key, "title") ? "title must be a string"
                                                     : "style must be a string",
                            key, node_path);
@@ -602,14 +616,14 @@ static bool ui_node_schema_valid(const my_conf_node_t* node,
       if (prop != NULL) {
         known = true;
         if (!ui_property_value_valid(prop->type, child)) {
-          ui_fail_field_path(err, "invalid typed widget property", key,
+          ui_fail_field_path(err, node, "invalid typed widget property", key,
                              node_path);
           return false;
         }
       }
     }
     if (!known && properties != NULL) {
-      ui_fail_field_path(err, "unknown YAML field", key, node_path);
+      ui_fail_field_path(err, node, "unknown YAML field", key, node_path);
       return false;
     }
   }
@@ -632,19 +646,19 @@ static bool ui_validate_tree(const my_conf_node_t* node, bool root,
     return true;
   }
   if (my_conf_type(node) != MY_CONF_OBJECT) {
-    ui_fail_field_path(err, "widget must be a map", "widget", node_path);
+    ui_fail_field_path(err, node, "widget must be a map", "widget", node_path);
     return false;
   }
   type_node = object_value(node, "type");
   if (type_node == NULL || my_conf_type(type_node) != MY_CONF_STR) {
-    ui_fail_field_path(err, "widget requires a string type", "type",
+    ui_fail_field_path(err, node, "widget requires a string type", "type",
                        node_path);
     return false;
   }
   type = my_conf_as_str(type_node, NULL);
   window_root = root && my_str_eq(type, "window");
   if (!root && my_str_eq(type, "window")) {
-    ui_fail_field_path(err, "window is only allowed as root", "type",
+    ui_fail_field_path(err, node, "window is only allowed as root", "type",
                        node_path);
     return false;
   }
@@ -657,7 +671,7 @@ static bool ui_validate_tree(const my_conf_node_t* node, bool root,
                      ? factory_entry->properties
                      : cls != NULL ? cls->props : NULL;
     if (factory_entry == NULL && cls == NULL) {
-      ui_fail_field_path(err, "unknown widget type", "type", node_path);
+      ui_fail_field_path(err, node, "unknown widget type", "type", node_path);
       return false;
     }
   }
@@ -1258,20 +1272,20 @@ static bool ui_migration_contract_valid(const my_conf_node_t* node,
   const my_conf_node_t* version_node = object_value(node, "version");
   if (type_node == NULL || my_conf_type(type_node) != MY_CONF_STR ||
       !my_str_eq(my_conf_as_str(type_node, NULL), type)) {
-    ui_fail_field_path(err, "schema migration changed widget type", "type",
+    ui_fail_field_path(err, node, "schema migration changed widget type", "type",
                        node_path);
     return false;
   }
   if (version_node != NULL) {
     int64_t version;
     if (my_conf_type(version_node) != MY_CONF_INT64) {
-      ui_fail_field_path(err, "invalid schema version", "version", node_path);
+      ui_fail_field_path(err, node, "invalid schema version", "version", node_path);
       return false;
     }
     version = my_conf_as_int64(version_node, -1);
     if (version < 0 || (uint64_t)version > UINT32_MAX ||
         (uint32_t)version != expected_version) {
-      ui_fail_field_path(err, "schema version is newer than supported",
+      ui_fail_field_path(err, node, "schema version is newer than supported",
                          "version", node_path);
       return false;
     }
@@ -1286,13 +1300,13 @@ static my_ret_t ui_migration_commit_version(const my_allocator_t* allocator,
                                             my_ui_error_t* err) {
   my_conf_node_t* version_node = my_conf_new_int64(allocator, version);
   if (version_node == NULL) {
-    ui_fail_field_path(err, "failed to commit schema version", "version",
+    ui_fail_field_path(err, node, "failed to commit schema version", "version",
                        node_path);
     return MY_RET_OOM;
   }
   if (my_conf_object_set(node, "version", version_node) != MY_RET_OK) {
     my_conf_destroy(version_node);
-    ui_fail_field_path(err, "failed to commit schema version", "version",
+    ui_fail_field_path(err, node, "failed to commit schema version", "version",
                        node_path);
     return MY_RET_FAIL;
   }
@@ -1317,23 +1331,23 @@ static my_ret_t ui_migrate_tree(const my_allocator_t* allocator,
   my_ret_t ret;
 
   if (depth >= MY_CONF_YAML_MAX_DEPTH) {
-    ui_fail_field_path(err, "widget nesting exceeds resource budget", "widget",
+    ui_fail_field_path(err, node, "widget nesting exceeds resource budget", "widget",
                        node_path);
     return MY_RET_FAIL;
   }
   if (my_conf_type(node) != MY_CONF_OBJECT) {
-    ui_fail_field_path(err, "widget must be a map", "widget", node_path);
+    ui_fail_field_path(err, node, "widget must be a map", "widget", node_path);
     return MY_RET_FAIL;
   }
   type_node = object_value(node, "type");
   if (type_node == NULL || my_conf_type(type_node) != MY_CONF_STR) {
-    ui_fail_field_path(err, "widget requires a string type", "type",
+    ui_fail_field_path(err, node, "widget requires a string type", "type",
                        node_path);
     return MY_RET_FAIL;
   }
   type = my_conf_as_str(type_node, NULL);
   if (!root && my_str_eq(type, "window")) {
-    ui_fail_field_path(err, "window is only allowed as root", "type",
+    ui_fail_field_path(err, node, "window is only allowed as root", "type",
                        node_path);
     return MY_RET_FAIL;
   }
@@ -1342,7 +1356,7 @@ static my_ret_t ui_migrate_tree(const my_allocator_t* allocator,
   cls = factory_entry == NULL ? my_widget_class_find(type) : NULL;
   if (factory_entry == NULL && cls == NULL &&
       !(root && my_str_eq(type, "window"))) {
-    ui_fail_field_path(err, "unknown widget type", "type", node_path);
+    ui_fail_field_path(err, node, "unknown widget type", "type", node_path);
     return MY_RET_FAIL;
   }
   schema_version = factory_entry != NULL ? factory_entry->schema_version : 1u;
@@ -1352,18 +1366,18 @@ static my_ret_t ui_migrate_tree(const my_allocator_t* allocator,
   } else {
     int64_t version;
     if (my_conf_type(version_node) != MY_CONF_INT64) {
-      ui_fail_field_path(err, "invalid schema version", "version", node_path);
+      ui_fail_field_path(err, node, "invalid schema version", "version", node_path);
       return MY_RET_FAIL;
     }
     version = my_conf_as_int64(version_node, -1);
     if (version < 0 || (uint64_t)version > UINT32_MAX) {
-      ui_fail_field_path(err, "invalid schema version", "version", node_path);
+      ui_fail_field_path(err, node, "invalid schema version", "version", node_path);
       return MY_RET_FAIL;
     }
     from_version = (uint32_t)version;
   }
   if (from_version > schema_version) {
-    ui_fail_field_path(err, "schema version is newer than supported", "version",
+    ui_fail_field_path(err, node, "schema version is newer than supported", "version",
                        node_path);
     return MY_RET_FAIL;
   }
@@ -1371,13 +1385,13 @@ static my_ret_t ui_migrate_tree(const my_allocator_t* allocator,
     if (factory_entry == NULL ||
         (factory_entry->migrate == NULL &&
          factory_entry->migration_count == 0u)) {
-      ui_fail_field_path(err, "schema migration is unavailable", "version",
+      ui_fail_field_path(err, node, "schema migration is unavailable", "version",
                          node_path);
       return MY_RET_FAIL;
     }
     if (factory_entry->migrate != NULL) {
       if (ui_module_callback_enter(module) != MY_RET_OK) {
-        ui_fail_field_path(err, "widget module is quiescing", "version",
+        ui_fail_field_path(err, node, "widget module is quiescing", "version",
                            node_path);
         return MY_RET_NOT_SUPPORTED;
       }
@@ -1387,7 +1401,7 @@ static my_ret_t ui_migrate_tree(const my_allocator_t* allocator,
       ui_registry_callback_leave();
       ui_module_callback_leave(module);
       if (ret != MY_RET_OK) {
-        ui_fail_field_path(err,
+        ui_fail_field_path(err, node,
                            ret == MY_RET_OOM ? "schema migration out of memory"
                                              : "schema migration failed",
                            "version", node_path);
@@ -1418,12 +1432,12 @@ static my_ret_t ui_migrate_tree(const my_allocator_t* allocator,
           }
         }
         if (step == NULL) {
-          ui_fail_field_path(err, "schema migration is unavailable", "version",
+          ui_fail_field_path(err, node, "schema migration is unavailable", "version",
                              node_path);
           return MY_RET_FAIL;
         }
         if (ui_module_callback_enter(module) != MY_RET_OK) {
-          ui_fail_field_path(err, "widget module is quiescing", "version",
+          ui_fail_field_path(err, node, "widget module is quiescing", "version",
                              node_path);
           return MY_RET_NOT_SUPPORTED;
         }
@@ -1434,7 +1448,7 @@ static my_ret_t ui_migrate_tree(const my_allocator_t* allocator,
         ui_module_callback_leave(module);
         if (ret != MY_RET_OK) {
           ui_fail_field_path(
-              err, ret == MY_RET_OOM ? "schema migration out of memory"
+              err, node, ret == MY_RET_OOM ? "schema migration out of memory"
                                      : "schema migration failed",
               "version", node_path);
           return ret == MY_RET_OOM ? MY_RET_OOM : MY_RET_FAIL;
@@ -1452,7 +1466,7 @@ static my_ret_t ui_migrate_tree(const my_allocator_t* allocator,
         step_count++;
       }
       if (current_version != schema_version) {
-        ui_fail_field_path(err, "schema migration is unavailable", "version",
+        ui_fail_field_path(err, node, "schema migration is unavailable", "version",
                            node_path);
         return MY_RET_FAIL;
       }
@@ -1566,7 +1580,7 @@ static my_ret_t apply_schema_props(my_widget_t* widget,
     const my_conf_node_t* value = object_value(node, prop->name);
     if (value != NULL && prop->set != NULL &&
         set_typed_property(widget, prop, value, module) != MY_RET_OK) {
-      ui_fail_field_path(err, "invalid typed widget property", prop->name,
+      ui_fail_field_path(err, node, "invalid typed widget property", prop->name,
                          node_path);
       return MY_RET_FAIL;
     }
@@ -1584,7 +1598,7 @@ static my_ret_t apply_bindings(my_widget_t* widget, const my_conf_node_t* node,
     return MY_RET_OK;
   }
   if (my_conf_type(bindings) != MY_CONF_OBJECT) {
-    ui_fail_field_path(err, "bindings must be a map", "bindings", node_path);
+    ui_fail_field_path(err, node, "bindings must be a map", "bindings", node_path);
     return MY_RET_FAIL;
   }
   for (i = 0; i < my_conf_child_count(bindings); i++) {
@@ -1593,14 +1607,14 @@ static my_ret_t apply_bindings(my_widget_t* widget, const my_conf_node_t* node,
     const char* text;
     int wrote;
     if (key == NULL || my_conf_type(value) != MY_CONF_STR) {
-      ui_fail_field_path(err, "binding values must be strings", "bindings",
+      ui_fail_field_path(err, node, "binding values must be strings", "bindings",
                          node_path);
       return MY_RET_FAIL;
     }
     text = my_conf_as_str(value, NULL);
     wrote = snprintf(rules + used, sizeof(rules) - used, "v:%s=%s;", key, text);
     if (wrote < 0 || (size_t)wrote >= sizeof(rules) - used) {
-      ui_fail_field_path(err, "bind rules too long", "bindings", node_path);
+      ui_fail_field_path(err, node, "bind rules too long", "bindings", node_path);
       return MY_RET_FAIL;
     }
     used += (size_t)wrote;
@@ -1652,44 +1666,44 @@ static my_ret_t apply_common(my_widget_t* widget, const my_conf_node_t* node,
   int32_t x, y, w, h;
   bool visible, enable;
   if (my_conf_type(node) != MY_CONF_OBJECT) {
-    ui_fail_field_path(err, "invalid common widget property", "widget",
+    ui_fail_field_path(err, node, "invalid common widget property", "widget",
                        node_path);
     return MY_RET_FAIL;
   }
   if (!value_int32(object_value(node, "x"), 0, &x)) {
-    ui_fail_field_path(err, "invalid common widget property", "x", node_path);
+    ui_fail_field_path(err, node, "invalid common widget property", "x", node_path);
     return MY_RET_FAIL;
   }
   if (!value_int32(object_value(node, "y"), 0, &y)) {
-    ui_fail_field_path(err, "invalid common widget property", "y", node_path);
+    ui_fail_field_path(err, node, "invalid common widget property", "y", node_path);
     return MY_RET_FAIL;
   }
   if (!value_int32(object_value(node, "w"), 0, &w)) {
-    ui_fail_field_path(err, "invalid common widget property", "w", node_path);
+    ui_fail_field_path(err, node, "invalid common widget property", "w", node_path);
     return MY_RET_FAIL;
   }
   if (!value_int32(object_value(node, "h"), 0, &h)) {
-    ui_fail_field_path(err, "invalid common widget property", "h", node_path);
+    ui_fail_field_path(err, node, "invalid common widget property", "h", node_path);
     return MY_RET_FAIL;
   }
   if (!value_bool(object_value(node, "visible"), true, &visible)) {
-    ui_fail_field_path(err, "invalid common widget property", "visible",
+    ui_fail_field_path(err, node, "invalid common widget property", "visible",
                        node_path);
     return MY_RET_FAIL;
   }
   if (!value_bool(object_value(node, "enable"), true, &enable)) {
-    ui_fail_field_path(err, "invalid common widget property", "enable",
+    ui_fail_field_path(err, node, "invalid common widget property", "enable",
                        node_path);
     return MY_RET_FAIL;
   }
   value = object_value(node, "name");
   if (value != NULL) {
     if (my_conf_type(value) != MY_CONF_STR) {
-      ui_fail_field_path(err, "name must be a string", "name", node_path);
+      ui_fail_field_path(err, node, "name must be a string", "name", node_path);
       return MY_RET_FAIL;
     }
     if (my_widget_set_name(widget, my_conf_as_str(value, NULL)) != MY_RET_OK) {
-      ui_fail_field_path(err, "failed to set widget name", "name", node_path);
+      ui_fail_field_path(err, node, "failed to set widget name", "name", node_path);
       return MY_RET_FAIL;
     }
   }
@@ -1699,12 +1713,12 @@ static my_ret_t apply_common(my_widget_t* widget, const my_conf_node_t* node,
   value = object_value(node, "tooltip");
   if (value != NULL) {
     if (my_conf_type(value) != MY_CONF_STR) {
-      ui_fail_field_path(err, "tooltip must be a string", "tooltip", node_path);
+      ui_fail_field_path(err, node, "tooltip must be a string", "tooltip", node_path);
       return MY_RET_FAIL;
     }
     if (my_widget_set_tooltip(widget, my_conf_as_str(value, NULL)) !=
         MY_RET_OK) {
-      ui_fail_field_path(err, "failed to set widget tooltip", "tooltip",
+      ui_fail_field_path(err, node, "failed to set widget tooltip", "tooltip",
                          node_path);
       return MY_RET_FAIL;
     }
@@ -1712,12 +1726,12 @@ static my_ret_t apply_common(my_widget_t* widget, const my_conf_node_t* node,
   value = object_value(node, "class");
   if (value != NULL) {
     if (my_conf_type(value) != MY_CONF_STR) {
-      ui_fail_field_path(err, "class must be a string", "class", node_path);
+      ui_fail_field_path(err, node, "class must be a string", "class", node_path);
       return MY_RET_FAIL;
     }
     if (my_widget_set_style_class(widget, my_conf_as_str(value, NULL)) !=
         MY_RET_OK) {
-      ui_fail_field_path(err, "failed to set widget class", "class", node_path);
+      ui_fail_field_path(err, node, "failed to set widget class", "class", node_path);
       return MY_RET_FAIL;
     }
   }
@@ -1725,7 +1739,7 @@ static my_ret_t apply_common(my_widget_t* widget, const my_conf_node_t* node,
   if (value != NULL && (my_conf_type(value) != MY_CONF_STR ||
                         my_widget_set_layout_params(widget,
                             my_conf_as_str(value, NULL)) != MY_RET_OK)) {
-    ui_fail_field_path(err, "invalid lp", "lp", node_path);
+    ui_fail_field_path(err, node, "invalid lp", "lp", node_path);
     return MY_RET_FAIL;
   }
   value = object_value(node, "layout");
@@ -1734,26 +1748,26 @@ static my_ret_t apply_common(my_widget_t* widget, const my_conf_node_t* node,
     bool horizontal;
     int32_t spacing;
     if (my_conf_type(value) != MY_CONF_STR) {
-      ui_fail_field_path(err, "layout must be a string", "layout", node_path);
+      ui_fail_field_path(err, node, "layout must be a string", "layout", node_path);
       return MY_RET_FAIL;
     }
     text = my_conf_as_str(value, NULL);
     if (my_str_eq(text, "default")) {
     } else if (!parse_linear_layout(text, &horizontal, &spacing)) {
-      ui_fail_field_path(err, "invalid layout syntax", "layout", node_path);
+      ui_fail_field_path(err, node, "invalid layout syntax", "layout", node_path);
       return MY_RET_FAIL;
     } else {
       layouter = my_layouter_linear_create(
           ((my_object_t*)widget)->allocator, horizontal, spacing);
       if (layouter == NULL) {
-        ui_fail_field_path(err, "failed to create layout", "layout", node_path);
+        ui_fail_field_path(err, node, "failed to create layout", "layout", node_path);
         return MY_RET_OOM;
       }
       if (my_widget_set_layouter(widget, layouter) != MY_RET_OK) {
         if (layouter->destroy != NULL) {
           layouter->destroy(layouter);
         }
-        ui_fail_field_path(err, "failed to set layout", "layout", node_path);
+        ui_fail_field_path(err, node, "failed to set layout", "layout", node_path);
         return MY_RET_FAIL;
       }
     }
@@ -1776,7 +1790,7 @@ static my_widget_t* build_children(const my_allocator_t* allocator, my_pal_t* pa
     return parent;
   }
   if (my_conf_type(children) != MY_CONF_ARRAY) {
-    ui_fail_field_path(err, "children must be a sequence", "children",
+    ui_fail_field_path(err, node, "children must be a sequence", "children",
                        node_path);
     return NULL;
   }
@@ -1789,7 +1803,7 @@ static my_widget_t* build_children(const my_allocator_t* allocator, my_pal_t* pa
     }
     if (my_widget_add_child(parent, child) != MY_RET_OK) {
       my_widget_unref(child);
-      ui_fail_field_path(err, "failed to attach child widget", "children",
+      ui_fail_field_path(err, node, "failed to attach child widget", "children",
                          node_path);
       return NULL;
     }
@@ -1815,12 +1829,12 @@ static my_widget_t* build_node(const my_allocator_t* allocator, my_pal_t* pal,
   if (my_conf_type(node) != MY_CONF_OBJECT ||
       (type_node = object_value(node, "type")) == NULL ||
       my_conf_type(type_node) != MY_CONF_STR) {
-    ui_fail_field_path(err, "widget requires a string type", "type", node_path);
+    ui_fail_field_path(err, node, "widget requires a string type", "type", node_path);
     return NULL;
   }
   type = my_conf_as_str(type_node, NULL);
   if (my_str_eq(type, "window")) {
-    ui_fail_field_path(err, "window is only allowed as root", "type", node_path);
+    ui_fail_field_path(err, node, "window is only allowed as root", "type", node_path);
     return NULL;
   }
   factory_entry = find_factory_entry(type);
@@ -1835,7 +1849,7 @@ static my_widget_t* build_node(const my_allocator_t* allocator, my_pal_t* pal,
   if (factory != NULL) {
     if (factory_entry->module != NULL &&
         ui_module_callback_enter(factory_entry->module) != MY_RET_OK) {
-      ui_fail_field_path(err, "widget module is quiescing", "type",
+      ui_fail_field_path(err, node, "widget module is quiescing", "type",
                          node_path);
       return NULL;
     }
@@ -1846,7 +1860,7 @@ static my_widget_t* build_node(const my_allocator_t* allocator, my_pal_t* pal,
   } else if (cls != NULL) {
     widget = cls->create(allocator);
   } else {
-    ui_fail_field_path(err, "unknown widget type", "type", node_path);
+    ui_fail_field_path(err, node, "unknown widget type", "type", node_path);
     return NULL;
   }
   if (widget == NULL) {
@@ -1859,7 +1873,7 @@ static my_widget_t* build_node(const my_allocator_t* allocator, my_pal_t* pal,
   if (module_callback_held &&
       my_widget_class_module_bind_widget(factory_entry->module, widget) !=
           MY_RET_OK) {
-    ui_fail_field_path(err, "widget module is quiescing", "type", node_path);
+    ui_fail_field_path(err, node, "widget module is quiescing", "type", node_path);
     my_widget_unref(widget);
     ui_module_callback_leave(factory_entry->module);
     return NULL;

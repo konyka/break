@@ -93,6 +93,13 @@ my_conf_node_t* my_conf_child(const my_conf_node_t* node, size_t index);
  * in arrays). */
 const char* my_conf_key(const my_conf_node_t* node);
 
+/** @brief 1-based source line the node was parsed from (YAML parser);
+ * 0 when unknown (built in code, other codecs, NULL). */
+int32_t my_conf_line(const my_conf_node_t* node);
+
+/** @brief Record the node's source line; values <= 0 clear it. NULL safe. */
+void my_conf_set_line(my_conf_node_t* node, int32_t line);
+
 /* ---------------- scalar access ---------------- */
 
 my_conf_type_t my_conf_type(const my_conf_node_t* node);

@@ -20,6 +20,7 @@ struct my_conf_node_t {
   bool b;         /**< BOOL */
   char* str;      /**< owned: STR */
   my_darray_t* children; /**< OBJECT/ARRAY: my_conf_node_t* (owned) */
+  int32_t line;   /**< 1-based source line, 0 = unknown */
 };
 
 static my_conf_node_t* node_new(const my_allocator_t* allocator,
@@ -196,6 +197,16 @@ my_conf_node_t* my_conf_child(const my_conf_node_t* node, size_t index) {
 
 const char* my_conf_key(const my_conf_node_t* node) {
   return node != NULL ? node->key : NULL;
+}
+
+int32_t my_conf_line(const my_conf_node_t* node) {
+  return node != NULL ? node->line : 0;
+}
+
+void my_conf_set_line(my_conf_node_t* node, int32_t line) {
+  if (node != NULL) {
+    node->line = line > 0 ? line : 0;
+  }
 }
 
 /* ---------------- scalar access ---------------- */

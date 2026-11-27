@@ -610,6 +610,19 @@ static my_conf_node_t* yv_value(yv_t* v) {
   }
 }
 
+/* Flow collections never span lines here, so every node built from one
+ * value slice shares its line. */
+static void y_stamp_line(my_conf_node_t* node, int32_t lineno) {
+  size_t i;
+  if (node == NULL) {
+    return;
+  }
+  my_conf_set_line(node, lineno);
+  for (i = 0; i < my_conf_child_count(node); i++) {
+    y_stamp_line(my_conf_child(node, i), lineno);
+  }
+}
+
 /** @brief Value of a block-level "key: value" rest slice. */
 static my_conf_node_t* y_block_value(yaml_p_t* p, const char* s, size_t len,
                                      int32_t lineno) {
@@ -625,6 +638,7 @@ static my_conf_node_t* y_block_value(yaml_p_t* p, const char* s, size_t len,
   if (n == NULL) {
     return NULL;
   }
+  y_stamp_line(n, lineno);
   return n;
 }
 
@@ -761,6 +775,7 @@ static my_conf_node_t* y_map(yaml_p_t* p, int32_t indent) {
         goto fail;
       }
     }
+    my_conf_set_line(val, l->lineno);
     /* duplicate key check */
     {
       size_t k, n = my_conf_child_count(obj);
@@ -890,6 +905,7 @@ static my_conf_node_t* y_seq(yaml_p_t* p, int32_t indent) {
           my_conf_destroy(m);
           goto fail;
         }
+        my_conf_set_line(mv, l->lineno);
         if (my_conf_child_count(m) >= MY_CONF_YAML_MAX_CHILDREN) {
           y_fail(p, l->lineno, l->indent + 1,
                  "YAML inline mapping size exceeds resource budget");
@@ -981,6 +997,7 @@ static my_conf_node_t* y_seq(yaml_p_t* p, int32_t indent) {
             my_conf_destroy(m);
             goto fail;
           }
+          my_conf_set_line(mv, pl->lineno);
           if (my_conf_child_count(m) >= MY_CONF_YAML_MAX_CHILDREN) {
             y_fail(p, pl->lineno, pl->indent + 1,
                    "YAML inline mapping size exceeds resource budget");
@@ -1019,6 +1036,7 @@ static my_conf_node_t* y_seq(yaml_p_t* p, int32_t indent) {
         }
       }
     }
+    my_conf_set_line(val, l->lineno);
     if (my_conf_child_count(arr) >= MY_CONF_YAML_MAX_CHILDREN) {
       y_fail(p, l->lineno, l->indent + 1,
              "YAML sequence size exceeds resource budget");
@@ -1039,6 +1057,7 @@ fail:
 /** @brief Block dispatcher: sequence vs mapping vs error. */
 static my_conf_node_t* y_block_impl(yaml_p_t* p, int32_t indent) {
   size_t ci = y_next_content(p, p->i);
+  my_conf_node_t* result;
   yline_t* l;
   const char* text;
   size_t tlen;
@@ -1049,9 +1068,12 @@ static my_conf_node_t* y_block_impl(yaml_p_t* p, int32_t indent) {
   text = p->s + l->start + l->indent;
   tlen = l->len - (size_t)l->indent;
   if (tlen >= 1 && text[0] == '-' && (tlen == 1 || text[1] == ' ')) {
-    return y_seq(p, indent);
+    result = y_seq(p, indent);
+  } else {
+    result = y_map(p, indent);
   }
-  return y_map(p, indent);
+  my_conf_set_line(result, l->lineno);
+  return result;
 }
 
 static my_conf_node_t* y_block(yaml_p_t* p, int32_t indent) {
