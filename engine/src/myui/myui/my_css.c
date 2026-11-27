@@ -7365,6 +7365,24 @@ static my_ret_t my_theme_load_css_internal(
     }
     if (ret != MY_RET_OK) break;
   }
+  if (ret == MY_RET_OK && !candidate->has_motion) {
+    size_t r, dn;
+    for (r = 0u; r < my_darray_size(sheet->rules) && !candidate->has_motion;
+         r++) {
+      const my_css_rule_t* rule =
+          (const my_css_rule_t*)my_darray_get(sheet->rules, r);
+      dn = my_darray_size(rule->decls);
+      for (di = 0u; di < dn; di++) {
+        const my_css_decl_t* d =
+            (const my_css_decl_t*)my_darray_get(rule->decls, di);
+        if (my_str_eq(d->key, MY_STYLE_ANIMATION) ||
+            my_str_eq(d->key, MY_STYLE_TRANSITION)) {
+          candidate->has_motion = true;
+          break;
+        }
+      }
+    }
+  }
   if (ret == MY_RET_OK && my_css_keyframes_count(sheet) > 0u) {
     if (candidate->keyframe_sheet == NULL) {
       candidate->keyframe_sheet = css_sheet_new_empty(candidate->allocator);
@@ -7398,6 +7416,7 @@ static my_ret_t my_theme_load_css_internal(
     candidate->property_defs = old_defs;
     theme->keyframe_sheet = candidate->keyframe_sheet;
     candidate->keyframe_sheet = old_keyframes;
+    theme->has_motion = candidate->has_motion;
   }
   my_theme_destroy(candidate);
   return ret;

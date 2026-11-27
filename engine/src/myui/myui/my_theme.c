@@ -88,6 +88,10 @@ void my_theme_destroy(my_theme_t* theme) {
   my_mem_free(theme->allocator, theme);
 }
 
+bool my_theme_has_motion(const my_theme_t* theme) {
+  return theme != NULL && theme->has_motion;
+}
+
 my_theme_t* my_theme_clone(const my_theme_t* source) {
   my_theme_t* candidate;
   size_t i;
@@ -178,6 +182,7 @@ my_theme_t* my_theme_clone(const my_theme_t* source) {
       return NULL;
     }
   }
+  candidate->has_motion = source->has_motion;
   if (source->keyframe_sheet != NULL) {
     candidate->keyframe_sheet =
         my_css_keyframes_sheet_clone(candidate->allocator,
@@ -1535,6 +1540,19 @@ static size_t theme_widget_tick(my_widget_t* widget, double now_ms,
   size_t i, n;
   if (widget == NULL || depth > 64u) {
     return 0u;
+  }
+  if (widget->style_motion == NULL) {
+    /* enroll widgets the theme gives CSS motion; the flag keeps themes
+     * without any motion from costing lookups on every frame */
+    const my_theme_t* theme = theme_widget_theme(widget);
+    my_widget_state_t state = my_widget_current_state(widget, false);
+    if (my_theme_has_motion(theme) &&
+        (my_theme_get_for_widget(theme, widget, state, MY_STYLE_ANIMATION) !=
+             NULL ||
+         my_theme_get_for_widget(theme, widget, state, MY_STYLE_TRANSITION) !=
+             NULL)) {
+      (void)my_widget_set_style_clock(widget, now_ms);
+    }
   }
   if (widget->style_motion != NULL) {
     const my_theme_t* theme = theme_widget_theme(widget);

@@ -335,7 +335,9 @@ uint32_t my_widget_style_get_color(my_widget_t* widget, my_widget_state_t state,
 my_ret_t my_widget_set_style_clock(my_widget_t* widget, double now_ms);
 
 /** @brief Advance the style clock of `root` and every descendant that has
- * one to now_ms. A widget whose CSS motion is still running for its
+ * one to now_ms. A widget without a clock gets one when its theme (with
+ * my_theme_has_motion) gives it an `animation` or `transition` for its
+ * current state. A widget whose CSS motion is still running for its
  * current state (my_theme_motion_running) is invalidated so the next
  * frame repaints it; on the tick where its motion stops it is invalidated
  * once more so the settled value replaces the last animated frame. Returns

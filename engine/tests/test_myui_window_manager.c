@@ -6880,6 +6880,81 @@ TEST(window_style_clock_tick_advances_and_invalidates)
   my_pal_destroy(pal);
 }
 
+TEST(window_style_clock_tick_enrolls_themed_motion)
+{
+  /* A widget whose theme gives it an `animation` or `transition` gets a
+   * motion clock from the tick without the host opting it in; a widget
+   * with neither stays without one. */
+  my_pal_t* pal = my_pal_dummy_create(NULL);
+  my_window_t* win = my_window_create(NULL, pal, 160, 100, "enroll");
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* moving = my_widget_create(NULL, "moving");
+  my_widget_t* fading = my_widget_create(NULL, "fading");
+  my_widget_t* still = my_widget_create(NULL, "still");
+  const char* css =
+      "@keyframes grow { from { font-size: 10; } to { font-size: 20; } }"
+      "moving { font-size: 12; animation: grow 100ms linear; }"
+      "fading { color: #ff0000ff; transition: color 100ms linear; }"
+      "still { font-size: 12; }";
+
+  moving->widget_type = "moving";
+  fading->widget_type = "fading";
+  still->widget_type = "still";
+  ASSERT_EQ(my_theme_load_css(theme, css), MY_RET_OK);
+  ASSERT_TRUE(my_theme_has_motion(theme));
+  ASSERT_EQ(my_widget_apply_theme(my_window_widget(win), theme), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(my_window_widget(win), moving), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(my_window_widget(win), fading), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(my_window_widget(win), still), MY_RET_OK);
+
+  ASSERT_EQ(my_window_tick_style_clocks(win, 1000.0), 1u);
+  ASSERT_TRUE(my_widget_style_clock_active(moving));
+  ASSERT_TRUE(my_widget_style_clock_active(fading));
+  ASSERT_FALSE(my_widget_style_clock_active(still));
+  ASSERT_EQ(my_window_tick_style_clocks(win, 1050.0), 1u);
+  ASSERT_EQ(my_widget_style_get_int(moving, MY_STATE_NORMAL,
+                                    MY_STYLE_FONT_SIZE, 0), 15);
+
+  my_widget_unref(moving);
+  my_widget_unref(fading);
+  my_widget_unref(still);
+  my_widget_unref((my_widget_t*)win);
+  my_theme_destroy(theme);
+  my_pal_destroy(pal);
+}
+
+TEST(theme_has_motion_tracks_motion_declarations)
+{
+  my_theme_t* plain = my_theme_create(NULL);
+  my_theme_t* motion = my_theme_create(NULL);
+  my_theme_t* copy;
+  ASSERT_FALSE(my_theme_has_motion(plain));
+  ASSERT_EQ(my_theme_load_css(plain, "button { color: red; }"), MY_RET_OK);
+  ASSERT_FALSE(my_theme_has_motion(plain));
+  ASSERT_EQ(my_theme_load_css(motion,
+                              "button:hover { transition: color 1s; }"),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_has_motion(motion));
+  {
+    my_theme_t* animated = my_theme_create(NULL);
+    ASSERT_EQ(my_theme_load_css(animated, "label { animation: a 1s; }"),
+              MY_RET_OK);
+    ASSERT_TRUE(my_theme_has_motion(animated));
+    my_theme_destroy(animated);
+  }
+  copy = my_theme_clone(motion);
+  ASSERT_NOT_NULL(copy);
+  ASSERT_TRUE(my_theme_has_motion(copy));
+  /* a failed load keeps the flag of the committed theme. */
+  ASSERT_NEQ(my_theme_load_css(plain, "button { animation: a 1s; } }"),
+             MY_RET_OK);
+  ASSERT_FALSE(my_theme_has_motion(plain));
+  ASSERT_FALSE(my_theme_has_motion(NULL));
+  my_theme_destroy(copy);
+  my_theme_destroy(plain);
+  my_theme_destroy(motion);
+}
+
 TEST(window_manager_paint_tick_drives_style_clocks)
 {
   /* The manager's paint tick reads the PAL clock and ticks every open
@@ -9479,6 +9554,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(button_cooldown_paint_samples_clock_once);
     RUN_TEST(window_style_clock_tick_advances_and_invalidates);
     RUN_TEST(window_manager_paint_tick_drives_style_clocks);
+    RUN_TEST(window_style_clock_tick_enrolls_themed_motion);
+    RUN_TEST(theme_has_motion_tracks_motion_declarations);
     RUN_TEST(button_release_preserves_minimum_press_after_clock_rollback);
     RUN_TEST(button_cooldown_remains_active_at_clock_upper_bound);
     RUN_TEST(button_release_timer_failure_does_not_stick_pressed_state);

@@ -89,9 +89,15 @@ typedef struct my_theme_t {
   /** @brief Keyframes-only sheet holding every @keyframes the theme has
    * loaded (later loads add or replace by name); NULL until the first. */
   struct my_css_sheet_t* keyframe_sheet;
+  /** @brief Some loaded rule declares `animation` or `transition`; lets
+   * the motion tick skip themes without any CSS motion. */
+  bool has_motion;
 } my_theme_t;
 
 my_theme_t* my_theme_create(const my_allocator_t* allocator);
+
+/** @brief Whether any loaded rule declares `animation` or `transition`. */
+bool my_theme_has_motion(const my_theme_t* theme);
 void my_theme_destroy(my_theme_t* theme);
 
 /** @brief Deep-copy a theme for transactional loading. NULL on allocation

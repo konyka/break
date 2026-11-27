@@ -14889,3 +14889,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **缺口**：BreakUI 关闭了自动重绘定时器，CSS 动画时钟的 tick 在引擎内不运行。
 - **实现**：`break_ui_render` 在收集 damage 前调用 `my_window_manager_tick_style_clocks`。
 - **验证**：`test_mycompose_gpu_opengl` / `_vulkan` 通过且 `idle_allocs=0`；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。接线改动，无专门 BreakUI 动画用例。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
+
+## 主题动画自动启用控件时钟（2026-11-27）
+
+- **缺口**：控件需要宿主逐个调用 `my_widget_set_style_clock` 才会动画，主题里的 `animation`/`transition` 默认不生效。
+- **实现**：主题记录 `has_motion`（`my_theme_has_motion`）；tick 为主题给出 `animation` 或 `transition` 的控件自动设置时钟，无动画主题只做一次标志判断。
+- **TDD 与变异**：`test_myui_window_manager` 新增 2 例（249 例），旧实现 RED；8 项定向变异判红，1 项为去掉快速路径的等价变异。
+- **验证**：普通与 ASan+UBSan 下 `test_myui_window_manager` 249/249、`test_myui_css` 223/223；`build-myui-tests` 全量 ctest 482/482；`test_mycompose_gpu_opengl` / `_vulkan` 通过且 `idle_allocs=0`；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
