@@ -1,0 +1,7 @@
+# Must fail: no built-in dictionary exists for this valid profile.
+version: 1
+locale: th-Latn
+dictionary: builtin
+cases:
+  - codepoints: "0E01,0E02"
+    expected: "0"

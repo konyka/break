@@ -1,0 +1,33 @@
+# Golden corpus for the built-in th-Thai SA dictionary (verify_myui_sa_dictionary).
+# expected lists one boundary per gap: 1 = a word starts here.
+version: 1
+locale: th-Thai
+dictionary: builtin
+cases:
+  # SAWATDEE
+  - codepoints: "0E2A,0E27,0E31,0E2A,0E14,0E35"
+    expected: "0,0,0,0,0"
+  # LANGUAGE + THAI
+  - codepoints: "0E20,0E32,0E29,0E32,0E44,0E17,0E22"
+    expected: "0,0,0,1,0,0"
+  # KAN + LAE + KHONG
+  - codepoints: "0E01,0E32,0E23,0E41,0E25,0E30,0E02,0E2D,0E07"
+    expected: "0,0,1,0,0,1,0,0"
+  # THI + PEN + NAI
+  - codepoints: "0E17,0E35,0E40,0E1B,0E47,0E19,0E43,0E19"
+    expected: "0,1,0,0,0,1,0"
+  # MAI + PEN
+  - codepoints: "0E44,0E21,0E48,0E40,0E1B,0E47,0E19"
+    expected: "0,0,1,0,0,0"
+  # LANGUAGE + THAI + KHONG + THI + NAI
+  - codepoints: "0E20,0E32,0E29,0E32,0E44,0E17,0E22,0E02,0E2D,0E07,0E17,0E35,0E43,0E19"
+    expected: "0,0,0,1,0,0,1,0,0,1,0,1,0"
+  # NAI + NAI + NAI
+  - codepoints: "0E43,0E19,0E43,0E19,0E43,0E19"
+    expected: "0,1,0,1,0"
+  # truncated LANGUAGE + THAI: no full segmentation, no boundaries
+  - codepoints: "0E20,0E32,0E29,0E44,0E17,0E22"
+    expected: "0,0,0,0,0"
+  # THAI + truncated LANGUAGE: unknown suffix keeps the run unbroken
+  - codepoints: "0E44,0E17,0E22,0E20,0E32,0E29"
+    expected: "0,0,0,0,0"

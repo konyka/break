@@ -1,4 +1,10 @@
-/* Verify a bounded, versioned SA dictionary golden corpus. */
+/* Verify a bounded, versioned SA dictionary golden corpus.
+ *
+ * Header keys: version (1), locale, cases, and an optional dictionary:
+ * `fixture` (default) runs the verifier's own rule (U+0E02 starts a word)
+ * and checks the profile plumbing; `builtin` runs the engine's built-in
+ * dictionary for the locale, so the corpus pins its segmentation. A locale
+ * without a built-in dictionary fails at its first case (NOT_SUPPORTED). */
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -83,7 +89,8 @@ static my_ret_t corpus_dictionary(
   return MY_RET_OK;
 }
 
-static int verify_case(const sa_case_t* test, const char* locale) {
+static int verify_case(const sa_case_t* test, const char* locale,
+                       bool builtin) {
   my_line_break_dictionary_profile_t profile = {1u, locale};
   my_line_break_profile_options_t options;
   bool actual[SA_CORPUS_MAX_CODEPOINTS];
@@ -94,7 +101,8 @@ static int verify_case(const sa_case_t* test, const char* locale) {
       !my_line_break_dictionary_profile_valid(&profile)) {
     return 0;
   }
-  options.dictionary = corpus_dictionary;
+  options.dictionary =
+      builtin ? my_line_break_builtin_dictionary_callback : corpus_dictionary;
   options.context = &context;
   options.max_codepoints = SA_CORPUS_MAX_CODEPOINTS;
   for (i = 0u; i < test->count; ++i) {
@@ -103,7 +111,7 @@ static int verify_case(const sa_case_t* test, const char* locale) {
   }
   result = my_line_break_apply_dictionary_profile(
       test->codepoints, test->count, actual, &options, &profile);
-  if (result != MY_RET_OK || context.calls != 1u) return 0;
+  if (result != MY_RET_OK || (!builtin && context.calls != 1u)) return 0;
   for (i = 1u; i < test->count; ++i) {
     if (actual[i] != test->expected[i - 1u]) return 0;
   }
@@ -160,7 +168,10 @@ static int verify_file(const char* path) {
   my_conf_node_t* cases;
   const char* locale;
   my_conf_error_t error;
-  const char* const root_keys[] = {"version", "locale", "cases"};
+  const char* const root_keys[] = {"version", "locale", "cases",
+                                   "dictionary"};
+  const char* dictionary;
+  bool builtin = false;
   const char* const case_keys[] = {"codepoints", "expected"};
   size_t i;
   size_t root_key_count;
@@ -184,13 +195,20 @@ static int verify_file(const char* path) {
   data[length] = '\0';
   root = my_conf_parse_yaml(NULL, data, length, &error);
   root_key_count = sizeof(root_keys) / sizeof(root_keys[0]);
-  if (root == NULL || my_conf_child_count(root) != root_key_count ||
+  dictionary = my_conf_get_str(root, "dictionary", NULL);
+  if (root == NULL ||
+      my_conf_child_count(root) !=
+          root_key_count - (my_conf_get(root, "dictionary") == NULL ? 1u : 0u) ||
       !object_keys_valid(root, root_keys, root_key_count) ||
-      my_conf_get_int64(root, "version", -1) != 1) {
+      my_conf_get_int64(root, "version", -1) != 1 ||
+      (my_conf_get(root, "dictionary") != NULL &&
+       (dictionary == NULL || (strcmp(dictionary, "fixture") != 0 &&
+                               strcmp(dictionary, "builtin") != 0)))) {
     my_conf_destroy(root);
     fprintf(stderr, "%s: invalid corpus header\n", path);
     return 1;
   }
+  builtin = dictionary != NULL && strcmp(dictionary, "builtin") == 0;
   locale = my_conf_get_str(root, "locale", NULL);
   cases = my_conf_get(root, "cases");
   if (locale == NULL || !my_line_break_dictionary_profile_valid(
@@ -213,7 +231,7 @@ static int verify_file(const char* path) {
         codepoints == NULL || expected == NULL ||
         !parse_codepoints(codepoints, &test) ||
         !parse_boundaries(expected, test.expected, test.count - 1u) ||
-        !verify_case(&test, locale)) {
+        !verify_case(&test, locale, builtin)) {
       my_conf_destroy(root);
       fprintf(stderr, "%s: invalid SA corpus case %zu\n", path, i);
       return 1;

@@ -4290,6 +4290,18 @@ endif()
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/myui_line_break_verifier_malformed.txt)
     set_tests_properties(verify_myui_line_break_rejects_malformed
         PROPERTIES WILL_FAIL TRUE)
+    foreach(_sa_builtin thai lao khmer burmese)
+        add_test(NAME verify_myui_sa_dictionary_${_sa_builtin}_builtin
+            COMMAND verify_myui_sa_dictionary
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/myui_sa_dictionary_${_sa_builtin}_builtin.yaml)
+    endforeach()
+    foreach(_sa_bad builtin_mismatch builtin_unsupported unknown_dictionary)
+        add_test(NAME verify_myui_sa_dictionary_rejects_${_sa_bad}
+            COMMAND verify_myui_sa_dictionary
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/myui_sa_dictionary_rejects_${_sa_bad}.yaml)
+        set_tests_properties(verify_myui_sa_dictionary_rejects_${_sa_bad}
+            PROPERTIES WILL_FAIL TRUE)
+    endforeach()
     add_test(NAME verify_myui_sa_dictionary_valid
         COMMAND verify_myui_sa_dictionary
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/myui_sa_dictionary_valid.yaml)

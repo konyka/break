@@ -1,0 +1,33 @@
+# Golden corpus for the built-in km-Khmr SA dictionary (verify_myui_sa_dictionary).
+# expected lists one boundary per gap: 1 = a word starts here.
+version: 1
+locale: km-Khmr
+dictionary: builtin
+cases:
+  # GREETING
+  - codepoints: "1787,17C6,179A,17B6,1794,179F,17BD,179A"
+    expected: "0,0,0,0,0,0,0"
+  # LANGUAGE + KHMER
+  - codepoints: "1797,17B6,179F,17B6,1781,17D2,1798,17C2,179A"
+    expected: "0,0,0,1,0,0,0,0"
+  # KA + NING + ROBOS
+  - codepoints: "1780,17B6,179A,1793,17B7,1784,179A,1794,179F,17CB"
+    expected: "0,0,1,0,0,1,0,0,0"
+  # NOV + KNONG + MIN
+  - codepoints: "1793,17C5,1780,17D2,1793,17BB,1784,1798,17B7,1793"
+    expected: "0,1,0,0,0,0,1,0,0"
+  # CHEA + LANGUAGE
+  - codepoints: "1787,17B6,1797,17B6,179F,17B6"
+    expected: "0,1,0,0,0"
+  # LANGUAGE + KHMER + ROBOS + NOV + KNONG
+  - codepoints: "1797,17B6,179F,17B6,1781,17D2,1798,17C2,179A,179A,1794,179F,17CB,1793,17C5,1780,17D2,1793,17BB,1784"
+    expected: "0,0,0,1,0,0,0,0,1,0,0,0,1,0,1,0,0,0,0"
+  # CHEA + CHEA + CHEA
+  - codepoints: "1787,17B6,1787,17B6,1787,17B6"
+    expected: "0,1,0,1,0"
+  # truncated LANGUAGE + KHMER: no full segmentation, no boundaries
+  - codepoints: "1797,17B6,179F,1781,17D2,1798,17C2,179A"
+    expected: "0,0,0,0,0,0,0"
+  # KHMER + truncated LANGUAGE: unknown suffix keeps the run unbroken
+  - codepoints: "1781,17D2,1798,17C2,179A,1797,17B6,179F"
+    expected: "0,0,0,0,0,0,0"

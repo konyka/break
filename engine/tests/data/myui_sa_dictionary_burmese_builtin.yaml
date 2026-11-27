@@ -1,0 +1,33 @@
+# Golden corpus for the built-in my-Mymr SA dictionary (verify_myui_sa_dictionary).
+# expected lists one boundary per gap: 1 = a word starts here.
+version: 1
+locale: my-Mymr
+dictionary: builtin
+cases:
+  # GREETING
+  - codepoints: "1019,1004,103A,1039,1002,101C,102C,1015,102B"
+    expected: "0,0,0,0,0,0,0,0"
+  # LANGUAGE + BURMESE
+  - codepoints: "1018,102C,101E,102C,1019,103C,1014,103A,1019,102C"
+    expected: "0,0,0,1,0,0,0,0,0"
+  # WORK + AND + OBJ
+  - codepoints: "1021,101C,102F,1015,103A,1014,1032,1037,1000,102D,102F"
+    expected: "0,0,0,0,1,0,0,1,0,0"
+  # AT + QUESTION + PERSON
+  - codepoints: "1019,103E,102C,101C,102C,1038,101C,1030"
+    expected: "0,0,1,0,0,1,0"
+  # THIS + PERSON
+  - codepoints: "1012,102E,101C,1030"
+    expected: "0,1,0"
+  # BURMESE + LANGUAGE + AND + THIS + PERSON
+  - codepoints: "1019,103C,1014,103A,1019,102C,1018,102C,101E,102C,1014,1032,1037,1012,102E,101C,1030"
+    expected: "0,0,0,0,0,1,0,0,0,1,0,0,1,0,1,0"
+  # THIS + THIS + THIS
+  - codepoints: "1012,102E,1012,102E,1012,102E"
+    expected: "0,1,0,1,0"
+  # truncated LANGUAGE + BURMESE: no full segmentation, no boundaries
+  - codepoints: "1018,102C,101E,1019,103C,1014,103A,1019,102C"
+    expected: "0,0,0,0,0,0,0,0"
+  # BURMESE + truncated LANGUAGE: unknown suffix keeps the run unbroken
+  - codepoints: "1019,103C,1014,103A,1019,102C,1018,102C,101E"
+    expected: "0,0,0,0,0,0,0,0"

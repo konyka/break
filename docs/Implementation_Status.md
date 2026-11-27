@@ -14757,3 +14757,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **实现**：`my_conf_node_t` 记录源码行（新增 `my_conf_line`、`my_conf_set_line`）；YAML 解析器给映射值、序列项、内联 map 和 flow 子树打行号；loader 的 schema 错误取出错键的行，键不存在时取 widget 节点的行。
 - **TDD 与变异**：`test_myui_loader` 新增 2 例（123 例），先以编译失败为 RED；13 项定向变异中 12 项判红，1 项为已说明的等价变异（第一次失败为准的守卫）。
 - **验证**：普通与 ASan+UBSan 下 123/123；`build-current-vk` 非 fuzz 470/470。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
+
+## 内置 SA 词典的 locale golden corpus（2026-11-27）
+
+- **缺口**：`docs/myui_remaining_work.md` UAX#14 一行的「locale dictionary corpus」。四个内置 SA 词典没有按语言列出的分词语料。
+- **实现**：`verify_myui_sa_dictionary` 新增可选头部键 `dictionary: fixture|builtin`；新增泰、老挝、高棉、缅甸四份 `builtin` 语料（各 9 个 case，含未登录词保守用例）与 3 份 `WILL_FAIL` 反例，CMake 注册 7 项测试。
+- **TDD 与变异**：13 项定向变异中 10 项判红，3 项为已说明的等价变异（词表无前缀关系、内置模式不计回调次数）；被证明多余的 locale 支持检查已删除。
+- **验证**：13 项 SA 语料测试通过；ASan+UBSan 无报错；`build-current-vk` 非 fuzz 477/477。详见 `docs/myui_remaining_work.md` 同日补充。
+- **仍未完成**：产品级 tailoring 契约。本提交自身的远端工作流结果不在此预写。

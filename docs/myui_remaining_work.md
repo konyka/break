@@ -2684,3 +2684,19 @@ graphics 与 present queue。`RE_VK_DEVICE_INDEX` 现在也必须通过同一门
 **验证**：`test_myui_loader` 123/123；ASan+UBSan 123/123，无报错；`build-current-vk` 非 fuzz 470/470。
 
 该行剩余判据只有全平台 runtime 证据，需要 Windows/macOS runner。
+
+## 本轮补充：内置 SA 词典的 locale golden corpus（2026-11-27）
+
+「未完成能力」表中「完整 UAX#14 默认规则」一行的完成判据有「locale dictionary corpus」。此前 `verify_myui_sa_dictionary` 只用验证器自带的固定规则（U+0E02 开始新词）检查 profile 的传递，内置的 `th-Thai`、`lo-Lao`、`km-Khmr`、`my-Mymr` 四个词典只有 `test_myui_text_layout` 里的零散单例，没有按语言列出的分词语料。
+
+- **验证器**（`engine/tools/verify_myui_sa_dictionary.c`）：语料头新增可选键 `dictionary`。取值 `fixture`（缺省，保持原有行为）或 `builtin`；`builtin` 时用 `my_line_break_builtin_dictionary_callback` 分词，所以语料固定的是引擎内置词典的实际结果。其他取值判为头部无效。没有内置词典的合法 locale 在第一个 case 处因 `NOT_SUPPORTED` 失败。
+- **语料**（`engine/tests/data/myui_sa_dictionary_{thai,lao,khmer,burmese}_builtin.yaml`）：每种语言 9 个 case：问候语单词、两词与三词组合、五词句、同一个词重复三次，以及两个未登录词用例（第一个词去掉末字后接一个已知词、已知词后接一个截断词）。未登录词用例要求整段不出现任何断点，对应词典「整段无法完整切分时不造断点」的保守语义。
+- **反例**：`rejects_builtin_mismatch`（期望与内置泰语词典不符）、`rejects_builtin_unsupported`（`th-Latn` 合法但没有内置词典）、`rejects_unknown_dictionary`（`dictionary: icu`）注册为 `WILL_FAIL`。
+
+**变异**：13 项中 10 项判红：取消断点写入、取消「不可完整切分则清空」、可达性只记录长词、老挝/高棉/缅甸三种 locale 改用泰语词表、改动老挝语与缅甸语词条码点、验证器不用内置词典、放宽 `dictionary` 取值。首版的「内置词典不支持该 locale 则头部无效」检查被变异证明多余（第一个 case 同样失败），已删除。另有 3 项存活，都是等价变异：
+- 最长匹配改为最短匹配、去掉「匹配后剩余部分仍可达」的检查：四个内置词表都没有一个词是另一个词的前缀（已逐表检查），同一位置最多只有一个词匹配，选择规则不起作用。
+- `builtin` 模式下不检查回调调用次数：内置词典的回调不经过验证器的计数上下文，计数恒为 0，该检查本来只对 `fixture` 模式有意义。
+
+**验证**：13 项 `verify_myui_sa_dictionary` 测试全部通过（4 个语言语料、3 个新反例、原有 6 项）；ASan+UBSan 下 13 个语料的退出码与普通构建一致、无报错；`build-current-vk` 非 fuzz 477/477。
+
+该行其余判据只剩「产品级 tailoring 契约」，需要产品侧给出语言策略，不在本节范围内。

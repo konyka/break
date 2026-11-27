@@ -1,0 +1,7 @@
+# Must fail: the built-in Thai dictionary breaks before THAI.
+version: 1
+locale: th-Thai
+dictionary: builtin
+cases:
+  - codepoints: "0E20,0E32,0E29,0E32,0E44,0E17,0E22"
+    expected: "0,0,0,0,0,0"

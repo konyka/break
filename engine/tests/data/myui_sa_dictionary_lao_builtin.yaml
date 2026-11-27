@@ -1,0 +1,33 @@
+# Golden corpus for the built-in lo-Lao SA dictionary (verify_myui_sa_dictionary).
+# expected lists one boundary per gap: 1 = a word starts here.
+version: 1
+locale: lo-Lao
+dictionary: builtin
+cases:
+  # SABAIDEE
+  - codepoints: "0EAA,0EB0,0E9A,0EB2,0E8D,0E94,0EB5"
+    expected: "0,0,0,0,0,0"
+  # LANGUAGE + LAO
+  - codepoints: "0E9E,0EB2,0EAA,0EB2,0EA5,0EB2,0EA7"
+    expected: "0,0,0,1,0,0"
+  # KAN + LAE + KHONG
+  - codepoints: "0E81,0EB2,0E99,0EC1,0EA5,0EB0,0E82,0EAD,0E87"
+    expected: "0,0,1,0,0,1,0,0"
+  # THI + PEN + NAI
+  - codepoints: "0E97,0EB5,0EC8,0EC0,0E9B,0EB1,0E99,0EC3,0E99"
+    expected: "0,0,1,0,0,0,1,0"
+  # BO + PEN
+  - codepoints: "0E9A,0ECD,0EC8,0EC0,0E9B,0EB1,0E99"
+    expected: "0,0,1,0,0,0"
+  # LANGUAGE + LAO + KHONG + THI + NAI
+  - codepoints: "0E9E,0EB2,0EAA,0EB2,0EA5,0EB2,0EA7,0E82,0EAD,0E87,0E97,0EB5,0EC8,0EC3,0E99"
+    expected: "0,0,0,1,0,0,1,0,0,1,0,0,1,0"
+  # NAI + NAI + NAI
+  - codepoints: "0EC3,0E99,0EC3,0E99,0EC3,0E99"
+    expected: "0,1,0,1,0"
+  # truncated LANGUAGE + LAO: no full segmentation, no boundaries
+  - codepoints: "0E9E,0EB2,0EAA,0EA5,0EB2,0EA7"
+    expected: "0,0,0,0,0"
+  # LAO + truncated LANGUAGE: unknown suffix keeps the run unbroken
+  - codepoints: "0EA5,0EB2,0EA7,0E9E,0EB2,0EAA"
+    expected: "0,0,0,0,0"

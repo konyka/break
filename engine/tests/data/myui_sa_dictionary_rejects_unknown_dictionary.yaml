@@ -1,0 +1,7 @@
+# Must fail: dictionary must be fixture or builtin.
+version: 1
+locale: th-Thai
+dictionary: icu
+cases:
+  - codepoints: "0E01,0E02"
+    expected: "1"
