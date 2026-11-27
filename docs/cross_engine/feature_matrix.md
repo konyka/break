@@ -91,3 +91,17 @@
 - 上述升级为“资料描述（源码/设计文档证据）”，仍不等于本工作区编译或运行过对应引擎。
 - CryENGINE 的 `Code/docs/design/` 中文文档仅作线索；BW191 的 `cellappmgr` 实现与 `BgTaskManager.cpp` 不在仓库，相应结论以接口/文档契约为限。
 - Break 列无变化；Break 的缺口追踪以 [`missing_capabilities.md`](missing_capabilities.md) 为准。
+
+## Break 列修订（2026-11-27）
+
+上表 Break 列的第 12、14、15、16、17 行写于对应能力交付之前，已经过时。原表保留不改，以本节为准。下列测试在 `build-current-vk` 上于 2026-11-27 本地运行，19/19 通过（`ctest -R "break_update|break_crash|break_authority|break_integrity|replay_window|msg_rate|world_stream"`）。
+
+| 模块 | 修订后 Break 状态 | 证据 | 边界 |
+| --- | --- | --- | --- |
+| 12. 编辑器 | `已实现` | `editor` 可执行目标（`engine/CMakeLists.txt` 的 `add_executable(editor ...)`）；`test_editor_shell`、`test_editor_doc`、`test_editor_cmd` 等；设计见 [`editor_phase1.md`](../design/editor_phase1.md)、[`editor_remote.md`](../design/editor_remote.md)、[`editor_hot_reload.md`](../design/editor_hot_reload.md) | 基于 myui；远程会话默认关闭 |
+| 14. 崩溃上传 | `已实现`（参考服务端） | `break_crash`（捕获、spool、脱敏、上传接缝）、`break_crash_symbolize`、`break_crash_cluster`、`break_crash_upload_http`；测试 `test_break_crash`、`test_break_crash_symbolize`、`test_break_crash_cluster`、`test_break_crash_upload_http`、`test_break_crash_e2e`；设计见 [`crash_reporting.md`](../design/crash_reporting.md)、[`crash_symbolization.md`](../design/crash_symbolization.md) | 服务端为参考实现，不是生产服务 |
+| 15. 在线更新 | `已实现`（参考服务端） | `break_update`（manifest、分块、续传、A/B、回滚）、`break_update_client`；测试 `test_break_update`、`test_break_update_client`、`test_break_update_e2e`；设计见 [`update_client.md`](../design/update_client.md)、[`update_transport.md`](../design/update_transport.md) | 服务端为参考实现；未链接进 `engine`/`editor` |
+| 16. 安全/反作弊 | `已实现`（库级） | TLS 模式与 CHALLENGE/AUTH-v2（[`transport_security.md`](../design/transport_security.md)）、`break_replay_window`、`break_msg_rate`、`break_authority`（[`server_authority.md`](../design/server_authority.md)）、`break_integrity`（[`client_integrity.md`](../design/client_integrity.md)）；测试 `test_break_replay_window`、`test_break_msg_rate`、`test_break_authority`、`test_break_integrity`；威胁模型见 [`security_threat_model.md`](../design/security_threat_model.md) | 客户端完整性信号只提高攻击成本，关键判定在服务端；replay window 在流式传输上不接线的理由见 `transport_security.md` 2026-10-30 补充 |
+| 17. 大世界/流式加载 | `已实现`（块级） | `engine/src/renderer/world_stream_job.{h,c}`：按 64 m 块驻留/卸载，经任务系统提交；测试 `test_world_stream`、`test_world_stream_job`、`test_world_stream_world`；设计见 [`core_style_runtime.md`](../design/core_style_runtime.md) | 不含服务端 Cell 分区与实体迁移；服务端可见性裁剪见 AOI 文档 |
+
+「与 Break 的比较边界」一节中「online update 和 security 集成列为边界」的说法同样以本节为准：两者已以库和参考服务端形式交付，未交付的只是生产部署。

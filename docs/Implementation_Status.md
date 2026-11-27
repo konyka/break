@@ -14713,3 +14713,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
   - 服务端预测按连接运行（`core_app_net_transport.c` 的 `prediction_bodies[slot]`，由 `net_prediction_apply` 逐连接执行输入）。把它绑定到关卡用户，需要每个连接各有一个由该连接输入驱动的用户实体，即多用户 simulation。
   - 这属于 simulation 设计改变，与上一条「每连接诊断 World 不接入权威合并」同因；预测、延迟补偿、插值与会话收发的库与接线均已交付。
 - `docs/cross_engine/missing_capabilities.md` 同步更新。本提交只改文档；本提交自身的远端工作流结果不在此预写。
+
+## `feature_matrix.md` 的 Break 列修订（2026-11-27）
+
+- **缺口**：`docs/cross_engine/feature_matrix.md` 的 Break 列把编辑器、崩溃上传、在线更新、安全/反作弊、大世界流式加载写为「资料不足」或「未实现」，写于这些能力交付之前。
+- **处理**：原表不改，在文末追加「Break 列修订（2026-11-27）」一节，逐行给出现状、证据（源码、测试、设计文档）与边界。
+- **验证**：对应 19 项测试在 `build-current-vk` 本地运行 19/19 通过。本提交只改文档；本提交自身的远端工作流结果不在此预写。
