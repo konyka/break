@@ -3061,3 +3061,17 @@ BreakUI 关闭了 window manager 的自动重绘定时器（`break_ui_init` 调�
 **验证**：`test_myui_window_manager` 252/252，ASan+UBSan 252/252。
 
 因此表中该项改为已核对；同一行剩余的「跨物理段落 visual rebreaking」与「跨段落增量预算」不变。
+
+## 本轮补充：换行 text area 随宽度变化重新换行（2026-11-27）
+
+排查「跨段落增量预算」时用 5 万行文档测量改宽度后的重排耗时，结果为 0 ms，进一步发现是缺陷：text area 没有 `on_layout`/`on_measure`，`my_widget_set_rect` 与布局器改变宽度都不会通知它，visual line 一直保留旧宽度的换行结果（200 px 换成 2 行的文本，缩到 100 px 或放大到 400 px 后仍是 2 行）。
+
+修正（`engine/src/myui/myui/widgets/my_text_area.c`、`my_text_area.h`）：`my_text_area_t` 记录 visual line 换行时的内部宽度 `vlines_width`；`ta_vlines_ensure` 每次取 visual line 前比较当前内部宽度，不同就从第 0 行失效并重建，重建成功后更新记录。直接改 rect、布局器设置的 layout rect、行号栏宽度变化都经同一入口处理；只改高度不重排。
+
+**TDD**：`test_myui_window_manager` 新增 `text_area_wrap_follows_width_changes`（253 例）：缩窄后行数增加、经 `my_widget_set_layout_rect` 放宽后恢复、只改高度时不变。旧实现缩窄后行数不变（RED）。
+
+**变异**：2 项判红：去掉宽度比较；不更新记录宽度（每次取 visual line 都整篇重建，14 个用例失败）。
+
+**测量**：5 万行（约 15 万 visual line）首次换行 3.8 s，与改动前相同；改宽度后的重排在本次测量中按需进行，`my_text_area_visual_line_count` 返回新宽度下的行数。宽度变化仍是整篇重排，按可见区域增量重排属于「跨段落增量预算」，仍未完成。
+
+**验证**：`test_myui_window_manager` 253/253，ASan+UBSan 253/253；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过，`mycompose_gpu` 与 editor 相关 28 项 ctest 通过。

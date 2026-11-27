@@ -14920,3 +14920,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **核对**：`myui_remaining_work.md` 把「复杂多段落 JUSTIFY 联动」列为未完成；表征用例显示现有实现已按段落独立拉伸，RTL 段落同样正确。
 - **测试**：`test_myui_window_manager` 新增 `text_area_justify_multi_paragraph_stretches_each_inner_line`（252 例），现有实现直接通过；「JUSTIFY 恒不拉伸」变异判红。
 - **验证**：普通与 ASan+UBSan 下 252/252。文档中该项改为已核对。本提交自身的远端工作流结果不在此预写。
+
+## 换行 text area 随宽度变化重新换行（2026-11-27）
+
+- **缺陷**：text area 不感知 rect 宽度变化，改宽度后 visual line 仍是旧宽度的换行结果。
+- **修复**：记录换行时的内部宽度，取 visual line 前比较，变化则整篇重建；只改高度不重排。
+- **TDD 与变异**：`test_myui_window_manager` 新增 1 例（253 例），旧实现 RED；2 项定向变异判红。
+- **验证**：普通与 ASan+UBSan 下 253/253；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。宽度变化仍整篇重排，按可见区域增量重排未做。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。

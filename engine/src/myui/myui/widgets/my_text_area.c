@@ -1259,9 +1259,18 @@ static void ta_vlines_invalidate_from(my_text_area_t* ta, size_t from) {
 
 /** @brief Ensure visual lines are built (when wrap is on). */
 static void ta_vlines_ensure(my_text_area_t* ta) {
-  if (ta->wrap && ta->vlines_dirty) {
+  float width;
+  if (!ta->wrap) return;
+  /* the rect may change without the text area being told (direct
+   * set_rect, a layouter, a gutter change): rewrap when the width does */
+  width = ta_inner_width(ta);
+  if (width != ta->vlines_width) {
+    ta_vlines_invalidate_from(ta, 0);
+  }
+  if (ta->vlines_dirty) {
     if (ta_vlines_rebuild_from(ta, ta->vlines_dirty_from) == MY_RET_OK) {
       ta->vlines_dirty = false;
+      ta->vlines_width = width;
     }
   }
 }

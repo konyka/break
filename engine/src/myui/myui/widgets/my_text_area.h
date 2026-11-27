@@ -67,6 +67,7 @@ typedef struct my_text_area_t {
   my_darray_t* vlines;      /**< my_visual_line_t* (wrap on only) */
   bool vlines_dirty;        /**< vlines need a rebuild */
   size_t vlines_dirty_from; /**< first physical row requiring rebuild */
+  float vlines_width;       /**< inner width the vlines were wrapped at */
   bool vlines_reuse_suffix;
   size_t vlines_reuse_old_line_index;
   size_t vlines_reuse_old_phys;

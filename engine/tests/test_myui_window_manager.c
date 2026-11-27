@@ -3965,6 +3965,37 @@ TEST(text_area_rtl_syntax_colors_tokens)
   my_widget_unref(highlighted);
 }
 
+TEST(text_area_wrap_follows_width_changes)
+{
+  /* Resizing a wrapped text area rewraps it at the new width, whether the
+   * rect changes directly or through a layout pass. */
+  my_widget_t* area = my_text_area_create(NULL);
+  my_font_t* font = my_font_bitmap_create(NULL);
+  size_t wide;
+  size_t narrow;
+
+  ASSERT_NOT_NULL(area);
+  my_text_area_set_font(area, font, 8);
+  ASSERT_EQ(my_text_area_set_wrap(area, true), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 200, 400}),
+            MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_text(area, "aa bb cc dd ee ff gg hh ii jj kk ll"),
+            MY_RET_OK);
+  wide = my_text_area_visual_line_count(area);
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 100, 400}),
+            MY_RET_OK);
+  narrow = my_text_area_visual_line_count(area);
+  ASSERT_TRUE(narrow > wide);
+  ASSERT_EQ(my_widget_set_layout_rect(area, &(my_rect_t){0, 0, 200, 400}),
+            MY_RET_OK);
+  ASSERT_EQ(my_text_area_visual_line_count(area), wide);
+  /* a height-only change keeps the wrap. */
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 200, 80}), MY_RET_OK);
+  ASSERT_EQ(my_text_area_visual_line_count(area), wide);
+  my_widget_unref(area);
+  my_font_destroy(font);
+}
+
 TEST(text_area_wrap_reuses_unchanged_prefix_after_edit)
 {
   my_widget_t* area = my_text_area_create(NULL);
@@ -9598,6 +9629,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_area_rtl_justify_syntax_colors_tokens);
     RUN_TEST(text_area_rtl_syntax_keeps_shaped_glyph_runs);
     RUN_TEST(text_area_wrap_reuses_unchanged_prefix_after_edit);
+    RUN_TEST(text_area_wrap_follows_width_changes);
     RUN_TEST(text_area_wrap_reuses_unchanged_suffix_after_single_line_edit);
     RUN_TEST(text_area_wrap_reuses_suffix_after_newline_edit);
     RUN_TEST(text_area_wrap_reuses_suffix_after_newline_delete);
