@@ -24,6 +24,7 @@
 #include "editor_shell_internal.h"
 #include "editor_hot_reload.h"
 #include "editor_image_preview.h"
+#include <runtime/runtime_reload_deps.h>
 #include "editor_scene_textures.h"
 #include <editor/editor_scene_deps.h>
 #include <asset/asset.h>
@@ -13822,6 +13823,82 @@ TEST(hot_reload_teardown_in_either_order_is_safe)
     TEST_RMDIR(dir);
 }
 
+/* When a reload_deps object is attached to the hot-reload host, a successful
+ * external scene reload forwards committed_path so dependent assets are
+ * queued for rebuild. The deps object re-registers paths whenever the scene
+ * changes. */
+TEST(hot_reload_with_deps_queues_dependents_after_scene_commit)
+{
+    /* Use a custom asset graph: kChild depends on kRoot.
+     * kRoot is registered for the scene's absolute path (committed_path is
+     * called with hr->scene_path which is absolute).
+     * kChild is registered with the VFS-relative name "scene.bscn" (pump
+     * issues the reload via hr->reload whose VFS is mounted on the scene dir).
+     * After the hot reload commits, committed_path(scene_path) finds kRoot
+     * → queues kChild.  Pump then issues a reload for kChild; since the
+     * scene content hasn't changed, hr_commit returns FAILED (skipped_same)
+     * and deps.failed becomes 1. */
+    HrFixture fx;
+    BreakEditorHotReloadStats st;
+    BreakRuntimeReloadDepsStats dep_st;
+    BreakRuntimeReloadDeps *deps;
+    BreakAssetGraph *graph;
+    BreakAssetGraphConfig gc;
+    static const BreakAssetId kRoot = 42u;
+    static const BreakAssetId kChild = 43u;
+    static const BreakAssetId kRoot_as_dep[1] = {42u}; /* kChild depends on kRoot */
+
+    hr_open(&fx, "editor_hr_deps", 1u);
+
+    memset(&gc, 0, sizeof(gc));
+    gc.capacity = 4u;
+    gc.max_edges = 4u;
+    ASSERT_EQ(break_asset_graph_create(&gc, &graph), BREAK_ASSET_GRAPH_OK);
+    ASSERT_EQ(break_asset_graph_add(graph, kRoot, NULL, 0u), BREAK_ASSET_GRAPH_OK);
+    ASSERT_EQ(break_asset_graph_add(graph, kChild, kRoot_as_dep, 1u), BREAK_ASSET_GRAPH_OK);
+
+    deps = break_editor_hot_reload_attach_reload_deps(fx.hr, graph, 32u);
+    ASSERT_NOT_NULL(deps);
+    /* kRoot uses the absolute path so committed_path(hr->scene_path) finds it */
+    ASSERT_EQ(break_runtime_reload_deps_set_path(deps, kRoot, fx.scene), BREAK_RUNTIME_OK);
+    /* kChild uses the VFS-relative name so pump can reload it */
+    ASSERT_EQ(break_runtime_reload_deps_set_path(deps, kChild, "scene.bscn"), BREAK_RUNTIME_OK);
+
+    hr_external_scene(fx.scene, 3u);
+    HR_WAIT(fx.shell, break_editor_doc_entity_count(fx.doc) == 3u);
+    st = hr_stats(&fx);
+    ASSERT_EQ(st.reloads, 1u);
+
+    /* committed_path was forwarded: kRoot matched → kChild queued.
+     * chains == 1 kills mutants 0 (committed_path not called) and 3
+     * (hr->reload_deps not assigned, so hr_commit never sees it). */
+    ASSERT_EQ(break_runtime_reload_deps_stats(deps, &dep_st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(dep_st.chains, 1u);
+
+    /* Pump runs every tick.  After kChild's reload finishes (same content →
+     * FAILED_KEEP_OLD), queued drops to 0.  queued == 0 kills mutant 1
+     * (pump not called). */
+    hr_settle(fx.shell, 100);
+    ASSERT_EQ(break_runtime_reload_deps_stats(deps, &dep_st), BREAK_RUNTIME_OK);
+    ASSERT_EQ(dep_st.queued, 0u);
+    ASSERT_FALSE(dep_st.in_flight);
+
+    /* NULL inputs are rejected */
+    ASSERT_TRUE(break_editor_hot_reload_attach_reload_deps(NULL, graph, 32u) == NULL);
+    ASSERT_TRUE(break_editor_hot_reload_attach_reload_deps(fx.hr, NULL, 32u) == NULL);
+
+    /* Switching the watched scene calls hr_stop, which must destroy and
+     * detach the deps (it borrows the coordinator hr_stop tears down). The
+     * test-only getter confirms the pointer is cleared, killing the mutant
+     * that skips the destroy. */
+    ASSERT_TRUE(break_editor_hot_reload_reload_deps_for_test(fx.hr) == deps);
+    ASSERT_TRUE(break_editor_hot_reload_set_scene(fx.hr, NULL));
+    ASSERT_TRUE(break_editor_hot_reload_reload_deps_for_test(fx.hr) == NULL);
+
+    break_asset_graph_destroy(graph);
+    hr_close(&fx);
+}
+
 /* ---------------- i18n ---------------- */
 
 static const char *label_text(BreakEditorShell *shell, const char *name) {
@@ -15216,6 +15293,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(assets_panel_live_refresh_survives_vanished_directory);
     RUN_TEST(hot_reload_overlong_scene_path_disables_watch_without_truncating);
     RUN_TEST(hot_reload_teardown_in_either_order_is_safe);
+    RUN_TEST(hot_reload_with_deps_queues_dependents_after_scene_commit);
     RUN_TEST(camera_pose_whose_eye_collapses_onto_the_target_is_rejected);
     RUN_TEST(remote_cli_default_off_and_fail_closed_flags);
 #ifdef BREAK_EDITOR_REMOTE_TESTS

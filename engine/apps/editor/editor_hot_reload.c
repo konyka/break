@@ -15,8 +15,10 @@
 #include <editor/editor_gizmo.h>
 #include <editor/editor_i18n.h>
 #include <editor/editor_scene.h>
+#include <editor/editor_scene_deps.h>
 #include <platform/filewatch.h>
 #include <runtime/runtime_reload.h>
+#include <runtime/runtime_reload_deps.h>
 #include <scene/scene_serial.h>
 
 #define HR_SHUTDOWN_TIMEOUT_MS 2000u
@@ -34,6 +36,7 @@ struct BreakEditorHotReload {
 
     VFS *vfs;
     BreakRuntimeReload *reload;
+    BreakRuntimeReloadDeps *reload_deps; /* owned; NULL when not attached */
     FileWatcher watcher;
     bool watcher_live;
     bool watching;
@@ -226,6 +229,9 @@ static BreakRuntimeError hr_commit(const char *path, const void *bytes,
     hr->known_hash = h;
     hr->stats.reloads++;
     hr->outcome = HR_OUT_APPLIED;
+    if (hr->reload_deps) {
+        (void)break_runtime_reload_deps_committed_path(hr->reload_deps, hr->scene_path);
+    }
     editor_shell_sync_scene_textures(shell);
     editor_shell_refresh_all(shell);
     hr_log(hr, break_editor_tr(BREAK_EDITOR_TR_LOG_HR_RELOADED_FMT), hr->name,
@@ -247,6 +253,10 @@ static void hr_on_file_changed(const char *path, void *user) {
 static bool hr_stop(BreakEditorHotReload *hr) {
     if (hr->stuck) {
         return false;
+    }
+    if (hr->reload_deps) {
+        break_runtime_reload_deps_destroy(hr->reload_deps);
+        hr->reload_deps = NULL;
     }
     if (hr->watcher_live) {
         filewatch_shutdown(&hr->watcher);
@@ -422,6 +432,9 @@ void break_editor_hot_reload_tick(BreakEditorHotReload *hr) {
 
     (void)break_runtime_reload_commit_owner(hr->reload, HR_COMMITS_PER_TICK,
                                             &done);
+    if (hr->reload_deps) {
+        (void)break_runtime_reload_deps_pump(hr->reload_deps);
+    }
     if (hr->request != 0u) {
         BreakRuntimeReloadState state = BREAK_RUNTIME_RELOAD_LOADING;
         BreakRuntimeError e =
@@ -469,11 +482,42 @@ bool break_editor_hot_reload_stats(const BreakEditorHotReload *hr,
     return true;
 }
 
+BreakRuntimeReloadDeps *break_editor_hot_reload_attach_reload_deps(
+    BreakEditorHotReload *hr,
+    const BreakAssetGraph *graph,
+    u32 max_assets) {
+    BreakRuntimeReloadDepsConfig dc;
+    BreakRuntimeReloadDeps *new_deps = NULL;
+    if (hr == NULL || !hr->watching || hr->reload == NULL || graph == NULL) {
+        /* Reject bad arguments before touching the existing deps, so a
+         * rejected call never detaches a working object. */
+        return NULL;
+    }
+    if (hr->reload_deps) {
+        break_runtime_reload_deps_destroy(hr->reload_deps);
+        hr->reload_deps = NULL;
+    }
+    memset(&dc, 0, sizeof(dc));
+    dc.reload = hr->reload;
+    dc.graph = graph;
+    dc.max_assets = max_assets > 0u ? max_assets : 1u;
+    if (break_runtime_reload_deps_create(&dc, &new_deps) != BREAK_RUNTIME_OK) {
+        return NULL;
+    }
+    hr->reload_deps = new_deps;
+    return new_deps;
+}
+
 #ifdef BREAK_EDITOR_SHELL_TESTING
 void break_editor_hot_reload_set_shutdown_timeout_for_test(
     BreakEditorHotReload *hr, u32 timeout_ms) {
     if (hr != NULL) {
         hr->shutdown_timeout_ms = timeout_ms;
     }
+}
+
+BreakRuntimeReloadDeps *break_editor_hot_reload_reload_deps_for_test(
+    const BreakEditorHotReload *hr) {
+    return hr != NULL ? hr->reload_deps : NULL;
 }
 #endif

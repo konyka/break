@@ -14654,3 +14654,18 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
   - 8 项定向变异：4 项判红（dedup 守卫、`!hit continue`、越界写入、load_order 循环不跳第一个），3 项等价变异（循环从 1 开始：等价，纹理节点排首位且不在 `wanted` 里；`wanted` 大小守卫：已由 `ids_for_path` 保证不超 n；`wanted_count != 0` 检查：等价，`load_order` 结果不会命中空 `wanted`），1 项等价（移除 `direct_count > n` 守卫：已由 `ids_for_path` 保证）。
 - **验证**：`test_editor_scene_deps` 7/7；`test_editor_shell` 189/189；`build-current-vk` 非 fuzz 466/466。
 - **仍未完成**：`dependents_of_path` 还没有被 `BreakEditorHotReload` 的 commit hook 调用。本提交自身的远端工作流结果不在此预写。
+
+## 编辑器热重载接入依赖协调器 `attach_reload_deps`（2026-11-27）
+
+- **缺口**：`BreakEditorHotReload` 场景提交后不触发依赖者重建；`BreakRuntimeReloadDeps` 和 `break_editor_scene_deps_dependents_of_path` 都已就绪但未接线。
+- **实现**（`engine/apps/editor/editor_hot_reload.{h,c}`）：
+  - 新增 `break_editor_hot_reload_attach_reload_deps(hr, graph, max_assets)`：用 hot-reload 自己的协调器 `reload` 和传入的 `graph`（通常取 `shell->scene_deps->graph`）创建一个 `BreakRuntimeReloadDeps`，由 hot-reload 实例持有。参数非法（`hr`/`graph` NULL、未 watching、协调器缺失）在销毁旧 deps **之前**就被拒绝，被拒的调用不会卸掉已有对象。
+  - `hr_commit` 成功应用场景后转发 `break_runtime_reload_deps_committed_path(scene_path)`，让依赖者入队。
+  - `break_editor_hot_reload_tick` 在 `commit_owner` 之后调用 `break_runtime_reload_deps_pump`。
+  - `hr_stop`（场景切换、teardown）销毁并清空 deps（它借用了被拆除的协调器）。
+  - 新增 `break_editor_hot_reload_reload_deps_for_test`（`BREAK_EDITOR_SHELL_TESTING`）。
+- **TDD 与变异**：
+  - `test_editor_shell` 新增 `hot_reload_with_deps_queues_dependents_after_scene_commit`（190 例）：自建 kChild→kRoot 的 asset 图，kRoot 登记场景绝对路径、kChild 登记 VFS 相对名；外部改写场景触发热重载后，`committed_path` 命中 kRoot → `chains==1`；`settle` 后 `queued==0 && !in_flight`；场景切到 NULL 后 deps 被清空。先以编译失败为 RED。
+  - 5 项定向变异全部判红：跳过 `committed_path`、跳过 `pump`、跳过 `hr_stop` 里的 destroy、跳过 deps 赋值、把 graph 校验移到销毁之后。
+- **验证**：`test_editor_shell` 190/190；ASan（`build-aoi-asan`）237/237 无泄漏；`build-current-vk` 非 fuzz 466/466。
+- **仍未完成**：编辑器外壳尚未在场景加载/切换时自动调用 `attach_reload_deps`（目前需宿主显式接线）；纹理文件事件经依赖图触发的端到端重建仍需外壳侧接入 `scene_deps->graph` 的刷新。本提交自身的远端工作流结果不在此预写。

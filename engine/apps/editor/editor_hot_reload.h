@@ -38,6 +38,8 @@
  * Workers never see the shell, the document or any widget. */
 
 #include <core/types.h>
+#include <asset/asset_graph.h>
+#include <runtime/runtime_reload_deps.h>
 
 #include "editor_panels.h"
 
@@ -80,3 +82,27 @@ void break_editor_hot_reload_note_saved(BreakEditorHotReload *hr);
 /* false on NULL arguments. */
 bool break_editor_hot_reload_stats(const BreakEditorHotReload *hr,
                                    BreakEditorHotReloadStats *out_stats);
+
+#ifdef BREAK_EDITOR_SHELL_TESTING
+/* The currently attached reload_deps (NULL when none). Tests use it to check
+ * that a scene switch (hr_stop) detaches and destroys it. */
+BreakRuntimeReloadDeps *break_editor_hot_reload_reload_deps_for_test(
+    const BreakEditorHotReload *hr);
+#endif
+
+/* Attach a BreakRuntimeReloadDeps object so that after each successful scene
+ * reload, committed_path is forwarded to trigger dependent-asset rebuilds.
+ * The hot-reload object creates the deps internally, using the same
+ * coordinator (reload) it already owns.  `graph` is borrowed; pass the
+ * shell's current scene_deps->graph (may be NULL if the scene has no deps
+ * yet — a new one is registered whenever the scene changes).  `max_assets`
+ * is passed to BreakRuntimeReloadDepsConfig. Returns the created deps object
+ * (borrowed; owned by the hot-reload instance), or NULL on failure (OOM,
+ * NULL hr, or hr not watching).
+ *
+ * Calling again replaces the existing deps (destroying the old one first).
+ * NULL `hr` is a no-op returning NULL. */
+BreakRuntimeReloadDeps *break_editor_hot_reload_attach_reload_deps(
+    BreakEditorHotReload *hr,
+    const BreakAssetGraph *graph,
+    u32 max_assets);
