@@ -15094,3 +15094,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **测试**：`test_myui_text_layout` 新增 1 例（145 例），三种 script 经字体链与 bidi 布局整形，glyph 与 cluster 逐项等于 `hb-shape` 的结果；表征测试，无 RED 阶段。
 - **变异**：4 项中 2 项被本用例判红，另 2 项被既有用例判红。
 - **验证**：普通与 ASan+UBSan 下 145/145；全量 ctest 482/482；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
+
+## myui：Urdu `locl` 的 RTL golden（2026-11-28）
+
+- **核对**：本机 Noto Sans Arabic、Vazirmatn、PakType Naskh 都有 Urdu LangSys，`ur` 把 ۴、۶ 换成 Urdu 字形。
+- **测试**：`test_myui_text_layout` 新增 1 例（146 例），经字体链与 bidi 布局，`ur` 与 `ar`/无语言的数字字形分别等于 `hb-shape` 的结果；表征测试，无 RED 阶段。
+- **变异**：3 项全部判红（provider 不设 language、分段丢 language、整形缓存不比较 language）。
+- **验证**：普通与 ASan+UBSan 下 146/146；全量 ctest 482/482；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。

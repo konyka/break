@@ -1602,6 +1602,90 @@ TEST(text_layout_shapes_other_rtl_scripts_through_font_chain_golden)
 #endif
 }
 
+TEST(text_layout_urdu_language_selects_localized_digits_golden)
+{
+#if defined(MYUI_FONT_FREETYPE) && defined(MYUI_FONT_HARFBUZZ) && \
+    defined(MYUI_BIDI)
+  /* Noto Sans Arabic carries an Urdu `locl` lookup: Extended Arabic-Indic
+   * digits 4, 6 take Urdu forms (glyphs 158, 132) instead of the default
+   * Arabic/Persian ones (138, 140); 5 has no Urdu variant (139). Through a
+   * Cantarell + Noto Sans Arabic chain and the bidi layout, the `ur`
+   * language must select the same glyphs `hb-shape --language=ur` does,
+   * and `ar` (or no language) the defaults. The digit run is LTR inside
+   * the RTL paragraph, so its glyphs come back in logical order. */
+  const char* latin_path =
+      "/usr/share/fonts/abattis-cantarell-fonts/Cantarell-Regular.otf";
+  const char* arabic_path =
+      "/usr/share/fonts/google-noto-vf/NotoSansArabic[wght].ttf";
+  const my_font_source_t sources[] = {{latin_path, 0}, {arabic_path, 0}};
+  const char* text = "\xD8\xB3\xD9\x84\xD8\xA7\xD9\x85 "
+                     "\xDB\xB4\xDB\xB5\xDB\xB6";
+  static const uint32_t urdu_digits[] = {158u, 139u, 132u};
+  static const uint32_t default_digits[] = {138u, 139u, 140u};
+  FILE* latin_file = fopen(latin_path, "rb");
+  FILE* arabic_file = fopen(arabic_path, "rb");
+  my_font_t* chain;
+  my_text_layout_t* layout;
+  my_font_shape_params_t urdu = {true, 0u, "ur", NULL};
+  my_font_shape_params_t arabic = {true, 0u, "ar", NULL};
+  my_font_shape_result_t ur = {0};
+  my_font_shape_result_t ar = {0};
+  my_font_shape_result_t none = {0};
+  size_t i;
+
+  if (latin_file == NULL || arabic_file == NULL) {
+    if (latin_file != NULL) fclose(latin_file);
+    if (arabic_file != NULL) fclose(arabic_file);
+    printf("  SKIP: no Cantarell/Noto Sans Arabic test fonts\n");
+    return;
+  }
+  fclose(latin_file);
+  fclose(arabic_file);
+  chain = my_font_create_chain_ex(NULL, sources, 2u, 16u);
+  layout = my_text_layout_process(NULL, text);
+  ASSERT_NOT_NULL(chain);
+  ASSERT_NOT_NULL(layout);
+  ASSERT_EQ(my_text_layout_shape_ex(layout, text, chain, 24, &urdu, NULL,
+                                    &ur),
+            MY_RET_OK);
+  ASSERT_EQ(my_text_layout_shape_ex(layout, text, chain, 24, &arabic, NULL,
+                                    &ar),
+            MY_RET_OK);
+  ASSERT_EQ(my_text_layout_shape(layout, text, chain, 24, NULL, &none),
+            MY_RET_OK);
+  ASSERT_EQ(ur.count, ar.count);
+  ASSERT_EQ(ur.count, none.count);
+  ASSERT_TRUE(ur.count >= 3u);
+  /* find the digit run by cluster: bytes 9, 11, 13 of the logical text */
+  for (i = 0u; i < 3u; i++) {
+    size_t k;
+    bool found = false;
+    for (k = 0u; k < ur.count; k++) {
+      if (ur.glyphs[k].cluster == 9u + 2u * i) {
+        ASSERT_EQ(ur.glyphs[k].glyph_id, urdu_digits[i]);
+        ASSERT_EQ(ar.glyphs[k].glyph_id, default_digits[i]);
+        ASSERT_EQ(none.glyphs[k].glyph_id, default_digits[i]);
+        found = true;
+      }
+    }
+    ASSERT_TRUE(found);
+  }
+  /* the Arabic word is the same in every language */
+  for (i = 0u; i < ur.count; i++) {
+    if (ur.glyphs[i].cluster < 8u) {
+      ASSERT_EQ(ur.glyphs[i].glyph_id, ar.glyphs[i].glyph_id);
+    }
+  }
+  my_font_shape_destroy(&none);
+  my_font_shape_destroy(&ar);
+  my_font_shape_destroy(&ur);
+  my_text_layout_destroy(layout);
+  my_font_destroy(chain);
+#else
+  printf("  SKIP: FreeType/HarfBuzz/BiDi shaping is unavailable\n");
+#endif
+}
+
 TEST(text_layout_shape_oom_is_transactional)
 {
   text_budget_alloc_state_t state = {0};
@@ -4055,6 +4139,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_layout_shapes_bidi_runs_with_logical_clusters);
     RUN_TEST(text_layout_shapes_mixed_bidi_through_font_chain_golden);
     RUN_TEST(text_layout_shapes_other_rtl_scripts_through_font_chain_golden);
+    RUN_TEST(text_layout_urdu_language_selects_localized_digits_golden);
     RUN_TEST(text_layout_splits_mixed_scripts_for_shape_provider);
     RUN_TEST(text_layout_shape_ex_forwards_language_and_features);
     RUN_TEST(text_layout_shape_reuses_bounded_glyph_cache);

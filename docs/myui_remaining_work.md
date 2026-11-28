@@ -3415,4 +3415,18 @@ CSS 常见写法是把一个字体按文字拆成多个文件，每条 `@font-fa
 
 **验证**：`test_myui_text_layout` 145/145，ASan+UBSan 145/145；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。
 
-剩余：`rlig` 之外由 language 系统选择的 RTL feature（例如 Urdu 与 Arabic 的数字、Sindhi 的字形变体）仍没有 golden；本机的 Noto Sans Arabic 与 Vazirmatn 是否带这些 LangSys 尚未核对。
+剩余：`rlig` 之外由 language 系统选择的 RTL feature 当时没有 golden；Urdu 一项已于同日补上，见下一节。
+
+## 本轮补充：Urdu `locl` 的 RTL golden（2026-11-28）
+
+核对本机字体：Noto Sans Arabic、Vazirmatn 与 PakType Naskh 都带 Urdu LangSys，`hb-shape --language=ur` 会把扩展阿拉伯-印度数字 ۴（U+06F4）、۶（U+06F6）换成 Urdu 字形；`fa`、`sd` 与默认相同。
+
+`test_myui_text_layout` 新增 `text_layout_urdu_language_selects_localized_digits_golden`（146 例）：「سلام ۴۵۶」经 Cantarell + Noto Sans Arabic 字体链与 bidi 布局，用 `my_text_layout_shape_ex` 分别以 `ur`、`ar` 和无语言整形。按 cluster 找到三个数字：`ur` 得到 158、139、132，`ar` 与无语言都得到 138、139、140（与 `hb-shape` 一致，5 没有 Urdu 变体）；阿拉伯词的字形三者相同。
+
+该用例在现有实现上直接通过，属于表征测试，没有 RED 阶段。字体缺失时 SKIP。
+
+**变异**（3 项，全部判红）：FreeType provider 不把 language 设到 HarfBuzz buffer、分段整形时丢掉 language、整形缓存比较键时忽略 language（`ar` 调用会拿到前一次 `ur` 的缓存结果）。
+
+**验证**：`test_myui_text_layout` 146/146，ASan+UBSan 146/146；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。
+
+「OpenType shaping」一行判据中的「完整 RTL GSUB」至此在本机可取证的范围内都有 golden：Arabic（连写、lam-alef、harakat、混合方向）、Syriac、N'Ko、Thaana 与 Urdu `locl`。更多 language 系统（如 Kashmiri、Uyghur）需要带相应 LangSys 的字体，本机三款阿拉伯字体只有 Urdu 与默认不同。
