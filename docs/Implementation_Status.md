@@ -15016,4 +15016,4 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **缺陷**：JUSTIFY 行的 syntax 着色在 token 边界截断词再分别整形，「T.」等词内字距丢失（字体链下 69 字节差异）。
 - **修复**：`ta_draw_syntax_span` 按颜色段整词绘制并水平 clip。
 - **TDD 与变异**：既有用例新增断言，旧实现判红；6 项变异 3 项判红，3 项等价。
-- **验证**：普通与 ASan+UBSan 下 261/261；全量 ctest 482/482；`build-current-vk` 构建通过��详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
+- **验证**：普通与 ASan+UBSan 下 261/261；全量 ctest 482/482；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
