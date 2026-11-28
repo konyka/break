@@ -50,6 +50,7 @@ typedef struct BreakSessionEntry {
     u8 server_nonce[16];
     bool server_nonce_valid;
     u64 authenticated_at_us;
+    bool authenticated_at_valid;
     u8 key_id[8];
     bool key_id_valid;
 #endif
@@ -183,14 +184,35 @@ static void break_session_state_store(BreakSessionEntry *entry, BreakSessionStat
     }
 }
 
-static u64 break_session_monotonic_us(void)
+#ifdef BREAK_NET_TESTING
+static BreakSessionClockUsFn break_session_test_clock;
+static void *break_session_test_clock_user;
+
+void break_session_set_clock_for_test(BreakSessionClockUsFn clock, void *user)
 {
+    break_session_test_clock = clock;
+    break_session_test_clock_user = clock != NULL ? user : NULL;
+}
+#endif
+
+/* Monotonic microseconds; false when the clock cannot be read. Callers fail
+ * closed: a session without a start time, or an expiry pass without a time,
+ * expires rather than living on. */
+static bool break_session_monotonic_us(u64 *now_us)
+{
+#ifdef BREAK_NET_TESTING
+    if (break_session_test_clock != NULL) {
+        return break_session_test_clock(break_session_test_clock_user, now_us);
+    }
+#endif
 #if defined(ENGINE_PLATFORM_WINDOWS) || defined(_WIN32)
-    return (u64)GetTickCount64() * UINT64_C(1000);
+    *now_us = (u64)GetTickCount64() * UINT64_C(1000);
+    return true;
 #else
     struct timespec now;
-    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return 0u;
-    return (u64)now.tv_sec * UINT64_C(1000000) + (u64)now.tv_nsec / UINT64_C(1000);
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return false;
+    *now_us = (u64)now.tv_sec * UINT64_C(1000000) + (u64)now.tv_nsec / UINT64_C(1000);
+    return true;
 #endif
 }
 
@@ -367,7 +389,8 @@ bool break_session_manager_auth_succeeded(BreakSessionManager *manager,
 #ifdef BREAK_ENABLE_CRYPTO
     if (transitioned) {
         BreakSessionEntry *entry = find_entry(manager, connection);
-        entry->authenticated_at_us = break_session_monotonic_us();
+        entry->authenticated_at_valid =
+            break_session_monotonic_us(&entry->authenticated_at_us);
     }
 #endif
     return transitioned;
@@ -803,13 +826,18 @@ size_t break_session_manager_poll(BreakSessionManager *manager, uint32_t max_eve
     }
 #ifdef BREAK_ENABLE_CRYPTO
     if (manager->max_age_seconds != 0u) {
-        u64 now = break_session_monotonic_us();
+        u64 now = 0u;
+        bool have_now = break_session_monotonic_us(&now);
         u64 max_age_us = (u64)manager->max_age_seconds * UINT64_C(1000000);
         for (i = 0u; i < manager->capacity; ++i) {
             BreakSessionEntry *entry = &manager->entries[i];
-            if (entry->used && entry->state == BREAK_SESSION_AUTHENTICATED &&
-                now >= entry->authenticated_at_us &&
-                now - entry->authenticated_at_us > max_age_us) {
+            if (!entry->used || entry->state != BREAK_SESSION_AUTHENTICATED) {
+                continue;
+            }
+            /* no time now, or no start time: expire instead of keeping */
+            if (!have_now || !entry->authenticated_at_valid ||
+                (now >= entry->authenticated_at_us &&
+                 now - entry->authenticated_at_us > max_age_us)) {
                 break_session_state_store(entry, BREAK_SESSION_CLOSING);
             }
         }

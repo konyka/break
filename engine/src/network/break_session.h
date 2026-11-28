@@ -38,6 +38,10 @@ bool break_session_set_auth(BreakNetAuthKeyFn fn, void *user);
 typedef void (*BreakSessionAuthTestHook)(void *user);
 void break_session_auth_set_test_hook_for_test(BreakSessionAuthTestHook hook,
                                                void *user);
+/* Test-only monotonic clock (microseconds) for max_age; false = read failed.
+ * NULL restores the system clock. Process-wide. */
+typedef bool (*BreakSessionClockUsFn)(void *user, u64 *now_us);
+void break_session_set_clock_for_test(BreakSessionClockUsFn clock, void *user);
 #endif
 /* Optional session expiry (0 = no expiry, default); authenticated sessions
  * older than max_age_seconds enter CLOSING at the next logic thread poll. */

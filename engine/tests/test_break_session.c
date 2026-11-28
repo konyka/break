@@ -1206,6 +1206,132 @@ TEST(break_session_registry_has_physics_sync_messages)
 }
 
 #ifdef BREAK_ENABLE_CRYPTO
+static bool g_clock_fails;
+static u64 g_clock_now_us;
+static bool break_test_session_clock(void *user, u64 *now_us)
+{
+    (void)user;
+    if (g_clock_fails) return false;
+    *now_us = g_clock_now_us;
+    return true;
+}
+
+static bool break_test_authenticate_v1(BreakSessionManager *manager,
+                                       BreakConnectionKey key)
+{
+    BreakNetEvent opened = {0};
+    BreakNetEvent auth = {0};
+    const unsigned char payload = 0x5au;
+    BreakNetMessageView view = {BREAK_NET_MESSAGE_ID_AUTH, 1u, 1u,
+                                &payload, sizeof(payload), 0u};
+    bool ok;
+    opened.type = BREAK_NET_EVENT_CONNECTION_OPENED;
+    opened.connection_key = key;
+    if (!break_session_manager_apply_adapter_event(manager, &opened) ||
+        !break_session_manager_set_message_handler(
+            manager, BREAK_NET_MESSAGE_ID_AUTH, break_test_auth_handler, NULL)) {
+        return false;
+    }
+    g_handler_result = true;
+    auth.type = BREAK_NET_EVENT_MESSAGE_RECEIVED;
+    auth.connection_key = key;
+    if (break_net_message_copy(&auth.message, &view) != BREAK_NET_MESSAGE_OK) {
+        return false;
+    }
+    ok = break_session_manager_apply_adapter_event(manager, &auth);
+    break_net_event_release(&auth);
+    return ok && break_session_manager_state(manager, key) ==
+                     BREAK_SESSION_AUTHENTICATED;
+}
+
+TEST(break_session_max_age_fails_closed_when_the_clock_fails)
+{
+    /* A failed clock read must not keep a session alive past max_age: at
+     * expiry time it closes every authenticated session instead of skipping
+     * them. States are collected first and asserted after the process-wide
+     * test clock is restored, so a failure does not leak into later tests. */
+    BreakSessionConfig config = {0};
+    BreakSessionManager *manager = break_session_manager_create(&config);
+    bool authed = false;
+    BreakSessionState within = BREAK_SESSION_CLOSED;
+    BreakSessionState failed = BREAK_SESSION_AUTHENTICATED;
+
+    ASSERT_NOT_NULL(manager);
+    break_session_set_clock_for_test(break_test_session_clock, NULL);
+    g_clock_fails = false;
+    g_clock_now_us = UINT64_C(5000000);
+    break_session_set_max_age(manager, 10u);
+    authed = break_test_authenticate_v1(manager, 0x731u);
+    /* a working clock within max_age keeps the session */
+    g_clock_now_us = UINT64_C(6000000);
+    (void)break_session_manager_poll(manager, 1u);
+    within = break_session_manager_state(manager, 0x731u);
+    /* the clock fails at expiry time: close rather than keep */
+    g_clock_fails = true;
+    (void)break_session_manager_poll(manager, 1u);
+    failed = break_session_manager_state(manager, 0x731u);
+    g_clock_fails = false;
+    break_session_set_clock_for_test(NULL, NULL);
+    break_session_manager_destroy(manager);
+    ASSERT_TRUE(authed);
+    ASSERT_EQ(within, BREAK_SESSION_AUTHENTICATED);
+    ASSERT_EQ(failed, BREAK_SESSION_CLOSING);
+}
+
+TEST(break_session_max_age_closes_a_session_authenticated_without_a_clock)
+{
+    /* The clock failed when the session authenticated: it has no start
+     * time, so the first expiry pass closes it even though the clock works
+     * again (a 0 start would otherwise let it live to now + max_age). */
+    BreakSessionConfig config = {0};
+    BreakSessionManager *manager = break_session_manager_create(&config);
+    bool authed = false;
+    BreakSessionState state = BREAK_SESSION_AUTHENTICATED;
+
+    ASSERT_NOT_NULL(manager);
+    break_session_set_clock_for_test(break_test_session_clock, NULL);
+    g_clock_fails = true;
+    break_session_set_max_age(manager, 10u);
+    authed = break_test_authenticate_v1(manager, 0x732u);
+    g_clock_fails = false;
+    g_clock_now_us = UINT64_C(1000);
+    (void)break_session_manager_poll(manager, 1u);
+    state = break_session_manager_state(manager, 0x732u);
+    break_session_set_clock_for_test(NULL, NULL);
+    break_session_manager_destroy(manager);
+    ASSERT_TRUE(authed);
+    ASSERT_EQ(state, BREAK_SESSION_CLOSING);
+}
+
+TEST(break_session_max_age_counts_from_authentication)
+{
+    /* With the injected clock: still open at exactly max_age, closed one
+     * microsecond later. */
+    BreakSessionConfig config = {0};
+    BreakSessionManager *manager = break_session_manager_create(&config);
+    bool authed = false;
+    BreakSessionState at_limit = BREAK_SESSION_CLOSED;
+    BreakSessionState after = BREAK_SESSION_AUTHENTICATED;
+
+    ASSERT_NOT_NULL(manager);
+    break_session_set_clock_for_test(break_test_session_clock, NULL);
+    g_clock_fails = false;
+    g_clock_now_us = UINT64_C(2000000);
+    break_session_set_max_age(manager, 1u);
+    authed = break_test_authenticate_v1(manager, 0x733u);
+    g_clock_now_us = UINT64_C(3000000);
+    (void)break_session_manager_poll(manager, 1u);
+    at_limit = break_session_manager_state(manager, 0x733u);
+    g_clock_now_us = UINT64_C(3000001);
+    (void)break_session_manager_poll(manager, 1u);
+    after = break_session_manager_state(manager, 0x733u);
+    break_session_set_clock_for_test(NULL, NULL);
+    break_session_manager_destroy(manager);
+    ASSERT_TRUE(authed);
+    ASSERT_EQ(at_limit, BREAK_SESSION_AUTHENTICATED);
+    ASSERT_EQ(after, BREAK_SESSION_CLOSING);
+}
+
 TEST(break_session_max_age_expires_at_poll)
 {
     BreakSessionConfig config = {0};
@@ -2330,6 +2456,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(break_session_registry_has_physics_sync_messages);
 #ifdef BREAK_ENABLE_CRYPTO
     RUN_TEST(break_session_max_age_expires_at_poll);
+    RUN_TEST(break_session_max_age_fails_closed_when_the_clock_fails);
+    RUN_TEST(break_session_max_age_closes_a_session_authenticated_without_a_clock);
+    RUN_TEST(break_session_max_age_counts_from_authentication);
     RUN_TEST(break_session_auth_v2_loopback_authenticates);
     RUN_TEST(break_session_auth_v2_tampered_tag_closes);
     RUN_TEST(break_session_auth_v2_unknown_key_closes);
