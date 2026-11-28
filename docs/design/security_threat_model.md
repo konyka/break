@@ -77,7 +77,7 @@ content-addressed chunk store（文件名 = 内容 SHA-256 hex；写入经 tmp+f
 
 - **TLS 传输模式（当前已有）**：`break_net` adapter 服务端 TLS 接受模式（`BreakNetTlsConfig` + `break_net_reactor_set_tls`）——TLS 为强制前置，handshake 失败 fail-closed 关闭；`verify_peer` 支持 mTLS；`snow` TLS 能力经钉版 Snowflake（`d5d4a928`，configure 期 fail-closed pin 门）采用，OpenSSL-stub 构建在 CRYPTO=ON 时 configure 期 FATAL 拒绝。限制如实记录：无 TLS shutdown API（close_notify 与 TCP FIN 不可区分）、无会话恢复（transport_security.md §8）。
 - **CHALLENGE/AUTH-v2 会话认证（当前已有，CRYPTO=ON 门控）**：16B 新鲜 server_nonce + 56B AUTH v2（`key_id || client_nonce || HMAC-SHA256(psk,"BRKAUTH2"||server_nonce||client_nonce)`），认证原语只经 `break_crypto_hmac_sha256`/`break_crypto_random`（§4 密码学纪律延伸，零自造）；全部失败路径 fail-closed 进 CLOSING；CRYPTO=OFF 树该面缺席（无 plaintext AUTH-v2 旁路）。
-- **密钥生命周期（仅接缝当前已有）**：`BreakNetAuthKeyFn` 回调按 8B key_id 解析 PSK——provisioning/存储/轮换/吊销全部留在 app 侧回调内；引擎不持有密钥材料。**每设备 provisioning tooling、轮换/吊销编排未交付**（§10），在其落地前认证接缝不是可部署的凭证体系。
+- **密钥生命周期（仅接缝当前已有）**：`BreakNetAuthKeyFn` 回调按 8B key_id 解析 PSK——provisioning/存储/轮换/吊销全部留在 app 侧回调内；引擎不持有密钥材料。**每设备 provisioning tooling、轮换/吊销编排未交付**（§10），在其落地前认证接缝不是可部署的凭证体系。2026-11-28 起已有逐设备密钥环 `break_keyring` 与按 key_id 关闭会话的入口，剩余边界见 §10 第 3 条。
 - **会话生命周期（当前已有）**：认证会话绑定 connection 生命周期（不可跨重连恢复）+ 可选 `max_age` 过期（单调时钟、有界扫描）+ 出站单调序号。
 - **声明不变**：fragment/envelope 完整性检查仍不是安全边界（§2）；认证握手只证明 PSK 持有，不证明客户端未被篡改（§2 成本模型）；**不存在"安全部署"声明**——无服务端产品、自签 fixture 仅供测试、生产 PKI 要求见 transport_security.md §7。
 
@@ -115,7 +115,7 @@ content-addressed chunk store（文件名 = 内容 SHA-256 hex；写入经 tmp+f
 | 更新信任链离线验证侧（签名 manifest 格式 + CAS chunk store + 密码学原语 + 原子写 PAL） | **当前已有**（Phase A Tasks 2-4） |
 | 更新客户端离线机制（分块下载/字节级续传/A-B activation/rollback/channel 策略） | **当前已有**（Phase B Tasks 1-4；真实传输/灰度客户端逻辑/服务端未实现） |
 | 版本/构建身份 `break_version` 0.1.0+buildid | **当前已有**（`engine/src/core/break_version.h/.c`，测试 `engine/tests/test_break_version.c`） |
-| 传输认证 / 密钥与会话生命周期 | **当前已有（库接缝，Phase D）**：TLS 模式 + CHALLENGE/AUTH-v2 + key_id 解析回调 + max_age；provisioning tooling/轮换编排未实现 |
+| 传输认证 / 密钥与会话生命周期 | **当前已有（库接缝，Phase D）**：TLS 模式 + CHALLENGE/AUTH-v2 + key_id 解析回调 + max_age；provisioning tooling/轮换编排未实现。**2026-11-28 更新**：逐设备密钥环库 `break_keyring`（文件加载、全有或全无的差异重载、吊销回调）、`break_session_manager_close_key_id`（吊销时关闭该 key_id 的已认证会话）、`break_keygen --max-keys N`（1..4096）已交付，单进程内可按文件重载轮换与吊销；设备注册协议、密钥托管/HSM、跨进程/分布式吊销、Windows 文件权限保证仍未实现 |
 | 崩溃数据脱敏契约 | 本文交付（契约）；**crash 通路客户端执行点当前已有**（Phase C `break_crash`：捕获侧 privacy-by-omission + 上传前 redact pass + 有界 spool/恢复语义）；服务端符号化与真实上传传输未实现 |
 | 重放/限速 | **握手级重放论证 + admission 限速执行点当前已有**（Phase D）；消息/字节级限速已在 break_session 接入（2026-10-30，默认关闭，`break_session_manager_set_message_rate`，见 transport_security.md）；应用消息级 replay window 已有库（`break_replay_window`），按决策不接入当前流式传输（触发条件：引入乱序或可丢包传输） |
 
@@ -125,7 +125,7 @@ content-addressed chunk store（文件名 = 内容 SHA-256 hex；写入经 tmp+f
 
 1. Stage 5 子项目 2 的**在线半侧**（**2026-10-30 起库内有 HTTP/TLS/range 传输 `break_http`、参考服务端 `break_update_server` 和端到端测试，见 `update_transport.md`；仍无生产更新服务，没有任何随发布二进制链接 `break_http`，Windows/macOS 未实现**）：真实传输接线（HTTP/TLS/range 映射）、灰度（gray rollout）客户端逻辑、服务端与签名后的在线流程——客户端离线机制（chunked download、byte-level resume、A/B activation、rollback、channel policy 经 `compatible()`）已由 Phase B 交付（`docs/design/update_client.md`），但传输只经调用方 `BreakUpdateFetchFn` 回调注入，仓库内无任何 socket/HTTP/TLS/curl 代码；
 2. Stage 5 子项目 3 的**服务端半侧与真实传输**（**2026-10-30 起库内有参考实现：ELF 符号化与帧指针展开、签名聚类与回归统计、`break_crash_upload_http`、参考收集服务 `break_crash_server`、运维工具和端到端测试，见 `crash_symbolization.md`；仍无生产服务（无上传者认证、无按客户端限速、不保存记录、无保留策略），没有任何发布二进制链接上传适配器，Windows/macOS 未实现，展开不用 DWARF CFI**）：生产级 crash 符号化服务、端点配置与上传者认证、GPU/RHI/网络/输入摘要捕获（app 经 context-blob 接缝的后续集成）、minidump/PE 格式、Windows SEH/VEH（`_WIN32` 为编译期 stub）——客户端半侧（capture/local spool/redaction 实现/upload seam/符号化契约）已由 Phase C 交付（`docs/design/crash_reporting.md`）；
-3. Stage 5 子项目 4 的**凭证体系半侧**：per-device key provisioning tooling、轮换/吊销编排、密钥托管——TLS 模式、CHALLENGE/AUTH-v2、key_id 解析接缝、max_age 已由 Phase D 交付（`docs/design/transport_security.md`），但在 app 侧 provisioning 落地前认证接缝不可投入真实凭证部署；
+3. Stage 5 子项目 4 的**凭证体系半侧**：per-device key provisioning tooling、轮换/吊销编排、密钥托管——TLS 模式、CHALLENGE/AUTH-v2、key_id 解析接缝、max_age 已由 Phase D 交付（`docs/design/transport_security.md`），但在 app 侧 provisioning 落地前认证接缝不可投入真实凭证部署。**2026-11-28 更新**：逐设备签发与按文件重载的轮换/吊销已有库级实现（`break_keyring`、`break_session_manager_close_key_id`、`break_keygen --max-keys`，见 `transport_security.md` §4）；仍未交付的是设备注册协议（设备文件仍需手工拷到设备上）、密钥托管/HSM、跨进程或分布式吊销（每个进程读自己的密钥环文件，吊销在该进程重载后才生效）、Windows 上的文件权限保证（`break_keygen` 的权限、符号链接与 `flock` 检查仅 POSIX）；仍无服务端产品接入该密钥环；
 4. Stage 5 子项目 5 的**剩余半侧**：server authority 的**产品化**（参考引擎 `break_authority` 与 client 信号库 `break_integrity` 已于 2026-10-30 交付，见 `server_authority.md`、`client_integrity.md`；仍无服务端产品、网络前端、持久化、权威模拟、匹配，两个库都没有接入任何可执行文件；integrity 在 Windows/macOS 上未实现）；应用消息级 replay window 按 2026-10-30 决策不接入当前流式传输（跨连接重放已被绑定 `server_nonce` 的 AUTH v2 阻断，连接内由严格递增序号拒绝，开 TLS 时记录层自带防重放；`break_replay_window` 留给将来的数据报或逐消息 AEAD 通道，见 `transport_security.md`），这是有意的边界而非缺口；消息/字节级限速已在 `break_session` 按连接接入（默认关闭），按身份的跨连接限速已接入（默认关闭，需逐设备密钥才有意义）；
 7. 任何服务端实现与 remote debug 通道（roadmap `:126`：release 无默认 remote debug 路径）；
 8. **运维用环境开关 `BREAK_RHI_FAIL_VULKAN` 仍在发布产物中**：它与 `BREAK_RHI_BACKEND`/`BREAK_RHI_NO_FALLBACK` 同属回滚 runbook 记录的运行时开关（强制走 OpenGL 降级路径），只能由本地环境设置，不构成远程入口。发布产物中的 `*_for_test` 测试钩子已于 2026-10-28 全部移出（`test_release_config_contract` 白名单为空）；

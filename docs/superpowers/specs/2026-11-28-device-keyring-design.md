@@ -1,6 +1,6 @@
 # 设备密钥环：通用 `break_net` 服务端的逐设备密钥签发、轮换与吊销（设计）
 
-状态：设计，待评审。先设计后实现，实现采用 TDD。
+状态：已实现（2026-11-28，提交 `a4210cc3..ba9966ee`，master）。原状态：设计，待评审。先设计后实现，实现采用 TDD。与本文的差异见各节「实现注记」。
 
 ## 1. 背景与问题
 
@@ -67,8 +67,9 @@ u32 break_keyring_count(const BreakKeyring *ring);
  * in constant time over every slot (no early exit on a match). */
 bool break_keyring_resolve(void *ring, const u8 key_id[8], u8 out_psk[32]);
 
-/* Called once per key_id the reload removed or re-keyed, before its bytes
- * are wiped, so the caller can close that identity's sessions. */
+/* Called once per key_id the reload removed or re-keyed, after it is gone
+ * from lookups, so the caller can close that identity's sessions. key_id is
+ * a copy that is wiped after the callback returns. */
 typedef void (*BreakKeyringRevokedFn)(void *user, const u8 key_id[8]);
 
 typedef enum BreakKeyringLoadResult {
@@ -87,7 +88,18 @@ typedef enum BreakKeyringLoadResult {
 BreakKeyringLoadResult break_keyring_load_file(BreakKeyring *ring, const char *path,
                                                BreakKeyringRevokedFn revoked,
                                                void *user);
+/* Same as load_file on an in-memory buffer (len bytes, need not be NUL
+ * terminated); used by callers that already read the file. */
+BreakKeyringLoadResult break_keyring_load_text(BreakKeyring *ring, const char *text,
+                                               usize len, BreakKeyringRevokedFn revoked,
+                                               void *user);
+
+/* Copies the i-th used key (0-based, insertion order) into id/psk; false
+ * when i >= count. For callers that mirror the ring into their own store. */
+bool break_keyring_key_at(const BreakKeyring *ring, u32 index, u8 key_id[8], u8 psk[32]);
 ```
+
+实现注记（2026-11-28）：`break_keyring_load_text` 与 `break_keyring_key_at` 是实现时加入的，前者供已自行读取文件的调用方（编辑器）使用，后者供把环镜像到自有存储的调用方使用。头文件另定义 `BREAK_KEYRING_MAX_FILE_BYTES`（512 KiB）。吊销回调在 key 从查找中移除并擦除之后调用，收到 id 的本地副本（回调返回后擦除），而不是在擦除之前收到槽位内的 id；回调里可以 resolve，但不能 add/remove。`load_text` 对超过上限的 `len` 同样返回 `TOO_LARGE`；NULL 参数返回 `UNREADABLE`。`resolve` 用 `used` 掩码排除空槽，全零 id 不会命中空槽（`96e61d9d` 加测试钉住）。
 
 文件格式（与 `break_keygen`、`--remote-keyring-file` 相同）：每行 `<16 hex key id> <64 hex psk>`，`#` 注释与空行跳过，`\r\n` 接受，key id 不重复。文件上限 `BREAK_KEYRING_MAX_FILE_BYTES` 定为 512 KiB（4096 行 × 每行 82 字节约 328 KiB，其余留给注释）。实现把整个文件读进堆上缓冲（不超过上限，超过则返回 `TOO_LARGE`），解析完毕后擦除并释放缓冲。
 
@@ -122,11 +134,15 @@ break_keyring_load_file(ring, path, on_revoked, manager);
 
 ### 4.4 编辑器迁移
 
-`editor_remote.c` 的 `EditorRemoteKey keys[8]`、`remote_auth_key`、`remote_keyring_file_read`、`reload_keyring` 中的差异逻辑改为调用 `break_keyring`。编辑器仍保留自己的连接表与 `auth_key_id`（它在会话层之外还要关闭传输行），吊销回调里同时调用 `break_session_manager_close_key_id` 与现有的行关闭。外部 API（`add_key`/`revoke_key`/`key_count`/`reload_keyring`/`watch_keyring`）签名与行为不变；容量保持 8（编辑器场景不需要更多，且 `break_keygen` 的 2047 字节上限与之对应）。
+`editor_remote.c` 的 `EditorRemoteKey keys[8]`、`remote_auth_key`、`remote_keyring_file_read`、`reload_keyring` 中的差异逻辑改为调用 `break_keyring`。编辑器仍保留自己的连接表与 `auth_key_id`（它在会话层之外还要关闭传输行）。吊销回调调用现有的 `break_editor_remote_revoke_key`，它经编辑器自己的连接行关闭会话与传输，因此编辑器不调用 `break_session_manager_close_key_id`（2026-11-28 实现时更正；原文写的是两者同时调用）。外部 API（`add_key`/`revoke_key`/`key_count`/`reload_keyring`/`watch_keyring`）签名与行为不变；容量保持 8（编辑器场景不需要更多，且 `break_keygen` 的 2047 字节上限与之对应）。
+
+实现注记（2026-11-28，`96a5cff5`）：启动解析与重载都先用编辑器自己的无缓冲读取函数（最多 2047 字节，第 2048 字节即拒绝整个文件）读入文本，再调用 `break_keyring_load_text`，而不是 `break_keyring_load_file`（后者接受到 512 KiB，会让重载接受启动时拒绝的文件）；编辑器的文件上限因此不变。重载时把当前 key 镜像进容量 8 的临时环，应用文件差异，吊销回调调用 `revoke_key`，再用 `key_at` 遍历并以 `add_key` 加入新 key。`EditorRemoteKey keys[8]` 与 `remote_auth_key` 保留未删。Snowflake 关闭的构建不链接 `break_net`，`editor` 与 `test_editor_shell` 直接编译 `break_keyring.c`。
 
 ### 4.5 `break_keygen`
 
 增加可选参数 `--max-keys N`（默认 8，最大 4096）与对应的文件大小上限，使它能为通用服务端的密钥环签发。默认行为不变，现有 `test_break_keygen` 保持通过。
+
+实现注记（2026-11-28，`ba9966ee`）：N 为严格十进制 1..4096，非法时在打开任何文件之前以退出码 2 退出；N 为 8 时环上限 2047 字节，其他 N 为 524287 字节（`BREAK_KEYRING_MAX_FILE_BYTES - 1`）。
 
 ## 5. 错误处理
 
