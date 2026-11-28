@@ -21,6 +21,7 @@
 #include <network/break_prediction_wire.h>
 #ifdef BREAK_ENABLE_CRYPTO
 #include <crypto/break_crypto.h>
+#include <network/break_keyring.h>
 #endif
 
 #include <stdint.h>
@@ -1407,6 +1408,8 @@ typedef struct BreakSessionAuthFixture {
     int fd;
     uint64_t key;
     uint8_t server_nonce[16];
+    /* reactor, manager and acceptor belong to another fixture */
+    bool borrowed;
 } BreakSessionAuthFixture;
 
 static SnowAcceptor *break_session_auth_acceptor(void)
@@ -1479,6 +1482,11 @@ static void break_session_auth_fixture_close(BreakSessionAuthFixture *fixture)
     if (fixture->fd >= 0) {
         close(fixture->fd);
         fixture->fd = -1;
+    }
+    if (fixture->borrowed) {
+        memset(fixture, 0, sizeof(*fixture));
+        fixture->fd = -1;
+        return;
     }
     if (fixture->reactor != NULL && fixture->manager != NULL) {
         uint64_t deadline = break_session_monotonic_us() + UINT64_C(2000000);
@@ -1573,6 +1581,46 @@ static bool break_session_auth_make_v2(const BreakSessionAuthFixture *fixture,
     return break_net_envelope_encode(&auth, wire,
                                      BREAK_NET_ENVELOPE_HEADER_SIZE + sizeof(payload),
                                      wire_size) == BREAK_NET_ENVELOPE_OK;
+}
+
+/* Connects a second socket to first's acceptor; second shares first's
+ * reactor and manager (borrowed, so closing second only closes its socket).
+ * Pumps until the new connection's CONNECTION_OPENED and reads its CHALLENGE. */
+static bool break_session_auth_fixture_open_second(BreakSessionAuthFixture *first,
+                                                   BreakSessionAuthFixture *second)
+{
+    uint8_t challenge_wire[BREAK_NET_ENVELOPE_HEADER_SIZE + 16u];
+    BreakNetEnvelope challenge = {0};
+    uint64_t deadline;
+    bool ok = false;
+
+    memset(second, 0, sizeof(*second));
+    second->fd = -1;
+    second->borrowed = true;
+    if (first->reactor == NULL || first->manager == NULL) goto cleanup;
+    second->reactor = first->reactor;
+    second->manager = first->manager;
+    second->acceptor = first->acceptor;
+    second->fd = break_session_auth_connect(first->acceptor);
+    if (second->fd < 0) goto cleanup;
+    deadline = break_session_monotonic_us() + UINT64_C(5000000);
+    while (second->key == 0u && break_session_monotonic_us() < deadline) {
+        break_session_auth_pump(second);
+    }
+    if (second->key == 0u || second->key == first->key ||
+        !break_session_auth_read(second, challenge_wire, sizeof(challenge_wire),
+                                 deadline) ||
+        break_net_envelope_decode(challenge_wire, sizeof(challenge_wire),
+                                  &challenge) != BREAK_NET_ENVELOPE_OK ||
+        challenge.message_id != BREAK_NET_MESSAGE_ID_CHALLENGE ||
+        challenge.payload_size != 16u) goto cleanup;
+    memcpy(second->server_nonce, challenge.payload, 16u);
+    if (break_session_manager_state(second->manager, second->key) !=
+        BREAK_SESSION_NEW) goto cleanup;
+    ok = true;
+cleanup:
+    if (!ok) break_session_auth_fixture_close(second);
+    return ok;
 }
 
 static bool break_session_auth_wait_terminal(BreakSessionAuthFixture *fixture)
@@ -1717,6 +1765,216 @@ TEST(break_session_auth_v2_replay_on_new_connection_closes)
               BREAK_SESSION_CLOSING);
     break_session_auth_fixture_close(&second);
     ASSERT_TRUE(break_session_set_auth(NULL, NULL));
+}
+
+/* Sends AUTH v2 for key_id on an open fixture and returns the state it
+ * settles in (UNKNOWN if it never settles or the send fails). */
+static BreakSessionState break_session_auth_send_v2(BreakSessionAuthFixture *fixture,
+                                                    const uint8_t key_id[8],
+                                                    uint8_t nonce_seed)
+{
+    uint8_t client_nonce[16];
+    uint8_t wire[BREAK_NET_ENVELOPE_HEADER_SIZE + 56u];
+    size_t wire_size = 0u;
+    size_t i;
+    for (i = 0u; i < sizeof(client_nonce); ++i) {
+        client_nonce[i] = (uint8_t)(nonce_seed + i);
+    }
+    if (!break_session_auth_make_v2(fixture, key_id, client_nonce, wire,
+                                    &wire_size) ||
+        break_session_wire_write_all(fixture->fd, wire, wire_size) !=
+            (ssize_t)wire_size ||
+        !break_session_auth_wait_terminal(fixture)) {
+        return BREAK_SESSION_UNKNOWN;
+    }
+    return break_session_manager_state(fixture->manager, fixture->key);
+}
+
+TEST(break_session_close_key_id_closes_only_that_identity)
+{
+    /* Two live identities on one manager: closing one key_id leaves the
+     * other session alone, and a session already CLOSING is not counted. */
+    BreakSessionAuthKeys keys = {true};
+    BreakSessionAuthFixture a;
+    BreakSessionAuthFixture b;
+    static const uint8_t zero_key_id[8] = {0u};
+    BreakSessionState a_auth = BREAK_SESSION_UNKNOWN;
+    BreakSessionState b_auth = BREAK_SESSION_UNKNOWN;
+    BreakSessionState a_after = BREAK_SESSION_UNKNOWN;
+    BreakSessionState b_after = BREAK_SESSION_UNKNOWN;
+    size_t first_call = 99u;
+    size_t second_call = 99u;
+    size_t null_manager = 99u;
+    size_t null_id = 99u;
+    size_t already_closing = 99u;
+    bool auth_set;
+    bool a_ok = false;
+    bool b_ok = false;
+    bool b_closed = false;
+
+    memset(&a, 0, sizeof(a));
+    memset(&b, 0, sizeof(b));
+    a.fd = -1;
+    b.fd = -1;
+    auth_set = break_session_set_auth(break_session_auth_key, &keys);
+    if (auth_set) {
+        a_ok = break_session_auth_fixture_open(&a);
+        if (a_ok) b_ok = break_session_auth_fixture_open_second(&a, &b);
+        if (a_ok && b_ok) {
+            a_auth = break_session_auth_send_v2(&a, break_session_auth_key_id, 0x10u);
+            b_auth = break_session_auth_send_v2(&b, zero_key_id, 0x50u);
+            first_call = break_session_manager_close_key_id(
+                a.manager, break_session_auth_key_id);
+            a_after = break_session_manager_state(a.manager, a.key);
+            b_after = break_session_manager_state(a.manager, b.key);
+            second_call = break_session_manager_close_key_id(
+                a.manager, break_session_auth_key_id);
+            null_manager = break_session_manager_close_key_id(
+                NULL, break_session_auth_key_id);
+            null_id = break_session_manager_close_key_id(a.manager, NULL);
+            b_closed = break_session_manager_close(a.manager, b.key, 0u);
+            already_closing = break_session_manager_close_key_id(a.manager,
+                                                                 zero_key_id);
+        }
+        break_session_auth_fixture_close(&b);
+        break_session_auth_fixture_close(&a);
+        (void)break_session_set_auth(NULL, NULL);
+    }
+    ASSERT_TRUE(auth_set);
+    ASSERT_TRUE(a_ok);
+    ASSERT_TRUE(b_ok);
+    ASSERT_EQ(a_auth, BREAK_SESSION_AUTHENTICATED);
+    ASSERT_EQ(b_auth, BREAK_SESSION_AUTHENTICATED);
+    ASSERT_EQ(first_call, 1u);
+    ASSERT_EQ(a_after, BREAK_SESSION_CLOSING);
+    ASSERT_EQ(b_after, BREAK_SESSION_AUTHENTICATED);
+    ASSERT_EQ(second_call, 0u);
+    ASSERT_EQ(null_manager, 0u);
+    ASSERT_EQ(null_id, 0u);
+    ASSERT_TRUE(b_closed);
+    ASSERT_EQ(already_closing, 0u);
+}
+
+TEST(break_session_close_key_id_skips_sessions_without_a_key_id)
+{
+    /* A v1-authenticated session has no AUTH v2 key_id; its zeroed key_id
+     * bytes must not match a revoked all-zero id. */
+    static const uint8_t zero_key_id[8] = {0u};
+    BreakSessionConfig config = {0};
+    BreakSessionManager *manager = break_session_manager_create(&config);
+    bool authed;
+    size_t closed;
+    BreakSessionState state;
+
+    ASSERT_NOT_NULL(manager);
+    authed = break_test_authenticate_v1(manager, 0x740u);
+    closed = break_session_manager_close_key_id(manager, zero_key_id);
+    state = break_session_manager_state(manager, 0x740u);
+    break_session_manager_destroy(manager);
+    ASSERT_TRUE(authed);
+    ASSERT_EQ(closed, 0u);
+    ASSERT_EQ(state, BREAK_SESSION_AUTHENTICATED);
+}
+
+typedef struct BreakSessionRevokeLog {
+    BreakSessionManager *manager;
+    size_t calls;
+    size_t closed;
+} BreakSessionRevokeLog;
+
+static void break_session_revoked_close(void *user, const u8 key_id[8])
+{
+    BreakSessionRevokeLog *log = (BreakSessionRevokeLog *)user;
+    ++log->calls;
+    log->closed += break_session_manager_close_key_id(log->manager, key_id);
+}
+
+static bool break_session_write_text(const char *path, const char *text)
+{
+    FILE *f = fopen(path, "wb");
+    size_t len = strlen(text);
+    size_t n;
+    if (f == NULL) return false;
+    n = fwrite(text, 1u, len, f);
+    return fclose(f) == 0 && n == len;
+}
+
+TEST(break_session_keyring_reload_revokes_live_sessions)
+{
+    /* A keyring reload that drops the test key closes the live session of
+     * that key through the revoked callback, and the key no longer
+     * authenticates a new connection. */
+    static const char with_key[] =
+        "746573742d6b3031 "
+        "00112233445566778899aabbccddeeff102132435465768798a9bacbdcedfe0f\n";
+    static const char without_key[] =
+        "0102030405060708 "
+        "ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100\n";
+    char path[256];
+    BreakKeyring *ring = break_keyring_create(4u);
+    BreakSessionAuthFixture first;
+    BreakSessionAuthFixture second;
+    BreakSessionRevokeLog log = {NULL, 0u, 0u};
+    BreakKeyringLoadResult initial = BREAK_KEYRING_LOAD_UNREADABLE;
+    BreakKeyringLoadResult reload = BREAK_KEYRING_LOAD_UNREADABLE;
+    BreakSessionState first_auth = BREAK_SESSION_UNKNOWN;
+    BreakSessionState first_after = BREAK_SESSION_UNKNOWN;
+    BreakSessionState second_auth = BREAK_SESSION_UNKNOWN;
+    bool written = false;
+    bool rewritten = false;
+    bool auth_set = false;
+    bool first_ok = false;
+    bool second_ok = false;
+
+    memset(&first, 0, sizeof(first));
+    memset(&second, 0, sizeof(second));
+    first.fd = -1;
+    second.fd = -1;
+    test_tmp(path, sizeof(path), "session_keyring_reload.txt");
+    if (ring != NULL) {
+        written = break_session_write_text(path, with_key);
+        if (written) initial = break_keyring_load_file(ring, path, NULL, NULL);
+    }
+    if (initial == BREAK_KEYRING_LOAD_OK) {
+        auth_set = break_session_set_auth(break_keyring_resolve, ring);
+    }
+    if (auth_set) {
+        first_ok = break_session_auth_fixture_open(&first);
+        if (first_ok) {
+            log.manager = first.manager;
+            first_auth = break_session_auth_send_v2(&first, break_session_auth_key_id,
+                                                    0x20u);
+            rewritten = break_session_write_text(path, without_key);
+            if (rewritten) {
+                reload = break_keyring_load_file(ring, path, break_session_revoked_close,
+                                                 &log);
+            }
+            first_after = break_session_manager_state(first.manager, first.key);
+            second_ok = break_session_auth_fixture_open_second(&first, &second);
+            if (second_ok) {
+                second_auth = break_session_auth_send_v2(
+                    &second, break_session_auth_key_id, 0x60u);
+            }
+        }
+        break_session_auth_fixture_close(&second);
+        break_session_auth_fixture_close(&first);
+        (void)break_session_set_auth(NULL, NULL);
+    }
+    remove(path);
+    break_keyring_destroy(ring);
+    ASSERT_NOT_NULL(ring);
+    ASSERT_TRUE(written);
+    ASSERT_EQ(initial, BREAK_KEYRING_LOAD_OK);
+    ASSERT_TRUE(auth_set);
+    ASSERT_TRUE(first_ok);
+    ASSERT_EQ(first_auth, BREAK_SESSION_AUTHENTICATED);
+    ASSERT_TRUE(rewritten);
+    ASSERT_EQ(reload, BREAK_KEYRING_LOAD_OK);
+    ASSERT_EQ(log.calls, 1u);
+    ASSERT_EQ(log.closed, 1u);
+    ASSERT_EQ(first_after, BREAK_SESSION_CLOSING);
+    ASSERT_TRUE(second_ok);
+    ASSERT_EQ(second_auth, BREAK_SESSION_CLOSING);
 }
 
 /* Sends one PING (sequence seq) on an authenticated fixture and waits until
@@ -2464,6 +2722,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(break_session_auth_v2_unknown_key_closes);
     RUN_TEST(break_session_auth_configured_rejects_v1);
     RUN_TEST(break_session_auth_v2_replay_on_new_connection_closes);
+    RUN_TEST(break_session_close_key_id_closes_only_that_identity);
+    RUN_TEST(break_session_close_key_id_skips_sessions_without_a_key_id);
+    RUN_TEST(break_session_keyring_reload_revokes_live_sessions);
     RUN_TEST(break_session_identity_rate_is_shared_across_reconnects);
     RUN_TEST(break_session_identity_rate_keys_by_the_authenticated_key_id);
     RUN_TEST(break_session_identity_rate_ignores_unauthenticated_traffic);

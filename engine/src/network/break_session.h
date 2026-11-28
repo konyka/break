@@ -169,6 +169,10 @@ bool break_session_manager_set_identity_rate(
  * no session is bound; NULL is refused. */
 bool break_session_manager_set_client_key_id(BreakSessionManager *manager,
                                              const u8 key_id[8]);
+/* Closes (CLOSING) every authenticated session whose AUTH v2 key_id equals
+ * key_id and returns how many. Logic thread. */
+size_t break_session_manager_close_key_id(BreakSessionManager *manager,
+                                          const u8 key_id[8]);
 #endif
 /* Polls the borrowed reactor on the logic thread and applies up to max_events. */
 size_t break_session_manager_poll_adapter(BreakSessionManager *manager,

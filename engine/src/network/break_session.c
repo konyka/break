@@ -770,6 +770,27 @@ bool break_session_manager_set_client_key_id(BreakSessionManager *manager,
     memcpy(manager->client_key_id, key_id, sizeof(manager->client_key_id));
     return true;
 }
+
+size_t break_session_manager_close_key_id(BreakSessionManager *manager,
+                                          const u8 key_id[8])
+{
+    size_t i;
+    size_t closed = 0u;
+    if (manager == NULL || key_id == NULL) {
+        return 0u;
+    }
+    for (i = 0u; i < manager->capacity; ++i) {
+        BreakSessionEntry *entry = &manager->entries[i];
+        if (entry->used && entry->key_id_valid &&
+            entry->state == BREAK_SESSION_AUTHENTICATED &&
+            memcmp(entry->key_id, key_id, sizeof(entry->key_id)) == 0) {
+            (void)break_session_manager_close(manager, entry->connection, 0u);
+            entry->key_id_valid = false;
+            ++closed;
+        }
+    }
+    return closed;
+}
 #endif
 
 bool break_session_manager_set_identity_rate(
