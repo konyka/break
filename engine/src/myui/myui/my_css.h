@@ -548,6 +548,17 @@ struct my_font_t* my_css_font_registry_get(my_css_font_registry_t* registry,
                                            const char* family_value,
                                            uint32_t weight, bool italic);
 
+/** @brief Font for a widget from its theme cascade: `font-family` (a
+ * string; required), `font-weight` (a number 1..1000, `normal` or `bold`;
+ * 400 when absent or invalid) and `font-style` (`italic`/`oblique` mean
+ * italic, anything else or absent upright), each resolved with
+ * my_widget_style_get for `state` (which falls back to the normal state).
+ * NULL when the cascade has no usable `font-family`, so the caller keeps
+ * the widget's own font. */
+struct my_font_t* my_css_font_registry_get_for_widget(
+    my_css_font_registry_t* registry, struct my_widget_t* widget,
+    my_widget_state_t state);
+
 /** @brief Number of keys held, including remembered misses. */
 size_t my_css_font_registry_count(const my_css_font_registry_t* registry);
 

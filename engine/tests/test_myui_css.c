@@ -12458,6 +12458,128 @@ TEST(css_font_registry_remembers_misses_and_is_bounded)
   my_css_sheet_destroy(sheet);
 }
 
+TEST(css_font_registry_resolves_a_widget_font_from_the_theme)
+{
+  const char* faces =
+      "@font-face{font-family:Ui;"
+      "src:url(abattis-cantarell-fonts/Cantarell-Regular.otf);}";
+  const char* css =
+      "#button { font-family: Ui, sans-serif; font-weight: 700; }"
+      "#button:hover { font-style: italic; }"
+      "#label { color: #000000; }";
+  my_css_sheet_t* sheet = my_css_parse(NULL, faces, strlen(faces), NULL);
+  my_css_font_registry_t* reg;
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* button = my_widget_create(NULL, "button");
+  my_widget_t* label = my_widget_create(NULL, "label");
+  my_font_t* normal;
+  my_font_t* bold_direct;
+  my_font_t* hover;
+  FILE* probe = fopen(
+      "/usr/share/fonts/abattis-cantarell-fonts/Cantarell-Regular.otf", "rb");
+
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_NOT_NULL(theme);
+  ASSERT_NOT_NULL(button);
+  ASSERT_NOT_NULL(label);
+  ASSERT_EQ(my_theme_load_css(theme, css), MY_RET_OK);
+  ASSERT_EQ(my_widget_apply_theme(button, theme), MY_RET_OK);
+  ASSERT_EQ(my_widget_apply_theme(label, theme), MY_RET_OK);
+  if (probe == NULL) {
+    printf("  SKIP: no Cantarell test font\n");
+  } else {
+    fclose(probe);
+    reg = my_css_font_registry_create(NULL, sheet, "/usr/share/fonts", 16u);
+    ASSERT_NOT_NULL(reg);
+    normal = my_css_font_registry_get_for_widget(reg, button,
+                                                 MY_STATE_NORMAL);
+    ASSERT_NOT_NULL(normal);
+    /* the theme's weight 700 is part of the key */
+    bold_direct = my_css_font_registry_get(reg, "Ui, sans-serif", 700u, false);
+    ASSERT_TRUE(normal == bold_direct);
+    /* hover adds italic; the family and weight fall back to normal state */
+    hover = my_css_font_registry_get_for_widget(reg, button, MY_STATE_HOVER);
+    ASSERT_NOT_NULL(hover);
+    ASSERT_TRUE(hover == my_css_font_registry_get(reg, "Ui, sans-serif",
+                                                  700u, true));
+    /* no font-family in the cascade: NULL, the widget keeps its own font */
+    ASSERT_TRUE(my_css_font_registry_get_for_widget(reg, label,
+                                                    MY_STATE_NORMAL) == NULL);
+    ASSERT_TRUE(my_css_font_registry_get_for_widget(NULL, button,
+                                                    MY_STATE_NORMAL) == NULL);
+    ASSERT_TRUE(my_css_font_registry_get_for_widget(reg, NULL,
+                                                    MY_STATE_NORMAL) == NULL);
+    my_css_font_registry_destroy(reg);
+  }
+  my_widget_unref(label);
+  my_widget_unref(button);
+  my_theme_destroy(theme);
+  my_css_sheet_destroy(sheet);
+}
+
+TEST(css_font_registry_widget_defaults_and_keywords)
+{
+  const char* faces =
+      "@font-face{font-family:Ui;"
+      "src:url(abattis-cantarell-fonts/Cantarell-Regular.otf);}";
+  const char* css =
+      "#a { font-family: Ui; }"
+      "#b { font-family: Ui; font-weight: bold; font-style: oblique; }"
+      "#c { font-family: Ui; font-weight: normal; font-style: normal; }"
+      "#d { font-family: Ui; font-weight: 1200; }"
+      "#e:hover { font-family: Ui; }";
+  my_css_sheet_t* sheet = my_css_parse(NULL, faces, strlen(faces), NULL);
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* a = my_widget_create(NULL, "a");
+  my_widget_t* b = my_widget_create(NULL, "b");
+  my_widget_t* c = my_widget_create(NULL, "c");
+  my_widget_t* d = my_widget_create(NULL, "d");
+  my_widget_t* e = my_widget_create(NULL, "e");
+  my_css_font_registry_t* reg;
+  FILE* probe = fopen(
+      "/usr/share/fonts/abattis-cantarell-fonts/Cantarell-Regular.otf", "rb");
+
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_theme_load_css(theme, css), MY_RET_OK);
+  ASSERT_EQ(my_widget_apply_theme(a, theme), MY_RET_OK);
+  ASSERT_EQ(my_widget_apply_theme(b, theme), MY_RET_OK);
+  ASSERT_EQ(my_widget_apply_theme(c, theme), MY_RET_OK);
+  ASSERT_EQ(my_widget_apply_theme(d, theme), MY_RET_OK);
+  ASSERT_EQ(my_widget_apply_theme(e, theme), MY_RET_OK);
+  if (probe == NULL) {
+    printf("  SKIP: no Cantarell test font\n");
+  } else {
+    fclose(probe);
+    reg = my_css_font_registry_create(NULL, sheet, "/usr/share/fonts", 16u);
+    ASSERT_NOT_NULL(reg);
+    /* no weight/style: 400 upright */
+    ASSERT_TRUE(my_css_font_registry_get_for_widget(reg, a, MY_STATE_NORMAL) ==
+                my_css_font_registry_get(reg, "Ui", 400u, false));
+    /* bold = 700, oblique = italic */
+    ASSERT_TRUE(my_css_font_registry_get_for_widget(reg, b, MY_STATE_NORMAL) ==
+                my_css_font_registry_get(reg, "Ui", 700u, true));
+    /* explicit normal keywords equal the defaults */
+    ASSERT_TRUE(my_css_font_registry_get_for_widget(reg, c, MY_STATE_NORMAL) ==
+                my_css_font_registry_get(reg, "Ui", 400u, false));
+    /* a weight outside 1..1000 is ignored (400) */
+    ASSERT_TRUE(my_css_font_registry_get_for_widget(reg, d, MY_STATE_NORMAL) ==
+                my_css_font_registry_get(reg, "Ui", 400u, false));
+    /* the family is resolved for the requested state: only hover has it */
+    ASSERT_TRUE(my_css_font_registry_get_for_widget(reg, e, MY_STATE_NORMAL) ==
+                NULL);
+    ASSERT_TRUE(my_css_font_registry_get_for_widget(reg, e, MY_STATE_HOVER) ==
+                my_css_font_registry_get(reg, "Ui", 400u, false));
+    my_css_font_registry_destroy(reg);
+  }
+  my_widget_unref(e);
+  my_widget_unref(d);
+  my_widget_unref(c);
+  my_widget_unref(b);
+  my_widget_unref(a);
+  my_theme_destroy(theme);
+  my_css_sheet_destroy(sheet);
+}
+
 TEST(css_keyframes_capability_is_registered)
 {
   ASSERT_TRUE((my_css_capabilities()->supported_features &
@@ -13052,6 +13174,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_font_face_single_weight_sets_min_equal_to_max);
     RUN_TEST(css_font_registry_shares_one_font_per_key);
     RUN_TEST(css_font_registry_remembers_misses_and_is_bounded);
+    RUN_TEST(css_font_registry_resolves_a_widget_font_from_the_theme);
+    RUN_TEST(css_font_registry_widget_defaults_and_keywords);
     RUN_TEST(css_keyframes_capability_is_registered);
     RUN_TEST(css_font_family_list_splits_quoted_and_unquoted_names);
     RUN_TEST(css_font_family_list_rejects_malformed_values);

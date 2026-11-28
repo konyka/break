@@ -15067,3 +15067,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **交付**：`my_css_font_registry_t` 按（规范化 family 列表、weight、italic）缓存字体链，未命中也记住，上限 64 键，注册表拥有并在销毁时释放全部字体。主题与控件尚未接入。
 - **TDD 与变异**：`test_myui_css` 新增 2 例（249 例），实现前编译失败；9 项变异全部判红（首轮 1 项存活后补用例）。
 - **验证**：普通与 ASan+UBSan 下 249/249；全量 ctest 482/482；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
+
+## myui CSS：按控件的主题 cascade 取字体（2026-11-28）
+
+- **交付**：`my_css_font_registry_get_for_widget` 读取控件按 state 解析的 `font-family`/`font-weight`/`font-style`，经注册表返回共享字体；无 `font-family` 时返回 NULL。至此 `@font-face` → 匹配 → 字体链 → 注册表 → 控件 cascade 的库级链路完整，把字体设到控件仍由宿主调用。
+- **TDD 与变异**：`test_myui_css` 新增 2 例（251 例），实现前编译失败；7 项变异全部判红（首轮 2 项存活后补用例）。
+- **验证**：普通与 ASan+UBSan 下 251/251；全量 ctest 482/482；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。

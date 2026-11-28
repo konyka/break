@@ -9200,3 +9200,37 @@ my_font_t* my_css_font_registry_get(my_css_font_registry_t* registry,
 size_t my_css_font_registry_count(const my_css_font_registry_t* registry) {
   return registry != NULL ? registry->count : 0u;
 }
+
+my_font_t* my_css_font_registry_get_for_widget(
+    my_css_font_registry_t* registry, my_widget_t* widget,
+    my_widget_state_t state) {
+  const my_value_t* family;
+  const my_value_t* weight_value;
+  const my_value_t* style_value;
+  uint32_t weight = 400u;
+  bool italic = false;
+  if (registry == NULL || widget == NULL) return NULL;
+  family = my_widget_style_get(widget, state, "font-family");
+  if (family == NULL || my_value_type(family) != MY_VALUE_STR) return NULL;
+  weight_value = my_widget_style_get(widget, state, "font-weight");
+  if (weight_value != NULL) {
+    if (my_value_type(weight_value) == MY_VALUE_INT32) {
+      int32_t w = my_value_get_int32(weight_value);
+      if (w >= 1 && w <= 1000) weight = (uint32_t)w;
+    } else if (my_value_type(weight_value) == MY_VALUE_STR) {
+      const char* text = my_value_get_str(weight_value);
+      uint32_t parsed;
+      if (css_font_weight_token(text, strlen(text), &parsed)) {
+        weight = parsed;
+      }
+    }
+  }
+  style_value = my_widget_style_get(widget, state, "font-style");
+  if (style_value != NULL && my_value_type(style_value) == MY_VALUE_STR) {
+    const char* text = my_value_get_str(style_value);
+    bool parsed = false;
+    if (css_font_style(text, strlen(text), &parsed)) italic = parsed;
+  }
+  return my_css_font_registry_get(registry, my_value_get_str(family), weight,
+                                  italic);
+}

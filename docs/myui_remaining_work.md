@@ -3337,3 +3337,31 @@ LTR JUSTIFY 行逐词绘制，`ta_draw_syntax_span` 又在 token 边界把词截
 **变异**（9 项，全部判红）：键不比较 weight、不比较 italic、不比较列表长度、名字区分大小写、未命中不记住、去掉上限（越过 64 项数组，进程崩溃）、上限差一、不查已有键、`sheet` 为 NULL 也创建。首轮「不比较列表长度」存活，据此补了前缀列表与更长列表两组输入。
 
 **验证**：`test_myui_css` 249/249，ASan+UBSan（含泄漏检测）249/249；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。
+
+## 本轮补充：按控件的主题 cascade 取字体（2026-11-28）
+
+`my_css_font_registry_get_for_widget(registry, widget, state)` 把主题里的 `font-family` 接到字体：用 `my_widget_style_get` 按所给 state（缺失时回落到 normal）读取三个声明，再交给 `my_css_font_registry_get`。
+
+- `font-family`：字符串，必需；缺失或不是字符串时返回 NULL，调用方保留控件原有字体。
+- `font-weight`：数字 1..1000，或 `normal`/`bold`；缺失、越界或无法识别时为 400。
+- `font-style`：`italic`/`oblique` 为斜体，其余或缺失为正体。
+- 每个声明分别按 state 回落，所以 `#b:hover { font-style: italic; }` 会沿用 normal 状态的 family 与 weight。
+
+边界：函数只负责解析与取字体，不会自动把字体设到控件上；控件的绘制路径仍使用各自的 `set_font`。宿主在主题加载或状态变化时调用本函数，并把结果设给控件（例如 `my_text_area_set_font`）。`font-family`/`font-weight`/`font-style` 不参与 transition/animation。
+
+**TDD**：`test_myui_css` 新增 2 例（251 例）：按 id 选择器的主题为控件选出与直接 `registry_get` 相同的字体；hover 追加 italic 并沿用 normal 的 family/weight；无 `font-family` 的控件返回 NULL；NULL 参数；缺省、`bold`、`oblique`、显式 `normal`、越界数字 1200、只在 hover 声明 family。字体缺失时 SKIP。实现前编译失败（RED）。
+
+**变异**（7 项，全部判红）：恒返回 NULL、忽略数字 weight、忽略关键字 weight、忽略 style、family 只读 normal 状态、style 只读 normal 状态、数字 weight 不检查范围。首轮后两项存活，据此补了「只在 hover 声明 family」与「weight 1200」两组输入。
+
+**验证**：`test_myui_css` 251/251，ASan+UBSan 251/251；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。
+
+### `@font-face` 到控件的完整链路（当前状态）
+
+1. 样式表中的 `@font-face` 规则解析为 `my_css_font_face_t`（family、安全相对 `src`、字重或字重范围、italic、`unicode-range`）。
+2. `my_css_font_face_match` 按 CSS Fonts 顺序为一个 family 选规则。
+3. `my_css_font_face_create_chain` 按 family 列表顺序加载文件，组成字体回退链。
+4. `my_css_font_family_list_parse` 解析 `font-family` 值；规则里的 `font-family` 声明保留原始列表。
+5. `my_css_font_registry_t` 按（family 列表、weight、italic）共享字体。
+6. `my_css_font_registry_get_for_widget` 从控件的主题 cascade 取字体。
+
+仍需宿主完成：在主题加载、状态变化时调用第 6 步并把字体设到控件；按码点在多个 face 之间做 `unicode-range` 回退。
