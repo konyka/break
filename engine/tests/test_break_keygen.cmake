@@ -176,6 +176,13 @@ if(UNIX)
     if(NOT r3_before STREQUAL r3_after OR EXISTS "${WORK}/c1.psk")
         message(FATAL_ERROR "an over-cap append changed the ring or left a device file")
     endif()
+    # an explicit --max-keys 8 keeps the editor byte limit too (the limit is
+    # keyed on N == 8, not on whether the flag was given)
+    keygen(FALSE --max-keys 8 "${RING3}" 6465766963653031 "${WORK}/c1b.psk")
+    file(READ "${RING3}" r3_after_explicit)
+    if(NOT r3_before STREQUAL r3_after_explicit OR EXISTS "${WORK}/c1b.psk")
+        message(FATAL_ERROR "--max-keys 8 grew the ring past the editor limit")
+    endif()
     # exactly at the cap is still fine: 1965 + 82 = 2047
     set(RING4 "${WORK}/ring4.txt")
     write_ring("${RING4}" 1965)

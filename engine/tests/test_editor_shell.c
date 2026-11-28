@@ -11284,6 +11284,99 @@ TEST(remote_tls_keyring_reload_revokes_removed_keys)
     break_editor_shell_destroy(shell);
 }
 
+/* Writes `key_line` + "\n" followed by one '#' comment line so the file is
+ * exactly `total` bytes (total >= strlen(key_line) + 3). */
+static bool remote_write_padded_keyring(const char *path, const char *key_line,
+                                        usize total)
+{
+    static char buf[4096];
+    usize n = strlen(key_line);
+    FILE *f;
+    bool ok;
+    if (total > sizeof(buf) || total < n + 3u) return false;
+    memcpy(buf, key_line, n);
+    buf[n] = '\n';
+    buf[n + 1u] = '#';
+    memset(buf + n + 2u, 'x', total - n - 3u);
+    buf[total - 1u] = '\n';
+    f = fopen(path, "wb");
+    if (f == NULL) return false;
+    ok = fwrite(buf, 1u, total, f) == total;
+    return fclose(f) == 0 && ok;
+}
+
+/* Reload keeps the editor's 2047-byte keyring limit (it reads through the
+ * editor's own reader, not break_keyring_load_file's 512 KiB one), and a
+ * re-keyed id (same key id, new secret) revokes the session that used the
+ * old secret while the new secret authenticates. */
+TEST(remote_tls_keyring_reload_enforces_the_size_limit_and_rekeys)
+{
+    static const char *k_ring = "editor_remote_rekey_test.keyring";
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorRemote *remote;
+    TlsRemoteClient a, c;
+    BreakNetEnvelope rsp;
+    u8 new_psk[32];
+    char line[96];
+    FILE *f;
+    usize i;
+    bool oversize_rejected, at_limit_ok, rekeyed, a_closed, c_auth;
+    u32 after_oversize, after_rekey;
+    for (i = 0u; i < 32u; i++) new_psk[i] = (u8)(0x90u + i);
+    ASSERT_NOT_NULL(shell);
+    remote = tls_remote_start(shell); /* key edit0001 */
+    ASSERT_NOT_NULL(remote);
+    ASSERT_TRUE(tls_client_open(&a, shell, remote));
+    ASSERT_TRUE(tls_wait_first_state(remote, shell, (u32)BREAK_SESSION_NEW));
+    ASSERT_TRUE(tls_client_send_auth(&a, k_tls_key_id, k_tls_psk, false));
+    ASSERT_TRUE(tls_client_send(&a, BREAK_EDITOR_MSG_DESCRIBE,
+                                BREAK_EDITOR_PROTO_VERSION, NULL, 0u));
+    ASSERT_TRUE(tls_client_recv(&a, &rsp));
+
+    /* one valid key line padded with a comment line to exactly 2048 bytes is
+     * over the editor limit: rejected, ring unchanged; 2047 bytes is accepted */
+    snprintf(line, sizeof(line), "6564697430303031 ");
+    for (i = 0u; i < 32u; i++) {
+        snprintf(line + 17u + 2u * i, sizeof(line) - 17u - 2u * i, "%02x",
+                 (unsigned)k_tls_psk[i]);
+    }
+    oversize_rejected = !remote_write_padded_keyring(k_ring, line, 2048u) ||
+                        !break_editor_remote_reload_keyring(remote, k_ring);
+    after_oversize = break_editor_remote_key_count(remote);
+    at_limit_ok = remote_write_padded_keyring(k_ring, line, 2047u) &&
+                  break_editor_remote_reload_keyring(remote, k_ring);
+
+    /* re-key edit0001: same id, new secret */
+    f = fopen(k_ring, "wb");
+    ASSERT_NOT_NULL(f);
+    fprintf(f, "6564697430303031 ");
+    for (i = 0u; i < 32u; i++) fprintf(f, "%02x", (unsigned)new_psk[i]);
+    fprintf(f, "\n");
+    fclose(f);
+    rekeyed = break_editor_remote_reload_keyring(remote, k_ring);
+    remove(k_ring);
+    after_rekey = break_editor_remote_key_count(remote);
+    a_closed = tls_client_wait_eof(&a); /* old secret's session is revoked */
+    remote_wait_connection_count(remote, shell, 0u);
+    c_auth = tls_client_open(&c, shell, remote) &&
+             tls_client_send_auth(&c, k_tls_key_id, new_psk, false) &&
+             tls_client_send(&c, BREAK_EDITOR_MSG_DESCRIBE,
+                             BREAK_EDITOR_PROTO_VERSION, NULL, 0u) &&
+             tls_client_recv(&c, &rsp) &&
+             rsp.message_id == BREAK_EDITOR_MSG_DESCRIBE;
+    tls_client_close(&c);
+    tls_client_close(&a);
+    break_editor_remote_destroy(remote);
+    break_editor_shell_destroy(shell);
+    ASSERT_TRUE(oversize_rejected);
+    ASSERT_EQ(after_oversize, 1u);
+    ASSERT_TRUE(at_limit_ok);
+    ASSERT_TRUE(rekeyed);
+    ASSERT_EQ(after_rekey, 1u);
+    ASSERT_TRUE(a_closed);
+    ASSERT_TRUE(c_auth);
+}
+
 /* The keyring file watcher compares whole-second mtimes. A truncate followed by
  * the finished rewrite inside one second raises ONE event, the reader sees the
  * empty file, rejects it, and nothing ever looks again, so a revocation is
@@ -15460,6 +15553,7 @@ TEST_MAIN_BEGIN()
     RUN_REMOTE_TEST(remote_tls_keyring_add_and_revoke);
     RUN_REMOTE_TEST(remote_tls_cli_keyring_file_installs_all_keys);
     RUN_REMOTE_TEST(remote_tls_keyring_reload_revokes_removed_keys);
+    RUN_REMOTE_TEST(remote_tls_keyring_reload_enforces_the_size_limit_and_rekeys);
     RUN_REMOTE_TEST(remote_tls_keyring_revocation_survives_a_missed_change_event);
     RUN_REMOTE_TEST(remote_tls_keyring_attribution_does_not_leak_across_reused_slots);
     RUN_REMOTE_TEST(remote_tls_e2e_connect_auth_describe_spawn_undo_disconnect);

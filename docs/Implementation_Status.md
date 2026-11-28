@@ -15182,3 +15182,12 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **变异**（每项恢复后 `cmp` 一致）：吊销回调空操作、tick 从不重载、启动忽略坏文件、每次拒绝都记 trace、`set_auth(NULL)` 失败仍销毁 ring、配置允许两者同时给出、成功重载总记 `reloaded`、keyring 模式装入 PSK 回调，8 项全部判红；`main.c` 只拒绝“都没给”时 `test_core_app_target_contract` 与 `test_core_app_network_start_failure` 判红。
 - **构建树**：`build-aoi-net` 与 `build-aoi-asan` 原为 `CORE_APP_ENABLE_NETWORK=OFF`（不编 transport），本次以 `-DCORE_APP_ENABLE_NETWORK=ON` 重新配置。
 - 本提交自身的远端工作流结果不在此预写。
+
+## 网络：补齐密钥环迁移遗留的三个测试缺口（2026-11-28）
+
+- **背景**：逐设备密钥环的终审把三处行为列为「正确但没有测试固定」。
+- **新增测试**：
+  - `test_editor_shell` 的 `remote_tls_keyring_reload_enforces_the_size_limit_and_rekeys`（241 例）：恰好 2048 字节的密钥环在重载时被拒、密钥数不变，2047 字节被接受；同一 key id 换新 PSK 后，用旧 PSK 认证的会话被关闭，新 PSK 能认证。
+  - `test_break_keygen`：显式 `--max-keys 8` 同样遵守编辑器的 2047 字节上限（上限按 N == 8 判断，与是否给出该参数无关）。
+- **变异**：去掉编辑器读取函数的超限判断，新用例判红；把 keygen 的上限改为按「是否给出参数」判断，新用例判红。「重载改用 `break_keyring_load_file`」一项存活，属等价变异：重载先经编辑器自己的 2047 字节读取函数读文件，超限文件在解析之前已被拒绝，替换解析调用不改变任何输入的结果。
+- **验证**：`test_editor_shell` 在 `build-aoi-net`、`build-aoi-asan`（无报告）均 241/241，在 `build-myui-tests`（Snowflake 关闭）193/193；`test_break_keygen` 在两棵树均通过。产品代码未改。本提交自身的远端工作流结果不在此预写。
