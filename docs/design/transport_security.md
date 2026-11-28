@@ -144,7 +144,7 @@ What this library gives you is TLS transport with `verify_peer` support — **no
 - The self-signed fixture certs under `tests/common/fixtures/ssl` exist **for tests only** (injected via the `BREAK_TEST_SSL_FIXTURE_DIR` compile macro). They are a one-cert PKI stand-in; shipping them or anything derived from them as production trust anchors defeats peer authentication.
 - Key files are read by the Snowflake/OpenSSL layer from PEM paths — filesystem permissions and custody of `key_file` are the application's responsibility; the engine does not manage, rotate, or protect key material on disk.
 - `verify_peer=0` (no client certs) means the TLS channel authenticates only the server-to-client direction at the transport level; application-level peer identity then rests entirely on CHALLENGE/AUTH-v2 PSKs.
-- No "secure deployment" claim is made: there is no server product, no deployment guide beyond this section, and the loopback evidence does not cover WAN conditions, cert rotation, CRL/OCSP, or cipher policy hardening (Snowflake/OpenSSL defaults are used as-is).
+- No "secure deployment" claim is made: there is no production server product (core_app is a reference server; since 2026-11-28 it can load per-device keys with `--keyring-file`), no deployment guide beyond this section, and the loopback evidence does not cover WAN conditions, cert rotation, CRL/OCSP, or cipher policy hardening (Snowflake/OpenSSL defaults are used as-is).
 
 ## 8. Documented limitations
 
