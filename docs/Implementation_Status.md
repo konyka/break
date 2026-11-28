@@ -15191,3 +15191,12 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
   - `test_break_keygen`：显式 `--max-keys 8` 同样遵守编辑器的 2047 字节上限（上限按 N == 8 判断，与是否给出该参数无关）。
 - **变异**：去掉编辑器读取函数的超限判断，新用例判红；把 keygen 的上限改为按「是否给出参数」判断，新用例判红。「重载改用 `break_keyring_load_file`」一项存活，属等价变异：重载先经编辑器自己的 2047 字节读取函数读文件，超限文件在解析之前已被拒绝，替换解析调用不改变任何输入的结果。
 - **验证**：`test_editor_shell` 在 `build-aoi-net`、`build-aoi-asan`（无报告）均 241/241，在 `build-myui-tests`（Snowflake 关闭）193/193；`test_break_keygen` 在两棵树均通过。产品代码未改。本提交自身的远端工作流结果不在此预写。
+
+## core_app：密钥环启动失败与吊销计数的测试补齐（2026-11-28）
+
+- **背景**：core_app `--keyring-file` 的评审把两处列为遗留：文档列出的「空文件」「超过容量」启动失败只在库的测试里覆盖；吊销用例从释放的槽位推断关闭数，没有直接读 `closed=`。
+- **新增断言**（`test_core_app_net_transport`，仍 64 例）：
+  - `keyring_start_fails_on_a_bad_file` 增加只有注释的文件与 1025 个 key（容量 1024 + 1）两种情况：都返回 FAILED、不写端口文件、不安装认证钩子，`stage=keyring` 共记 4 次，从未 `listening`。
+  - `keyring_reload_revokes_removed_device` 直接读 `network_stats` 行：`opened=4`，`closed` 等于 `opened`。
+- **变异**：把服务端容量改成 1025 时新断言判红（超容量文件被接受并开始监听）；不再累计 `stats.closed` 时新断言判红。
+- **验证**：`test_core_app_net_transport` 在 `build-aoi-net` 与 `build-aoi-asan`（无报告）均 64/64。产品代码未改（`81ce398d`）。本提交自身的远端工作流结果不在此预写。
