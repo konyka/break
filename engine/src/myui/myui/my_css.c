@@ -6495,19 +6495,10 @@ static bool css_font_src(const char* text, size_t length, char* out,
   return false;
 }
 
-static bool css_font_weight(const char* text, size_t length,
-                            uint32_t* weight) {
+static bool css_font_weight_number(const char* text, size_t length,
+                                   uint32_t* weight) {
   uint32_t value = 0u;
   size_t i;
-  css_font_trim(&text, &length);
-  if (length == 6u && memcmp(text, "normal", 6u) == 0) {
-    *weight = 400u;
-    return true;
-  }
-  if (length == 4u && memcmp(text, "bold", 4u) == 0) {
-    *weight = 700u;
-    return true;
-  }
   if (length == 0u || length > 4u) return false;
   for (i = 0u; i < length; i++) {
     if (text[i] < '0' || text[i] > '9') return false;
@@ -6516,6 +6507,45 @@ static bool css_font_weight(const char* text, size_t length,
   if (value < 1u || value > 1000u) return false;
   *weight = value;
   return true;
+}
+
+static bool css_font_weight_token(const char* text, size_t length,
+                                  uint32_t* weight) {
+  if (length == 6u && memcmp(text, "normal", 6u) == 0) {
+    *weight = 400u;
+    return true;
+  }
+  if (length == 4u && memcmp(text, "bold", 4u) == 0) {
+    *weight = 700u;
+    return true;
+  }
+  return css_font_weight_number(text, length, weight);
+}
+
+/* `font-weight` is one keyword/number, or two numbers giving a variable
+ * font's range (low first). */
+static bool css_font_weight(const char* text, size_t length, uint32_t* low,
+                            uint32_t* high) {
+  size_t i;
+  css_font_trim(&text, &length);
+  for (i = 0u; i < length && !css_qualifier_is_ws(text[i]); i++) {
+  }
+  if (i == length) {
+    if (!css_font_weight_token(text, length, low)) return false;
+    *high = *low;
+    return true;
+  }
+  {
+    const char* second = text + i;
+    size_t second_len = length - i;
+    css_font_trim(&second, &second_len);
+    /* the two-value range is numbers only, no `normal`/`bold` */
+    if (!css_font_weight_number(text, i, low) ||
+        !css_font_weight_number(second, second_len, high) || *low > *high) {
+      return false;
+    }
+    return true;
+  }
 }
 
 static bool css_font_style(const char* text, size_t length, bool* italic) {
@@ -6612,6 +6642,7 @@ static bool css_parse_font_face_atrule(css_p_t* p, my_css_sheet_t* sheet) {
 
   memset(&face, 0, sizeof(face));
   face.weight = 400u;
+  face.weight_max = 400u;
   c_ws(p);
   if (c_peek(p) != '{') {
     return css_skip_or_reject_atrule_with_capability(
@@ -6675,7 +6706,10 @@ static bool css_parse_font_face_atrule(css_p_t* p, my_css_sheet_t* sheet) {
       has_src = css_font_src(p->s + start, length, face.src,
                              sizeof(face.src));
     } else if (my_str_eq(key, "font-weight")) {
-      if (!css_font_weight(p->s + start, length, &face.weight)) valid = false;
+      if (!css_font_weight(p->s + start, length, &face.weight,
+                           &face.weight_max)) {
+        valid = false;
+      }
     } else if (my_str_eq(key, "font-style")) {
       if (!css_font_style(p->s + start, length, &face.italic)) valid = false;
     } else if (my_str_eq(key, "unicode-range")) {
@@ -7076,8 +7110,11 @@ static bool css_font_family_eq(const char* a, const char* b) {
 
 /* Lower rank is a better weight match for `desired` (CSS Fonts 4,
  * font-weight matching). Weights are 1..1000, so ranks stay below 4000. */
-static uint32_t css_font_weight_rank(uint32_t desired, uint32_t weight) {
-  if (weight == desired) return 0u;
+static uint32_t css_font_weight_rank(uint32_t desired, uint32_t weight,
+                                     uint32_t weight_max) {
+  if (desired >= weight && desired <= weight_max) return 0u;
+  /* outside the range: measure from the nearer edge */
+  if (desired > weight_max) weight = weight_max;
   if (desired >= 400u && desired <= 500u) {
     if (weight > desired && weight <= 500u) return weight - desired;
     if (weight < desired) return 1000u + (desired - weight);
@@ -7112,7 +7149,7 @@ const my_css_font_face_t* my_css_font_face_match(const my_css_sheet_t* sheet,
     uint32_t rank;
     if (!css_font_family_eq(face->family, family)) continue;
     if (style_present && face->italic != italic) continue;
-    rank = css_font_weight_rank(weight, face->weight);
+    rank = css_font_weight_rank(weight, face->weight, face->weight_max);
     if (best == NULL || rank <= best_rank) {
       best = face;
       best_rank = rank;

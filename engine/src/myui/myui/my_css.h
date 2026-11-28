@@ -292,7 +292,11 @@ typedef struct my_css_keyframes_t my_css_keyframes_t;
 typedef struct my_css_font_face_t {
   char family[MY_CSS_MAX_FONT_FAMILY_BYTES + 1u];
   char src[MY_CSS_MAX_IMPORT_PATH_BYTES + 1u];
-  uint32_t weight; /**< 1..1000; 400 when absent, `bold` is 700 */
+  uint32_t weight; /**< low end of the weight range; 1..1000, 400 when
+                    * absent, `bold` is 700 */
+  uint32_t weight_max; /**< high end; equals `weight` for a single value.
+                        * `font-weight: 100 900` on a variable font sets a
+                        * range and any weight within it matches exactly. */
   bool italic;     /**< `italic` or `oblique`; false for `normal`/absent */
   /** `unicode-range` as inclusive [first, last] pairs; range_count 0 means
    * the descriptor was absent and the face covers every code point. */
@@ -521,7 +525,10 @@ struct my_font_t* my_css_font_face_create_chain(
 /** @brief Best `@font-face` for a family, weight and style, following the
  * CSS Fonts matching order: faces of the family (ASCII case-insensitive)
  * are narrowed to the requested style when any exists, then by weight.
- * An exact weight wins; for a desired weight in 400..500 the heavier
+ * A face whose weight range (`weight`..`weight_max`) contains the desired
+ * weight is an exact match. Otherwise a face is placed by its nearer edge
+ * (its high edge when the desired weight is above the range, else its low
+ * edge) and ranked as follows: for a desired weight in 400..500 the heavier
  * faces up to 500 come first (ascending), then lighter ones (descending),
  * then heavier ones above 500 (ascending); below 400 lighter faces come
  * first (descending), then heavier (ascending); above 500 heavier faces

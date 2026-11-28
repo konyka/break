@@ -12216,6 +12216,150 @@ TEST(css_font_family_declaration_keeps_the_raw_list)
   my_css_sheet_destroy(sheet);
 }
 
+TEST(css_font_face_weight_range_matches_inside_the_range)
+{
+  const char* css =
+      "@font-face{font-family:V;src:url(v.ttf);font-weight:100 900;}"
+      "@font-face{font-family:P;src:url(p3.ttf);font-weight:200 300;}"
+      "@font-face{font-family:P;src:url(p7.ttf);font-weight:600 800;}";
+  my_css_sheet_t* sheet = my_css_parse(NULL, css, strlen(css), NULL);
+  const my_css_font_face_t* face;
+
+  ASSERT_NOT_NULL(sheet);
+  face = my_css_font_face_at(sheet, 0u);
+  ASSERT_EQ(face->weight, 100u);
+  ASSERT_EQ(face->weight_max, 900u);
+  /* a single weight keeps min == max */
+  ASSERT_EQ(my_css_font_face_at(sheet, 1u)->weight, 200u);
+  ASSERT_EQ(my_css_font_face_at(sheet, 1u)->weight_max, 300u);
+  /* any weight inside the variable range is an exact match */
+  ASSERT_STR_EQ(my_css_font_face_match(sheet, "V", 1u, false)->src, "v.ttf");
+  ASSERT_STR_EQ(my_css_font_face_match(sheet, "V", 500u, false)->src, "v.ttf");
+  ASSERT_STR_EQ(my_css_font_face_match(sheet, "V", 1000u, false)->src, "v.ttf");
+  /* 400 falls between P's two ranges: the 400..500 rule reaches up for the
+   * nearest face at or above, which is the 600..800 range's 600 edge, but
+   * the 200..300 range's 300 edge is closer going down; per CSS the
+   * 400..500 desired first looks up to 500 (none), then lighter: 300 wins */
+  ASSERT_STR_EQ(my_css_font_face_match(sheet, "P", 400u, false)->src, "p3.ttf");
+  /* 500 up to 500 none, lighter 300 wins over heavier 600 */
+  ASSERT_STR_EQ(my_css_font_face_match(sheet, "P", 500u, false)->src, "p3.ttf");
+  /* 550 is above 500: heavier first, so the 600..800 range */
+  ASSERT_STR_EQ(my_css_font_face_match(sheet, "P", 550u, false)->src, "p7.ttf");
+  /* inside a range beats a closer out-of-range edge: 650 is in 600..800 */
+  ASSERT_STR_EQ(my_css_font_face_match(sheet, "P", 650u, false)->src, "p7.ttf");
+  my_css_sheet_destroy(sheet);
+
+  {
+    /* a point face at 400 competes with a wide 500..900 range. */
+    const char* c2 =
+        "@font-face{font-family:Q;src:url(q4.ttf);font-weight:400;}"
+        "@font-face{font-family:Q;src:url(qv.ttf);font-weight:500 900;}";
+    my_css_sheet_t* s2 = my_css_parse(NULL, c2, strlen(c2), NULL);
+    ASSERT_NOT_NULL(s2);
+    /* 700 is inside the range (rank 0), beats the far 400 point */
+    ASSERT_STR_EQ(my_css_font_face_match(s2, "Q", 700u, false)->src, "qv.ttf");
+    /* 500 is the range's low edge (rank 0), beats the 400 point */
+    ASSERT_STR_EQ(my_css_font_face_match(s2, "Q", 500u, false)->src, "qv.ttf");
+    /* 300 is below 400: the 400 point (distance 100) beats reaching up to
+     * the range's 500 low edge (distance 200) */
+    ASSERT_STR_EQ(my_css_font_face_match(s2, "Q", 300u, false)->src, "q4.ttf");
+    my_css_sheet_destroy(s2);
+  }
+  {
+    /* two ranges both below the desired weight: distance is from each
+     * range's high edge, not its low edge. R1 400..450 (low 400, high 450)
+     * and R2 100..600 (low 100, high 600); desired 650 is above both. By
+     * high edge R2 (|650-600|=50) beats R1 (|650-450|=200); by low edge R1
+     * (|650-400|=250) would beat R2 (|650-100|=550). Pins clamp to the
+     * high edge. */
+    const char* c3 =
+        "@font-face{font-family:R;src:url(r1.ttf);font-weight:400 450;}"
+        "@font-face{font-family:R;src:url(r2.ttf);font-weight:100 600;}";
+    my_css_sheet_t* s3 = my_css_parse(NULL, c3, strlen(c3), NULL);
+    ASSERT_NOT_NULL(s3);
+    ASSERT_STR_EQ(my_css_font_face_match(s3, "R", 650u, false)->src, "r2.ttf");
+    my_css_sheet_destroy(s3);
+  }
+  {
+    /* an in-range weight that is not the range's low edge still ranks 0 and
+     * beats a nearer point face. */
+    /* desired 700 (above 500, heavier first). Z range 300..900 contains
+     * 700. The point face at 800 is a heavier candidate at distance 100.
+     * Without rank 0 for in-range, the range is measured from its 300 low
+     * edge (lighter, 1000+400) and loses to the 800 point; with rank 0 it
+     * wins. */
+    const char* c4 =
+        "@font-face{font-family:Z;src:url(zp.ttf);font-weight:800;}"
+        "@font-face{font-family:Z;src:url(zr.ttf);font-weight:300 900;}";
+    my_css_sheet_t* s4 = my_css_parse(NULL, c4, strlen(c4), NULL);
+    ASSERT_NOT_NULL(s4);
+    ASSERT_STR_EQ(my_css_font_face_match(s4, "Z", 700u, false)->src, "zr.ttf");
+    my_css_sheet_destroy(s4);
+  }
+}
+
+TEST(css_font_face_weight_range_validation)
+{
+  /* reversed range, a bound out of range, three numbers, a non-number
+   * second token: each drops the rule. A normalized equal range is fine. */
+  const char* css =
+      "@font-face{font-family:A;src:url(a.ttf);font-weight:900 100;}"
+      "@font-face{font-family:B;src:url(b.ttf);font-weight:100 1001;}"
+      "@font-face{font-family:C;src:url(c.ttf);font-weight:100 200 300;}"
+      "@font-face{font-family:D;src:url(d.ttf);font-weight:100 bold;}"
+      "@font-face{font-family:E;src:url(e.ttf);font-weight:400 400;}"
+      "@font-face{font-family:T;src:url(t.ttf);font-weight:200\t700;}"
+      "@font-face{font-family:F;src:url(f.ttf);font-weight:normal bold;}"
+      "x{color:red;}";
+  my_css_sheet_t* sheet = my_css_parse(NULL, css, strlen(css), NULL);
+
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_font_face_count(sheet), 2u);
+  ASSERT_STR_EQ(my_css_font_face_at(sheet, 0u)->family, "E");
+  ASSERT_EQ(my_css_font_face_at(sheet, 0u)->weight, 400u);
+  ASSERT_EQ(my_css_font_face_at(sheet, 0u)->weight_max, 400u);
+  /* a tab separates the range as well as a space */
+  ASSERT_STR_EQ(my_css_font_face_at(sheet, 1u)->family, "T");
+  ASSERT_EQ(my_css_font_face_at(sheet, 1u)->weight, 200u);
+  ASSERT_EQ(my_css_font_face_at(sheet, 1u)->weight_max, 700u);
+  my_css_sheet_destroy(sheet);
+}
+
+TEST(css_font_face_default_weight_is_a_400_point)
+{
+  /* No font-weight: the face is the single point 400..400. Asking for 900
+   * must not treat it as containing 900 (a zero/garbage weight_max would
+   * make the in-range test fail open or closed). With an 800 competitor,
+   * 900 (above 500, heavier first, none heavier) falls back to the lighter
+   * one nearest: 800 beats the 400 default. */
+  const char* css =
+      "@font-face{font-family:N;src:url(n.ttf);}"
+      "@font-face{font-family:N;src:url(n8.ttf);font-weight:800;}";
+  my_css_sheet_t* sheet = my_css_parse(NULL, css, strlen(css), NULL);
+
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_font_face_at(sheet, 0u)->weight, 400u);
+  ASSERT_EQ(my_css_font_face_at(sheet, 0u)->weight_max, 400u);
+  ASSERT_STR_EQ(my_css_font_face_match(sheet, "N", 400u, false)->src, "n.ttf");
+  ASSERT_STR_EQ(my_css_font_face_match(sheet, "N", 900u, false)->src, "n8.ttf");
+  my_css_sheet_destroy(sheet);
+}
+
+TEST(css_font_face_single_weight_sets_min_equal_to_max)
+{
+  /* A single weight must set weight_max to the same value, so a request
+   * above it is out of range, not treated as a stale wide max. */
+  const char* css = "@font-face{font-family:S;src:url(s.ttf);font-weight:300;}";
+  my_css_sheet_t* sheet = my_css_parse(NULL, css, strlen(css), NULL);
+  const my_css_font_face_t* face;
+
+  ASSERT_NOT_NULL(sheet);
+  face = my_css_font_face_at(sheet, 0u);
+  ASSERT_EQ(face->weight, 300u);
+  ASSERT_EQ(face->weight_max, 300u);
+  my_css_sheet_destroy(sheet);
+}
+
 TEST(css_keyframes_capability_is_registered)
 {
   ASSERT_TRUE((my_css_capabilities()->supported_features &
@@ -12804,6 +12948,10 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_keyframes_sample_interpolates_between_stops);
     RUN_TEST(css_keyframes_reject_malformed_and_oversized);
     RUN_TEST(css_font_family_declaration_keeps_the_raw_list);
+    RUN_TEST(css_font_face_weight_range_matches_inside_the_range);
+    RUN_TEST(css_font_face_weight_range_validation);
+    RUN_TEST(css_font_face_default_weight_is_a_400_point);
+    RUN_TEST(css_font_face_single_weight_sets_min_equal_to_max);
     RUN_TEST(css_keyframes_capability_is_registered);
     RUN_TEST(css_font_family_list_splits_quoted_and_unquoted_names);
     RUN_TEST(css_font_family_list_rejects_malformed_values);
