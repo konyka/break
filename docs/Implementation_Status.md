@@ -15087,3 +15087,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **修复**：`my_css_font_face_create_chain` 把与最佳规则 family、字形、字重范围都相同的规则一起入链，后写先试。
 - **TDD 与变异**：`test_myui_css` 新增 2 例（254 例），修正前判红；7 项变异全部判红（首轮 3 项存活后补用例）。
 - **验证**：普通与 ASan+UBSan 下 254/254；全量 ctest 482/482；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
+
+## myui：Syriac、N'Ko、Thaana 经字体链的 RTL golden（2026-11-28）
+
+- **更正**：此前记为「本机字体覆盖不到」的 Syriac、N'Ko 本机已有 Noto 字体，Thaana 同样可用。
+- **测试**：`test_myui_text_layout` 新增 1 例（145 例），三种 script 经字体链与 bidi 布局整形，glyph 与 cluster 逐项等于 `hb-shape` 的结果；表征测试，无 RED 阶段。
+- **变异**：4 项中 2 项被本用例判红，另 2 项被既有用例判红。
+- **验证**：普通与 ASan+UBSan 下 145/145；全量 ctest 482/482；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。

@@ -1528,6 +1528,80 @@ TEST(text_layout_shapes_mixed_bidi_through_font_chain_golden)
 #endif
 }
 
+typedef struct rtl_script_golden_t {
+  const char* path;
+  const char* text;
+  size_t count;
+  uint32_t glyphs[6];
+  uint32_t clusters[6];
+} rtl_script_golden_t;
+
+TEST(text_layout_shapes_other_rtl_scripts_through_font_chain_golden)
+{
+#if defined(MYUI_FONT_FREETYPE) && defined(MYUI_FONT_HARFBUZZ) && \
+    defined(MYUI_BIDI)
+  /* Syriac and N'Ko join like Arabic (init/medi/fina); Thaana stacks its
+   * vowel signs on the base consonants. Each goes through a Cantarell +
+   * script-font chain and the bidi layout, and must give the glyphs and
+   * logical byte clusters `hb-shape` gives for the script font alone. */
+  static const rtl_script_golden_t cases[] = {
+      {"/usr/share/fonts/google-noto-vf/NotoSansSyriac[wght].ttf",
+       "\xDC\xAB\xDC\xA0\xDC\xA1\xDC\x90", 4u,
+       {260u, 64u, 60u, 101u}, {6u, 4u, 2u, 0u}},
+      {"/usr/share/fonts/google-noto/NotoSansNKo-Regular.ttf",
+       "\xDF\x92\xDF\x9E\xDF\x8F", 3u,
+       {82u, 128u, 93u}, {4u, 2u, 0u}},
+      {"/usr/share/fonts/google-noto-vf/NotoSansThaana[wght].ttf",
+       "\xDE\x8B\xDE\xA8\xDE\x88\xDE\xAC\xDE\x80\xDE\xA8", 6u,
+       {98u, 2u, 102u, 10u, 98u, 13u}, {8u, 8u, 4u, 4u, 0u, 0u}},
+  };
+  const char* latin_path =
+      "/usr/share/fonts/abattis-cantarell-fonts/Cantarell-Regular.otf";
+  size_t c;
+
+  for (c = 0u; c < sizeof(cases) / sizeof(cases[0]); c++) {
+    const rtl_script_golden_t* g = &cases[c];
+    const my_font_source_t sources[] = {{latin_path, 0}, {g->path, 0}};
+    FILE* script_file = fopen(g->path, "rb");
+    FILE* latin_file = fopen(latin_path, "rb");
+    my_font_t* chain;
+    my_text_layout_t* layout;
+    my_font_shape_result_t shaped = {0};
+    size_t i;
+
+    if (script_file == NULL || latin_file == NULL) {
+      if (script_file != NULL) fclose(script_file);
+      if (latin_file != NULL) fclose(latin_file);
+      printf("  SKIP: missing %s\n", g->path);
+      continue;
+    }
+    fclose(script_file);
+    fclose(latin_file);
+    chain = my_font_create_chain_ex(NULL, sources, 2u, 16u);
+    layout = my_text_layout_process(NULL, g->text);
+    ASSERT_NOT_NULL(chain);
+    ASSERT_NOT_NULL(layout);
+    ASSERT_EQ(my_text_layout_shape(layout, g->text, chain, 24, NULL, &shaped),
+              MY_RET_OK);
+    ASSERT_EQ(shaped.count, g->count);
+    for (i = 0u; i < g->count; i++) {
+      ASSERT_EQ(shaped.glyphs[i].glyph_id, g->glyphs[i]);
+      ASSERT_EQ(shaped.glyphs[i].cluster, g->clusters[i]);
+      ASSERT_TRUE(shaped.glyphs[i].font != NULL);
+    }
+    /* every glyph comes from the script font, not Cantarell */
+    for (i = 1u; i < g->count; i++) {
+      ASSERT_TRUE(shaped.glyphs[i].font == shaped.glyphs[0].font);
+    }
+    my_font_shape_destroy(&shaped);
+    my_text_layout_destroy(layout);
+    my_font_destroy(chain);
+  }
+#else
+  printf("  SKIP: FreeType/HarfBuzz/BiDi shaping is unavailable\n");
+#endif
+}
+
 TEST(text_layout_shape_oom_is_transactional)
 {
   text_budget_alloc_state_t state = {0};
@@ -3980,6 +4054,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_layout_maps_rtl_visual_order);
     RUN_TEST(text_layout_shapes_bidi_runs_with_logical_clusters);
     RUN_TEST(text_layout_shapes_mixed_bidi_through_font_chain_golden);
+    RUN_TEST(text_layout_shapes_other_rtl_scripts_through_font_chain_golden);
     RUN_TEST(text_layout_splits_mixed_scripts_for_shape_provider);
     RUN_TEST(text_layout_shape_ex_forwards_language_and_features);
     RUN_TEST(text_layout_shape_reuses_bounded_glyph_cache);

@@ -2753,7 +2753,7 @@ graphics 与 present queue。`RE_VK_DEVICE_INDEX` 现在也必须通过同一门
 
 **验证**：`test_myui_text_layout` 143/143，ASan+UBSan 143/143；`build-current-vk` 非 fuzz 477/477。
 
-该行判据中「完整 RTL GSUB」的剩余部分只是本机字体覆盖不到的情形（如 Syriac、N'Ko 等其他 RTL script 与 `rlig` 之外的 language-specific RTL feature），需要相应字体才能取证。
+该行判据中「完整 RTL GSUB」的剩余部分只是本机字体覆盖不到的情形（如 Syriac、N'Ko 等其他 RTL script 与 `rlig` 之外的 language-specific RTL feature），需要相应字体才能取证。（2026-11-28 更正：本机已装 Noto Sans Syriac、NKo、Thaana，这三种 script 已补 golden，见文末同日一节。）
 
 ## 本轮补充：RTL 布局缓存跨物理段落保留（2026-11-27）
 
@@ -3397,3 +3397,22 @@ CSS 常见写法是把一个字体按文字拆成多个文件，每条 `@font-fa
 **变异**（7 项，全部判红）：只加最佳规则、不比较字重、不比较字形、不比较 family、先旧后新、不去重、不比较字重上界。首轮其中 3 项存活（测试里的 700 规则文件不存在，加入与否看不出），改为真实文件并补了字形、范围两组输入；「不比较字重上界」需要下界相同、上界不同的两条规则才能区分，为此另加 400 与 400..450 一组。
 
 **验证**：`test_myui_css` 254/254，ASan+UBSan 254/254；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。
+
+## 本轮补充：Syriac、N'Ko、Thaana 经字体链的 RTL golden（2026-11-28）
+
+此前记录「完整 RTL GSUB」剩余的是本机字体覆盖不到的 RTL script，并举了 Syriac、N'Ko。核对发现本机已有 `NotoSansSyriac[wght].ttf`、`NotoSansNKo-Regular.ttf`、`NotoSansThaana[wght].ttf`，该前提不成立。
+
+`test_myui_text_layout` 新增 `text_layout_shapes_other_rtl_scripts_through_font_chain_golden`（145 例）：每种 script 用 Cantarell + 该 script 字体组成字体链，经 `my_text_layout_shape`（SheenBidi 拆 run、按 script 分段）整形，与 `hb-shape` 只用该字体的结果逐 glyph 对照：
+
+- Syriac「ܫܠܡܐ」：init/medi/medi/fina.wideX 四个连写字形 260、64、60、101，cluster 6、4、2、0。
+- N'Ko「ߒߞߏ」：init/medi/fina 三个连写字形 82、128、93，cluster 4、2、0。
+- Thaana「ދިވެހި」：三个辅音各带一个元音符号，6 个 glyph 98、2、102、10、98、13，每对 glyph 共享辅音的 cluster（8、8、4、4、0、0）。
+- 所有 glyph 都来自该 script 字体而不是 Cantarell。
+
+该用例是对已有行为的表征测试，在现有实现上直接通过，没有 RED 阶段。字体缺失时逐项 SKIP。
+
+**变异**（`my_text_layout.c`，4 项）：2 项判红：分段整形时丢失 RTL 方向、RTL run 按逻辑顺序展开。另 2 项（分段时丢失 script、script tag 恒为 0）本用例存活而被既有用例抓到：这三种字体的连写不依赖 script tag，HarfBuzz 从文字本身推断 script 也得到同样结果。
+
+**验证**：`test_myui_text_layout` 145/145，ASan+UBSan 145/145；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。
+
+剩余：`rlig` 之外由 language 系统选择的 RTL feature（例如 Urdu 与 Arabic 的数字、Sindhi 的字形变体）仍没有 golden；本机的 Noto Sans Arabic 与 Vazirmatn 是否带这些 LangSys 尚未核对。
