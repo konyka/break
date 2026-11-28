@@ -3364,4 +3364,24 @@ LTR JUSTIFY 行逐词绘制，`ta_draw_syntax_span` 又在 token 边界把词截
 5. `my_css_font_registry_t` 按（family 列表、weight、italic）共享字体。
 6. `my_css_font_registry_get_for_widget` 从控件的主题 cascade 取字体。
 
-仍需宿主完成：在主题加载、状态变化时调用第 6 步并把字体设到控件；按码点在多个 face 之间做 `unicode-range` 回退。
+仍需宿主完成：在主题加载、状态变化时调用第 6 步并把字体设到控件。按码点在多个 face 之间的 `unicode-range` 回退已于同日由字体链完成（见下一节）。
+
+## 本轮补充：字体链按 `unicode-range` 路由（2026-11-28）
+
+此前 `unicode-range` 只解析、不参与字体链：列在前面的 face 只要有某个字形就会被选中，即使它的规则把范围限定在别的文字上。例如把 Vazirmatn（含拉丁字形）限定为 `U+0600-06FF` 并列在 Cantarell 前面，拉丁字母仍由 Vazirmatn 绘制。
+
+新增三个 `myr` 接口（`engine/src/myui/myr/my_font.{h,c}`）：
+
+- `my_font_create_ranged(allocator, base, ranges, count)`：包装一个 face，`has_glyph` 只在范围内（且 base 本身有该字形）时为真；度量、栅格化、整形、glyph id、shape support 与 variation support 全部转发给 base（范围外的 variation 报告不支持）。接管 `base` 的所有权；参数非法（NULL、0 段、超过 16 段、首大于尾）或内存不足时销毁 `base` 并返回 NULL。
+- `my_font_create_chain_from_fonts(allocator, fonts, count)`：用调用方已建好的字体组成回退链，接管全部非 NULL 项（失败时也销毁它们），NULL 项跳过。
+- `my_font_load_source(allocator, source, cache_capacity)`：按字体链的方式加载单个文件（FreeType 优先，stb 回退）。
+
+`my_css_font_face_create_chain` 改为逐个加载文件，有 `unicode-range` 的 face 用 `my_font_create_ranged` 包装后再交给 `my_font_create_chain_from_fonts`；没有范围的 face 不包装。`MY_CSS_MAX_FONT_RANGES` 与 `MY_FONT_RANGED_MAX_RANGES` 由 `_Static_assert` 绑定，合法的 CSS 范围总能被包装。
+
+**TDD**：`test_myui_font` 新增 6 例（92 例）：范围限制 `has_glyph` 且其他调用照常转发；范围内仍以 base 是否有字形为准；恰好 16 段可用、第 16 段生效、17 段被拒；参数非法与失败时销毁 base（用计数字体核对销毁次数）；由两个范围包装组成的链按范围把 'B' 与 'Z' 分到不同 face；`chain_from_fonts` 的参数校验、跳过 NULL、超限时销毁全部项。`test_myui_css` 新增 1 例（252 例）：Vazirmatn 限定为阿拉伯文后，"WAVE" 的宽度等于只用 Cantarell 的链，未限定时等于只用 Vazirmatn 的链。去掉包装时该用例判红。字体缺失时 SKIP。
+
+**变异**（18 项，全部判红）：包装忽略范围、范围上界开区间、下界开区间、范围内不再询问 base、只看第一段、不检查首大于尾、首大于尾时不销毁 base、销毁包装时不销毁 base、段数上限放宽一、上限收紧一、`measure` 不转发、允许 0 段、`chain_from_fonts` 超限时不销毁、跳过第一个非 NULL 项、全为 NULL 时仍返回链，以及 CSS 侧不包装。实现首版的超限清理循环只销毁前 256 项，被新用例发现（第 257 项泄漏）后修正。
+
+**验证**：`test_myui_font` 92/92、`test_myui_css` 252/252，ASan+UBSan（含泄漏检测）两者均通过；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。
+
+边界：`my_css_font_face_match` 仍按 family 选一条规则，不会为同一 family 下 `unicode-range` 不同的多条规则各自加载 face（CSS 中常见的按文字拆分字体文件的写法）；需要时宿主可以为这些规则使用不同的 family 名并都列入 `font-family`。

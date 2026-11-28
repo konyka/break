@@ -12580,6 +12580,75 @@ TEST(css_font_registry_widget_defaults_and_keywords)
   my_css_sheet_destroy(sheet);
 }
 
+TEST(css_font_face_chain_honours_unicode_range)
+{
+  /* Vazirmatn has Latin glyphs too. Listed first but limited to Arabic by
+   * unicode-range, it must not take 'A': the chain routes Latin to the
+   * Cantarell face after it, and Arabic stays with Vazirmatn. Without the
+   * range both go to Vazirmatn. */
+  const char* css =
+      "@font-face{font-family:Arabic;"
+      "src:url(\"vazirmatn-vf-fonts/Vazirmatn[wght].ttf\");"
+      "unicode-range:U+0600-06FF;}"
+      "@font-face{font-family:Latin;"
+      "src:url(abattis-cantarell-fonts/Cantarell-Regular.otf);}"
+      "@font-face{font-family:ArabicAll;"
+      "src:url(\"vazirmatn-vf-fonts/Vazirmatn[wght].ttf\");}";
+  const char* ranged_list[] = {"Arabic", "Latin"};
+  const char* plain_list[] = {"ArabicAll", "Latin"};
+  my_css_sheet_t* sheet = my_css_parse(NULL, css, strlen(css), NULL);
+  my_font_t* ranged;
+  my_font_t* plain;
+  my_font_t* latin_only;
+  my_font_t* arabic_only;
+  int32_t w_ranged = 0, w_plain = 0, w_latin = 0, w_arabic = 0, h = 0;
+  FILE* a = fopen("/usr/share/fonts/abattis-cantarell-fonts/Cantarell-Regular.otf", "rb");
+  FILE* b = fopen("/usr/share/fonts/vazirmatn-vf-fonts/Vazirmatn[wght].ttf", "rb");
+
+  ASSERT_NOT_NULL(sheet);
+  if (a == NULL || b == NULL) {
+    if (a != NULL) fclose(a);
+    if (b != NULL) fclose(b);
+    my_css_sheet_destroy(sheet);
+    printf("  SKIP: no Cantarell/Vazirmatn test fonts\n");
+    return;
+  }
+  fclose(a);
+  fclose(b);
+  ranged = my_css_font_face_create_chain(NULL, sheet, "/usr/share/fonts",
+                                         ranged_list, 2u, 400u, false, 16u,
+                                         NULL);
+  plain = my_css_font_face_create_chain(NULL, sheet, "/usr/share/fonts",
+                                        plain_list, 2u, 400u, false, 16u,
+                                        NULL);
+  latin_only = my_css_font_face_create_chain(NULL, sheet, "/usr/share/fonts",
+                                             &ranged_list[1], 1u, 400u,
+                                             false, 16u, NULL);
+  arabic_only = my_css_font_face_create_chain(NULL, sheet, "/usr/share/fonts",
+                                              &plain_list[0], 1u, 400u,
+                                              false, 16u, NULL);
+  ASSERT_NOT_NULL(ranged);
+  ASSERT_NOT_NULL(plain);
+  ASSERT_NOT_NULL(latin_only);
+  ASSERT_NOT_NULL(arabic_only);
+  ASSERT_TRUE(my_font_has_glyph(ranged, 'A'));
+  ASSERT_TRUE(my_font_has_glyph(ranged, 0x0633u));
+  /* "WAVE" measures with Cantarell through the ranged chain, with
+   * Vazirmatn through the plain one; the two faces differ in width. */
+  ASSERT_EQ(my_font_measure(ranged, "WAVE", 20, &w_ranged, &h), MY_RET_OK);
+  ASSERT_EQ(my_font_measure(plain, "WAVE", 20, &w_plain, &h), MY_RET_OK);
+  ASSERT_EQ(my_font_measure(latin_only, "WAVE", 20, &w_latin, &h), MY_RET_OK);
+  ASSERT_EQ(my_font_measure(arabic_only, "WAVE", 20, &w_arabic, &h), MY_RET_OK);
+  ASSERT_TRUE(w_latin != w_arabic);
+  ASSERT_EQ(w_ranged, w_latin);
+  ASSERT_EQ(w_plain, w_arabic);
+  my_font_destroy(arabic_only);
+  my_font_destroy(latin_only);
+  my_font_destroy(plain);
+  my_font_destroy(ranged);
+  my_css_sheet_destroy(sheet);
+}
+
 TEST(css_keyframes_capability_is_registered)
 {
   ASSERT_TRUE((my_css_capabilities()->supported_features &
@@ -13176,6 +13245,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_font_registry_remembers_misses_and_is_bounded);
     RUN_TEST(css_font_registry_resolves_a_widget_font_from_the_theme);
     RUN_TEST(css_font_registry_widget_defaults_and_keywords);
+    RUN_TEST(css_font_face_chain_honours_unicode_range);
     RUN_TEST(css_keyframes_capability_is_registered);
     RUN_TEST(css_font_family_list_splits_quoted_and_unquoted_names);
     RUN_TEST(css_font_family_list_rejects_malformed_values);

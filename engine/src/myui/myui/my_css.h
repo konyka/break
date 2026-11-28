@@ -484,7 +484,8 @@ const my_css_font_face_t* my_css_font_face_at(const my_css_sheet_t* sheet,
  * takes a comma list of `U+X`, `U+X-Y` and `U+X??` (trailing wildcards),
  * 1..6 hex digits each, `U+` in either case. An end beyond U+10FFFF is
  * clamped; a start beyond it, start > end, an empty list or more than
- * MY_CSS_MAX_FONT_RANGES ranges drops the rule. */
+ * MY_CSS_MAX_FONT_RANGES ranges drops the rule. my_css_font_face_create_chain
+ * applies the range when it builds a chain. */
 bool my_css_font_face_covers(const my_css_font_face_t* face,
                              uint32_t codepoint);
 
@@ -512,8 +513,11 @@ bool my_css_font_family_list_parse(const char* value,
  * italic) is loaded from `base_dir` + "/" + its `src` (`src` is always a
  * safe relative path). Families without a face, files that do not exist
  * and paths longer than 1023 bytes are skipped; a family listed twice
- * loads once. Faces are created with my_font_create_chain_ex, which loads
- * every file before returning (the path buffers are not kept). `loaded`,
+ * loads once. Each file is loaded with my_font_load_source; a face whose
+ * rule has a `unicode-range` is wrapped with my_font_create_ranged, so the
+ * chain (my_font_create_chain_from_fonts) routes code points outside the
+ * range to the next face. Every file is loaded before returning (the path
+ * buffers are not kept). `loaded`,
  * when non-NULL, receives the number of files handed to the chain on
  * success and 0 otherwise; a file that exists but fails to parse still
  * counts. NULL when a pointer argument is NULL, no file is found (always

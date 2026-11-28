@@ -305,6 +305,44 @@ my_font_t* my_font_create_chain_ex(const my_allocator_t* allocator,
                                    size_t cache_capacity);
 
 /**
+ * @brief Load one face the way the fallback chain does: FreeType (hinted)
+ * when built with MYUI_FONT_FREETYPE, stb_truetype otherwise or when
+ * FreeType fails. NULL when the source is NULL, has a NULL path or a
+ * negative face index, or the file does not load.
+ */
+my_font_t* my_font_load_source(const my_allocator_t* allocator,
+                               const my_font_source_t* source,
+                               size_t cache_capacity);
+
+/**
+ * @brief Fallback chain over fonts the caller already built (for example
+ * my_font_create_ranged wrappers). Takes ownership of every non-NULL entry:
+ * destroying the chain destroys them, and so does a failed call. NULL
+ * entries are skipped; NULL when `fonts` is NULL, `count` is 0 or above
+ * MY_FONT_CHAIN_MAX_SOURCES, no entry is non-NULL, or on OOM.
+ */
+my_font_t* my_font_create_chain_from_fonts(const my_allocator_t* allocator,
+                                           my_font_t* const* fonts,
+                                           size_t count);
+
+#define MY_FONT_RANGED_MAX_RANGES 16u
+
+/**
+ * @brief Wrap `base` so it reports glyphs only inside `ranges`
+ * (`range_count` inclusive [first, last] pairs, as CSS `unicode-range`).
+ * Every other call is forwarded to `base`, including shaping, whose glyphs
+ * keep `base` as their owning face. A fallback chain built from such
+ * wrappers routes each codepoint past faces whose range excludes it.
+ *
+ * Takes ownership of `base`: destroying the wrapper destroys it, and on
+ * failure (NULL ranges, range_count 0 or above MY_FONT_RANGED_MAX_RANGES,
+ * first > last, OOM) `base` is destroyed and NULL returned.
+ */
+my_font_t* my_font_create_ranged(const my_allocator_t* allocator,
+                                 my_font_t* base, const uint32_t (*ranges)[2],
+                                 size_t range_count);
+
+/**
  * @brief Decode the first UTF-8 codepoint of s and advance the pointer.
  * Invalid, truncated, overlong, surrogate, and out-of-range sequences decode
  * as 0xFFFD and advance one byte. s must not be empty.

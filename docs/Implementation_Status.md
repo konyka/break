@@ -15073,3 +15073,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **交付**：`my_css_font_registry_get_for_widget` 读取控件按 state 解析的 `font-family`/`font-weight`/`font-style`，经注册表返回共享字体；无 `font-family` 时返回 NULL。至此 `@font-face` → 匹配 → 字体链 → 注册表 → 控件 cascade 的库级链路完整，把字体设到控件仍由宿主调用。
 - **TDD 与变异**：`test_myui_css` 新增 2 例（251 例），实现前编译失败；7 项变异全部判红（首轮 2 项存活后补用例）。
 - **验证**：普通与 ASan+UBSan 下 251/251；全量 ctest 482/482；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
+
+## myui：字体链按 `unicode-range` 路由（2026-11-28）
+
+- **缺陷**：`unicode-range` 只解析不生效，列在前面且含该字形的 face 总被选中。
+- **交付**：`my_font_create_ranged`（按范围限制 `has_glyph`、其余转发、接管 base）、`my_font_create_chain_from_fonts`、`my_font_load_source`；`my_css_font_face_create_chain` 为有范围的 face 包装后组链。两处上限由 `_Static_assert` 绑定。
+- **TDD 与变异**：`test_myui_font` 新增 6 例（92 例）、`test_myui_css` 新增 1 例（252 例），去掉包装时判红；18 项变异全部判红，期间发现并修正了超限清理漏销毁最后一项的缺陷。
+- **验证**：普通与 ASan+UBSan 下两者通过；全量 ctest 482/482；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。

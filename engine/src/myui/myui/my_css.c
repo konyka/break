@@ -9052,6 +9052,10 @@ my_ret_t my_theme_load_css_with_options(
 
 #define CSS_FONT_CHAIN_PATH_BYTES 1024u
 
+/* every parsed `unicode-range` must fit the font wrapper */
+_Static_assert(MY_CSS_MAX_FONT_RANGES <= MY_FONT_RANGED_MAX_RANGES,
+               "unicode-range limit exceeds my_font_create_ranged");
+
 my_font_t* my_css_font_face_create_chain(
     const my_allocator_t* allocator, const my_css_sheet_t* sheet,
     const char* base_dir, const char* const* families, size_t family_count,
@@ -9093,9 +9097,21 @@ my_font_t* my_css_font_face_create_chain(
     sources[count].face_index = 0;
     count++;
   }
-  chain = count > 0u ? my_font_create_chain_ex(allocator, sources, count,
-                                               cache_capacity)
-                     : NULL;
+  chain = NULL;
+  if (count > 0u) {
+    /* load each face; a face with a `unicode-range` is wrapped so the
+     * chain routes code points outside its range to later faces */
+    my_font_t* fonts[MY_CSS_MAX_FONT_FACES];
+    for (j = 0u; j < count; j++) {
+      fonts[j] = my_font_load_source(allocator, &sources[j], cache_capacity);
+      if (fonts[j] != NULL && picked[j]->range_count > 0u) {
+        fonts[j] = my_font_create_ranged(allocator, fonts[j],
+                                         picked[j]->ranges,
+                                         picked[j]->range_count);
+      }
+    }
+    chain = my_font_create_chain_from_fonts(allocator, fonts, count);
+  }
   my_mem_free(allocator, paths);
   if (chain != NULL && loaded != NULL) *loaded = count;
   return chain;

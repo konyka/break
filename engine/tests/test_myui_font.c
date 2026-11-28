@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <stdatomic.h>
 
 #include "core/platform_thread.h"
@@ -1336,6 +1337,237 @@ cleanup:
   return success;
 }
 #endif
+
+typedef struct counting_font_t {
+  my_font_t base;
+  int* glyph_calls;
+  int* destroyed;
+} counting_font_t;
+
+static my_ret_t counting_measure(my_font_t* font, const char* text,
+                                 int32_t size, int32_t* w, int32_t* h) {
+  (void)font;
+  (void)text;
+  if (w != NULL) *w = size;
+  if (h != NULL) *h = size;
+  return MY_RET_OK;
+}
+
+static my_ret_t counting_get_glyph(my_font_t* font, uint32_t codepoint,
+                                   int32_t size, my_glyph_t* glyph) {
+  counting_font_t* c = (counting_font_t*)font;
+  (void)codepoint;
+  (void)size;
+  memset(glyph, 0, sizeof(*glyph));
+  (*c->glyph_calls)++;
+  return MY_RET_OK;
+}
+
+static int32_t counting_metric(my_font_t* font, int32_t size) {
+  (void)font;
+  return size;
+}
+
+static void counting_destroy(my_font_t* font) {
+  counting_font_t* c = (counting_font_t*)font;
+  (*c->destroyed)++;
+  free(c);
+}
+
+static const my_font_vtable_t s_counting_vtable = {
+    counting_measure, counting_get_glyph, counting_metric, counting_metric,
+    counting_metric,  counting_destroy,   NULL, NULL, NULL, NULL, NULL, NULL};
+
+static my_font_t* counting_font(int* glyph_calls, int* destroyed) {
+  counting_font_t* c = (counting_font_t*)calloc(1u, sizeof(*c));
+  c->base.vtable = &s_counting_vtable;
+  c->glyph_calls = glyph_calls;
+  c->destroyed = destroyed;
+  return (my_font_t*)c;
+}
+
+TEST(font_ranged_limits_coverage_and_forwards_the_rest)
+{
+  static const uint32_t ranges[][2] = {{'A', 'C'}, {'x', 'x'}};
+  my_font_t* base = my_font_bitmap_create(NULL);
+  my_font_t* ranged;
+  int32_t base_w = 0, base_h = 0, w = 0, h = 0;
+  my_glyph_t glyph = {0};
+
+  ASSERT_NOT_NULL(base);
+  ranged = my_font_create_ranged(NULL, base, ranges, 2u);
+  ASSERT_NOT_NULL(ranged);
+  ASSERT_TRUE(my_font_has_glyph(ranged, 'A'));
+  ASSERT_TRUE(my_font_has_glyph(ranged, 'C'));
+  ASSERT_TRUE(my_font_has_glyph(ranged, 'x'));
+  ASSERT_FALSE(my_font_has_glyph(ranged, 'D'));
+  ASSERT_FALSE(my_font_has_glyph(ranged, '@'));
+  ASSERT_FALSE(my_font_has_glyph(ranged, 'w'));
+  ASSERT_EQ(my_font_measure(base, "AB", 8, &base_w, &base_h), MY_RET_OK);
+  ASSERT_TRUE(base_w > 0);
+  ASSERT_EQ(my_font_measure(ranged, "AB", 8, &w, &h), MY_RET_OK);
+  ASSERT_EQ(w, base_w);
+  ASSERT_EQ(h, base_h);
+  ASSERT_EQ(my_font_ascent(ranged, 8), my_font_ascent(base, 8));
+  ASSERT_EQ(my_font_line_height(ranged, 8), my_font_line_height(base, 8));
+  ASSERT_EQ(my_font_get_glyph(ranged, 'A', 8, &glyph), MY_RET_OK);
+  my_font_glyph_release(&glyph);
+  /* the wrapper owns the base face: destroying it releases both */
+  my_font_destroy(ranged);
+}
+
+static bool even_only_has_glyph(my_font_t* font, uint32_t codepoint) {
+  (void)font;
+  return (codepoint & 1u) == 0u;
+}
+
+static const my_font_vtable_t s_even_vtable = {
+    counting_measure, counting_get_glyph, counting_metric, counting_metric,
+    counting_metric,  counting_destroy,   even_only_has_glyph,
+    NULL, NULL, NULL, NULL, NULL};
+
+TEST(font_ranged_still_asks_the_base_inside_its_range)
+{
+  /* Inside the range the wrapper defers to the base face: a code point the
+   * base lacks is still missing. */
+  static const uint32_t all[][2] = {{0u, 0x10FFFFu}};
+  int calls = 0, dead = 0;
+  counting_font_t* even = (counting_font_t*)calloc(1u, sizeof(*even));
+  my_font_t* ranged;
+  even->base.vtable = &s_even_vtable;
+  even->glyph_calls = &calls;
+  even->destroyed = &dead;
+  ranged = my_font_create_ranged(NULL, (my_font_t*)even, all, 1u);
+  ASSERT_NOT_NULL(ranged);
+  ASSERT_TRUE(my_font_has_glyph(ranged, 'B'));  /* 0x42, even */
+  ASSERT_FALSE(my_font_has_glyph(ranged, 'A')); /* 0x41, odd */
+  my_font_destroy(ranged);
+  ASSERT_EQ(dead, 1);
+}
+
+TEST(font_ranged_accepts_exactly_the_range_limit)
+{
+  uint32_t ranges[MY_FONT_RANGED_MAX_RANGES + 1u][2];
+  my_font_t* ranged;
+  size_t i;
+  for (i = 0u; i < MY_FONT_RANGED_MAX_RANGES + 1u; i++) {
+    ranges[i][0] = (uint32_t)(0x100u * i);
+    ranges[i][1] = (uint32_t)(0x100u * i);
+  }
+  {
+    /* the counting font claims every glyph, so has_glyph is exactly the
+     * range test: the 16th range still counts, a gap between ranges does
+     * not */
+    int calls = 0, dead = 0;
+    ranged = my_font_create_ranged(NULL, counting_font(&calls, &dead),
+                                   (const uint32_t (*)[2])ranges,
+                                   MY_FONT_RANGED_MAX_RANGES);
+    ASSERT_NOT_NULL(ranged);
+    ASSERT_TRUE(my_font_has_glyph(
+        ranged, (uint32_t)(0x100u * (MY_FONT_RANGED_MAX_RANGES - 1u))));
+    ASSERT_FALSE(my_font_has_glyph(ranged, 0x80u));
+    my_font_destroy(ranged);
+    ASSERT_EQ(dead, 1);
+  }
+  {
+    int calls = 0, dead = 0;
+    ASSERT_TRUE(my_font_create_ranged(NULL, counting_font(&calls, &dead),
+                                      (const uint32_t (*)[2])ranges,
+                                      MY_FONT_RANGED_MAX_RANGES + 1u) == NULL);
+    ASSERT_EQ(dead, 1);
+  }
+}
+
+TEST(font_ranged_rejects_bad_arguments_and_destroys_the_base)
+{
+  static const uint32_t ranges[][2] = {{'A', 'C'}};
+  static const uint32_t reversed[][2] = {{'C', 'A'}};
+  my_font_t* base;
+
+  ASSERT_TRUE(my_font_create_ranged(NULL, NULL, ranges, 1u) == NULL);
+  {
+    int calls = 0, dead = 0;
+    ASSERT_TRUE(my_font_create_ranged(NULL, counting_font(&calls, &dead),
+                                      reversed, 1u) == NULL);
+    ASSERT_EQ(dead, 1);
+  }
+  /* on failure the base face is destroyed, so callers never leak it */
+  base = my_font_bitmap_create(NULL);
+  ASSERT_TRUE(my_font_create_ranged(NULL, base, NULL, 1u) == NULL);
+  base = my_font_bitmap_create(NULL);
+  ASSERT_TRUE(my_font_create_ranged(NULL, base, ranges, 0u) == NULL);
+  base = my_font_bitmap_create(NULL);
+  ASSERT_TRUE(my_font_create_ranged(NULL, base, reversed, 1u) == NULL);
+  base = my_font_bitmap_create(NULL);
+  ASSERT_TRUE(my_font_create_ranged(NULL, base, ranges,
+                                    MY_FONT_RANGED_MAX_RANGES + 1u) == NULL);
+}
+
+TEST(font_chain_from_ranged_faces_routes_by_range)
+{
+  /* Both faces claim every glyph (NULL has_glyph). The first wrapper
+   * limits its face to 'A'..'M', the second takes the rest. A plain chain
+   * would send everything to the first face. */
+  static const uint32_t low[][2] = {{'A', 'M'}};
+  static const uint32_t rest[][2] = {{0u, 0x10FFFFu}};
+  int low_calls = 0, rest_calls = 0, low_dead = 0, rest_dead = 0;
+  my_font_t* faces[2];
+  my_font_t* chain;
+  my_glyph_t glyph = {0};
+
+  faces[0] = my_font_create_ranged(NULL, counting_font(&low_calls, &low_dead),
+                                   low, 1u);
+  faces[1] = my_font_create_ranged(NULL,
+                                   counting_font(&rest_calls, &rest_dead),
+                                   rest, 1u);
+  ASSERT_NOT_NULL(faces[0]);
+  ASSERT_NOT_NULL(faces[1]);
+  chain = my_font_create_chain_from_fonts(NULL, faces, 2u);
+  ASSERT_NOT_NULL(chain);
+  ASSERT_EQ(my_font_get_glyph(chain, 'B', 8, &glyph), MY_RET_OK);
+  my_font_glyph_release(&glyph);
+  ASSERT_EQ(low_calls, 1);
+  ASSERT_EQ(rest_calls, 0);
+  ASSERT_EQ(my_font_get_glyph(chain, 'Z', 8, &glyph), MY_RET_OK);
+  my_font_glyph_release(&glyph);
+  ASSERT_EQ(low_calls, 1);
+  ASSERT_EQ(rest_calls, 1);
+  ASSERT_EQ(my_font_get_glyph(chain, 'M', 8, &glyph), MY_RET_OK);
+  my_font_glyph_release(&glyph);
+  ASSERT_EQ(low_calls, 2);
+  /* the chain owns the wrappers, which own the faces */
+  my_font_destroy(chain);
+  ASSERT_EQ(low_dead, 1);
+  ASSERT_EQ(rest_dead, 1);
+}
+
+TEST(font_chain_from_fonts_rejects_bad_arguments)
+{
+  my_font_t* faces[2] = {NULL, NULL};
+  ASSERT_TRUE(my_font_create_chain_from_fonts(NULL, NULL, 1u) == NULL);
+  ASSERT_TRUE(my_font_create_chain_from_fonts(NULL, faces, 0u) == NULL);
+  {
+    /* over the limit: every entry is destroyed */
+    int calls = 0, dead = 0;
+    my_font_t* many[MY_FONT_CHAIN_MAX_SOURCES + 1u];
+    size_t i;
+    for (i = 0u; i < MY_FONT_CHAIN_MAX_SOURCES + 1u; i++) {
+      many[i] = counting_font(&calls, &dead);
+    }
+    ASSERT_TRUE(my_font_create_chain_from_fonts(
+                    NULL, many, MY_FONT_CHAIN_MAX_SOURCES + 1u) == NULL);
+    ASSERT_EQ(dead, (int)(MY_FONT_CHAIN_MAX_SOURCES + 1u));
+  }
+  /* NULL entries are skipped; with no face left the call fails */
+  ASSERT_TRUE(my_font_create_chain_from_fonts(NULL, faces, 2u) == NULL);
+  faces[1] = my_font_bitmap_create(NULL);
+  {
+    my_font_t* chain = my_font_create_chain_from_fonts(NULL, faces, 2u);
+    ASSERT_NOT_NULL(chain);
+    ASSERT_TRUE(my_font_has_glyph(chain, 'A'));
+    my_font_destroy(chain);
+  }
+}
 
 TEST(utf8_decodes_chinese_codepoints)
 {
@@ -4048,4 +4280,10 @@ TEST_MAIN_BEGIN()
     RUN_TEST(font_chain_keeps_zwj_sequence_on_one_face);
   RUN_TEST(bundled_jetbrains_mono_loads_and_shapes_latin);
   RUN_TEST(bundled_noto_sans_sc_loads_and_shapes_cjk);
+  RUN_TEST(font_ranged_limits_coverage_and_forwards_the_rest);
+  RUN_TEST(font_ranged_still_asks_the_base_inside_its_range);
+  RUN_TEST(font_ranged_accepts_exactly_the_range_limit);
+  RUN_TEST(font_ranged_rejects_bad_arguments_and_destroys_the_base);
+  RUN_TEST(font_chain_from_ranged_faces_routes_by_range);
+  RUN_TEST(font_chain_from_fonts_rejects_bad_arguments);
 TEST_MAIN_END()

@@ -1418,6 +1418,44 @@ my_font_t* my_font_create_chain_ex(const my_allocator_t* allocator,
   return (my_font_t*)c;
 }
 
+my_font_t* my_font_load_source(const my_allocator_t* allocator,
+                               const my_font_source_t* source,
+                               size_t cache_capacity) {
+  return chain_load_face(allocator, source, cache_capacity);
+}
+
+my_font_t* my_font_create_chain_from_fonts(const my_allocator_t* allocator,
+                                           my_font_t* const* fonts,
+                                           size_t count) {
+  my_font_chain_t* c;
+  size_t i;
+  if (fonts == NULL) return NULL;
+  if (count == 0u || count > MY_FONT_CHAIN_MAX_SOURCES) {
+    for (i = 0u; i < count; i++) my_font_destroy(fonts[i]);
+    return NULL;
+  }
+  c = (my_font_chain_t*)my_mem_calloc(allocator, 1, sizeof(my_font_chain_t));
+  if (c != NULL) {
+    c->faces = (my_font_t**)my_mem_calloc(allocator, count, sizeof(my_font_t*));
+  }
+  if (c == NULL || c->faces == NULL) {
+    if (c != NULL) my_mem_free(allocator, c);
+    for (i = 0u; i < count; i++) my_font_destroy(fonts[i]);
+    return NULL;
+  }
+  c->allocator = allocator;
+  for (i = 0u; i < count; i++) {
+    if (fonts[i] != NULL) c->faces[c->count++] = fonts[i];
+  }
+  if (c->count == 0u) {
+    my_mem_free(allocator, c->faces);
+    my_mem_free(allocator, c);
+    return NULL;
+  }
+  c->base.vtable = &s_chain_vtable;
+  return (my_font_t*)c;
+}
+
 my_font_t* my_font_create_chain(const my_allocator_t* allocator,
                                 const char* const* paths, size_t path_count,
                                 size_t cache_capacity) {
@@ -1522,4 +1560,131 @@ const char* my_font_format_name(my_font_format_t format) {
     default:
       return "unknown";
   }
+}
+
+/* ---------------- unicode-range wrapper ---------------- */
+
+typedef struct my_font_ranged_t {
+  my_font_t base_font;
+  const my_allocator_t* allocator;
+  my_font_t* base;
+  uint32_t ranges[MY_FONT_RANGED_MAX_RANGES][2];
+  size_t range_count;
+} my_font_ranged_t;
+
+static my_font_t* ranged_base(my_font_t* font) {
+  return ((my_font_ranged_t*)font)->base;
+}
+
+static my_ret_t ranged_measure(my_font_t* font, const char* text,
+                               int32_t size, int32_t* w, int32_t* h) {
+  return my_font_measure(ranged_base(font), text, size, w, h);
+}
+
+static my_ret_t ranged_get_glyph(my_font_t* font, uint32_t codepoint,
+                                 int32_t size, my_glyph_t* glyph) {
+  return my_font_get_glyph(ranged_base(font), codepoint, size, glyph);
+}
+
+static int32_t ranged_ascent(my_font_t* font, int32_t size) {
+  return my_font_ascent(ranged_base(font), size);
+}
+
+static int32_t ranged_descent(my_font_t* font, int32_t size) {
+  return my_font_descent(ranged_base(font), size);
+}
+
+static int32_t ranged_line_height(my_font_t* font, int32_t size) {
+  return my_font_line_height(ranged_base(font), size);
+}
+
+static void ranged_destroy(my_font_t* font) {
+  my_font_ranged_t* r = (my_font_ranged_t*)font;
+  my_font_destroy(r->base);
+  my_mem_free(r->allocator, r);
+}
+
+static bool ranged_has_glyph(my_font_t* font, uint32_t codepoint) {
+  my_font_ranged_t* r = (my_font_ranged_t*)font;
+  size_t i;
+  for (i = 0u; i < r->range_count; i++) {
+    if (codepoint >= r->ranges[i][0] && codepoint <= r->ranges[i][1]) {
+      return my_font_has_glyph(r->base, codepoint);
+    }
+  }
+  return false;
+}
+
+static my_ret_t ranged_shape(my_font_t* font, const char* text, int32_t size,
+                             bool rtl, const my_allocator_t* allocator,
+                             my_font_shape_result_t* result) {
+  return my_font_shape(ranged_base(font), text, size, rtl, allocator, result);
+}
+
+static my_ret_t ranged_get_glyph_id(my_font_t* font, uint32_t glyph_id,
+                                    int32_t size, my_glyph_t* glyph) {
+  return my_font_get_glyph_id(ranged_base(font), glyph_id, size, glyph);
+}
+
+static my_ret_t ranged_shape_ex(my_font_t* font, const char* text,
+                                int32_t size,
+                                const my_font_shape_params_t* params,
+                                const my_allocator_t* allocator,
+                                my_font_shape_result_t* result) {
+  return my_font_shape_ex(ranged_base(font), text, size, params, allocator,
+                          result);
+}
+
+static my_ret_t ranged_shape_support(my_font_t* font,
+                                     const my_font_shape_params_t* params,
+                                     my_font_shape_support_t* support) {
+  return my_font_shape_support_query(ranged_base(font), params, support);
+}
+
+static my_font_variation_support_t ranged_variation_support(
+    my_font_t* font, uint32_t codepoint, uint32_t selector) {
+  my_font_t* base = ranged_base(font);
+  if (!ranged_has_glyph(font, codepoint)) {
+    return MY_FONT_VARIATION_UNSUPPORTED;
+  }
+  if (base->vtable == NULL || base->vtable->variation_support == NULL) {
+    return MY_FONT_VARIATION_SUPPORT_UNKNOWN;
+  }
+  return base->vtable->variation_support(base, codepoint, selector);
+}
+
+static const my_font_vtable_t s_ranged_vtable = {
+    ranged_measure,      ranged_get_glyph,     ranged_ascent,
+    ranged_descent,      ranged_line_height,   ranged_destroy,
+    ranged_has_glyph,    ranged_shape,         ranged_get_glyph_id,
+    ranged_shape_ex,     ranged_shape_support, ranged_variation_support};
+
+my_font_t* my_font_create_ranged(const my_allocator_t* allocator,
+                                 my_font_t* base, const uint32_t (*ranges)[2],
+                                 size_t range_count) {
+  my_font_ranged_t* r;
+  size_t i;
+  if (base == NULL) return NULL;
+  if (ranges == NULL || range_count == 0u ||
+      range_count > MY_FONT_RANGED_MAX_RANGES) {
+    my_font_destroy(base);
+    return NULL;
+  }
+  for (i = 0u; i < range_count; i++) {
+    if (ranges[i][0] > ranges[i][1]) {
+      my_font_destroy(base);
+      return NULL;
+    }
+  }
+  r = (my_font_ranged_t*)my_mem_calloc(allocator, 1, sizeof(*r));
+  if (r == NULL) {
+    my_font_destroy(base);
+    return NULL;
+  }
+  r->base_font.vtable = &s_ranged_vtable;
+  r->allocator = allocator;
+  r->base = base;
+  memcpy(r->ranges, ranges, range_count * sizeof(ranges[0]));
+  r->range_count = range_count;
+  return (my_font_t*)r;
 }
