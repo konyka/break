@@ -14997,3 +14997,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **结论**：不实施。myui 已在持久 `surface_fbo` 中保留像素并只重绘 damage，Vulkan 每帧做一次全屏合成；该方案每帧多一次整幅 blit 与一张交换链尺寸的 image，节省的合成工作被抵消，且要改动交换链 pass 的四个重启点和截图路径。compositor 侧的 damage 已由 `VK_KHR_incremental_present` 提示交付。
 - **不变**：Vulkan 的 `present_target_preserved` 仍为 false，由 `test_vulkan` 的 `tv_test_present_damage_regions` 固定。详见 `docs/myui_remaining_work.md` 同日决策记录。本提交只改文档。
 
+
+## 状态对账：AOI 接入文档与崩溃上传应答缓冲（2026-11-28）
+
+- `docs/design/runtime_world_aoi_integration.md` 首行仍写「设计，未实现」，与已交付的 adapter 接入（`publish_keep`，`8aacfc87`、`c091604c`）不符，已改为当前状态；core_app 不接线的结论不变。
+- 指标推送一节记录的 `break_crash_upload_http` 256 字节应答缓冲：维持「过大的应答判失败」，不改。参考收集服务 `break_crash_server` 对规范化记录取 SHA-256 去重，重复上传答 `duplicate` 且不重复计数（`docs/design/crash_symbolization.md`「重复与回归」，e2e 场景「应答丢失后重试只计一次」），所以失败后重传不会造成重复计数；其应答体是 `ok count=N regression=0/1` 一行，远小于 256 字节。改为成功只会省一次重传，却要改动头文件契约与 `a_200_with_broken_framing_is_failure`，不值得。
+- 本提交只改文档，不预写远端结果。

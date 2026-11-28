@@ -1,6 +1,8 @@
 # Runtime World Session 的按连接 AOI 过滤接入（设计）
 
-状态：设计，未实现。本文规划把已交付的按连接 AOI 裁剪原语接入 `BreakRuntimeWorldSession`
+状态：adapter 接入已交付（`BreakRuntimeWorldSessionConfig.publish_keep`，提交 `8aacfc87`、`c091604c`）；core_app 未接线，原因见文末「core_app 接线的实际结论」。以下为原设计。
+
+本文规划把已交付的按连接 AOI 裁剪原语接入 `BreakRuntimeWorldSession`
 共享发布 fan-out 路径，供 core_app `--world-replication` 实际按连接裁剪。先设计后实现，
 实现时采用 TDD。
 
