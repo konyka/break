@@ -65,6 +65,7 @@
 #define MY_CSS_MAX_FONT_FAMILY_BYTES 64u
 #define MY_CSS_MAX_FONT_RANGES 16u
 #define MY_CSS_MAX_FONT_FAMILIES 16u
+#define MY_CSS_MAX_FONT_REGISTRY 64u
 
 typedef enum my_css_parse_flags_t {
   MY_CSS_PARSE_DEFAULT = 0u,
@@ -521,6 +522,34 @@ struct my_font_t* my_css_font_face_create_chain(
     const my_allocator_t* allocator, const my_css_sheet_t* sheet,
     const char* base_dir, const char* const* families, size_t family_count,
     uint32_t weight, bool italic, size_t cache_capacity, size_t* loaded);
+
+/** @brief Shares loaded fonts between widgets: one font per
+ * (normalized family list, weight, italic) key, built with
+ * my_css_font_face_create_chain. The registry borrows `sheet` and
+ * `base_dir` (both must outlive it) and owns every font it returns. */
+typedef struct my_css_font_registry_t my_css_font_registry_t;
+
+/** @brief NULL when `sheet` or `base_dir` is NULL or on OOM. */
+my_css_font_registry_t* my_css_font_registry_create(
+    const my_allocator_t* allocator, const my_css_sheet_t* sheet,
+    const char* base_dir, size_t cache_capacity);
+
+/** @brief Destroys the registry and every font it holds. NULL is a no-op. */
+void my_css_font_registry_destroy(my_css_font_registry_t* registry);
+
+/** @brief Font for a `font-family` value at a weight and style. The value
+ * is parsed with my_css_font_family_list_parse; names are compared ASCII
+ * case-insensitively, so differently spaced or cased lists share a key. A
+ * key that loads no font is remembered and returns NULL without trying
+ * again. NULL for a malformed value (no entry is made), a NULL argument,
+ * or a new key once MY_CSS_MAX_FONT_REGISTRY keys are held; existing keys
+ * still resolve. The font stays valid until the registry is destroyed. */
+struct my_font_t* my_css_font_registry_get(my_css_font_registry_t* registry,
+                                           const char* family_value,
+                                           uint32_t weight, bool italic);
+
+/** @brief Number of keys held, including remembered misses. */
+size_t my_css_font_registry_count(const my_css_font_registry_t* registry);
 
 /** @brief Best `@font-face` for a family, weight and style, following the
  * CSS Fonts matching order: faces of the family (ASCII case-insensitive)

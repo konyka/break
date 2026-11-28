@@ -9100,3 +9100,103 @@ my_font_t* my_css_font_face_create_chain(
   if (chain != NULL && loaded != NULL) *loaded = count;
   return chain;
 }
+
+typedef struct css_font_registry_entry_t {
+  my_css_font_family_list_t families;
+  uint32_t weight;
+  bool italic;
+  my_font_t* font; /* NULL for a remembered miss */
+} css_font_registry_entry_t;
+
+struct my_css_font_registry_t {
+  const my_allocator_t* allocator;
+  const my_css_sheet_t* sheet;
+  const char* base_dir;
+  size_t cache_capacity;
+  css_font_registry_entry_t* entries;
+  size_t count;
+};
+
+my_css_font_registry_t* my_css_font_registry_create(
+    const my_allocator_t* allocator, const my_css_sheet_t* sheet,
+    const char* base_dir, size_t cache_capacity) {
+  my_css_font_registry_t* reg;
+  if (sheet == NULL || base_dir == NULL) return NULL;
+  reg = (my_css_font_registry_t*)my_mem_calloc(allocator, 1, sizeof(*reg));
+  if (reg == NULL) return NULL;
+  reg->entries = (css_font_registry_entry_t*)my_mem_calloc(
+      allocator, MY_CSS_MAX_FONT_REGISTRY, sizeof(*reg->entries));
+  if (reg->entries == NULL) {
+    my_mem_free(allocator, reg);
+    return NULL;
+  }
+  reg->allocator = allocator;
+  reg->sheet = sheet;
+  reg->base_dir = base_dir;
+  reg->cache_capacity = cache_capacity;
+  return reg;
+}
+
+void my_css_font_registry_destroy(my_css_font_registry_t* registry) {
+  size_t i;
+  if (registry == NULL) return;
+  for (i = 0u; i < registry->count; i++) {
+    if (registry->entries[i].font != NULL) {
+      my_font_destroy(registry->entries[i].font);
+    }
+  }
+  my_mem_free(registry->allocator, registry->entries);
+  my_mem_free(registry->allocator, registry);
+}
+
+static bool css_font_registry_same(const css_font_registry_entry_t* entry,
+                                   const my_css_font_family_list_t* families,
+                                   uint32_t weight, bool italic) {
+  size_t i;
+  if (entry->weight != weight || entry->italic != italic ||
+      entry->families.count != families->count) {
+    return false;
+  }
+  for (i = 0u; i < families->count; i++) {
+    if (!css_font_family_eq(entry->families.names[i], families->names[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+my_font_t* my_css_font_registry_get(my_css_font_registry_t* registry,
+                                    const char* family_value,
+                                    uint32_t weight, bool italic) {
+  my_css_font_family_list_t families;
+  css_font_registry_entry_t* entry;
+  size_t i;
+  if (registry == NULL ||
+      !my_css_font_family_list_parse(family_value, &families)) {
+    return NULL;
+  }
+  for (i = 0u; i < registry->count; i++) {
+    if (css_font_registry_same(&registry->entries[i], &families, weight,
+                               italic)) {
+      return registry->entries[i].font;
+    }
+  }
+  if (registry->count >= MY_CSS_MAX_FONT_REGISTRY) return NULL;
+  entry = &registry->entries[registry->count];
+  entry->families = families;
+  for (i = 0u; i < entry->families.count; i++) {
+    entry->families.ptrs[i] = entry->families.names[i];
+  }
+  entry->weight = weight;
+  entry->italic = italic;
+  entry->font = my_css_font_face_create_chain(
+      registry->allocator, registry->sheet, registry->base_dir,
+      entry->families.ptrs, entry->families.count, weight, italic,
+      registry->cache_capacity, NULL);
+  registry->count++;
+  return entry->font;
+}
+
+size_t my_css_font_registry_count(const my_css_font_registry_t* registry) {
+  return registry != NULL ? registry->count : 0u;
+}

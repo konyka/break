@@ -3321,3 +3321,19 @@ LTR JUSTIFY 行逐词绘制，`ta_draw_syntax_span` 又在 token 边界把词截
 **变异**（7 项，全部判红）：范围内不判为完全匹配、高于范围时不用上界、不检查下界大于上界、两值形式也接受关键字、单值不设置 `weight_max`、`weight_max` 缺省初值为 0、只按空格（不按制表符）分隔。首轮其中 4 项存活，据此补了「两个范围下界不同」「范围内非端点 vs 更近的单点」「缺省 400 单点」「制表符分隔」四组输入；其间一条断言写错（400..500 段先向上找到 500，范围下界 500 应胜过 400 单点），已按规范改正。
 
 **验证**：`test_myui_css` 247/247，ASan+UBSan 247/247；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。
+
+## 本轮补充：按 `font-family` 共享字体的注册表（2026-11-28）
+
+`my_css_font_registry_t` 让多个控件共用已加载的字体：键是（规范化后的 family 列表、weight、italic），值是 `my_css_font_face_create_chain` 建出的字体链。
+
+- `my_css_font_registry_create(allocator, sheet, base_dir, cache_capacity)`：借用 `sheet` 与 `base_dir`（二者须比注册表活得久），任一为 NULL 时返回 NULL。
+- `my_css_font_registry_get(reg, family_value, weight, italic)`：值经 `my_css_font_family_list_parse` 解析，名字按 ASCII 不区分大小写比较，所以空格或大小写不同的同一列表共用一个键；列表是另一列表的前缀时是不同的键。加载不到字体的键也记下，之后直接返回 NULL 不再重试。非法值返回 NULL 且不建项；满 `MY_CSS_MAX_FONT_REGISTRY`（64）个键后新键返回 NULL，已有的键照常返回。
+- 返回的字体归注册表所有，注册表销毁前一直有效；`my_css_font_registry_destroy` 释放全部字体。
+
+边界：不做淘汰（满了就拒绝新键）；sheet 变更后需要新建注册表；主题与控件仍未接入，宿主可以在给控件设字体时调用 `get`。
+
+**TDD**：`test_myui_css` 新增 2 例（249 例）：同键返回同一指针（空格与大小写不同）、weight/italic/列表长度不同则为不同键、未命中被记住、非法值不建项、NULL 参数、64 键上限后新键被拒而旧键可用。字体缺失时 SKIP。实现前编译失败（RED）。
+
+**变异**（9 项，全部判红）：键不比较 weight、不比较 italic、不比较列表长度、名字区分大小写、未命中不记住、去掉上限（越过 64 项数组，进程崩溃）、上限差一、不查已有键、`sheet` 为 NULL 也创建。首轮「不比较列表长度」存活，据此补了前缀列表与更长列表两组输入。
+
+**验证**：`test_myui_css` 249/249，ASan+UBSan（含泄漏检测）249/249；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。

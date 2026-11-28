@@ -12360,6 +12360,104 @@ TEST(css_font_face_single_weight_sets_min_equal_to_max)
   my_css_sheet_destroy(sheet);
 }
 
+TEST(css_font_registry_shares_one_font_per_key)
+{
+  const char* css =
+      "@font-face{font-family:Ui;"
+      "src:url(abattis-cantarell-fonts/Cantarell-Regular.otf);}";
+  my_css_sheet_t* sheet = my_css_parse(NULL, css, strlen(css), NULL);
+  my_css_font_registry_t* reg;
+  my_font_t* a;
+  my_font_t* b;
+  FILE* probe = fopen(
+      "/usr/share/fonts/abattis-cantarell-fonts/Cantarell-Regular.otf", "rb");
+
+  ASSERT_NOT_NULL(sheet);
+  if (probe == NULL) {
+    my_css_sheet_destroy(sheet);
+    printf("  SKIP: no Cantarell test font\n");
+    return;
+  }
+  fclose(probe);
+  reg = my_css_font_registry_create(NULL, sheet, "/usr/share/fonts", 16u);
+  ASSERT_NOT_NULL(reg);
+  a = my_css_font_registry_get(reg, "Ui, sans-serif", 400u, false);
+  ASSERT_NOT_NULL(a);
+  /* the same list written differently is the same key */
+  b = my_css_font_registry_get(reg, " ui ,  sans-serif ", 400u, false);
+  ASSERT_TRUE(a == b);
+  ASSERT_EQ(my_css_font_registry_count(reg), 1u);
+  /* weight and style are part of the key */
+  b = my_css_font_registry_get(reg, "Ui, sans-serif", 700u, false);
+  ASSERT_NOT_NULL(b);
+  ASSERT_TRUE(a != b);
+  b = my_css_font_registry_get(reg, "Ui, sans-serif", 400u, true);
+  ASSERT_NOT_NULL(b);
+  ASSERT_TRUE(a != b);
+  ASSERT_EQ(my_css_font_registry_count(reg), 3u);
+  /* a list that is a prefix of another is a different key */
+  b = my_css_font_registry_get(reg, "Ui", 400u, false);
+  ASSERT_NOT_NULL(b);
+  ASSERT_TRUE(a != b);
+  ASSERT_EQ(my_css_font_registry_count(reg), 4u);
+  b = my_css_font_registry_get(reg, "Ui, sans-serif, serif", 400u, false);
+  ASSERT_NOT_NULL(b);
+  ASSERT_TRUE(a != b);
+  ASSERT_EQ(my_css_font_registry_count(reg), 5u);
+  ASSERT_TRUE(my_font_has_glyph(a, 'A'));
+  my_css_font_registry_destroy(reg);
+  my_css_sheet_destroy(sheet);
+}
+
+TEST(css_font_registry_remembers_misses_and_is_bounded)
+{
+  const char* css =
+      "@font-face{font-family:Ui;"
+      "src:url(abattis-cantarell-fonts/Cantarell-Regular.otf);}";
+  my_css_sheet_t* sheet = my_css_parse(NULL, css, strlen(css), NULL);
+  my_css_font_registry_t* reg;
+  size_t i;
+  FILE* probe = fopen(
+      "/usr/share/fonts/abattis-cantarell-fonts/Cantarell-Regular.otf", "rb");
+
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_TRUE(my_css_font_registry_create(NULL, NULL, "/x", 16u) == NULL);
+  ASSERT_TRUE(my_css_font_registry_create(NULL, sheet, NULL, 16u) == NULL);
+  my_css_font_registry_destroy(NULL);
+  ASSERT_TRUE(my_css_font_registry_get(NULL, "Ui", 400u, false) == NULL);
+  if (probe == NULL) {
+    my_css_sheet_destroy(sheet);
+    printf("  SKIP: no Cantarell test font\n");
+    return;
+  }
+  fclose(probe);
+  reg = my_css_font_registry_create(NULL, sheet, "/usr/share/fonts", 16u);
+  ASSERT_NOT_NULL(reg);
+  /* an unknown family loads nothing; the miss is remembered as an entry */
+  ASSERT_TRUE(my_css_font_registry_get(reg, "Nope", 400u, false) == NULL);
+  ASSERT_EQ(my_css_font_registry_count(reg), 1u);
+  ASSERT_TRUE(my_css_font_registry_get(reg, "nope", 400u, false) == NULL);
+  ASSERT_EQ(my_css_font_registry_count(reg), 1u);
+  /* a malformed value is refused without an entry */
+  ASSERT_TRUE(my_css_font_registry_get(reg, "A,,B", 400u, false) == NULL);
+  ASSERT_TRUE(my_css_font_registry_get(reg, NULL, 400u, false) == NULL);
+  ASSERT_EQ(my_css_font_registry_count(reg), 1u);
+  /* fill to the bound with distinct weights, then a new key is refused
+   * while existing keys still resolve */
+  for (i = 1u; i < MY_CSS_MAX_FONT_REGISTRY; i++) {
+    ASSERT_NOT_NULL(
+        my_css_font_registry_get(reg, "Ui", (uint32_t)i, false));
+  }
+  ASSERT_EQ(my_css_font_registry_count(reg),
+            (size_t)MY_CSS_MAX_FONT_REGISTRY);
+  ASSERT_TRUE(my_css_font_registry_get(reg, "Ui", 999u, false) == NULL);
+  ASSERT_NOT_NULL(my_css_font_registry_get(reg, "Ui", 1u, false));
+  ASSERT_EQ(my_css_font_registry_count(reg),
+            (size_t)MY_CSS_MAX_FONT_REGISTRY);
+  my_css_font_registry_destroy(reg);
+  my_css_sheet_destroy(sheet);
+}
+
 TEST(css_keyframes_capability_is_registered)
 {
   ASSERT_TRUE((my_css_capabilities()->supported_features &
@@ -12952,6 +13050,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_font_face_weight_range_validation);
     RUN_TEST(css_font_face_default_weight_is_a_400_point);
     RUN_TEST(css_font_face_single_weight_sets_min_equal_to_max);
+    RUN_TEST(css_font_registry_shares_one_font_per_key);
+    RUN_TEST(css_font_registry_remembers_misses_and_is_bounded);
     RUN_TEST(css_keyframes_capability_is_registered);
     RUN_TEST(css_font_family_list_splits_quoted_and_unquoted_names);
     RUN_TEST(css_font_family_list_rejects_malformed_values);

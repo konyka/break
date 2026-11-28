@@ -15061,3 +15061,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **交付**：`font-weight: 100 900` 设置 `weight`..`weight_max`；范围内的字重完全匹配，范围外按较近一端计距离再套三段规则。
 - **TDD 与变异**：`test_myui_css` 新增 4 例（247 例），实现前编译失败；7 项变异全部判红（首轮 4 项存活后补用例）。
 - **验证**：普通与 ASan+UBSan 下 247/247；全量 ctest 482/482；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
+
+## myui CSS：按 `font-family` 共享字体的注册表（2026-11-28）
+
+- **交付**：`my_css_font_registry_t` 按（规范化 family 列表、weight、italic）缓存字体链，未命中也记住，上限 64 键，注册表拥有并在销毁时释放全部字体。主题与控件尚未接入。
+- **TDD 与变异**：`test_myui_css` 新增 2 例（249 例），实现前编译失败；9 项变异全部判红（首轮 1 项存活后补用例）。
+- **验证**：普通与 ASan+UBSan 下 249/249；全量 ctest 482/482；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
