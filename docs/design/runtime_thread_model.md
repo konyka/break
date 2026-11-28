@@ -263,7 +263,7 @@ Stage 2 每一项实现必须先有 focused RED/GREEN test，再决定 source pr
 
 1. **Target promotion 已发生但未接入 engine**：ECS snapshot/schema/delta/AoI/replication/fragment 已由正式可选 `break_ecs_replication`/`break_replication_core` 承载，`break_net`/Session 是 Snowflake 条件正式可选 target（均不链入 `engine`/`engine_demo`/`dxx_break`）；它们仍不是 `engine` static library 的组成部分，runtime/session integration 与 publication/authority/线程生命周期边界仍待后续 plan。
 2. **Snapshot publication service 未实现**：当前没有 mutex-protected current-snapshot service、epoch reclamation 或统一 owner handoff；调用者必须自行 retain 当前 snapshot。
-3. **Fragment timeout/eviction 未实现**：没有 scheduler、deadline、最大并发 assembly 或网络断线清理链；16 MiB 是内存上限，不是生命周期上限。
+3. **Fragment timeout/eviction 未实现**：没有 scheduler、deadline、最大并发 assembly 或网络断线清理链；16 MiB 是内存上限，不是生命周期上限。（2026-11-28 更正：此条已过时。`BreakReplicationReassemblyPool`（2026-11-23）限制每连接并发 stream 数（`stream_capacity`，上限 64）以及 payload 与元数据两个预算，超限返回 OVER_LIMIT 且不影响已有 stream；`break_replication_reassembly_pool_set_expiry_schedule`/`_tick` 按空闲时间淘汰 stream；`break_replication_session`（2026-11-24）为每条连接建一个 pool，按配置启用淘汰，并在 `break_replication_session_connection_close` 时销毁该连接的 pool。）
 4. **协议与安全未实现**：schema negotiation、wire schema/tick fields、cryptographic authentication、authority handoff、prediction/rollback、player authentication backend 均不属于当前 runtime。
 5. **Task API 兼容风险**：当前 `task_system_create` 是进程单实例，external queue 满会 inline execute；将其正式化为多域 Runtime Core 需要先解决 owner/shutdown/admission 语义，不能仅改 target 名称。
 6. **PAL 跨平台证据不完整**：现有 thread wrapper 有 POSIX/Win32 分支，但 Snowflake bounded stop 的非 Linux lane 尚未由本机验证；Wayland/Cocoa/mobile WSI 的 owner 和 suspend/resume 仍需各自测试。
