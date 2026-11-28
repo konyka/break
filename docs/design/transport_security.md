@@ -162,15 +162,16 @@ What this library gives you is TLS transport with `verify_peer` support — **no
   module is untouched by this phase.
 - Session resumption, TLS shutdown/close_notify plumbing (§8).
 - Remote debug channel, Lua remote session (still gated on a fuller security/transport contract).
-- Replay protection beyond the handshake + per-connection sequence scope (§3).
+- Replay protection beyond the handshake + per-connection sequence scope (§3). By the 2026-10-30 decision this is a deliberate boundary on the stream transport, not a gap; `break_replay_window` is kept for a future datagram or per-message AEAD channel.
 - WAN/production validation of any kind (§7).
 
 ## 10. Evidence index
 
 - Implementation: `engine/src/network/break_net_adapter.{h,c}` (TLS mode, admission rate limits, parser split, outbound monotonic sequence), `engine/src/network/break_session.{h,c}` (CHALLENGE/AUTH-v2, operation lease, max_age), `engine/src/network/break_net_message_registry.{h,c}` (CHALLENGE id 3, AUTH v1..2 under CRYPTO).
 - Tests: `engine/tests/test_break_net_tls.c` (10), `test_break_net_adapter.c` (38), `test_break_session.c` (34) — all green on normal/ASan+UBSan/TSan trees, repeated ×3/×5 with zero sanitizer reports; full non-graphics suite 203 = 202 + 1 Windows-only skip on all three trees.
+  Current counts (2026-11-28, after the rate-limit, key_id, max_age and admission follow-ups above): `test_break_net_tls` 10, `test_break_net_adapter` 51, `test_break_session` 50, plus `test_break_msg_rate` and `test_break_identity_rate` (7); all pass on the normal, ASan+UBSan and TSan Snowflake trees, and the Snowflake tree's full ctest is 498/498. The figures above are the 2026-10-24 delivery and are kept as history.
 - Task evidence: `.superpowers/sdd/2026-10-24-stage5-transport-security/task-{1..5}-report.md` (RED-before-GREEN logs, review fix rounds, pin gate failure-path evidence).
-- Pin/supply chain: Snowflake pinned at `d5d4a9287d81468506a3f1962dead16f72a3b5c1` with a configure-time fail-closed FATAL gate (`engine/CMakeLists.txt:295-383`, mirrored in `engine/external/locked_dependencies.json` and `docs/design/snowflake_c11_adapter.md`); OpenSSL-stub snow builds are rejected at configure time when `BREAK_ENABLE_CRYPTO=ON`.
+- Pin/supply chain: Snowflake was pinned at `d5d4a9287d81468506a3f1962dead16f72a3b5c1` for this phase; the pin has since moved to `4ab761fc58a9d15970f295e231003c99a7d44df8` (snowflake main 2026-11-19). The configure-time fail-closed FATAL gate is `BREAK_SNOWFLAKE_PIN` in `engine/CMakeLists.txt`, mirrored in `engine/external/locked_dependencies.json` and `docs/design/snowflake_c11_adapter.md`; OpenSSL-stub snow builds are rejected at configure time when `BREAK_ENABLE_CRYPTO=ON`.
 - Sibling contracts: `docs/design/security_threat_model.md` §5/§7 (this phase is their delivered enforcement point), `docs/design/session_protocol.md` (session state machine and wire facts), `docs/design/snowflake_c11_adapter.md` (adapter lifecycle/queue contracts).
 
 
