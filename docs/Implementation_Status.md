@@ -15136,3 +15136,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **修复**：某 IP 的一分钟窗口内已没有接入记录时，它不可能再被拒绝，槽位改给新 IP 使用（窗口本来就为空）。只有表满且每个 IP 窗口内都有接入时才对新 IP fail-closed；已知 IP 始终按其窗口计数。准入逻辑改为接收毫秒时间，生产路径传入 `SnowNowMonotonicNs`，与 `SnowFreqlimiterAllow` 使用同一时钟。
 - **TDD 与变异**：`test_break_net_adapter` 新增 2 例（51 例），经仅测试构建可用的 `break_net_reactor_admit_at_for_test` 注入时间，实现前编译失败；5 项变异全部判红。首版在复用时重置窗口，变异证明多余（空闲槽位的窗口本来为空），已删除。
 - **验证**：`test_break_net_adapter` 普通、ASan+UBSan、TSan 均 51/51；`build-aoi-net` 全量 ctest 498/498。本提交自身的远端工作流结果不在此预写。
+
+## 构建：修复 Linux/Windows 上 `test_myui_window_manager` 的未使用函数错误；`c091604c` 远端收据（2026-11-28）
+
+- **缺陷**：`fb0d4887`（LTR 语法着色整行塑形）新增的测试辅助函数 `chain_syntax_diff_bytes` / `chain_syntax_diff_bytes_ex` 定义在条件编译块之外，而唯一的调用方 `text_area_syntax_keeps_cross_face_glyph_runs` 只在 `MYUI_FONT_FREETYPE && MYUI_FONT_HARFBUZZ && MYUI_BIDI` 时使用它们。CI 的 Linux/Windows job 未启用 HarfBuzz，`-Wunused-function` 在 `-Werror` 下使 `Build` 步骤失败。从 `fb0d4887` 到 `574ada97`（run `46110050617`），GCC、Clang/LLD、MinGW、Clang ASan、ASan+UBSan、TSan、Wayland、benchmark、validation、clean-room 共 13 个 job 持续失败；macOS job 启用了 HarfBuzz，所以没有暴露。
+- **修复**：把两个辅助函数移进已有的同条件 `#if` 块，与调用方保持一致；产品代码不变。
+- **复现与验证**：去掉 `-DMYUI_FONT_HARFBUZZ=1 -DMYUI_FONT_FREETYPE=1` 单独编译该测试文件，修复前报 `unused function 'chain_syntax_diff_bytes'`，修复后在三种宏组合下均零警告。新建 `-DMYUI_FONT_FREETYPE=OFF -DMYUI_HARFBUZZ=OFF -DENGINE_RHI_BACKEND=metal` 的完整构建通过，myui 测试 50/50；`build-macos-current`（Metal）全量 ctest 465/465。
+- **`c091604c` 远端收据**：CI run `45995212379` 结论 failure，28 个 job 中 24 success、3 条件 skip、1 failure。失败的是 `Linux + GCC (rule engine with native Redis provider)` 的 `Install hiredis and Redis (Linux)` 依赖安装步骤；后续提交上该 job 恢复，判断为瞬时故障，与本次改动无关。`macOS Snowflake replication (Clang)` 显示 success，但仓库没有 Snowflake 读取凭据，构建与测试步骤全部 skipped，只执行了 `Record unavailable dependency boundary`，按 UNAVAILABLE 记录。windows-d3d12 run `45995212496` success；proton-d3d12 run `45996024336` success，仅作兼容参考。
+- 本收据提交自身的远端工作流结果不在此预写。

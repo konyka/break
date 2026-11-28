@@ -3617,7 +3617,6 @@ TEST(text_area_rtl_cache_rejects_prefix_of_longer_cached_line)
 #if defined(MYUI_FONT_FREETYPE) && defined(MYUI_FONT_HARFBUZZ) && \
     defined(MYUI_BIDI)
 #include "myr/my_font_ft.h"
-#endif
 
 static size_t chain_syntax_diff_bytes_ex(my_font_t* font, const char* text,
                                          bool justify, int32_t width);
@@ -3681,6 +3680,7 @@ static size_t chain_syntax_diff_bytes_ex(my_font_t* font, const char* text,
   my_widget_unref(plain);
   return diff;
 }
+#endif
 
 TEST(text_area_syntax_keeps_cross_face_glyph_runs)
 {
