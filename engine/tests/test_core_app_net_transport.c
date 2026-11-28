@@ -3545,6 +3545,11 @@ static int ring_client_recv(RingClient *c, BreakNetEnvelope *env, u32 timeout_ms
     return 0;
 }
 
+static void ring_client_init(RingClient *c) {
+    memset(c, 0, sizeof(*c));
+    c->fd = -1;
+}
+
 static void ring_client_close(RingClient *c) {
     if (c->plain) SnowNetworkBufferDestroy(c->plain);
     if (c->ssl) SnowSslFree(c->ssl);
@@ -3664,7 +3669,8 @@ TEST(keyring_file_authenticates_listed_devices) {
     int a_auth = 0, b_auth = 0;
     u32 slots = 0u, authenticated = 0u, listening = 0u;
     ring_fixture_paths(&f, "core_app_keyring_listed");
-    a.fd = b.fd = -1;
+    ring_client_init(&a);
+    ring_client_init(&b);
     written = ring_write(f.ring, true, true);
     if (written) started = ring_fixture_start(&f);
     if (started) {
@@ -3700,7 +3706,10 @@ TEST(keyring_reload_revokes_removed_device) {
     int a_auth = 0, b_auth = 0, a2_auth = 0, b2_auth = 0;
     u32 before = 0u, after = 0u, open_after = 0u, keys = 0u;
     ring_fixture_paths(&f, "core_app_keyring_revoke");
-    a.fd = b.fd = a2.fd = b2.fd = -1;
+    ring_client_init(&a);
+    ring_client_init(&b);
+    ring_client_init(&a2);
+    ring_client_init(&b2);
     written = ring_write(f.ring, true, true);
     if (written) started = ring_fixture_start(&f);
     if (started) {
@@ -3749,7 +3758,8 @@ TEST(keyring_reload_rejects_a_bad_file_and_keeps_the_ring) {
     int a_auth = 0, a2_auth = 0;
     u32 kept = 0u, live = 0u, rejected = 0u, rejected_after = 0u, reloaded = 0u, keys = 0u;
     ring_fixture_paths(&f, "core_app_keyring_bad");
-    a.fd = a2.fd = -1;
+    ring_client_init(&a);
+    ring_client_init(&a2);
     written = ring_write(f.ring, true, false);
     if (written) started = ring_fixture_start(&f);
     if (started) {
@@ -3814,14 +3824,20 @@ TEST(keyring_tick_reloads_the_file_on_its_cadence) {
     ASSERT_TRUE(stopped);
 }
 
+/* Not in a public header: break_session.c defines it for break_net_adapter.c,
+ * which declares it the same way. True while a process-wide auth hook is
+ * installed. */
+bool break_session_auth_configured_internal(void);
+
 TEST(keyring_start_fails_on_a_bad_file) {
     RingFixture f;
     bool written;
     BreakRuntimeError bad = BREAK_RUNTIME_OK, missing = BREAK_RUNTIME_OK;
     bool bad_port = true, missing_port = true;
     u32 bad_stage = 0u, missing_stage = 0u, listening = 1u;
-    bool cleared;
+    bool hook_before = true, hook_after_bad = true, hook_after_missing = true;
     ring_fixture_paths(&f, "core_app_keyring_start_bad");
+    hook_before = break_session_auth_configured_internal();
     written = ring_write_text(f.ring, "0102030405060708 not-hex\n");
     f.trace = tmpfile();
     f.transport = f.trace ? core_app_net_transport_create(&f.config) : NULL;
@@ -3830,14 +3846,14 @@ TEST(keyring_start_fails_on_a_bad_file) {
         bad = f.hooks.start(f.hooks.user, f.trace);
         bad_port = file_exists(f.port_file);
         bad_stage = ring_trace_count(f.trace, "event=network result=rejected stage=keyring\n");
+        hook_after_bad = break_session_auth_configured_internal();
         (void)remove(f.ring);
         missing = f.hooks.start(f.hooks.user, f.trace);
         missing_port = file_exists(f.port_file);
         missing_stage = ring_trace_count(f.trace, "event=network result=rejected stage=keyring\n");
         listening = ring_trace_count(f.trace, "result=listening");
+        hook_after_missing = break_session_auth_configured_internal();
     }
-    /* a failed start left no auth hook installed */
-    cleared = break_session_set_auth(NULL, NULL);
     ring_fixture_dispose(&f);
     ASSERT_TRUE(written);
     ASSERT_EQ(bad, BREAK_RUNTIME_FAILED);
@@ -3847,7 +3863,9 @@ TEST(keyring_start_fails_on_a_bad_file) {
     ASSERT_FALSE(missing_port);
     ASSERT_EQ(missing_stage, 2u);
     ASSERT_EQ(listening, 0u);
-    ASSERT_TRUE(cleared);
+    ASSERT_FALSE(hook_before);
+    ASSERT_FALSE(hook_after_bad);
+    ASSERT_FALSE(hook_after_missing);
 }
 
 /* While the process-wide auth cannot be cleared (another manager holds a

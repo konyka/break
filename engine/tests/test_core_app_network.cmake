@@ -98,7 +98,7 @@ endfunction()
 
 function(read_core_lines path out_var)
     file(STRINGS "${path}" lines REGEX "^COREAPPTRACE ")
-    list(FILTER lines EXCLUDE REGEX "event=network")
+    list(FILTER lines EXCLUDE REGEX "event=(network|keyring)")
     set(${out_var} "${lines}" PARENT_SCOPE)
 endfunction()
 
