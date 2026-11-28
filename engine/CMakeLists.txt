@@ -2353,6 +2353,10 @@ target_include_directories(editor PRIVATE
 target_link_libraries(editor PRIVATE break_editor break_lua break_myui engine m)
 if(BREAK_ENABLE_SNOWFLAKE)
     target_link_libraries(editor PRIVATE break_net)
+else()
+    # --remote-keyring-file is parsed by break_keyring (part of break_net
+    # when it exists); without it the pure-C keyring TU is compiled inline.
+    target_sources(editor PRIVATE src/network/break_keyring.c)
 endif()
 # Editor hot reload: the scene host and viewport each own a Runtime Core
 # coordinator (editor_hot_reload.c/editor_shader_reload.c). runtime_core
@@ -6806,6 +6810,8 @@ endif()
         target_compile_definitions(test_editor_shell PRIVATE BREAK_EDITOR_REMOTE_TESTS=1
             BREAK_TEST_SSL_FIXTURE_DIR=${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl)
         target_link_libraries(test_editor_shell PRIVATE break_net)
+    else()
+        target_sources(test_editor_shell PRIVATE src/network/break_keyring.c)
     endif()
     # editor_hot_reload.c: Runtime Core coordinator (test variant) + the VFS
     # and legacy file watcher compiled inline (exactly one definition each).

@@ -41,6 +41,7 @@
 #include <editor/editor_lua.h>
 #include <platform/time.h>
 #include <editor/editor_protocol.h>
+#include <network/break_keyring.h>
 
 /* Key-material wipe the optimizer cannot drop: a plain memset right before
  * free()/return is a dead store and is removed at -O2. */
@@ -51,6 +52,11 @@ static void remote_wipe(void *p, size_t n) {
     }
 }
 
+#define EDITOR_REMOTE_KEYRING_TEXT_BYTES 2048u
+
+static bool remote_keyring_text_read(const char *path,
+                                     char text[EDITOR_REMOTE_KEYRING_TEXT_BYTES],
+                                     size_t *out_len);
 static bool remote_keyring_file_read(const char *path, BreakEditorRemoteCli *out);
 
 #ifdef BREAK_ENABLE_SNOWFLAKE
@@ -1327,51 +1333,63 @@ uint32_t break_editor_remote_key_count(const BreakEditorRemote *r) {
 #endif
 }
 
+#ifdef BREAK_ENABLE_CRYPTO
+static void remote_keyring_revoked(void *user, const u8 key_id[8]) {
+    (void)break_editor_remote_revoke_key((BreakEditorRemote *)user, key_id);
+}
+#endif
+
 bool break_editor_remote_reload_keyring(BreakEditorRemote *r, const char *path) {
 #ifdef BREAK_ENABLE_CRYPTO
-    BreakEditorRemoteCli file;
+    char text[EDITOR_REMOTE_KEYRING_TEXT_BYTES];
+    size_t n = 0u;
+    BreakKeyring *ring;
+    BreakKeyringLoadResult loaded;
+    u8 id[8], psk[32];
     u32 i, k;
     bool ok = true;
     if (r == NULL || path == NULL || !r->has_psk) {
         return false;
     }
-    memset(&file, 0, sizeof(file));
-    if (!remote_keyring_file_read(path, &file)) {
-        return false; /* malformed or unreadable: the ring is unchanged */
+    if (!remote_keyring_text_read(path, text, &n)) {
+        return false; /* unreadable or over the editor limit: ring unchanged */
     }
-    /* revoke keys that are gone or whose secret changed */
+    ring = break_keyring_create(EDITOR_REMOTE_MAX_KEYS);
+    if (ring == NULL) {
+        remote_wipe(text, sizeof(text));
+        return false;
+    }
     for (i = 0u; i < EDITOR_REMOTE_MAX_KEYS; i++) {
-        bool keep = false;
-        u8 id[8];
-        if (!r->keys[i].used) {
-            continue;
+        if (r->keys[i].used) {
+            (void)break_keyring_add(ring, r->keys[i].key_id, r->keys[i].psk);
         }
-        for (k = 0u; k < file.key_count; k++) {
-            if (remote_key_id_eq(r->keys[i].key_id, file.keys[k].key_id) &&
-                memcmp(r->keys[i].psk, file.keys[k].psk, 32u) == 0) {
-                keep = true;
-            }
-        }
-        if (!keep) {
-            memcpy(id, r->keys[i].key_id, 8u);
-            (void)break_editor_remote_revoke_key(r, id);
-        }
+    }
+    /* revokes keys that are gone or whose secret changed (callback); on a
+     * malformed file nothing is revoked and the ring is unchanged */
+    loaded = break_keyring_load_text(ring, text, n, remote_keyring_revoked, r);
+    remote_wipe(text, sizeof(text));
+    if (loaded != BREAK_KEYRING_LOAD_OK) {
+        break_keyring_destroy(ring);
+        return false;
     }
     /* add keys that are new (or re-keyed) */
-    for (k = 0u; k < file.key_count; k++) {
+    for (k = 0u; k < break_keyring_count(ring); k++) {
         bool present = false;
+        if (!break_keyring_key_at(ring, k, id, psk)) {
+            continue;
+        }
         for (i = 0u; i < EDITOR_REMOTE_MAX_KEYS; i++) {
-            if (r->keys[i].used &&
-                remote_key_id_eq(r->keys[i].key_id, file.keys[k].key_id)) {
+            if (r->keys[i].used && remote_key_id_eq(r->keys[i].key_id, id)) {
                 present = true;
             }
         }
-        if (!present &&
-            !break_editor_remote_add_key(r, file.keys[k].key_id, file.keys[k].psk)) {
+        if (!present && !break_editor_remote_add_key(r, id, psk)) {
             ok = false;
         }
     }
-    remote_wipe(&file, sizeof(file));
+    remote_wipe(id, sizeof(id));
+    remote_wipe(psk, sizeof(psk));
+    break_keyring_destroy(ring);
     return ok;
 #else
     (void)r;
@@ -1975,16 +1993,16 @@ static bool remote_psk_file_read(const char *path, u8 out[32]) {
     return true;
 }
 
-/* Keyring file: one "<16 hex key id> <64 hex psk>" per line, '#' comments
- * and blank lines skipped, at most 8 keys, no duplicate ids. Read
- * unbuffered; every scratch copy of key bytes is wiped. */
-static bool remote_keyring_file_read(const char *path, BreakEditorRemoteCli *out) {
-    char text[2048];
+/* Keyring file text: read unbuffered, at most
+ * EDITOR_REMOTE_KEYRING_TEXT_BYTES - 1 bytes (a larger file is refused, the
+ * limit break_keygen enforces for editor rings). The caller wipes text. */
+static bool remote_keyring_text_read(const char *path,
+                                     char text[EDITOR_REMOTE_KEYRING_TEXT_BYTES],
+                                     size_t *out_len) {
     size_t n;
-    size_t pos = 0u;
-    bool ok = true;
+    bool ok;
     FILE *f = fopen(path, "rb");
-    out->key_count = 0u;
+    *out_len = 0u;
     if (f == NULL) {
         return false;
     }
@@ -1992,63 +2010,50 @@ static bool remote_keyring_file_read(const char *path, BreakEditorRemoteCli *out
         fclose(f);
         return false;
     }
-    n = fread(text, 1u, sizeof(text) - 1u, f);
-    if (n == sizeof(text) - 1u && fgetc(f) != EOF) {
+    n = fread(text, 1u, EDITOR_REMOTE_KEYRING_TEXT_BYTES - 1u, f);
+    ok = ferror(f) == 0;
+    if (n == EDITOR_REMOTE_KEYRING_TEXT_BYTES - 1u && fgetc(f) != EOF) {
         ok = false; /* oversize file */
     }
     fclose(f);
-    text[n] = '\0';
-    while (ok && pos < n) {
-        size_t end = pos;
-        size_t len;
-        char line[128];
-        while (end < n && text[end] != '\n') {
-            end++;
-        }
-        len = end - pos;
-        if (len > 0u && text[pos + len - 1u] == '\r') {
-            len--;
-        }
-        if (len == 0u || text[pos] == '#') {
-            pos = end + 1u;
-            continue;
-        }
-        if (len != 16u + 1u + 64u || text[pos + 16u] != ' ' ||
-            out->key_count >= 8u) {
-            ok = false;
-            break;
-        }
-        memcpy(line, text + pos, 16u);
-        line[16] = '\0';
-        if (!remote_hex_decode(line, out->keys[out->key_count].key_id, 8u)) {
-            ok = false;
-        }
-        memcpy(line, text + pos + 17u, 64u);
-        line[64] = '\0';
-        if (ok && !remote_hex_decode(line, out->keys[out->key_count].psk, 32u)) {
-            ok = false;
-        }
-        remote_wipe(line, sizeof(line));
-        if (ok) {
-            u32 k;
-            for (k = 0u; k < out->key_count; k++) {
-                if (memcmp(out->keys[k].key_id, out->keys[out->key_count].key_id,
-                           8u) == 0) {
-                    ok = false;
-                }
-            }
-        }
-        if (ok) {
-            out->key_count++;
-        }
-        pos = end + 1u;
+    if (!ok) {
+        remote_wipe(text, EDITOR_REMOTE_KEYRING_TEXT_BYTES);
+        return false;
     }
+    *out_len = n;
+    return true;
+}
+
+/* Keyring file: one "<16 hex key id> <64 hex psk>" per line, '#' comments
+ * and blank lines skipped, at most 8 keys, no duplicate ids (parsed by
+ * break_keyring). Read unbuffered; every scratch copy of key bytes is
+ * wiped. */
+static bool remote_keyring_file_read(const char *path, BreakEditorRemoteCli *out) {
+    char text[EDITOR_REMOTE_KEYRING_TEXT_BYTES];
+    size_t n = 0u;
+    bool ok;
+    u32 i, count;
+    BreakKeyring *ring;
+    out->key_count = 0u;
+    if (!remote_keyring_text_read(path, text, &n)) {
+        remote_wipe(out->keys, sizeof(out->keys));
+        return false;
+    }
+    ring = break_keyring_create(8u);
+    ok = ring != NULL &&
+         break_keyring_load_text(ring, text, n, NULL, NULL) == BREAK_KEYRING_LOAD_OK;
     remote_wipe(text, sizeof(text));
-    if (!ok || out->key_count == 0u) {
+    count = ok ? break_keyring_count(ring) : 0u;
+    for (i = 0u; ok && i < count; i++) {
+        ok = break_keyring_key_at(ring, i, out->keys[i].key_id, out->keys[i].psk);
+    }
+    break_keyring_destroy(ring);
+    if (!ok || count == 0u) {
         remote_wipe(out->keys, sizeof(out->keys));
         out->key_count = 0u;
         return false;
     }
+    out->key_count = count;
     return true;
 }
 
