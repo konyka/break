@@ -27,6 +27,7 @@ extern int nanosleep(const struct timespec *, struct timespec *);
 #include <snow/socket.h>
 #include <snow/ratelimiter.h>
 #include <snow/freqlimiter.h>
+#include <snow/common.h>
 
 enum BreakNetState {
     BREAK_NET_STATE_CREATED,
@@ -1257,13 +1258,17 @@ static bool break_net_admission_config_valid(const BreakNetRateLimitConfig *conf
     return true;
 }
 
-static bool break_net_admission_admit(void *admit_ud, const char *ip, uint16_t port)
+/* Admission at now_ms (monotonic milliseconds, the clock
+ * SnowFreqlimiterAllow uses). A slot whose IP has no event left in its
+ * window can never deny that IP again, so it is reused for a new IP: the
+ * table fails closed only while every slot holds an IP with live events. */
+static bool break_net_admission_admit_at(BreakNetAdmissionState *admission,
+                                         const char *ip, uint64_t now_ms)
 {
-    BreakNetAdmissionState *admission = (BreakNetAdmissionState *)admit_ud;
     size_t first_free = BREAK_NET_ADMISSION_IP_CAPACITY;
+    size_t first_idle = BREAK_NET_ADMISSION_IP_CAPACITY;
     size_t i;
     bool allowed = true;
-    (void)port;
 
     if (admission == NULL) return true;
     if (ip == NULL) {
@@ -1282,8 +1287,12 @@ static bool break_net_admission_admit(void *admit_ud, const char *ip, uint16_t p
                 continue;
             }
             if (strncmp(entry->ip, ip, sizeof(entry->ip)) == 0) {
-                allowed = SnowFreqlimiterAllow(entry->limiter);
+                allowed = SnowFreqlimiterAllowAt(entry->limiter, now_ms);
                 goto done;
+            }
+            if (first_idle == BREAK_NET_ADMISSION_IP_CAPACITY &&
+                SnowFreqlimiterCountAt(entry->limiter, now_ms) == 0u) {
+                first_idle = i;
             }
         }
         if (first_free != BREAK_NET_ADMISSION_IP_CAPACITY) {
@@ -1296,10 +1305,18 @@ static bool break_net_admission_admit(void *admit_ud, const char *ip, uint16_t p
                 return false;
             }
             snprintf(entry->ip, sizeof(entry->ip), "%s", ip);
-            allowed = SnowFreqlimiterAllow(entry->limiter);
+            allowed = SnowFreqlimiterAllowAt(entry->limiter, now_ms);
+        } else if (first_idle != BREAK_NET_ADMISSION_IP_CAPACITY) {
+            /* The idle IP has no live event, so its window is already empty:
+             * the new IP takes the slot with a fresh window, and the idle IP
+             * starts over as a new IP if it returns. */
+            BreakNetAdmissionIpEntry *entry = &admission->per_ip[first_idle];
+            snprintf(entry->ip, sizeof(entry->ip), "%s", ip);
+            allowed = SnowFreqlimiterAllowAt(entry->limiter, now_ms);
         } else {
-            /* Table full: fail closed for NEW IPs only.  Known IPs still get
-             * measured instead of being mistaken for new ones. */
+            /* Table full of IPs with live events: fail closed for NEW IPs
+             * only.  Known IPs still get measured instead of being mistaken
+             * for new ones. */
             allowed = false;
         }
     }
@@ -1311,6 +1328,27 @@ done:
     }
     return allowed;
 }
+
+static bool break_net_admission_admit(void *admit_ud, const char *ip, uint16_t port)
+{
+    (void)port;
+    return break_net_admission_admit_at((BreakNetAdmissionState *)admit_ud, ip,
+                                        SnowNowMonotonicNs() / UINT64_C(1000000));
+}
+
+#ifdef BREAK_NET_TESTING
+size_t break_net_reactor_admission_ip_capacity_for_test(void)
+{
+    return BREAK_NET_ADMISSION_IP_CAPACITY;
+}
+
+bool break_net_reactor_admit_at_for_test(BreakNetReactor *reactor,
+                                         const char *ip, uint64_t now_ms)
+{
+    if (reactor == NULL) return false;
+    return break_net_admission_admit_at(reactor->admission, ip, now_ms);
+}
+#endif
 
 bool break_net_reactor_set_rate_limits(BreakNetReactor *r,
                                         const BreakNetRateLimitConfig *cfg)

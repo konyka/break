@@ -66,8 +66,10 @@ typedef struct BreakNetRateLimitConfig {
     uint32_t per_ip_per_minute;       /* sliding-window accepts per source IP; 0 = unlimited */
 } BreakNetRateLimitConfig;
 /* CREATED state only. Uses snow ratelimiter/freqlimiter under the admit(ip,port) hook
- * (SnowNetThreadAddAcceptorWithHandlersEx). Per-IP table ≤ 1024 entries;
- * full table → deny NEW IPs (fail-closed, documented), known IPs still measured.
+ * (SnowNetThreadAddAcceptorWithHandlersEx). Per-IP table ≤ 1024 entries; a slot
+ * whose IP has no accept left in its one-minute window is reused for a new IP,
+ * so only a table full of IPs with live accepts denies NEW IPs (fail-closed);
+ * known IPs are always measured.
  * All limiter state lives on the network driver thread (limiters are not thread-safe). */
 bool break_net_reactor_set_rate_limits(BreakNetReactor *r, const BreakNetRateLimitConfig *cfg);
 uint64_t break_net_reactor_admission_denied(const BreakNetReactor *r);   /* observable counter */
@@ -153,6 +155,13 @@ bool break_net_reactor_set_event_hook(BreakNetReactor *reactor,
 #ifdef BREAK_NET_TESTING
 /* Test seams below exist only in the break_net_test library
  * (BREAK_NET_TESTING=1); the shipped break_net carries none of them. */
+
+/* Test-only: the per-IP admission table size. */
+size_t break_net_reactor_admission_ip_capacity_for_test(void);
+/* Test-only: run the admission check for ip at now_ms (monotonic ms) on the
+ * caller's thread. Only before start (the table is driver-thread owned). */
+bool break_net_reactor_admit_at_for_test(BreakNetReactor *reactor,
+                                         const char *ip, uint64_t now_ms);
 
 /* Test-only: returns outbound send attempts made by the reactor driver. */
 size_t break_net_reactor_outbound_attempts_for_test(BreakNetReactor *reactor);

@@ -2201,6 +2201,76 @@ TEST(break_net_adapter_per_ip_window_denies_limit_plus_one)
     SnowAcceptorDestroy(acceptor);
 }
 
+TEST(break_net_adapter_admission_reuses_slots_of_ips_with_no_live_events)
+{
+    /* The per-IP table holds BREAK_NET_ADMISSION_IP_CAPACITY entries. An IP
+     * whose window has no live event left cannot be denied any more, so its
+     * slot is reused for a new IP instead of refusing that IP forever. An IP
+     * with live events keeps its slot and its count. Uses the injected-time
+     * admit seam, no sockets. */
+    BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_STEP);
+    BreakNetReactor *reactor = break_net_reactor_create(&config);
+    BreakNetRateLimitConfig limits = {0};
+    char ip[64];
+    size_t i;
+    size_t cap = break_net_reactor_admission_ip_capacity_for_test();
+    limits.per_ip_per_minute = 2u;
+    ASSERT_NOT_NULL(reactor);
+    ASSERT_TRUE(cap > 2u);
+    ASSERT_TRUE(break_net_reactor_set_rate_limits(reactor, &limits));
+    /* fill the table at t=0 */
+    for (i = 0u; i < cap; ++i) {
+        snprintf(ip, sizeof(ip), "10.0.%zu.%zu", i / 256u, i % 256u);
+        ASSERT_TRUE(break_net_reactor_admit_at_for_test(reactor, ip, 0u));
+    }
+    /* still inside every window: a new IP is refused (fail closed) */
+    ASSERT_FALSE(break_net_reactor_admit_at_for_test(reactor, "192.0.2.1",
+                                                      UINT64_C(59999)));
+    ASSERT_EQ(break_net_reactor_admission_denied(reactor), UINT64_C(1));
+    /* the first IP is used again at 30 s: its window stays live */
+    ASSERT_TRUE(break_net_reactor_admit_at_for_test(reactor, "10.0.0.0",
+                                                     UINT64_C(30000)));
+    /* at 60 s every other IP's only event has expired: a new IP gets a slot */
+    ASSERT_TRUE(break_net_reactor_admit_at_for_test(reactor, "192.0.2.1",
+                                                     UINT64_C(60000)));
+    /* the IP that stayed active kept its slot and its count: at 60 s its t=0
+     * event expired and its 30 s one is live, so one more is allowed, then
+     * it is denied */
+    ASSERT_TRUE(break_net_reactor_admit_at_for_test(reactor, "10.0.0.0",
+                                                     UINT64_C(60000)));
+    ASSERT_FALSE(break_net_reactor_admit_at_for_test(reactor, "10.0.0.0",
+                                                      UINT64_C(60000)));
+    ASSERT_EQ(break_net_reactor_admission_denied(reactor), UINT64_C(2));
+    break_net_reactor_destroy(reactor);
+}
+
+TEST(break_net_adapter_admission_reused_slot_starts_a_fresh_window)
+{
+    /* A reused slot belongs to the new IP with an empty window: it gets the
+     * full per-minute allowance, not what the previous IP left. */
+    BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_STEP);
+    BreakNetReactor *reactor = break_net_reactor_create(&config);
+    BreakNetRateLimitConfig limits = {0};
+    char ip[64];
+    size_t i;
+    size_t cap = break_net_reactor_admission_ip_capacity_for_test();
+    limits.per_ip_per_minute = 2u;
+    ASSERT_NOT_NULL(reactor);
+    ASSERT_TRUE(break_net_reactor_set_rate_limits(reactor, &limits));
+    for (i = 0u; i < cap; ++i) {
+        snprintf(ip, sizeof(ip), "10.1.%zu.%zu", i / 256u, i % 256u);
+        ASSERT_TRUE(break_net_reactor_admit_at_for_test(reactor, ip, 0u));
+        ASSERT_TRUE(break_net_reactor_admit_at_for_test(reactor, ip, 0u));
+    }
+    ASSERT_TRUE(break_net_reactor_admit_at_for_test(reactor, "198.51.100.7",
+                                                     UINT64_C(60000)));
+    ASSERT_TRUE(break_net_reactor_admit_at_for_test(reactor, "198.51.100.7",
+                                                     UINT64_C(60000)));
+    ASSERT_FALSE(break_net_reactor_admit_at_for_test(reactor, "198.51.100.7",
+                                                      UINT64_C(60000)));
+    break_net_reactor_destroy(reactor);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(break_net_adapter_rejects_null_config);
     RUN_TEST(break_net_adapter_start_without_acceptor_fails_closed);
@@ -2251,4 +2321,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(break_net_adapter_rate_limit_zeros_keep_legacy_behavior);
     RUN_TEST(break_net_adapter_global_burst_then_denies_immediate_accepts);
     RUN_TEST(break_net_adapter_per_ip_window_denies_limit_plus_one);
+    RUN_TEST(break_net_adapter_admission_reuses_slots_of_ips_with_no_live_events);
+    RUN_TEST(break_net_adapter_admission_reused_slot_starts_a_fresh_window);
 TEST_MAIN_END()
