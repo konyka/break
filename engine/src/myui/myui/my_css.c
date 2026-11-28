@@ -6516,6 +6516,78 @@ static bool css_font_style(const char* text, size_t length, bool* italic) {
   return false;
 }
 
+static int css_font_hex(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+/* Reads 1..6 hex digits at text[*at]; with `wild`, trailing '?' digits
+ * widen the value into a [low, high] range. */
+static bool css_font_range_number(const char* text, size_t length,
+                                  size_t* at, bool wild, uint32_t* low,
+                                  uint32_t* high) {
+  uint32_t lo = 0u, hi = 0u;
+  size_t digits = 0u;
+  bool wildcards = false;
+  while (*at < length && digits < 7u) {
+    char c = text[*at];
+    int v = css_font_hex(c);
+    if (c == '?' && wild) {
+      wildcards = true;
+      lo = lo * 16u;
+      hi = hi * 16u + 15u;
+    } else if (v >= 0 && !wildcards) {
+      lo = lo * 16u + (uint32_t)v;
+      hi = hi * 16u + (uint32_t)v;
+    } else {
+      break;
+    }
+    digits++;
+    (*at)++;
+  }
+  if (digits == 0u || digits > 6u) return false;
+  *low = lo;
+  *high = hi;
+  return true;
+}
+
+static bool css_font_unicode_range(const char* text, size_t length,
+                                   my_css_font_face_t* face) {
+  size_t at = 0u;
+  face->range_count = 0u;
+  for (;;) {
+    uint32_t first, last, ignored;
+    while (at < length && css_qualifier_is_ws(text[at])) at++;
+    if (at + 2u > length || (text[at] != 'U' && text[at] != 'u') ||
+        text[at + 1u] != '+') {
+      return false;
+    }
+    at += 2u;
+    if (!css_font_range_number(text, length, &at, true, &first, &last)) {
+      return false;
+    }
+    if (first == last && at < length && text[at] == '-') {
+      at++;
+      if (!css_font_range_number(text, length, &at, false, &last,
+                                 &ignored)) {
+        return false;
+      }
+    }
+    if (first > 0x10FFFFu || first > last) return false;
+    if (last > 0x10FFFFu) last = 0x10FFFFu;
+    if (face->range_count >= MY_CSS_MAX_FONT_RANGES) return false;
+    face->ranges[face->range_count][0] = first;
+    face->ranges[face->range_count][1] = last;
+    face->range_count++;
+    while (at < length && css_qualifier_is_ws(text[at])) at++;
+    if (at == length) return true;
+    if (text[at] != ',') return false;
+    at++;
+  }
+}
+
 static bool css_parse_font_face_atrule(css_p_t* p, my_css_sheet_t* sheet) {
   my_css_font_face_t face;
   bool has_family = false;
@@ -6590,6 +6662,8 @@ static bool css_parse_font_face_atrule(css_p_t* p, my_css_sheet_t* sheet) {
       if (!css_font_weight(p->s + start, length, &face.weight)) valid = false;
     } else if (my_str_eq(key, "font-style")) {
       if (!css_font_style(p->s + start, length, &face.italic)) valid = false;
+    } else if (my_str_eq(key, "unicode-range")) {
+      if (!css_font_unicode_range(p->s + start, length, &face)) valid = false;
     }
     if (c_peek(p) == ';') c_next(p);
   }
@@ -6925,6 +6999,19 @@ const my_css_font_face_t* my_css_font_face_at(const my_css_sheet_t* sheet,
                                               size_t index) {
   if (index >= my_css_font_face_count(sheet)) return NULL;
   return (const my_css_font_face_t*)my_darray_get(sheet->font_faces, index);
+}
+
+bool my_css_font_face_covers(const my_css_font_face_t* face,
+                             uint32_t codepoint) {
+  size_t i;
+  if (face == NULL || codepoint > 0x10FFFFu) return false;
+  if (face->range_count == 0u) return true;
+  for (i = 0u; i < face->range_count; i++) {
+    if (codepoint >= face->ranges[i][0] && codepoint <= face->ranges[i][1]) {
+      return true;
+    }
+  }
+  return false;
 }
 
 static bool css_font_family_eq(const char* a, const char* b) {

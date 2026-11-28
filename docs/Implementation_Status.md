@@ -15029,3 +15029,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **交付**：`my_css_font_face_match` 按 CSS Fonts 顺序（family 不区分大小写、style 收窄、三段 weight 规则、同键取后者）选出一条 `@font-face`。仍不加载字体、不接入控件。
 - **TDD 与变异**：`test_myui_css` 新增 3 例（234 例），实现前编译失败；12 项变异全部判红（首轮 4 项存活后补用例）。
 - **验证**：普通与 ASan+UBSan 下 234/234；全量 ctest 482/482；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
+
+## myui CSS：`@font-face` 的 `unicode-range`（2026-11-28）
+
+- **交付**：解析 `unicode-range`（`U+X`、`U+X-Y`、`U+X??`，最多 16 段，结束值截到 U+10FFFF，无效时丢弃规则），`my_css_font_face_covers` 判断覆盖。匹配函数不看范围，按码点回退由宿主完成。
+- **TDD 与变异**：`test_myui_css` 新增 2 例（236 例），实现前编译失败；21 项变异全部判红。
+- **验证**：普通与 ASan+UBSan 下 236/236；全量 ctest 482/482；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。

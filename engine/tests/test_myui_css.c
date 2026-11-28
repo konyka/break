@@ -11781,6 +11781,91 @@ TEST(css_font_face_match_takes_the_last_duplicate)
   my_css_sheet_destroy(sheet);
 }
 
+TEST(css_font_face_unicode_range_limits_coverage)
+{
+  const char* css =
+      "@font-face{font-family:C;src:url(c.ttf);"
+      "unicode-range: U+4E00-9FFF, u+3000-303f, U+FF01;}"
+      "@font-face{font-family:W;src:url(w.ttf);unicode-range:U+4??;}"
+      "@font-face{font-family:All;src:url(all.ttf);}"
+      "@font-face{font-family:Clamp;src:url(k.ttf);"
+      "unicode-range:U+10FF00-1FFFFF;}";
+  my_css_sheet_t* sheet = my_css_parse(NULL, css, strlen(css), NULL);
+  const my_css_font_face_t* face;
+
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_font_face_count(sheet), 4u);
+  face = my_css_font_face_at(sheet, 0u);
+  ASSERT_EQ(face->range_count, 3u);
+  ASSERT_TRUE(my_css_font_face_covers(face, 0x4E00u));
+  ASSERT_TRUE(my_css_font_face_covers(face, 0x9FFFu));
+  ASSERT_FALSE(my_css_font_face_covers(face, 0x4DFFu));
+  ASSERT_FALSE(my_css_font_face_covers(face, 0xA000u));
+  ASSERT_TRUE(my_css_font_face_covers(face, 0x3000u));
+  ASSERT_TRUE(my_css_font_face_covers(face, 0x303Fu));
+  ASSERT_TRUE(my_css_font_face_covers(face, 0xFF01u));
+  ASSERT_FALSE(my_css_font_face_covers(face, 0xFF02u));
+  ASSERT_FALSE(my_css_font_face_covers(face, 'a'));
+  face = my_css_font_face_at(sheet, 1u);
+  ASSERT_TRUE(my_css_font_face_covers(face, 0x400u));
+  ASSERT_TRUE(my_css_font_face_covers(face, 0x4FFu));
+  ASSERT_FALSE(my_css_font_face_covers(face, 0x3FFu));
+  ASSERT_FALSE(my_css_font_face_covers(face, 0x500u));
+  face = my_css_font_face_at(sheet, 2u);
+  ASSERT_EQ(face->range_count, 0u);
+  ASSERT_TRUE(my_css_font_face_covers(face, 0u));
+  ASSERT_TRUE(my_css_font_face_covers(face, 0x10FFFFu));
+  ASSERT_FALSE(my_css_font_face_covers(face, 0x110000u));
+  face = my_css_font_face_at(sheet, 3u);
+  ASSERT_EQ(face->ranges[0][1], 0x10FFFFu);
+  ASSERT_TRUE(my_css_font_face_covers(face, 0x10FFFFu));
+  ASSERT_FALSE(my_css_font_face_covers(face, 0x10FEFFu));
+  ASSERT_FALSE(my_css_font_face_covers(NULL, 'a'));
+  my_css_sheet_destroy(sheet);
+}
+
+TEST(css_font_face_invalid_unicode_range_drops_the_rule)
+{
+  /* start > end, start beyond U+10FFFF, seven hex digits, a wildcard
+   * before a digit or a digit after a wildcard, a missing U+, more than MY_CSS_MAX_FONT_RANGES ranges,
+   * an empty list: each rule is dropped. */
+  static char css[2048];
+  size_t at = 0u, i;
+  my_css_sheet_t* sheet;
+  at += (size_t)snprintf(css + at, sizeof(css) - at, "%s",
+      "@font-face{font-family:A;src:url(a.ttf);unicode-range:U+200-100;}"
+      "@font-face{font-family:B;src:url(b.ttf);unicode-range:U+110000;}"
+      "@font-face{font-family:C;src:url(c.ttf);unicode-range:U+0000041;}"
+      "@font-face{font-family:C2;src:url(c.ttf);unicode-range:U+4?4;}"
+      "@font-face{font-family:D;src:url(d.ttf);unicode-range:U+?4;}"
+      "@font-face{font-family:E;src:url(e.ttf);unicode-range:4E00;}"
+      "@font-face{font-family:F;src:url(f.ttf);unicode-range:;}"
+      "@font-face{font-family:G;src:url(g.ttf);unicode-range:U+41,;}"
+      "@font-face{font-family:H;src:url(h.ttf);unicode-range:");
+  for (i = 0u; i <= MY_CSS_MAX_FONT_RANGES; i++) {
+    at += (size_t)snprintf(css + at, sizeof(css) - at, "%sU+%zx",
+                           i == 0u ? "" : ",", i * 2u);
+  }
+  at += (size_t)snprintf(css + at, sizeof(css) - at,
+      ";}@font-face{font-family:Ok;src:url(ok.ttf);unicode-range:");
+  for (i = 0u; i < MY_CSS_MAX_FONT_RANGES; i++) {
+    at += (size_t)snprintf(css + at, sizeof(css) - at, "%sU+%zx",
+                           i == 0u ? "" : ",", i * 2u);
+  }
+  at += (size_t)snprintf(css + at, sizeof(css) - at, ";}");
+  ASSERT_TRUE(at < sizeof(css));
+  sheet = my_css_parse(NULL, css, at, NULL);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_font_face_count(sheet), 1u);
+  ASSERT_STR_EQ(my_css_font_face_at(sheet, 0u)->family, "Ok");
+  ASSERT_EQ(my_css_font_face_at(sheet, 0u)->range_count,
+            (size_t)MY_CSS_MAX_FONT_RANGES);
+  ASSERT_TRUE(my_css_font_face_covers(my_css_font_face_at(sheet, 0u),
+                                      (uint32_t)(MY_CSS_MAX_FONT_RANGES - 1u) * 2u));
+  ASSERT_FALSE(my_css_font_face_covers(my_css_font_face_at(sheet, 0u), 1u));
+  my_css_sheet_destroy(sheet);
+}
+
 TEST(css_keyframes_capability_is_registered)
 {
   ASSERT_TRUE((my_css_capabilities()->supported_features &
@@ -12369,6 +12454,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_keyframes_sample_interpolates_between_stops);
     RUN_TEST(css_keyframes_reject_malformed_and_oversized);
     RUN_TEST(css_keyframes_capability_is_registered);
+    RUN_TEST(css_font_face_unicode_range_limits_coverage);
+    RUN_TEST(css_font_face_invalid_unicode_range_drops_the_rule);
     RUN_TEST(css_font_face_match_follows_css_weight_rules);
     RUN_TEST(css_font_face_match_prefers_the_requested_style);
     RUN_TEST(css_font_face_match_takes_the_last_duplicate);

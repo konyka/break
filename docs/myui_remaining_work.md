@@ -3221,7 +3221,7 @@ LTR JUSTIFY 行逐词绘制，`ta_draw_syntax_span` 又在 token 边界把词截
 - `font-family`：一个带引号的字符串，或若干标识符（以单个空格连接）。
 - `src`：逗号列表中第一个安全的相对路径，取自 `url(...)`（可带引号）或直接的字符串，`format()` 忽略；`local()` 与不安全路径跳过。安全规则与 `@import` 相同（`css_import_path_safe`：非绝对路径，无 `.`/`..` 段，无反斜杠、冒号或控制字节）。
 - `font-weight`：`normal`=400、`bold`=700 或 1..1000 的整数，缺省 400；`font-style`：`normal`、`italic`、`oblique`（后两者记为 italic）。
-- 缺 family、缺安全 source、weight 越界或 style 未知时丢弃该条并告警；其他描述符（`unicode-range`、`font-display` 等）忽略。不匹配的 `@media` 块内的规则随块跳过。最多 `MY_CSS_MAX_FONT_FACES`（64）条，超出解析失败；块未闭合解析失败。
+- 缺 family、缺安全 source、weight 越界或 style 未知时丢弃该条并告警；其他描述符（`font-display` 等）忽略。`unicode-range` 见同日后续一节。不匹配的 `@media` 块内的规则随块跳过。最多 `MY_CSS_MAX_FONT_FACES`（64）条，超出解析失败；块未闭合解析失败。
 - capability registry 新增 `MY_CSS_FEATURE_FONT_FACE`，严格模式接受 `@font-face`。
 
 边界：sheet 只记录规则，不加载字体文件，也不把 family 接到控件的字体选择上；由宿主按 `src` 加载（如 `my_font_ft_create` 或字体链）。选择哪一条规则见下一节的 `my_css_font_face_match`。
@@ -3246,3 +3246,19 @@ LTR JUSTIFY 行逐词绘制，`ta_draw_syntax_span` 又在 token 边界把词截
 **变异**（12 项，全部判红）：大小写敏感、前缀即相等、去掉 400..500 的「500 以内更重优先」、400..500 段先重后轻、低于 400 段先重、高于 500 段先轻、400..500 区间上下界各差一、不按 style 收窄、style 永不命中、重复规则取前者、不按 family 过滤。首轮其中 4 项存活（大小写、前缀、500 窗口、style 收窄），据此补了 `M` 400→500、`Abc`/`Ab` 前缀与 `a` 小写输入。
 
 **验证**：`test_myui_css` 234/234，ASan+UBSan 234/234；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。
+
+## 本轮补充：`@font-face` 的 `unicode-range`（2026-11-28）
+
+`my_css_font_face_t` 新增 `ranges[MY_CSS_MAX_FONT_RANGES][2]` 与 `range_count`，`my_css_font_face_covers(face, codepoint)` 判断某码点是否在该 face 的范围内。
+
+- 语法：逗号列表，每项 `U+X`、`U+X-Y` 或 `U+X??`（末尾通配），每段 1..6 位十六进制，`U+` 大小写均可。
+- 结束值超过 U+10FFFF 时截到 U+10FFFF；起始值超过 U+10FFFF、起始大于结束、通配后再出现数字、空列表、尾随逗号、超过 16 段都使整条规则丢弃。
+- 未写 `unicode-range` 时 `range_count` 为 0，覆盖 U+0..U+10FFFF；任何 face 都不覆盖 U+10FFFF 以上的值。
+
+边界：`my_css_font_face_match` 不看 `unicode-range`，按码点在多个 face 之间回退由宿主结合 `covers` 完成（例如为字体链排序）。
+
+**TDD**：`test_myui_css` 新增 2 例（236 例）：多段与单点、通配、截断、缺省全覆盖；10 种无效写法的丢弃与 16 段上限。实现前编译失败（RED）。
+
+**变异**（21 项，全部判红）：不检查起始大于结束、不检查起始上限、不截断结束值、允许 7 位、通配后允许数字、通配下界与上界各错一、只认大写 `U`、不要求 `U+`、上限差一、接受尾随逗号、无效范围仍保留规则、`covers` 的两端各开区间、不限制 U+10FFFF、缺省不覆盖、只看第一段、不解析 `X-Y`。首轮「不截断」「7 位」两项存活，据此补了 `U+0000041` 与结束值断言；首版「数字串后不得紧跟 `?`」的检查被变异证明多余（通配后出现数字已由 `!wildcards` 拒绝），已删除。
+
+**验证**：`test_myui_css` 236/236，ASan+UBSan 236/236；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。

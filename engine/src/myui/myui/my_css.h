@@ -63,6 +63,7 @@
 #define MY_CSS_MAX_ANIMATIONS MY_THEME_ANIMATION_GROUPS
 #define MY_CSS_MAX_FONT_FACES 64u
 #define MY_CSS_MAX_FONT_FAMILY_BYTES 64u
+#define MY_CSS_MAX_FONT_RANGES 16u
 
 typedef enum my_css_parse_flags_t {
   MY_CSS_PARSE_DEFAULT = 0u,
@@ -292,6 +293,10 @@ typedef struct my_css_font_face_t {
   char src[MY_CSS_MAX_IMPORT_PATH_BYTES + 1u];
   uint32_t weight; /**< 1..1000; 400 when absent, `bold` is 700 */
   bool italic;     /**< `italic` or `oblique`; false for `normal`/absent */
+  /** `unicode-range` as inclusive [first, last] pairs; range_count 0 means
+   * the descriptor was absent and the face covers every code point. */
+  uint32_t ranges[MY_CSS_MAX_FONT_RANGES][2];
+  size_t range_count;
 } my_css_font_face_t;
 
 typedef struct my_css_sheet_t {
@@ -458,7 +463,8 @@ size_t my_css_keyframes_count(const my_css_sheet_t* sheet);
 /** @brief Number of `@font-face` rules on the sheet, in source order. A rule
  * without `font-family` or without a safe source, or with a `font-weight`
  * outside 1..1000 or an unknown `font-style`, is dropped with a warning.
- * Other descriptors (`unicode-range`, `font-display`, ...) are ignored. A
+ * An invalid `unicode-range` drops it too. Other descriptors
+ * (`font-display`, ...) are ignored. A
  * rule inside a non-matching `@media` block is skipped with the block.
  * More than MY_CSS_MAX_FONT_FACES rules fail the parse. */
 size_t my_css_font_face_count(const my_css_sheet_t* sheet);
@@ -466,6 +472,15 @@ size_t my_css_font_face_count(const my_css_sheet_t* sheet);
 /** @brief Font face by index; NULL when out of range or sheet is NULL. */
 const my_css_font_face_t* my_css_font_face_at(const my_css_sheet_t* sheet,
                                               size_t index);
+
+/** @brief True when the face's `unicode-range` covers `codepoint` (any
+ * code point up to U+10FFFF when the face has no range). `unicode-range`
+ * takes a comma list of `U+X`, `U+X-Y` and `U+X??` (trailing wildcards),
+ * 1..6 hex digits each, `U+` in either case. An end beyond U+10FFFF is
+ * clamped; a start beyond it, start > end, an empty list or more than
+ * MY_CSS_MAX_FONT_RANGES ranges drops the rule. */
+bool my_css_font_face_covers(const my_css_font_face_t* face,
+                             uint32_t codepoint);
 
 /** @brief Best `@font-face` for a family, weight and style, following the
  * CSS Fonts matching order: faces of the family (ASCII case-insensitive)
