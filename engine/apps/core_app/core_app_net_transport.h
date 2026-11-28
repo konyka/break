@@ -22,12 +22,23 @@ typedef struct CoreAppNetTransport CoreAppNetTransport;
 /* Unacknowledged reliable World packets per connection, kept below the World
  * session's default history limit of 8 entries. */
 #define CORE_APP_NET_WORLD_RELIABLE_IN_FLIGHT 4u
+/* Device keys a keyring_file may list (break_keyring capacity). */
+#define CORE_APP_NET_KEYRING_CAPACITY 1024u
+/* A running server re-reads keyring_file every this many ticks. */
+#define CORE_APP_NET_KEYRING_RELOAD_TICKS 60u
 
 typedef struct CoreAppNetTransportConfig {
     const char *bind;      /* "HOST:PORT"; PORT 0 picks an ephemeral port */
     const char *tls_cert;  /* PEM server certificate */
     const char *tls_key;   /* PEM server key */
-    const char *psk_env;   /* environment variable holding 64 hex digits */
+    /* Exactly one of psk_env and keyring_file is set. */
+    const char *psk_env;   /* environment variable holding 64 hex digits; key id "coreapp1" */
+    /* break_keyring file of per-device keys ("<16 hex key id> <64 hex psk>"
+     * per line). Start fails unless it loads. While running it is re-read
+     * every CORE_APP_NET_KEYRING_RELOAD_TICKS ticks; a key no longer listed
+     * (or listed with a new psk) closes its sessions, and a file that does
+     * not load keeps the current keys. */
+    const char *keyring_file;
     const char *port_file; /* receives the bound port after start; removed on exit */
     u32 poll_ms;           /* per-tick socket wait, 0..100; 0 never blocks the tick */
     bool voice_relay;      /* forward accepted peer voice to every other peer */
@@ -49,8 +60,9 @@ typedef struct CoreAppNetTransportConfig {
     bool prediction;
 } CoreAppNetTransportConfig;
 
-/* Validates the configuration shape (every field present, bind parses).
- * Reads no secret and opens no socket; start does both. */
+/* Validates the configuration shape (every field present, exactly one of
+ * psk_env and keyring_file, bind parses). Reads no secret and opens no
+ * socket; start does both. */
 CoreAppNetTransport *core_app_net_transport_create(const CoreAppNetTransportConfig *config);
 /* Destroys and frees the transport. When the destroy fails (the reactor did
  * not stop, or the global auth hook could not be cleared) the memory is
@@ -222,6 +234,11 @@ BreakNetReactor *core_app_net_transport_reactor_for_test(CoreAppNetTransport *tr
  * destroys the reactor and the acceptor a timed-out destroy kept, then frees
  * the transport. Returns false if the reactor still does not stop. */
 bool core_app_net_transport_reclaim_for_test(CoreAppNetTransport *transport);
+/* Test-only: runs one keyring reload now, as the tick does every
+ * CORE_APP_NET_KEYRING_RELOAD_TICKS ticks. No-op without a keyring. */
+void core_app_net_transport_keyring_reload_for_test(CoreAppNetTransport *transport);
+/* Test-only: keys in the transport's ring; 0 when it holds none. */
+u32 core_app_net_transport_keyring_count_for_test(const CoreAppNetTransport *transport);
 #endif
 
 /* Parses "HOST:PORT" with a dotted IPv4 host. Exposed for the CLI so a

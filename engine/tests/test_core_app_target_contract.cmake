@@ -205,7 +205,22 @@ endif()
 if(NETWORK_ENABLED AND NETWORK_TRANSPORT)
     expect_exit(network_requires_transport_options 2 --network)
     expect_last_error(network_requires_transport_options
-        "--network requires --bind, --tls-cert, --tls-key, --psk-env and --port-file")
+        "--network requires --bind, --tls-cert, --tls-key, --port-file and exactly one of --psk-env and --keyring-file")
+    expect_exit(network_requires_one_key_source 2 --network --bind 127.0.0.1:0
+        --tls-cert c.pem --tls-key k.pem --psk-env CORE_APP_CONTRACT_PSK
+        --keyring-file ring.txt --port-file port.txt)
+    expect_last_error(network_requires_one_key_source
+        "exactly one of --psk-env and --keyring-file")
+    expect_exit(keyring_file_without_network 2 --keyring-file ring.txt)
+    expect_last_error(keyring_file_without_network "network options require --network")
+    expect_exit(keyring_file_missing_value 2 --network --keyring-file)
+    expect_last_error(keyring_file_missing_value "--keyring-file requires a nonempty path")
+    if(NOT help_out MATCHES "--keyring-file PATH")
+        record_error("help does not list --keyring-file PATH: ${help_out}")
+    endif()
+    expect_runtime_failed(keyring_file_reaches_runtime
+        --network --bind 127.0.0.1:0 --tls-cert c.pem --tls-key k.pem
+        --keyring-file ring.txt --port-file port.txt)
     expect_exit(network_options_without_network 2 --bind 127.0.0.1:0)
     expect_last_error(network_options_without_network "network options require --network")
     expect_exit(voice_relay_without_network 2 --voice-relay)

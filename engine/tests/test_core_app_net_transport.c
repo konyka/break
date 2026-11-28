@@ -2,24 +2,34 @@
 
 #include "../apps/core_app/core_app_net_transport.h"
 
+#include <crypto/break_crypto.h>
 #include <ecs/world_session.h>
 #include <network/break_net_adapter.h>
+#include <network/break_net_envelope.h>
 #include <network/break_net_message.h>
 #include <network/break_net_message_registry.h>
 #include <network/break_online_aspect_replication.h>
 #include <network/break_online_aspect_session.h>
 #include <network/break_online_voice.h>
 #include <network/break_replication_wire.h>
+#include <network/break_session.h>
 #include <runtime/runtime_bus.h>
 #include <runtime/runtime_coordinator.h>
 #include <runtime/runtime_queue.h>
 #include <runtime/runtime_world_session.h>
+#include <snow/network_buffer.h>
+#include <snow/openssl.h>
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <poll.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #ifndef CORE_APP_TEST_SSL_FIXTURE_DIR
 #error "CORE_APP_TEST_SSL_FIXTURE_DIR must be defined by the build system"
@@ -3293,6 +3303,626 @@ TEST(world_reliable_publish_is_off_by_default) {
     aspect_fixture_dispose(&fixture);
 }
 
+/* Per-device keyring (keyring_file). RingClient is a real TLS + AUTH v2
+ * peer in this process: before every read it ticks the transport once, so
+ * server and client make progress on one thread. */
+static const u8 k_ring_id_a[8] = {'d', 'e', 'v', 'i', 'c', 'e', '0', 'a'};
+static const u8 k_ring_id_b[8] = {'d', 'e', 'v', 'i', 'c', 'e', '0', 'b'};
+
+static void ring_psk(u8 out[32], u8 base) {
+    for (u32 i = 0u; i < 32u; ++i) out[i] = (u8)(base + i);
+}
+
+static bool ring_write_text(const char *path, const char *text) {
+    FILE *f = fopen(path, "wb");
+    usize length = strlen(text);
+    if (!f) return false;
+    usize written = fwrite(text, 1u, length, f);
+    return fclose(f) == 0 && written == length;
+}
+
+/* Writes "<id hex> <psk hex>" lines for A (psk base 0x10) and/or B (0x50). */
+static bool ring_write(const char *path, bool with_a, bool with_b) {
+    char text[512];
+    usize at = 0u;
+    const u8 *ids[2] = {k_ring_id_a, k_ring_id_b};
+    const bool use[2] = {with_a, with_b};
+    const u8 bases[2] = {0x10u, 0x50u};
+    text[0] = '\0';
+    at += (usize)snprintf(text + at, sizeof(text) - at, "# core_app test keyring\n");
+    for (u32 k = 0u; k < 2u; ++k) {
+        u8 psk[32];
+        if (!use[k]) continue;
+        ring_psk(psk, bases[k]);
+        for (u32 i = 0u; i < 8u; ++i)
+            at += (usize)snprintf(text + at, sizeof(text) - at, "%02x", ids[k][i]);
+        text[at++] = ' ';
+        for (u32 i = 0u; i < 32u; ++i)
+            at += (usize)snprintf(text + at, sizeof(text) - at, "%02x", psk[i]);
+        text[at++] = '\n';
+        text[at] = '\0';
+    }
+    return ring_write_text(path, text);
+}
+
+typedef struct RingFixture {
+    CoreAppNetTransportConfig config;
+    CoreAppNetTransport *transport;
+    CoreAppNetworkHooks hooks;
+    FILE *trace;
+    char cert[512];
+    char key[512];
+    char port_file[256];
+    char ring[256];
+    u16 port;
+    u32 tick;
+    bool started;
+} RingFixture;
+
+typedef struct RingClient {
+    RingFixture *server;
+    int fd;
+    SnowSslCtx *ctx;
+    SnowSsl *ssl;
+    SnowNetworkBuffer *plain;
+    u32 next_seq;
+    u8 server_nonce[16];
+} RingClient;
+
+static u64 ring_now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (u64)ts.tv_sec * 1000u + (u64)ts.tv_nsec / 1000000u;
+}
+
+static void ring_tick(RingFixture *f) {
+    f->hooks.tick(f->hooks.user, ++f->tick, 1u, NULL, 0u, 0u);
+}
+
+static void ring_fixture_paths(RingFixture *f, const char *name) {
+    const char *fixtures = CORE_APP_TEST_STR(CORE_APP_TEST_SSL_FIXTURE_DIR);
+    char file[128];
+    memset(f, 0, sizeof(*f));
+    snprintf(f->cert, sizeof(f->cert), "%s/snow_test_cert.pem", fixtures);
+    snprintf(f->key, sizeof(f->key), "%s/snow_test_key.pem", fixtures);
+    snprintf(file, sizeof(file), "%s.port", name);
+    test_tmp(f->port_file, sizeof(f->port_file), file);
+    snprintf(file, sizeof(file), "%s.keyring", name);
+    test_tmp(f->ring, sizeof(f->ring), file);
+    (void)remove(f->port_file);
+    f->config.bind = "127.0.0.1:0";
+    f->config.tls_cert = f->cert;
+    f->config.tls_key = f->key;
+    f->config.keyring_file = f->ring;
+    f->config.port_file = f->port_file;
+}
+
+/* Starts the transport on f->ring (written by the caller). */
+static bool ring_fixture_start(RingFixture *f) {
+    FILE *port = NULL;
+    unsigned value = 0u;
+    f->trace = tmpfile();
+    f->transport = f->trace ? core_app_net_transport_create(&f->config) : NULL;
+    if (!f->transport) return false;
+    core_app_net_transport_hooks(f->transport, &f->hooks);
+    if (f->hooks.start(f->hooks.user, f->trace) != BREAK_RUNTIME_OK) return false;
+    f->started = true;
+    port = fopen(f->port_file, "rb");
+    if (!port) return false;
+    if (fscanf(port, "%u", &value) != 1) value = 0u;
+    fclose(port);
+    f->port = (u16)value;
+    return value > 0u && value <= 65535u;
+}
+
+/* Drains and destroys; true when the destroy cleared the auth hook. */
+static bool ring_fixture_stop(RingFixture *f) {
+    bool ok = true;
+    if (f->transport && f->started) {
+        ok = f->hooks.stop_admission(f->hooks.user) == BREAK_RUNTIME_OK &&
+             f->hooks.stop_producers(f->hooks.user) == BREAK_RUNTIME_OK &&
+             f->hooks.drain(f->hooks.user) == BREAK_RUNTIME_OK;
+        ok = f->hooks.destroy(f->hooks.user) == BREAK_RUNTIME_OK && ok;
+    }
+    f->started = false;
+    return ok;
+}
+
+static void ring_fixture_dispose(RingFixture *f) {
+    core_app_net_transport_free(f->transport);
+    f->transport = NULL;
+    if (f->trace) fclose(f->trace);
+    f->trace = NULL;
+    (void)remove(f->port_file);
+    (void)remove(f->ring);
+}
+
+/* Copies the whole trace into text (NUL-terminated). */
+static void ring_trace_text(FILE *trace, char *text, usize capacity) {
+    usize length = 0u;
+    if (trace) {
+        fflush(trace);
+        rewind(trace);
+        length = fread(text, 1u, capacity - 1u, trace);
+        fseek(trace, 0, SEEK_END);
+    }
+    text[length] = '\0';
+}
+
+static u32 ring_trace_count(FILE *trace, const char *needle) {
+    static char text[65536];
+    u32 count = 0u;
+    ring_trace_text(trace, text, sizeof(text));
+    for (const char *at = strstr(text, needle); at; at = strstr(at + 1, needle)) count++;
+    return count;
+}
+
+static u32 ring_authenticated_slots(RingFixture *f) {
+    CoreAppNetConnectionTestView view;
+    u32 count = 0u;
+    for (u32 i = 0u; i < 8u; ++i) {
+        if (core_app_net_transport_connection_for_test(f->transport, i, &view) &&
+            view.key != 0u && view.authenticated) {
+            count++;
+        }
+    }
+    return count;
+}
+
+/* Slots holding a connection; a slot is released by the CONNECTION_CLOSED
+ * event that also counts the transport's closed statistic. */
+static u32 ring_open_slots(RingFixture *f) {
+    CoreAppNetConnectionTestView view;
+    u32 count = 0u;
+    for (u32 i = 0u; i < 8u; ++i) {
+        if (core_app_net_transport_connection_for_test(f->transport, i, &view) && view.key != 0u)
+            count++;
+    }
+    return count;
+}
+
+static bool ring_client_flush(RingClient *c, SnowNetworkBuffer *out) {
+    usize size = SnowNetworkBufferLength(out);
+    usize copied = 0u, off = 0u;
+    u8 *flat;
+    if (size == 0u) return true;
+    flat = (u8 *)malloc(size);
+    if (!flat || SnowNetworkBufferCopyTo(out, flat, size, &copied) != SNOW_OK || copied != size) {
+        free(flat);
+        return false;
+    }
+    SnowNetworkBufferClear(out);
+    while (off < size) {
+        ssize_t n = write(c->fd, flat + off, size - off);
+        if (n <= 0) break;
+        off += (usize)n;
+    }
+    free(flat);
+    return off == size;
+}
+
+/* 1 = bytes consumed, 0 = nothing within 2 ms, -1 = closed or TLS error. */
+static int ring_client_read_burst(RingClient *c, SnowNetworkBuffer *out, bool handshake) {
+    u8 buf[4096];
+    struct pollfd pfd = {c->fd, POLLIN, 0};
+    ssize_t got;
+    ring_tick(c->server);
+    if (poll(&pfd, 1, 2) <= 0) return 0;
+    got = read(c->fd, buf, sizeof(buf));
+    if (got <= 0) return -1;
+    if (handshake) return SnowSslDoHandshake(c->ssl, out, buf, (usize)got) == 0 ? 1 : -1;
+    return SnowSslRead(c->ssl, buf, (usize)got, c->plain) == 0 ? 1 : -1;
+}
+
+/* 1 = one envelope (payload in a static frame), 0 = timeout, -1 = closed. */
+static int ring_client_recv(RingClient *c, BreakNetEnvelope *env, u32 timeout_ms) {
+    static u8 frame[BREAK_NET_ENVELOPE_HEADER_SIZE + BREAK_NET_MAX_PAYLOAD_SIZE];
+    u64 deadline = ring_now_ms() + timeout_ms;
+    while (ring_now_ms() < deadline) {
+        usize have = SnowNetworkBufferLength(c->plain);
+        if (have >= BREAK_NET_ENVELOPE_HEADER_SIZE) {
+            usize n = 0u;
+            if (SnowNetworkBufferGetHeader(c->plain, BREAK_NET_ENVELOPE_HEADER_SIZE, frame,
+                                           sizeof(frame), &n) != SNOW_OK) {
+                return -1;
+            }
+            u32 payload = (u32)frame[14] | ((u32)frame[15] << 8u) | ((u32)frame[16] << 16u) |
+                          ((u32)frame[17] << 24u);
+            usize need = BREAK_NET_ENVELOPE_HEADER_SIZE + (usize)payload;
+            if (need > sizeof(frame)) return -1;
+            if (have >= need) {
+                if (SnowNetworkBufferGetHeader(c->plain, need, frame, sizeof(frame), &n) !=
+                        SNOW_OK ||
+                    n != need || SnowNetworkBufferMoveHeader(c->plain, need) != SNOW_OK ||
+                    break_net_envelope_decode(frame, need, env) != BREAK_NET_ENVELOPE_OK) {
+                    return -1;
+                }
+                return 1;
+            }
+        }
+        if (ring_client_read_burst(c, NULL, false) < 0) return -1;
+    }
+    return 0;
+}
+
+static void ring_client_close(RingClient *c) {
+    if (c->plain) SnowNetworkBufferDestroy(c->plain);
+    if (c->ssl) SnowSslFree(c->ssl);
+    if (c->ctx) SnowSslCtxFree(c->ctx);
+    if (c->fd >= 0) close(c->fd);
+    memset(c, 0, sizeof(*c));
+    c->fd = -1;
+}
+
+/* TCP connect, TLS handshake, then the server CHALLENGE (nonce kept). */
+static bool ring_client_open(RingClient *c, RingFixture *server) {
+    struct sockaddr_in address;
+    SnowSslCtxOpts opts;
+    SnowNetworkBuffer *out = NULL;
+    BreakNetEnvelope challenge;
+    bool ok = false;
+    memset(c, 0, sizeof(*c));
+    c->server = server;
+    c->next_seq = 1u;
+    c->fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (c->fd < 0) return false;
+    memset(&address, 0, sizeof(address));
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = htons(server->port);
+    if (connect(c->fd, (const struct sockaddr *)&address, sizeof(address)) != 0) return false;
+    memset(&opts, 0, sizeof(opts));
+    c->ctx = SnowSslCtxNew(&opts, NULL);
+    c->ssl = c->ctx ? SnowSslNew(c->ctx) : NULL;
+    if (!c->ssl || SnowSslInit(c->ssl, false) != SNOW_OK ||
+        SnowNetworkBufferCreate(&c->plain) != SNOW_OK ||
+        SnowNetworkBufferCreate(&out) != SNOW_OK) {
+        goto done;
+    }
+    if (SnowSslDoHandshake(c->ssl, out, NULL, 0u) != 0 || !ring_client_flush(c, out)) goto done;
+    u64 deadline = ring_now_ms() + 5000u;
+    while (!SnowSslIsHandshaked(c->ssl) && ring_now_ms() < deadline) {
+        if (ring_client_read_burst(c, out, true) < 0 || !ring_client_flush(c, out)) goto done;
+    }
+    if (!SnowSslIsHandshaked(c->ssl) || ring_client_recv(c, &challenge, 5000u) != 1 ||
+        challenge.message_id != BREAK_NET_MESSAGE_ID_CHALLENGE ||
+        challenge.protocol_version != 1u || challenge.payload_size != 16u) {
+        goto done;
+    }
+    memcpy(c->server_nonce, challenge.payload, 16u);
+    ok = true;
+done:
+    if (out) SnowNetworkBufferDestroy(out);
+    return ok;
+}
+
+static bool ring_client_auth(RingClient *c, const u8 key_id[8], const u8 psk[32]) {
+    BreakNetEnvelope env;
+    SnowNetworkBuffer *out = NULL;
+    u8 payload[56];
+    u8 context[40];
+    u8 wire[BREAK_NET_ENVELOPE_HEADER_SIZE + sizeof(payload)];
+    usize wire_size = 0u;
+    bool ok;
+    memcpy(payload, key_id, 8u);
+    for (u32 i = 0u; i < 16u; ++i) payload[8u + i] = (u8)(0x3cu + i);
+    memcpy(context, "BRKAUTH2", 8u);
+    memcpy(context + 8u, c->server_nonce, 16u);
+    memcpy(context + 24u, payload + 8u, 16u);
+    if (!break_crypto_hmac_sha256(psk, 32u, context, sizeof(context), payload + 24u)) return false;
+    memset(&env, 0, sizeof(env));
+    env.protocol_version = 2u;
+    env.message_id = BREAK_NET_MESSAGE_ID_AUTH;
+    env.sequence = c->next_seq++;
+    env.payload = payload;
+    env.payload_size = sizeof(payload);
+    if (break_net_envelope_encode(&env, wire, sizeof(wire), &wire_size) != BREAK_NET_ENVELOPE_OK ||
+        SnowNetworkBufferCreate(&out) != SNOW_OK) {
+        return false;
+    }
+    ok = SnowSslWrite(c->ssl, (const char *)wire, wire_size, out) == 0 && ring_client_flush(c, out);
+    SnowNetworkBufferDestroy(out);
+    return ok;
+}
+
+/* 1 = the server welcomed the session (it authenticated), -1 = the server
+ * closed the connection first, 0 = neither within timeout_ms. */
+static int ring_client_wait_welcome(RingClient *c, u32 timeout_ms) {
+    u64 deadline = ring_now_ms() + timeout_ms;
+    while (ring_now_ms() < deadline) {
+        BreakNetEnvelope env;
+        int got = ring_client_recv(c, &env, (u32)(deadline - ring_now_ms()) + 1u);
+        if (got != 1) return got;
+        if (env.message_id == CORE_APP_SESSION_WELCOME_MESSAGE_ID) return 1;
+    }
+    return 0;
+}
+
+/* True when the server closes the connection within timeout_ms. */
+static bool ring_client_wait_closed(RingClient *c, u32 timeout_ms) {
+    u64 deadline = ring_now_ms() + timeout_ms;
+    while (ring_now_ms() < deadline) {
+        if (ring_client_read_burst(c, NULL, false) < 0) return true;
+        SnowNetworkBufferClear(c->plain);
+    }
+    return false;
+}
+
+/* Opens a connection and authenticates as key_id/psk: 1 welcomed, -1
+ * closed by the server, 0 open/auth/timeout failure. */
+static int ring_connect(RingClient *c, RingFixture *server, const u8 key_id[8], u8 psk_base) {
+    u8 psk[32];
+    ring_psk(psk, psk_base);
+    if (!ring_client_open(c, server) || !ring_client_auth(c, key_id, psk)) return 0;
+    return ring_client_wait_welcome(c, 5000u);
+}
+
+TEST(keyring_file_authenticates_listed_devices) {
+    RingFixture f;
+    RingClient a, b;
+    bool written, started = false, stopped;
+    int a_auth = 0, b_auth = 0;
+    u32 slots = 0u, authenticated = 0u, listening = 0u;
+    ring_fixture_paths(&f, "core_app_keyring_listed");
+    a.fd = b.fd = -1;
+    written = ring_write(f.ring, true, true);
+    if (written) started = ring_fixture_start(&f);
+    if (started) {
+        a_auth = ring_connect(&a, &f, k_ring_id_a, 0x10u);
+        b_auth = ring_connect(&b, &f, k_ring_id_b, 0x50u);
+        ring_tick(&f);
+        slots = ring_authenticated_slots(&f);
+    }
+    ring_client_close(&a);
+    ring_client_close(&b);
+    stopped = ring_fixture_stop(&f);
+    listening = ring_trace_count(f.trace, "event=network result=listening tls=1 auth=v2\n");
+    authenticated = ring_trace_count(f.trace, " authenticated=2 ");
+    u32 secrets = ring_trace_count(f.trace, "101112131415");
+    ring_fixture_dispose(&f);
+    ASSERT_TRUE(written);
+    ASSERT_TRUE(started);
+    ASSERT_EQ(a_auth, 1);
+    ASSERT_EQ(b_auth, 1);
+    ASSERT_EQ(slots, 2u);
+    ASSERT_TRUE(stopped);
+    ASSERT_EQ(listening, 1u);
+    ASSERT_EQ(authenticated, 1u);
+    ASSERT_EQ(secrets, 0u);
+}
+
+/* Removing A from the file and reloading closes A's live session; A can no
+ * longer authenticate, and B (live and new) is unaffected. */
+TEST(keyring_reload_revokes_removed_device) {
+    RingFixture f;
+    RingClient a, b, a2, b2;
+    bool written, started = false, rewritten = false, a_closed = false, stopped;
+    int a_auth = 0, b_auth = 0, a2_auth = 0, b2_auth = 0;
+    u32 before = 0u, after = 0u, open_after = 0u, keys = 0u;
+    ring_fixture_paths(&f, "core_app_keyring_revoke");
+    a.fd = b.fd = a2.fd = b2.fd = -1;
+    written = ring_write(f.ring, true, true);
+    if (written) started = ring_fixture_start(&f);
+    if (started) {
+        a_auth = ring_connect(&a, &f, k_ring_id_a, 0x10u);
+        b_auth = ring_connect(&b, &f, k_ring_id_b, 0x50u);
+        before = ring_authenticated_slots(&f);
+        rewritten = ring_write(f.ring, false, true);
+        core_app_net_transport_keyring_reload_for_test(f.transport);
+        keys = core_app_net_transport_keyring_count_for_test(f.transport);
+        a_closed = ring_client_wait_closed(&a, 3000u);
+        for (u32 i = 0u; i < 50u && ring_open_slots(&f) != 1u; ++i) ring_tick(&f);
+        after = ring_authenticated_slots(&f);
+        open_after = ring_open_slots(&f);
+        a2_auth = ring_connect(&a2, &f, k_ring_id_a, 0x10u);
+        b2_auth = ring_connect(&b2, &f, k_ring_id_b, 0x50u);
+    }
+    ring_client_close(&a);
+    ring_client_close(&b);
+    ring_client_close(&a2);
+    ring_client_close(&b2);
+    stopped = ring_fixture_stop(&f);
+    u32 authenticated = ring_trace_count(f.trace, " authenticated=3 ");
+    ring_fixture_dispose(&f);
+    ASSERT_TRUE(written);
+    ASSERT_TRUE(started);
+    ASSERT_EQ(a_auth, 1);
+    ASSERT_EQ(b_auth, 1);
+    ASSERT_EQ(before, 2u);
+    ASSERT_TRUE(rewritten);
+    ASSERT_EQ(keys, 1u);
+    ASSERT_TRUE(a_closed);
+    ASSERT_EQ(after, 1u);
+    ASSERT_EQ(open_after, 1u);
+    ASSERT_EQ(a2_auth, -1);
+    ASSERT_EQ(b2_auth, 1);
+    ASSERT_TRUE(stopped);
+    ASSERT_EQ(authenticated, 1u);
+}
+
+/* A file that does not load keeps the ring and is traced once, however
+ * often it is retried; the next accepted load says how many keys it has. */
+TEST(keyring_reload_rejects_a_bad_file_and_keeps_the_ring) {
+    RingFixture f;
+    RingClient a, a2;
+    bool written, started = false, broken = false, fixed = false, stopped;
+    int a_auth = 0, a2_auth = 0;
+    u32 kept = 0u, live = 0u, rejected = 0u, rejected_after = 0u, reloaded = 0u, keys = 0u;
+    ring_fixture_paths(&f, "core_app_keyring_bad");
+    a.fd = a2.fd = -1;
+    written = ring_write(f.ring, true, false);
+    if (written) started = ring_fixture_start(&f);
+    if (started) {
+        a_auth = ring_connect(&a, &f, k_ring_id_a, 0x10u);
+        broken = ring_write_text(f.ring, "this is not a keyring line\n");
+        core_app_net_transport_keyring_reload_for_test(f.transport);
+        core_app_net_transport_keyring_reload_for_test(f.transport);
+        rejected = ring_trace_count(f.trace, "event=keyring result=rejected\n");
+        kept = core_app_net_transport_keyring_count_for_test(f.transport);
+        a2_auth = ring_connect(&a2, &f, k_ring_id_a, 0x10u);
+        live = ring_authenticated_slots(&f);
+        fixed = ring_write(f.ring, true, true);
+        core_app_net_transport_keyring_reload_for_test(f.transport);
+        reloaded = ring_trace_count(f.trace, "event=keyring result=reloaded keys=2\n");
+        keys = core_app_net_transport_keyring_count_for_test(f.transport);
+        core_app_net_transport_keyring_reload_for_test(f.transport);
+        rejected_after = ring_trace_count(f.trace, "event=keyring result=");
+    }
+    ring_client_close(&a);
+    ring_client_close(&a2);
+    stopped = ring_fixture_stop(&f);
+    ring_fixture_dispose(&f);
+    ASSERT_TRUE(written);
+    ASSERT_TRUE(started);
+    ASSERT_EQ(a_auth, 1);
+    ASSERT_TRUE(broken);
+    ASSERT_EQ(rejected, 1u);
+    ASSERT_EQ(kept, 1u);
+    ASSERT_EQ(a2_auth, 1);
+    ASSERT_EQ(live, 2u);
+    ASSERT_TRUE(fixed);
+    ASSERT_EQ(reloaded, 1u);
+    ASSERT_EQ(keys, 2u);
+    ASSERT_EQ(rejected_after, 2u);
+    ASSERT_TRUE(stopped);
+}
+
+/* The tick re-reads the file every CORE_APP_NET_KEYRING_RELOAD_TICKS
+ * ticks, and not before. */
+TEST(keyring_tick_reloads_the_file_on_its_cadence) {
+    RingFixture f;
+    bool written, started = false, rewritten = false, stopped;
+    u32 early = 0u, due = 0u;
+    ring_fixture_paths(&f, "core_app_keyring_cadence");
+    written = ring_write(f.ring, true, true);
+    if (written) started = ring_fixture_start(&f);
+    if (started) {
+        core_app_net_transport_keyring_reload_for_test(f.transport);
+        rewritten = ring_write(f.ring, false, true);
+        for (u32 i = 0u; i + 1u < CORE_APP_NET_KEYRING_RELOAD_TICKS; ++i) ring_tick(&f);
+        early = core_app_net_transport_keyring_count_for_test(f.transport);
+        ring_tick(&f);
+        due = core_app_net_transport_keyring_count_for_test(f.transport);
+    }
+    stopped = ring_fixture_stop(&f);
+    ring_fixture_dispose(&f);
+    ASSERT_TRUE(written);
+    ASSERT_TRUE(started);
+    ASSERT_TRUE(rewritten);
+    ASSERT_EQ(early, 2u);
+    ASSERT_EQ(due, 1u);
+    ASSERT_TRUE(stopped);
+}
+
+TEST(keyring_start_fails_on_a_bad_file) {
+    RingFixture f;
+    bool written;
+    BreakRuntimeError bad = BREAK_RUNTIME_OK, missing = BREAK_RUNTIME_OK;
+    bool bad_port = true, missing_port = true;
+    u32 bad_stage = 0u, missing_stage = 0u, listening = 1u;
+    bool cleared;
+    ring_fixture_paths(&f, "core_app_keyring_start_bad");
+    written = ring_write_text(f.ring, "0102030405060708 not-hex\n");
+    f.trace = tmpfile();
+    f.transport = f.trace ? core_app_net_transport_create(&f.config) : NULL;
+    if (written && f.transport) {
+        core_app_net_transport_hooks(f.transport, &f.hooks);
+        bad = f.hooks.start(f.hooks.user, f.trace);
+        bad_port = file_exists(f.port_file);
+        bad_stage = ring_trace_count(f.trace, "event=network result=rejected stage=keyring\n");
+        (void)remove(f.ring);
+        missing = f.hooks.start(f.hooks.user, f.trace);
+        missing_port = file_exists(f.port_file);
+        missing_stage = ring_trace_count(f.trace, "event=network result=rejected stage=keyring\n");
+        listening = ring_trace_count(f.trace, "result=listening");
+    }
+    /* a failed start left no auth hook installed */
+    cleared = break_session_set_auth(NULL, NULL);
+    ring_fixture_dispose(&f);
+    ASSERT_TRUE(written);
+    ASSERT_EQ(bad, BREAK_RUNTIME_FAILED);
+    ASSERT_FALSE(bad_port);
+    ASSERT_EQ(bad_stage, 1u);
+    ASSERT_EQ(missing, BREAK_RUNTIME_FAILED);
+    ASSERT_FALSE(missing_port);
+    ASSERT_EQ(missing_stage, 2u);
+    ASSERT_EQ(listening, 0u);
+    ASSERT_TRUE(cleared);
+}
+
+/* While the process-wide auth cannot be cleared (another manager holds a
+ * session that is not NEW), destroy fails and keeps the ring the hook still
+ * points at; once it can be cleared, destroy frees it. */
+TEST(keyring_destroy_keeps_the_ring_while_auth_cannot_be_cleared) {
+    RingFixture f;
+    BreakSessionConfig session_config;
+    BreakSessionManager *other = NULL;
+    bool written, started = false, pinned = false, stopped_ok = false;
+    BreakRuntimeError held = BREAK_RUNTIME_OK, released = BREAK_RUNTIME_FAILED;
+    u32 kept = 0u, freed = 1u;
+    ring_fixture_paths(&f, "core_app_keyring_destroy");
+    written = ring_write(f.ring, true, true);
+    if (written) started = ring_fixture_start(&f);
+    memset(&session_config, 0, sizeof(session_config));
+    session_config.max_sessions = 1u;
+    session_config.first_session_id = 1u;
+    if (started) other = break_session_manager_create(&session_config);
+    if (other) {
+        pinned = break_session_manager_bind(other, 0x51u) &&
+                 break_session_manager_begin_auth(other, 0x51u);
+        stopped_ok = f.hooks.stop_admission(f.hooks.user) == BREAK_RUNTIME_OK &&
+                     f.hooks.stop_producers(f.hooks.user) == BREAK_RUNTIME_OK &&
+                     f.hooks.drain(f.hooks.user) == BREAK_RUNTIME_OK;
+        held = f.hooks.destroy(f.hooks.user);
+        kept = core_app_net_transport_keyring_count_for_test(f.transport);
+        break_session_manager_destroy(other);
+        released = f.hooks.destroy(f.hooks.user);
+        freed = core_app_net_transport_keyring_count_for_test(f.transport);
+        f.started = false;
+    }
+    (void)ring_fixture_stop(&f);
+    ring_fixture_dispose(&f);
+    ASSERT_TRUE(written);
+    ASSERT_TRUE(started);
+    ASSERT_NOT_NULL(other);
+    ASSERT_TRUE(pinned);
+    ASSERT_TRUE(stopped_ok);
+    ASSERT_EQ(held, BREAK_RUNTIME_FAILED);
+    ASSERT_EQ(kept, 2u);
+    ASSERT_EQ(released, BREAK_RUNTIME_OK);
+    ASSERT_EQ(freed, 0u);
+}
+
+/* Exactly one of psk_env and keyring_file. */
+TEST(keyring_config_needs_exactly_one_key_source) {
+    CoreAppNetTransportConfig config;
+    CoreAppNetTransport *both, *neither, *ring_only, *psk_only;
+    memset(&config, 0, sizeof(config));
+    config.bind = "127.0.0.1:0";
+    config.tls_cert = "c";
+    config.tls_key = "k";
+    config.port_file = "p";
+    config.psk_env = k_psk_env;
+    config.keyring_file = "ring";
+    both = core_app_net_transport_create(&config);
+    config.psk_env = NULL;
+    config.keyring_file = NULL;
+    neither = core_app_net_transport_create(&config);
+    config.keyring_file = "ring";
+    ring_only = core_app_net_transport_create(&config);
+    config.keyring_file = NULL;
+    config.psk_env = k_psk_env;
+    psk_only = core_app_net_transport_create(&config);
+    core_app_net_transport_free(both);
+    core_app_net_transport_free(neither);
+    core_app_net_transport_free(ring_only);
+    core_app_net_transport_free(psk_only);
+    ASSERT_TRUE(both == NULL);
+    ASSERT_TRUE(neither == NULL);
+    ASSERT_NOT_NULL(ring_only);
+    ASSERT_NOT_NULL(psk_only);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(destroy_reports_stop_timeout_and_keeps_the_reactor);
     RUN_TEST(voice_frame_counts_invalid_and_skipped_frames);
@@ -3351,4 +3981,11 @@ TEST_MAIN_BEGIN()
     RUN_TEST(world_reliable_publish_needs_world_replication);
     RUN_TEST(world_reliable_publish_survives_a_restarted_tick);
     RUN_TEST(world_reliable_publish_is_off_by_default);
+    RUN_TEST(keyring_file_authenticates_listed_devices);
+    RUN_TEST(keyring_reload_revokes_removed_device);
+    RUN_TEST(keyring_reload_rejects_a_bad_file_and_keeps_the_ring);
+    RUN_TEST(keyring_tick_reloads_the_file_on_its_cadence);
+    RUN_TEST(keyring_start_fails_on_a_bad_file);
+    RUN_TEST(keyring_destroy_keeps_the_ring_while_auth_cannot_be_cleared);
+    RUN_TEST(keyring_config_needs_exactly_one_key_source);
 TEST_MAIN_END()

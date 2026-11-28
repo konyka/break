@@ -1,6 +1,7 @@
 #include "core_app_net_transport.h"
 
 #include <ecs/world_session.h>
+#include <network/break_keyring.h>
 #include <network/break_net_adapter.h>
 #include <network/break_net_events.h>
 #include <network/break_net_message_registry.h>
@@ -217,8 +218,14 @@ struct CoreAppNetTransport {
     char tls_cert[CORE_APP_NET_PATH_CAPACITY];
     char tls_key[CORE_APP_NET_PATH_CAPACITY];
     char psk_env[128];
+    char keyring_file[CORE_APP_NET_PATH_CAPACITY];
     char port_file[CORE_APP_NET_PATH_CAPACITY];
     u8 psk[32];
+    /* Per-device keys (keyring_file set); installed as the process-wide
+     * auth user, so it is destroyed only once that is cleared. */
+    BreakKeyring *keyring;
+    u32 keyring_ticks;
+    bool keyring_rejected;
     u32 poll_ms;
     u32 current_tick;
     FILE *trace;
@@ -365,8 +372,9 @@ bool core_app_net_parse_bind(const char *bind, char *host, usize host_capacity, 
     return true;
 }
 
-/* AUTH-v2 key lookup. The session layer calls it on this thread while it
- * verifies the HMAC; only the configured key id resolves. */
+/* AUTH-v2 key lookup in --psk-env mode (a keyring installs
+ * break_keyring_resolve instead). The session layer calls it on this thread
+ * while it verifies the HMAC; only the configured key id resolves. */
 static bool net_auth_key(void *user, const u8 key_id[8], u8 out_psk[32]) {
     CoreAppNetTransport *t = (CoreAppNetTransport *)user;
     if (!t || memcmp(key_id, k_core_app_net_key_id, 8u) != 0) return false;
@@ -378,6 +386,38 @@ static void net_trace(CoreAppNetTransport *t, const char *text) {
     if (t->trace) {
         (void)break_trace_core_app_write(t->trace, text);
         fflush(t->trace);
+    }
+}
+
+/* A key the reload removed or re-keyed: its sessions go to CLOSING, and
+ * net_sync_sessions closes their connections on this tick's pump. */
+static void net_keyring_revoked(void *user, const u8 key_id[8]) {
+    CoreAppNetTransport *t = (CoreAppNetTransport *)user;
+    if (t->manager) (void)break_session_manager_close_key_id(t->manager, key_id);
+}
+
+/* Re-reads keyring_file into the ring (all or nothing) and restarts the
+ * reload countdown. A file that does not load keeps the current keys; only
+ * a change between accepted and rejected is traced, so a file that stays
+ * broken writes one line. */
+static void net_keyring_reload(CoreAppNetTransport *t) {
+    if (!t->keyring) return;
+    t->keyring_ticks = 0u;
+    if (break_keyring_load_file(t->keyring, t->keyring_file, net_keyring_revoked, t) ==
+        BREAK_KEYRING_LOAD_OK) {
+        if (t->keyring_rejected) {
+            char line[128];
+            snprintf(line, sizeof(line),
+                     "COREAPPTRACE version=1 event=keyring result=reloaded keys=%u\n",
+                     break_keyring_count(t->keyring));
+            net_trace(t, line);
+        }
+        t->keyring_rejected = false;
+    } else {
+        if (!t->keyring_rejected) {
+            net_trace(t, "COREAPPTRACE version=1 event=keyring result=rejected\n");
+        }
+        t->keyring_rejected = true;
     }
 }
 
@@ -2124,15 +2164,26 @@ static BreakRuntimeError net_destroy(void *user);
 
 static BreakRuntimeError net_start(void *user, FILE *trace) {
     CoreAppNetTransport *t = (CoreAppNetTransport *)user;
-    if (!t || t->started || t->reactor) return BREAK_RUNTIME_INVALID;
+    if (!t || t->started || t->reactor || t->keyring) return BREAK_RUNTIME_INVALID;
     BreakNetReactorConfig reactor_config;
     BreakSessionConfig session_config;
     BreakNetTlsConfig tls;
     SnowEndpoint *endpoint = NULL;
     SnowStatus status = SNOW_OK;
-    const char *stage = "psk";
+    const char *stage = t->keyring_file[0] != '\0' ? "keyring" : "psk";
     t->trace = trace;
-    if (!core_app_net_take_secret_env(t->psk_env, t->psk, sizeof(t->psk))) goto fail;
+    if (t->keyring_file[0] != '\0') {
+        t->keyring = break_keyring_create(CORE_APP_NET_KEYRING_CAPACITY);
+        if (!t->keyring) goto fail;
+        if (break_keyring_load_file(t->keyring, t->keyring_file, NULL, NULL) !=
+            BREAK_KEYRING_LOAD_OK) {
+            goto fail;
+        }
+        t->keyring_ticks = 0u;
+        t->keyring_rejected = false;
+    } else if (!core_app_net_take_secret_env(t->psk_env, t->psk, sizeof(t->psk))) {
+        goto fail;
+    }
     stage = "reactor";
     memset(&reactor_config, 0, sizeof(reactor_config));
     reactor_config.drive_mode = BREAK_NET_DRIVE_STEP;
@@ -2187,7 +2238,10 @@ static BreakRuntimeError net_start(void *user, FILE *trace) {
     stage = "acceptor";
     if (!break_net_reactor_set_acceptor(t->reactor, t->acceptor)) goto fail;
     stage = "auth";
-    if (!break_session_set_auth(net_auth_key, t)) goto fail;
+    if (t->keyring ? !break_session_set_auth(break_keyring_resolve, t->keyring)
+                   : !break_session_set_auth(net_auth_key, t)) {
+        goto fail;
+    }
     t->auth_installed = true;
     stage = "listen";
     if (!break_net_reactor_start(t->reactor)) goto fail;
@@ -2219,6 +2273,10 @@ static void net_tick(void *user, u32 tick, u64 level_generation,
     if (!t || !t->started) return;
     t->live_generation = level_generation;
     t->current_tick = tick;
+    /* Counted here, not from tick: a level reload restarts the tick. */
+    if (t->keyring && ++t->keyring_ticks >= CORE_APP_NET_KEYRING_RELOAD_TICKS) {
+        net_keyring_reload(t);
+    }
     if (t->world_replication && !t->world_level_initialized &&
         !net_world_initialize_level(t, level_generation)) {
         t->world_stats.terminal_errors++;
@@ -2498,8 +2556,9 @@ static BreakRuntimeError net_destroy(void *user) {
         if (break_session_set_auth(NULL, NULL)) {
             t->auth_installed = false;
         } else {
-            /* The global auth hook still points at t; keep the PSK readable
-             * only through it and report the failure. */
+            /* The global auth hook still points at t (or at the ring);
+             * keep the PSK and the ring readable only through it and report
+             * the failure. */
             result = BREAK_RUNTIME_FAILED;
         }
     }
@@ -2513,7 +2572,11 @@ static BreakRuntimeError net_destroy(void *user) {
     memset(t->closing, 0, sizeof(t->closing));
     memset(t->session_ids, 0, sizeof(t->session_ids));
     net_release_baselines(t);
-    if (!t->auth_installed) net_wipe(t->psk, sizeof(t->psk));
+    if (!t->auth_installed) {
+        net_wipe(t->psk, sizeof(t->psk));
+        break_keyring_destroy(t->keyring);
+        t->keyring = NULL;
+    }
     t->trace = NULL;
     return result;
 }
@@ -2525,7 +2588,10 @@ CoreAppNetTransport *core_app_net_transport_create(const CoreAppNetTransportConf
     if (!core_app_net_parse_bind(config->bind, t->host, sizeof(t->host), &t->port) ||
         !net_copy(t->tls_cert, sizeof(t->tls_cert), config->tls_cert) ||
         !net_copy(t->tls_key, sizeof(t->tls_key), config->tls_key) ||
-        !net_copy(t->psk_env, sizeof(t->psk_env), config->psk_env) ||
+        (config->psk_env != NULL) == (config->keyring_file != NULL) ||
+        (config->psk_env && !net_copy(t->psk_env, sizeof(t->psk_env), config->psk_env)) ||
+        (config->keyring_file &&
+         !net_copy(t->keyring_file, sizeof(t->keyring_file), config->keyring_file)) ||
         !net_copy(t->port_file, sizeof(t->port_file), config->port_file) ||
         config->poll_ms > CORE_APP_NET_MAX_POLL_MS) {
         free(t);
@@ -2650,6 +2716,14 @@ bool core_app_net_transport_seed_physics_for_test(CoreAppNetTransport *transport
     }
     transport->correction_pending[slot] = true;
     return true;
+}
+
+void core_app_net_transport_keyring_reload_for_test(CoreAppNetTransport *transport) {
+    if (transport && transport->started) net_keyring_reload(transport);
+}
+
+u32 core_app_net_transport_keyring_count_for_test(const CoreAppNetTransport *transport) {
+    return transport ? break_keyring_count(transport->keyring) : 0u;
 }
 
 void core_app_net_transport_pump_for_test(CoreAppNetTransport *transport) {

@@ -655,15 +655,19 @@ source 槽带 generation。只有 `PLAY_3D` 认领槽位；`POSITION` 和 `STOP`
 命令行（仅 transport 构建接受，help 也只在该构建列出）：
 
 ```text
-core_app --network --bind HOST:PORT --tls-cert PATH --tls-key PATH --psk-env NAME --port-file PATH
+core_app --network --bind HOST:PORT --tls-cert PATH --tls-key PATH
+         (--psk-env NAME | --keyring-file PATH) --port-file PATH
          [--net-poll-ms 0..100]
 ```
 
-- 缺任一项退出 2：`--network requires --bind, --tls-cert, --tls-key, --psk-env and --port-file`；
+- 缺任一项，或 `--psk-env` 与 `--keyring-file` 同时给出或都没给，退出 2：`--network requires --bind, --tls-cert, --tls-key, --port-file and exactly one of --psk-env and --keyring-file`（2026-11-28 前的文本是 `--network requires --bind, --tls-cert, --tls-key, --psk-env and --port-file`）；
 - 给了这些参数但没有 `--network`：`network options require --network`；
 - `HOST:PORT` 非法：主机必须是点分十进制 IPv4，`localhost:0` 这类非数字主机和 65536 这类端口都退出 2，`invalid --bind value`；
 - `--net-poll-ms` 是每 tick 等待 reactor 的毫秒数，默认 0（不阻塞 tick）。只接受 1 到 3 位十进制数字且值不超过 100（`00` 合法，`0001` 和 `101` 不合法），否则退出 2：`--net-poll-ms requires 0..100`；
 - PSK 只从 `--psk-env` 指定的环境变量读取，必须是 64 位 hex，不写入 trace；全零 key 视为未设置，启动以 `stage=psk` 拒绝；key id 固定为 `coreapp1`；
+- `--keyring-file PATH`（2026-11-28）：按设备发 key，替代单一 PSK。文件格式与限制是 `break_keyring` 的（每行 `<16 hex key id> <64 hex psk>`，`#` 注释、空行、CRLF，id 不重复，最多 512 KiB），服务器容量 `CORE_APP_NET_KEYRING_CAPACITY` = 1024 个 key，用 `break_keygen --max-keys 1024 <keyring> <key id> <device psk file>` 逐台添加（容量不同的 ring 在服务器上会以 `TOO_LARGE` 加载失败）。启动时文件读不到、格式错、为空或超过容量都以 `stage=keyring` 拒绝，不写 port file。启动后安装 `break_session_set_auth(break_keyring_resolve, ring)`，客户端用自己的 key id 和 PSK 做 AUTH v2；`--psk-env` 路径（`net_auth_key`，固定 `coreapp1`）不变；
+- 运行中每 `CORE_APP_NET_KEYRING_RELOAD_TICKS` = 60 个 tick 重读一次文件（计数在 transport 内，level 重载导致 tick 归零不影响）。加载是全有或全无：成功时文件里删掉或改了 PSK 的 key 立即从查找中移除，revoked 回调对每个这样的 id 调 `break_session_manager_close_key_id`，把该 id 的已认证会话移到 CLOSING，同一 tick 的 `net_sync_sessions` 再用 `net_close_slot` 关闭连接；之后用该 id 的 AUTH 失败，其他 key 的会话不受影响。加载失败时保留当前 ring，并且只在状态从“已接受”变为“已拒绝”时写一行 `COREAPPTRACE version=1 event=keyring result=rejected`，文件一直坏着也只写这一行；之后第一次成功加载写 `event=keyring result=reloaded keys=N`。trace 从不包含 key 或 PSK；
+- 销毁顺序遵守 `break_keyring.h` 的约定：只有 `break_session_set_auth(NULL, NULL)` 返回 true 后才销毁 ring；清除失败（进程里还有别的会话不是 NEW）时 destroy 返回 `FAILED`，ring 与 transport 一起保留（与 PSK 相同的泄漏路径）。所有 load 与会话轮询都在 core_app 的 tick 线程上；
 - 监听成功后用 `platform_atomic_writer_*` 把实际端口写入 `--port-file`（`--bind 127.0.0.1:0` 因此可用于测试），进程退出时删除该文件。
 
 运行时：`CoreAppNetworkHooks` 把传输对象挂到 `core_app` 生命周期。`network_start` 阶段位于 audio 之后、coordinator 之前；每 tick 在 audio listener 之后最多处理 64 个 reactor 事件（等待 `--net-poll-ms`，最多 8 个连接），并只向已认证会话发送 snapshot（user `flags=1`，chaser `flags=2`）。`SEND_DRAINED` 只是流控通知，直接释放，不交给会话层。连接打开 3000 ms 内仍未认证即关闭，计入 `auth_timeouts`，空闲的 TLS 对端因此不能占满连接槽。期限按单调时钟（`time_microseconds()`，POSIX 上为 `CLOCK_MONOTONIC`，Windows 上为 QPC）计算，与 tick 无关：record 车道默认不限速，1500 tick 只需约 0.05 s，按 tick 计的期限（原先 180 tick）在这种情况下只有几毫秒。
@@ -672,7 +676,7 @@ core_app --network --bind HOST:PORT --tls-cert PATH --tls-key PATH --psk-env NAM
 
 停止顺序：stop admission → stop producers → drain → destroy（drain 每轮等待 1 ms，最多 8 轮）。`app_rollback` 在 audio 之前调用这四个钩子。`net_destroy` 幂等：只有已经进入监听状态时才写一行 `event=network_stats`；只要 reactor 存在就调用 stop，不管启动失败停在哪个阶段（已启动的 reactor 上 `break_net_reactor_destroy` 不做任何事，acceptor 也不能在 reactor 仍持有它时销毁）。stop 成功后依次销毁 session manager、reactor、acceptor。stop 超时时写 `event=network result=stop_timeout`，有意保留 reactor 和 acceptor（泄漏），置 `leaked` 并返回 `TIMEOUT`；之后再调用 destroy 直接返回 `TIMEOUT`，不再触碰仍被泄漏 reactor 持有的 acceptor。`core_app_net_transport_free` 在 destroy 返回非 `OK` 时不释放内存（运行中的 reactor 或全局 auth 回调仍指向它）。随后清除 auth 回调；清除失败时保留 PSK（全局回调仍指向它）并返回 `FAILED`，成功时清零 PSK。最后删除 port file。
 
-启动阶段依次为 `psk`、`reactor`、`bind`、`tls`、`acceptor`、`auth`、`listen`、`port_file`。任一阶段失败写 `event=network result=rejected stage=<阶段>`，走同一清理路径，进程退出 2。
+启动阶段依次为 `psk`（`--keyring-file` 时为 `keyring`）、`reactor`、`bind`、`tls`、`acceptor`、`auth`、`listen`、`port_file`。任一阶段失败写 `event=network result=rejected stage=<阶段>`，走同一清理路径，进程退出 2。
 
 消息注册表新增 `BREAK_NET_MESSAGE_ID_CORE_SNAPSHOT = 0x4001`（v1..1，`AUTHENTICATED` phase，`IDEMPOTENT`，payload 上限 `32 + 64 × 24` 字节）。transport 用 `#error`/`_Static_assert` 锁定 id 和上限与 `core_app_network.h` 一致。
 
@@ -693,7 +697,9 @@ SIGPIPE：transport 构建在 `--network` 生效时调用 `signal(SIGPIPE, SIG_I
   - A 发完敌意包后，要等到帧号比第一帧至少大 60 的 snapshot 才关闭。原先只等下一帧，outbox 里可能已有敌意包到达前生成的帧，A 关闭时服务器还没读到最后那条可 admit 的包，`close()` 引发的 RST 会把它丢掉：连跑 9 次出现 1 次 `admitted=0`。
 
   驱动脚本断言 trace 不含 secret、`authenticated==2`、`opened>=6`、`snapshots_sent>=2`、`auth_timeouts>=1`、`admitted>=1`、各拒绝计数至少 1、`session_handler_failed>=2`，退出后不残留 port file，并且过滤 network 行后与离线 trace 逐字节相同，snapshot generation 等于 `level_loaded` generation。本机一次运行的 stats：`opened=6 closed=6 authenticated=2 snapshots_sent=6 auth_timeouts=1 decode_failed=1 admitted=1 rejected_schema=1 rejected_stale=1 session_applied=15 session_phase_rejected=1 session_invalid=0 session_handler_failed=2`。
-- `test_core_app_network_start_failure`（transport 构建且非 WIN32）：缺 PSK 环境变量与全零 PSK（`stage=psk`）、坏证书（`stage=tls`）、port file 指向不存在的目录（`stage=port_file`）。每项断言 rc=2、无 Sanitizer 输出、无 `listening` 与 `network_stats` 行、不留 port file。
+- `test_core_app_network_start_failure`（transport 构建且非 WIN32）：缺 PSK 环境变量与全零 PSK（`stage=psk`）、坏证书（`stage=tls`）、port file 指向不存在的目录（`stage=port_file`）、格式错与不存在的 keyring 文件（`stage=keyring`）。每项断言 rc=2、无 Sanitizer 输出、无 `listening` 与 `network_stats` 行、不留 port file。另外 `--psk-env` 与 `--keyring-file` 同时给出或都没给时退出 2 并打印上面的用法错误，`--keyring-file` 不带 `--network` 报 `network options require --network`。
+- `test_core_app_network_keyring`（2026-11-28，注册条件同 loopback）：真实 `core_app --keyring-file`（文件列出客户端的 `coreapp1` 和另一台设备）与 `single` 模式的客户端，断言一次认证、收到 welcome 与 snapshot、trace 不含 key 也没有 `event=keyring` 变化行。
+- `test_core_app_net_transport` 的 keyring 用例（进程内真实 TLS + AUTH v2 客户端，每次读之前 tick 一次 transport）：两台设备都能认证；重载去掉 A 后 A 的连接被关闭、槽位释放、A 再连被拒、B 新老连接都正常；坏文件重载两次只写一行 `result=rejected` 且 ring 不变，修好后写 `result=reloaded keys=2`；tick 在第 60 个 tick 重读、第 59 个不读；坏文件与缺文件启动失败（`stage=keyring`、无 port file、auth 未安装）；另一 manager 持有非 NEW 会话时 destroy 返回 `FAILED` 且 ring 保留，放开后 destroy 成功并释放 ring；`create` 在 `psk_env` 与 `keyring_file` 同时给出或都没给时返回 NULL。
 - `test_core_app_network_late_auth`（注册条件同 loopback）：服务器 `--net-poll-ms 1`，scenario `engine/tests/data/core_app_network_late_auth.scenario`（6000 tick），客户端以 `late-auth` 模式只运行场景 G：完成 TLS 后静默 1 s 再发 AUTH，必须收到 snapshot；驱动脚本断言 `authenticated==1`、`auth_timeouts==0`。按 tick 计期限时 RED（`g_receives_snapshot_after_late_auth` FAIL），改为毫秒期限后通过。
 - `test_core_app_target_contract` 覆盖 `--net-poll-ms 101` 与 `0001` 的错误文本，并要求 `00` 不被当作 CLI 错误（参数解析接受后，因缺少 `--scenario`/`--fixed-step` 在 config 阶段以 `stage=config unsupported lifecycle configuration` 退出 2）。
 - 变异：去掉“只发给已认证会话”检查 → B/C/D 三项 FAIL；把对端 snapshot 位置写进 user → `network input changed the simulation`；`net_destroy` 只在 started/listening 时调用 stop → ASan 树 start_failure 的 port_file 用例 rc=1 并报 LeakSanitizer 泄漏。三处恢复后 `cmp` 一致。评审修复前的 RED：loopback 因 `--net-poll-ms` 未知报 `unknown or malformed argument`，start_failure 报 `zero_psk: rc=0, want 2`。

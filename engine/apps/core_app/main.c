@@ -51,6 +51,7 @@ static void print_help(void) {
          "  --tls-cert PATH\n"
          "  --tls-key PATH\n"
          "  --psk-env NAME\n"
+         "  --keyring-file PATH\n"
          "  --port-file PATH\n"
          "  --net-poll-ms 0..100\n"
          "  --voice-relay\n"
@@ -315,6 +316,10 @@ static int core_app_main(int argc, char **argv) {
             if (matched < 0) return cli_error("--psk-env requires a variable name");
             net_config.psk_env = value;
             net_option_seen = true;
+        } else if ((matched = take_value(argc, argv, &i, "--keyring-file", &value)) != 0) {
+            if (matched < 0) return cli_error("--keyring-file requires a nonempty path");
+            net_config.keyring_file = value;
+            net_option_seen = true;
         } else if ((matched = take_value(argc, argv, &i, "--port-file", &value)) != 0) {
             if (matched < 0) return cli_error("--port-file requires a nonempty path");
             net_config.port_file = value;
@@ -389,9 +394,10 @@ static int core_app_main(int argc, char **argv) {
         char host[64];
         u16 port = 0u;
         if (!net_config.bind || !net_config.tls_cert || !net_config.tls_key ||
-            !net_config.psk_env || !net_config.port_file) {
+            (!net_config.psk_env == !net_config.keyring_file) || !net_config.port_file) {
             return cli_error(
-                "--network requires --bind, --tls-cert, --tls-key, --psk-env and --port-file");
+                "--network requires --bind, --tls-cert, --tls-key, --port-file and exactly one"
+                " of --psk-env and --keyring-file");
         }
         if (!core_app_net_parse_bind(net_config.bind, host, sizeof(host), &port))
             return cli_error("invalid --bind value");

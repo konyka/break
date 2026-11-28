@@ -15170,4 +15170,15 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **修复**：用例改为 `k: [[...0...]]` 并写满每个字节：恰好 `MY_CONF_YAML_MAX_DEPTH` 层时必须解析成功，多一层时必须失败，且错误信息包含 `flow nesting depth`。解析器不变。
 - **验证**：把 `flow_depth >= MY_CONF_YAML_MAX_DEPTH` 改成 `>` 的变异被新用例判红；`test_myui_loader` 123/123；`build-macos-current`（Metal）全量 ctest 466/466，`build-macos`（MoltenVK）469/469，各有 10 项既有条件 skip。
 - **审查**：同步进来的 `break_keyring`、`break_session_manager_close_key_id`、editor 重载改用 `break_keyring` 和 `break_keygen --max-keys` 已通读，未发现需要修改的问题。
+
+## core_app：`--keyring-file` 逐设备密钥（2026-11-28）
+
+- **交付**（计划 `docs/superpowers/plans/2026-11-28-core-app-keyring.md`）：`core_app --network` 可用 `--keyring-file PATH` 代替 `--psk-env NAME`，两者必须且只能给一个，否则退出 2：`--network requires --bind, --tls-cert, --tls-key, --port-file and exactly one of --psk-env and --keyring-file`。`CoreAppNetTransportConfig.keyring_file`（NULL 表示不用）；`core_app_net_transport_create` 在两者同时给出或都没给时返回 NULL。
+  - 启动：`break_keyring_create(CORE_APP_NET_KEYRING_CAPACITY)`（1024），加载失败（读不到、格式错、为空、超容量）以 `stage=keyring` 拒绝，不写 port file；随后 `break_session_set_auth(break_keyring_resolve, ring)`。`--psk-env` 路径与固定 key id `coreapp1` 不变。
+  - 重载：`net_tick` 每 `CORE_APP_NET_KEYRING_RELOAD_TICKS`（60）个 tick 调 `break_keyring_load_file(ring, path, net_keyring_revoked, t)`；计数在 transport 内，level 重载使 tick 归零不影响。`net_keyring_revoked` 调 `break_session_manager_close_key_id`，同一 tick 的 `net_sync_sessions` 关闭连接。失败时保留 ring，只在“已接受→已拒绝”时写一行 `COREAPPTRACE version=1 event=keyring result=rejected`，之后第一次成功写 `event=keyring result=reloaded keys=N`。
+  - 销毁：只有 `break_session_set_auth(NULL, NULL)` 成功后才销毁 ring，否则 destroy 返回 `FAILED`，ring 随 transport 保留（与 PSK 同一泄漏路径）。
+  - 测试钩子 `core_app_net_transport_keyring_reload_for_test`（立即重载一次）与 `core_app_net_transport_keyring_count_for_test`。
+- **TDD**：`test_core_app_net_transport` 新增 7 例（64 例）：两台设备经真实 TLS + AUTH v2 认证；重载去掉 A 后 A 被关闭、槽位释放、A 再连被拒、B 新老连接正常；坏文件重载只记一行且 ring 不变，修好后记 `reloaded keys=2`；第 60 个 tick 重读、第 59 个不读；坏文件与缺文件启动失败；另一 manager 持有非 NEW 会话时 destroy 失败并保留 ring，放开后释放；配置形状。实现前编译失败（无字段、无钩子）。`test_core_app_network_start_failure` 新增 keyring 坏文件/缺文件、两种密钥来源同时给出/都不给、`--keyring-file` 不带 `--network`；新增 `test_core_app_network_keyring`（真实 `core_app --keyring-file` 与 single 模式客户端）；`test_core_app_target_contract` 的用法文本随之更新并补 `--keyring-file` 的 help、缺值、无 `--network` 与到达 runtime 用例。
+- **变异**（每项恢复后 `cmp` 一致）：吊销回调空操作、tick 从不重载、启动忽略坏文件、每次拒绝都记 trace、`set_auth(NULL)` 失败仍销毁 ring、配置允许两者同时给出、成功重载总记 `reloaded`、keyring 模式装入 PSK 回调，8 项全部判红；`main.c` 只拒绝“都没给”时 `test_core_app_target_contract` 与 `test_core_app_network_start_failure` 判红。
+- **构建树**：`build-aoi-net` 与 `build-aoi-asan` 原为 `CORE_APP_ENABLE_NETWORK=OFF`（不编 transport），本次以 `-DCORE_APP_ENABLE_NETWORK=ON` 重新配置。
 - 本提交自身的远端工作流结果不在此预写。

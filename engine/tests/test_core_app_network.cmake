@@ -11,7 +11,13 @@
 # reads stdin and core_app writes nothing to stdout, so the pipe stays empty.
 #
 # MODE=start_failure: every start failure must exit 2 with a rejected stage,
-# leave no port file, and (in sanitizer trees) report no leak.
+# leave no port file, and (in sanitizer trees) report no leak. A keyring
+# file that does not load fails at stage=keyring. --network with both
+# --psk-env and --keyring-file, or with neither, is a usage error.
+#
+# MODE=keyring: like single, but the server reads its key from
+# --keyring-file (a break_keyring file listing the peer's coreapp1 key and
+# one other device) instead of --psk-env.
 #
 # MODE=late_auth: the server ticks every millisecond and one peer waits
 # about a second between TLS and AUTH. The authentication deadline is wall
@@ -197,6 +203,59 @@ if(MODE STREQUAL "start_failure")
     expect_start_failure(bad_cert "${good_psk}" "${WORK_DIR}/missing.pem" "${WORK_DIR}/c.port" tls)
     expect_start_failure(port_file "${good_psk}" "${TLS_CERT}"
         "${WORK_DIR}/no-such-dir/d.port" port_file)
+    file(WRITE "${WORK_DIR}/bad.keyring" "636f726561707031 not-a-key\n")
+    foreach(ring bad missing)
+        execute_process(
+            COMMAND ${CORE_APP_RUNNER} "${CORE_APP}" ${common_args}
+                --trace "${WORK_DIR}/keyring_${ring}.trace"
+                --network --bind 127.0.0.1:0 --tls-cert "${TLS_CERT}" --tls-key "${TLS_KEY}"
+                --keyring-file "${WORK_DIR}/${ring}.keyring" --port-file "${WORK_DIR}/e.port"
+            RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err TIMEOUT 60)
+        if(NOT rc EQUAL 2)
+            message(FATAL_ERROR "keyring_${ring}: rc=${rc}, want 2\n${out}${err}")
+        endif()
+        if(err MATCHES "Sanitizer|LeakSanitizer")
+            message(FATAL_ERROR "keyring_${ring}: sanitizer report\n${err}")
+        endif()
+        file(READ "${WORK_DIR}/keyring_${ring}.trace" trace)
+        if(NOT trace MATCHES "event=network result=rejected stage=keyring\n" OR
+           trace MATCHES "result=listening")
+            message(FATAL_ERROR "keyring_${ring}: no rejected stage=keyring\n${trace}")
+        endif()
+        if(EXISTS "${WORK_DIR}/e.port")
+            message(FATAL_ERROR "keyring_${ring}: a rejected start left e.port")
+        endif()
+    endforeach()
+    set(usage "--network requires --bind, --tls-cert, --tls-key, --port-file and exactly one of --psk-env and --keyring-file")
+    set(ENV{CORE_APP_TEST_PSK} "${good_psk}")
+    foreach(sources "both" "neither")
+        if(sources STREQUAL "both")
+            set(key_args --psk-env CORE_APP_TEST_PSK --keyring-file "${WORK_DIR}/bad.keyring")
+        else()
+            set(key_args "")
+        endif()
+        execute_process(
+            COMMAND ${CORE_APP_RUNNER} "${CORE_APP}" ${common_args}
+                --network --bind 127.0.0.1:0 --tls-cert "${TLS_CERT}" --tls-key "${TLS_KEY}"
+                ${key_args} --port-file "${WORK_DIR}/f.port"
+            RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err TIMEOUT 60)
+        if(NOT rc EQUAL 2)
+            message(FATAL_ERROR "key_sources_${sources}: rc=${rc}, want 2\n${out}${err}")
+        endif()
+        string(FIND "${err}" "${usage}" usage_at)
+        if(usage_at LESS 0)
+            message(FATAL_ERROR "key_sources_${sources}: stderr lacks the usage error\n${err}")
+        endif()
+        if(EXISTS "${WORK_DIR}/f.port")
+            message(FATAL_ERROR "key_sources_${sources}: a usage error left f.port")
+        endif()
+    endforeach()
+    unset(ENV{CORE_APP_TEST_PSK})
+    execute_process(COMMAND ${CORE_APP_RUNNER} "${CORE_APP}" --keyring-file x.keyring
+        RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err TIMEOUT 60)
+    if(NOT rc EQUAL 2 OR NOT err MATCHES "network options require --network")
+        message(FATAL_ERROR "--keyring-file without --network: rc=${rc}\n${err}")
+    endif()
     message(STATUS "core_app network start failure contract passed")
     return()
 endif()
@@ -205,7 +264,8 @@ if(NOT MODE STREQUAL "loopback" AND NOT MODE STREQUAL "late_auth" AND NOT MODE S
    AND NOT MODE STREQUAL "voice_relay" AND NOT MODE STREQUAL "voice_relay_off"
    AND NOT MODE STREQUAL "voice_mute" AND NOT MODE STREQUAL "voice_flood"
    AND NOT MODE STREQUAL "single" AND NOT MODE STREQUAL "aspect" AND NOT MODE STREQUAL "world"
-   AND NOT MODE STREQUAL "prediction" AND NOT MODE STREQUAL "world_reliable")
+   AND NOT MODE STREQUAL "prediction" AND NOT MODE STREQUAL "world_reliable"
+   AND NOT MODE STREQUAL "keyring")
     message(FATAL_ERROR "unknown MODE=${MODE}")
 endif()
 foreach(var NET_CLIENT TLS_CERT TLS_KEY)
@@ -230,7 +290,7 @@ elseif(MODE STREQUAL "voice_mute")
     set(client_mode voice-mute)
 elseif(MODE STREQUAL "voice_flood")
     set(client_mode voice-flood)
-elseif(MODE STREQUAL "single")
+elseif(MODE STREQUAL "single" OR MODE STREQUAL "keyring")
     set(client_mode single)
 elseif(MODE STREQUAL "aspect")
     set(client_mode aspect)
@@ -259,10 +319,20 @@ set(prediction_args "")
 if(MODE STREQUAL "prediction")
     set(prediction_args --prediction)
 endif()
+set(key_args --psk-env CORE_APP_TEST_PSK)
+if(MODE STREQUAL "keyring")
+    # the peer's fixed key id "coreapp1" with the test PSK, plus a second
+    # device the peer does not use
+    file(WRITE "${WORK_DIR}/server.keyring"
+        "# core_app loopback keyring\n"
+        "636f726561707031 $ENV{CORE_APP_TEST_PSK}\n"
+        "6465766963653032 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff\n")
+    set(key_args --keyring-file "${WORK_DIR}/server.keyring")
+endif()
 execute_process(
     COMMAND ${CORE_APP_RUNNER} "${CORE_APP}" ${common_args} --trace "${WORK_DIR}/network.trace"
         --network --bind 127.0.0.1:0 --tls-cert "${TLS_CERT}" --tls-key "${TLS_KEY}"
-        --psk-env CORE_APP_TEST_PSK --port-file "${WORK_DIR}/server.port"
+        ${key_args} --port-file "${WORK_DIR}/server.port"
         --net-poll-ms ${poll_ms} ${relay_args} ${aspect_args} ${world_args} ${prediction_args}
     COMMAND "${NET_CLIENT}" "${WORK_DIR}/server.port" "${WORK_DIR}/client.report"
         ${client_mode} --trace "${WORK_DIR}/peer.trace"
@@ -737,10 +807,17 @@ if(MODE STREQUAL "voice_relay" OR MODE STREQUAL "voice_relay_off")
     return()
 endif()
 stat_value("${stats}" authenticated authenticated)
-if(MODE STREQUAL "single")
+if(MODE STREQUAL "single" OR MODE STREQUAL "keyring")
     # one connection only; the counts below belong to the loopback suite
     if(NOT authenticated EQUAL 1)
         message(FATAL_ERROR "the single-session peer authenticated ${authenticated} times")
+    endif()
+    if(MODE STREQUAL "keyring")
+        if(trace MATCHES "00112233445566778899aabbccddeeff|event=keyring result=")
+            message(FATAL_ERROR "the keyring run traced a key or a reload change:\n${trace}")
+        endif()
+        message(STATUS "core_app keyring-file contract passed")
+        return()
     endif()
     message(STATUS "core_app single-session contract passed")
     return()
