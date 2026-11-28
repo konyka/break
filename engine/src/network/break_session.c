@@ -11,6 +11,7 @@
 #include "network/break_net_adapter.h"
 #include "network/break_net_message_registry.h"
 #include "network/break_msg_rate.h"
+#include "network/break_identity_rate.h"
 
 #include <limits.h>
 #include <stdlib.h>
@@ -49,6 +50,8 @@ typedef struct BreakSessionEntry {
     u8 server_nonce[16];
     bool server_nonce_valid;
     u64 authenticated_at_us;
+    u8 key_id[8];
+    bool key_id_valid;
 #endif
 } BreakSessionEntry;
 
@@ -69,6 +72,8 @@ struct BreakSessionManager {
     BreakSessionApplyStats stats;
     bool rate_enabled;
     BreakSessionMessageRateConfig rate_config;
+    bool identity_rate_enabled;
+    BreakSessionIdentityRateConfig identity_rate_config;
 #ifdef BREAK_ENABLE_CRYPTO
     u32 max_age_seconds;
     bool auth_operation_active;
@@ -476,6 +481,8 @@ static bool break_session_auth_v2_received(
     entry->message_seen[definition_index] = true;
     entry->message_sequences[definition_index] = event->message.sequence;
     entry->auth_seen = true;
+    memcpy(entry->key_id, payload, sizeof(entry->key_id));
+    entry->key_id_valid = true;
     if (!break_session_manager_auth_succeeded(manager, event->connection_key)) {
         return break_session_auth_fail(manager, event->connection_key,
                                        BREAK_SESSION_APPLY_INVALID);
@@ -594,6 +601,17 @@ bool break_session_manager_apply_adapter_event(BreakSessionManager *manager,
                 BREAK_MSG_RATE_OK) {
             return break_session_record(manager, BREAK_SESSION_APPLY_RATE_LIMITED);
         }
+#ifdef BREAK_ENABLE_CRYPTO
+        if (manager->identity_rate_enabled && entry->key_id_valid &&
+            break_identity_rate_admit(
+                manager->identity_rate_config.table, entry->key_id,
+                (u32)event->message.size,
+                manager->identity_rate_config.clock(
+                    manager->identity_rate_config.clock_user)) !=
+                BREAK_MSG_RATE_OK) {
+            return break_session_record(manager, BREAK_SESSION_APPLY_RATE_LIMITED);
+        }
+#endif
         definition = break_net_message_registry_lookup(
             manager->registry, event->message.message_id);
         if (definition == NULL || !break_net_message_definition_supports_version(
@@ -715,6 +733,24 @@ bool break_session_manager_set_message_rate(BreakSessionManager *manager,
     }
     manager->rate_config = *config;
     manager->rate_enabled = true;
+    return true;
+}
+
+bool break_session_manager_set_identity_rate(
+    BreakSessionManager *manager, const BreakSessionIdentityRateConfig *config)
+{
+    if (manager == NULL || manager->count != 0u) {
+        return false;
+    }
+    if (config == NULL) {
+        manager->identity_rate_enabled = false;
+        return true;
+    }
+    if (config->table == NULL || config->clock == NULL) {
+        return false;
+    }
+    manager->identity_rate_config = *config;
+    manager->identity_rate_enabled = true;
     return true;
 }
 

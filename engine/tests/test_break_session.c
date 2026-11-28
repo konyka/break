@@ -13,6 +13,7 @@
 #include <network/break_net_message_registry.h>
 #include <network/break_net_events.h>
 #include <network/break_session.h>
+#include <network/break_identity_rate.h>
 #include <network/break_online_lobby.h>
 #include <network/break_online_session.h>
 #include <network/break_online_voice.h>
@@ -1372,6 +1373,10 @@ static void break_session_auth_fixture_close(BreakSessionAuthFixture *fixture)
     fixture->fd = -1;
 }
 
+/* Applied to the manager before the connection opens (session settings are
+ * frozen once a session is bound). NULL for none. */
+static const BreakSessionIdentityRateConfig *g_fixture_identity_rate;
+
 static bool break_session_auth_fixture_open(BreakSessionAuthFixture *fixture)
 {
     BreakNetReactorConfig reactor_config = {BREAK_NET_DRIVE_STEP, 0, 4u,
@@ -1391,6 +1396,11 @@ static bool break_session_auth_fixture_open(BreakSessionAuthFixture *fixture)
     fixture->reactor = break_net_reactor_create(&reactor_config);
     fixture->manager = break_session_manager_create(&session_config);
     if (fixture->reactor == NULL || fixture->manager == NULL) goto cleanup;
+    if (g_fixture_identity_rate != NULL &&
+        !break_session_manager_set_identity_rate(fixture->manager,
+                                                 g_fixture_identity_rate)) {
+        goto cleanup;
+    }
     if (!break_session_manager_attach_reactor(fixture->manager, fixture->reactor) ||
         !break_net_reactor_set_acceptor(fixture->reactor, fixture->acceptor) ||
         !break_net_reactor_start(fixture->reactor)) goto cleanup;
@@ -1581,6 +1591,225 @@ TEST(break_session_auth_v2_replay_on_new_connection_closes)
               BREAK_SESSION_CLOSING);
     break_session_auth_fixture_close(&second);
     ASSERT_TRUE(break_session_set_auth(NULL, NULL));
+}
+
+/* Sends one PING (sequence seq) on an authenticated fixture and waits until
+ * the manager has applied it; returns the manager's last result. */
+static BreakSessionApplyResult break_session_identity_ping(
+    BreakSessionAuthFixture *fixture, uint32_t seq)
+{
+    uint8_t wire[BREAK_NET_ENVELOPE_HEADER_SIZE + 1u];
+    uint8_t body = 0u;
+    size_t wire_size = 0u;
+    BreakSessionApplyStats before = {0};
+    BreakSessionApplyStats after = {0};
+    BreakNetEnvelope ping = break_test_envelope(1u, BREAK_NET_MESSAGE_ID_PING,
+                                                0u, seq, &body, 1u);
+    uint64_t deadline;
+    if (break_net_envelope_encode(&ping, wire, sizeof(wire), &wire_size) !=
+            BREAK_NET_ENVELOPE_OK ||
+        break_session_wire_write_all(fixture->fd, wire, wire_size) !=
+            (ssize_t)wire_size) {
+        return BREAK_SESSION_APPLY_INVALID;
+    }
+    break_session_manager_apply_stats(fixture->manager, &before);
+    deadline = break_session_monotonic_us() + UINT64_C(5000000);
+    while (break_session_monotonic_us() < deadline) {
+        break_session_auth_pump(fixture);
+        break_session_manager_apply_stats(fixture->manager, &after);
+        if (after.applied + after.rate_limited >
+            before.applied + before.rate_limited) {
+            return break_session_manager_last_result(fixture->manager);
+        }
+    }
+    return BREAK_SESSION_APPLY_INVALID;
+}
+
+static bool break_session_identity_authenticate_as(
+    BreakSessionAuthFixture *fixture, const BreakSessionIdentityRateConfig *rate,
+    const uint8_t key_id[8])
+{
+    uint8_t client_nonce[16] = {0x42u};
+    uint8_t wire[BREAK_NET_ENVELOPE_HEADER_SIZE + 56u];
+    size_t wire_size = 0u;
+    bool opened;
+    g_fixture_identity_rate = rate;
+    opened = break_session_auth_fixture_open(fixture);
+    g_fixture_identity_rate = NULL;
+    if (!opened) return false;
+    if (!break_session_manager_set_message_handler(
+            fixture->manager, BREAK_NET_MESSAGE_ID_PING, break_test_auth_handler,
+            NULL)) {
+        return false;
+    }
+    if (!break_session_auth_make_v2(fixture, key_id, client_nonce, wire,
+                                    &wire_size) ||
+        break_session_wire_write_all(fixture->fd, wire, wire_size) !=
+            (ssize_t)wire_size ||
+        !break_session_auth_wait_terminal(fixture)) {
+        return false;
+    }
+    return break_session_manager_state(fixture->manager, fixture->key) ==
+           BREAK_SESSION_AUTHENTICATED;
+}
+
+static bool break_session_identity_authenticate(BreakSessionAuthFixture *fixture,
+                                                const BreakSessionIdentityRateConfig *rate)
+{
+    return break_session_identity_authenticate_as(fixture, rate,
+                                                  break_session_auth_key_id);
+}
+
+TEST(break_session_identity_rate_is_shared_across_reconnects)
+{
+    /* One table outlives both managers, as it would outlive connections in
+     * a server: the second connection of the same key_id starts with the
+     * bucket the first one drained, while per-connection limits would give
+     * it a fresh one. Results are collected first and asserted after the
+     * global auth callback and both fixtures are released, so a failure
+     * does not leak state into later tests. */
+    BreakSessionAuthKeys keys = {0};
+    BreakSessionAuthFixture first;
+    BreakSessionAuthFixture second;
+    BreakIdentityRateConfig table_config = {1u, 2u, 1000u, 1000u, 8u, 60000u};
+    BreakIdentityRate *table = break_identity_rate_create(&table_config);
+    BreakSessionIdentityRateConfig rate = {table, break_test_rate_clock, NULL};
+    BreakSessionApplyStats stats = {0};
+    BreakSessionApplyResult r1[3] = {BREAK_SESSION_APPLY_INVALID,
+                                     BREAK_SESSION_APPLY_INVALID,
+                                     BREAK_SESSION_APPLY_INVALID};
+    BreakSessionApplyResult r2[2] = {BREAK_SESSION_APPLY_INVALID,
+                                     BREAK_SESSION_APPLY_INVALID};
+    bool auth_set;
+    bool first_ok = false;
+    bool second_ok = false;
+    size_t identities = 0u;
+
+    memset(&first, 0, sizeof(first));
+    memset(&second, 0, sizeof(second));
+    first.fd = -1;
+    second.fd = -1;
+    ASSERT_NOT_NULL(table);
+    g_rate_clock_ms = 1000u;
+    auth_set = break_session_set_auth(break_session_auth_key, &keys);
+    if (auth_set) {
+        first_ok = break_session_identity_authenticate(&first, &rate);
+        if (first_ok) {
+            r1[0] = break_session_identity_ping(&first, 2u);
+            r1[1] = break_session_identity_ping(&first, 3u);
+            r1[2] = break_session_identity_ping(&first, 4u);
+            break_session_manager_apply_stats(first.manager, &stats);
+        }
+        break_session_auth_fixture_close(&first);
+        second_ok = break_session_identity_authenticate(&second, &rate);
+        if (second_ok) {
+            /* same key_id, same clock: still throttled after reconnecting */
+            r2[0] = break_session_identity_ping(&second, 2u);
+            /* one second refills one message token for that identity */
+            g_rate_clock_ms = 2000u;
+            r2[1] = break_session_identity_ping(&second, 3u);
+        }
+        break_session_auth_fixture_close(&second);
+        identities = break_identity_rate_count(table);
+        (void)break_session_set_auth(NULL, NULL);
+    }
+    break_identity_rate_destroy(table);
+    ASSERT_TRUE(auth_set);
+    ASSERT_TRUE(first_ok);
+    ASSERT_EQ(r1[0], BREAK_SESSION_APPLY_OK);
+    ASSERT_EQ(r1[1], BREAK_SESSION_APPLY_OK);
+    ASSERT_EQ(r1[2], BREAK_SESSION_APPLY_RATE_LIMITED);
+    ASSERT_EQ(stats.rate_limited, 1u);
+    ASSERT_TRUE(second_ok);
+    ASSERT_EQ(r2[0], BREAK_SESSION_APPLY_RATE_LIMITED);
+    ASSERT_EQ(r2[1], BREAK_SESSION_APPLY_OK);
+    ASSERT_EQ(identities, 1u);
+}
+
+TEST(break_session_identity_rate_keys_by_the_authenticated_key_id)
+{
+    /* Two different key_ids each get their own budget: draining one does
+     * not throttle the other. */
+    BreakSessionAuthKeys keys = {true};
+    BreakSessionAuthFixture a;
+    BreakSessionAuthFixture b;
+    BreakIdentityRateConfig table_config = {1u, 1u, 1000u, 1000u, 8u, 60000u};
+    BreakIdentityRate *table = break_identity_rate_create(&table_config);
+    BreakSessionIdentityRateConfig rate = {table, break_test_rate_clock, NULL};
+    static const uint8_t zero_key_id[8] = {0u};
+    BreakSessionApplyResult ra[2] = {BREAK_SESSION_APPLY_INVALID,
+                                     BREAK_SESSION_APPLY_INVALID};
+    BreakSessionApplyResult rb = BREAK_SESSION_APPLY_INVALID;
+    bool auth_set;
+    bool a_ok = false;
+    bool b_ok = false;
+    size_t identities = 0u;
+
+    memset(&a, 0, sizeof(a));
+    memset(&b, 0, sizeof(b));
+    a.fd = -1;
+    b.fd = -1;
+    ASSERT_NOT_NULL(table);
+    g_rate_clock_ms = 1000u;
+    auth_set = break_session_set_auth(break_session_auth_key, &keys);
+    if (auth_set) {
+        a_ok = break_session_identity_authenticate_as(&a, &rate,
+                                                      break_session_auth_key_id);
+        if (a_ok) {
+            ra[0] = break_session_identity_ping(&a, 2u);
+            ra[1] = break_session_identity_ping(&a, 3u);
+        }
+        break_session_auth_fixture_close(&a);
+        b_ok = break_session_identity_authenticate_as(&b, &rate, zero_key_id);
+        if (b_ok) rb = break_session_identity_ping(&b, 2u);
+        break_session_auth_fixture_close(&b);
+        identities = break_identity_rate_count(table);
+        (void)break_session_set_auth(NULL, NULL);
+    }
+    break_identity_rate_destroy(table);
+    ASSERT_TRUE(auth_set);
+    ASSERT_TRUE(a_ok);
+    ASSERT_EQ(ra[0], BREAK_SESSION_APPLY_OK);
+    ASSERT_EQ(ra[1], BREAK_SESSION_APPLY_RATE_LIMITED);
+    ASSERT_TRUE(b_ok);
+    ASSERT_EQ(rb, BREAK_SESSION_APPLY_OK);
+    ASSERT_EQ(identities, 2u);
+}
+
+TEST(break_session_identity_rate_ignores_unauthenticated_traffic)
+{
+    /* Before authentication there is no identity: messages pass the
+     * identity gate (the per-connection limit, if any, still applies). */
+    BreakSessionConfig config = {0};
+    BreakSessionManager *manager = break_session_manager_create(&config);
+    BreakIdentityRateConfig table_config = {1u, 1u, 1000u, 1000u, 8u, 60000u};
+    BreakIdentityRate *table = break_identity_rate_create(&table_config);
+    BreakSessionIdentityRateConfig rate = {table, break_test_rate_clock, NULL};
+    BreakSessionIdentityRateConfig bad = {table, NULL, NULL};
+    BreakNetEvent opened = {0};
+
+    ASSERT_NOT_NULL(manager);
+    ASSERT_NOT_NULL(table);
+    ASSERT_FALSE(break_session_manager_set_identity_rate(NULL, &rate));
+    ASSERT_FALSE(break_session_manager_set_identity_rate(manager, &bad));
+    bad.table = NULL;
+    bad.clock = break_test_rate_clock;
+    ASSERT_FALSE(break_session_manager_set_identity_rate(manager, &bad));
+    ASSERT_TRUE(break_session_manager_set_identity_rate(manager, &rate));
+    ASSERT_TRUE(break_session_manager_set_message_handler(
+        manager, BREAK_NET_MESSAGE_ID_PING, break_test_auth_handler, NULL));
+    g_rate_clock_ms = 1000u;
+    opened.type = BREAK_NET_EVENT_CONNECTION_OPENED;
+    opened.connection_key = 0x720u;
+    ASSERT_TRUE(break_session_manager_apply_adapter_event(manager, &opened));
+    /* configuration is frozen once sessions exist */
+    ASSERT_FALSE(break_session_manager_set_identity_rate(manager, NULL));
+    ASSERT_TRUE(break_test_send_ping(manager, 0x720u, 1u, 1u));
+    ASSERT_TRUE(break_test_send_ping(manager, 0x720u, 2u, 1u));
+    ASSERT_TRUE(break_test_send_ping(manager, 0x720u, 3u, 1u));
+    ASSERT_EQ(break_identity_rate_count(table), 0u);
+    break_session_manager_destroy(manager);
+    break_identity_rate_destroy(table);
 }
 
 TEST(break_session_challenge_client_helper_answers_auth_v2)
@@ -2018,6 +2247,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(break_session_auth_v2_unknown_key_closes);
     RUN_TEST(break_session_auth_configured_rejects_v1);
     RUN_TEST(break_session_auth_v2_replay_on_new_connection_closes);
+    RUN_TEST(break_session_identity_rate_is_shared_across_reconnects);
+    RUN_TEST(break_session_identity_rate_keys_by_the_authenticated_key_id);
+    RUN_TEST(break_session_identity_rate_ignores_unauthenticated_traffic);
     RUN_TEST(break_session_challenge_client_helper_answers_auth_v2);
     RUN_TEST(break_session_challenge_auth_reply_echoes_correlation_id);
     RUN_TEST(break_session_auth_configuration_is_new_state_only);

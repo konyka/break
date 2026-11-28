@@ -990,6 +990,7 @@ if(BREAK_ENABLE_SNOWFLAKE)
         src/network/break_online_aspect_session.c
         src/ecs/world_session.c
         src/network/break_msg_rate.c
+        src/network/break_identity_rate.c
         src/network/break_prediction.c
         src/network/break_prediction_wire.c
         src/network/break_prediction_session.c)

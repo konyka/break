@@ -92,6 +92,22 @@ typedef struct BreakSessionMessageRateConfig {
     void *clock_user;
 } BreakSessionMessageRateConfig;
 
+/* Optional per-identity limit (break_identity_rate): once a connection
+ * authenticates with AUTH v2, every message it sends is also admitted
+ * against the borrowed table under its 8-byte key_id, so all connections of
+ * that identity share one budget and a reconnect does not refill it. The
+ * table must outlive the manager and is used on the Logic thread only.
+ * Traffic before authentication has no identity and is not gated here. A
+ * refusal (bucket or full table) is recorded as RATE_LIMITED; the session
+ * stays open. Without BREAK_ENABLE_CRYPTO no session has a key_id, so the
+ * gate never applies. */
+struct BreakIdentityRate;
+typedef struct BreakSessionIdentityRateConfig {
+    struct BreakIdentityRate *table;
+    BreakSessionClockMsFn clock;
+    void *clock_user;
+} BreakSessionIdentityRateConfig;
+
 typedef bool (*BreakSessionMessageHandler)(BreakConnectionKey connection,
                                            const BreakNetOwnedMessage *message,
                                            void *user_data);
@@ -138,6 +154,10 @@ bool break_session_manager_set_message_handler(BreakSessionManager *manager,
  * starts with full buckets. */
 bool break_session_manager_set_message_rate(BreakSessionManager *manager,
                                             const BreakSessionMessageRateConfig *config);
+/* Enables (config) or disables (NULL) the per-identity limit. Only while no
+ * session is bound; table and clock must be set. */
+bool break_session_manager_set_identity_rate(
+    BreakSessionManager *manager, const BreakSessionIdentityRateConfig *config);
 /* Polls the borrowed reactor on the logic thread and applies up to max_events. */
 size_t break_session_manager_poll_adapter(BreakSessionManager *manager,
                                            uint32_t max_events);
