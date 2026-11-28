@@ -15163,3 +15163,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - 本提交自身的远端工作流结果不在此预写。
 - **验证**：见本节末尾。
 - **全量**（`c2e106e8`）：`build-aoi-net`（Snowflake + crypto）全量 ctest 499/499；`build-myui-tests`（Snowflake 关闭）全量 484/484；`build-current-vk` 构建通过。各任务的 ASan+UBSan 结果见上文；`test_break_keyring` 与 `test_break_session` 另在 TSan 下通过。
+
+## 测试：YAML flow 嵌套超限用例不再读取未初始化字节（2026-11-28）
+
+- **缺陷**：`test_myui_loader` 的 `yaml_parser_rejects_excessive_flow_nesting` 分配 `depth * 2 + 2` 字节，只写了前 `depth * 2 + 1` 个，却把最后一个未初始化字节也作为输入交给 `my_conf_parse_yaml`。文本本身（`[[...0...]]`）是顶层裸 flow 序列，解析器按 block 规则报 `expected 'key:' pair`，深度限制根本没被触发。用例能通过，只是因为大多数未初始化字节值都让解析失败；遍历 256 个取值时，`':'`（58）会让输入被接受。`d011bfea`（纯文档提交）的 CI run `46128404888` 中，`Windows + MinGW GCC (headless)` 就因此失败（`test_myui_loader.c:2760: root == NULL is false`），下一个提交又通过。
+- **修复**：用例改为 `k: [[...0...]]` 并写满每个字节：恰好 `MY_CONF_YAML_MAX_DEPTH` 层时必须解析成功，多一层时必须失败，且错误信息包含 `flow nesting depth`。解析器不变。
+- **验证**：把 `flow_depth >= MY_CONF_YAML_MAX_DEPTH` 改成 `>` 的变异被新用例判红；`test_myui_loader` 123/123；`build-macos-current`（Metal）全量 ctest 466/466，`build-macos`（MoltenVK）469/469，各有 10 项既有条件 skip。
+- **审查**：同步进来的 `break_keyring`、`break_session_manager_close_key_id`、editor 重载改用 `break_keyring` 和 `break_keygen --max-keys` 已通读，未发现需要修改的问题。
+- 本提交自身的远端工作流结果不在此预写。

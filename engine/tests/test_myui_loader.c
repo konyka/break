@@ -2740,24 +2740,38 @@ TEST(yaml_parser_rejects_invalid_input_without_error_storage)
 
 TEST(yaml_parser_rejects_excessive_flow_nesting)
 {
-  size_t depth = MY_CONF_YAML_MAX_DEPTH + 1u;
-  size_t length = depth * 2u + 2u;
-  size_t i;
-  char* yaml = (char*)malloc(length + 1u);
-  my_conf_error_t error;
-  my_conf_node_t* root;
+  /* "k: [[...[0]...]]" at the limit parses; one level deeper fails on the
+   * depth budget. Every byte of the buffer is written. */
+  size_t max_depth = MY_CONF_YAML_MAX_DEPTH + 1u;
+  char* yaml = (char*)malloc(3u + max_depth * 2u + 2u);
+  size_t pass;
 
   ASSERT_NOT_NULL(yaml);
-  for (i = 0; i < depth; i++) {
-    yaml[i] = '[';
+  for (pass = 0u; pass < 2u; pass++) {
+    size_t depth = MY_CONF_YAML_MAX_DEPTH + pass;
+    size_t length = 3u + depth * 2u + 1u;
+    size_t i;
+    my_conf_error_t error;
+    my_conf_node_t* root;
+
+    memcpy(yaml, "k: ", 3u);
+    for (i = 0; i < depth; i++) {
+      yaml[3u + i] = '[';
+    }
+    yaml[3u + depth] = '0';
+    for (i = 0; i < depth; i++) {
+      yaml[3u + depth + 1u + i] = ']';
+    }
+    yaml[length] = '\0';
+    root = my_conf_parse_yaml(NULL, yaml, length, &error);
+    if (pass == 0u) {
+      ASSERT_NOT_NULL(root);
+      my_conf_destroy(root);
+    } else {
+      ASSERT_TRUE(root == NULL);
+      ASSERT_NOT_NULL(strstr(error.msg, "flow nesting depth"));
+    }
   }
-  yaml[depth] = '0';
-  for (i = 0; i < depth; i++) {
-    yaml[depth + 1u + i] = ']';
-  }
-  yaml[length] = '\0';
-  root = my_conf_parse_yaml(NULL, yaml, length, &error);
-  ASSERT_TRUE(root == NULL);
   free(yaml);
 }
 
