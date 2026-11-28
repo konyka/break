@@ -148,6 +148,14 @@ TEST(keyring_resolve_returns_the_psk_and_leaves_misses_alone)
     c.id[7] ^= 0x01u;
     ASSERT_FALSE(break_keyring_resolve(ring, c.id, out));
     ASSERT_TRUE(memcmp(out, untouched, 32u) == 0);
+    /* free and wiped slots hold an all-zero id and psk; an all-zero id (the
+     * built-in client's default) must not match them */
+    memset(c.id, 0, sizeof(c.id));
+    ASSERT_FALSE(break_keyring_resolve(ring, c.id, out));
+    ASSERT_TRUE(memcmp(out, untouched, 32u) == 0);
+    ASSERT_TRUE(break_keyring_remove(ring, b.id));
+    ASSERT_FALSE(break_keyring_resolve(ring, c.id, out));
+    ASSERT_TRUE(memcmp(out, untouched, 32u) == 0);
     ASSERT_FALSE(break_keyring_resolve(NULL, a.id, out));
     ASSERT_FALSE(break_keyring_resolve(ring, NULL, out));
     ASSERT_FALSE(break_keyring_resolve(ring, a.id, NULL));

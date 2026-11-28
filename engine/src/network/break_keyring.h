@@ -12,8 +12,8 @@
  * Loading is all-or-nothing: the whole text is parsed and validated into a
  * scratch table first, and only then is the ring made equal to it. Keys no
  * longer listed, or listed with a different psk, are removed (the revoked
- * callback runs for each before its bytes are wiped); new keys are added;
- * unchanged keys stay. On any failure the ring is unchanged and revoked is
+ * callback runs for each after the key is removed from lookups; the callback
+ * gets a copy of the id); new keys are added; unchanged keys stay. On any failure the ring is unchanged and revoked is
  * never called.
  *
  * break_keyring_resolve compares the key id against every slot in constant
