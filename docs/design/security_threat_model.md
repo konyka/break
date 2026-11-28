@@ -137,7 +137,7 @@ content-addressed chunk store（文件名 = 内容 SHA-256 hex；写入经 tmp+f
 - OpenSSL 系统库版本漂移：EVP 行为由宿主机库决定，尚未入 `locked_dependencies.json`；
 - OpenSSL OOM 路径不可注入测试：内存耗尽下的 EVP 失败路径无覆盖率声明（文档化，不假称覆盖）；
 - 密钥管理未定义：离线签名密钥与 AUTH PSK 的生成、保管、轮换、吊销流程未交付（Phase D 交付的是 key_id→PSK 解析接缝），在其落地前签名体系与 AUTH 认证均不可投入真实发布；
-- Phase D 已知限制按文档记录在案（transport_security.md §8：无 TLS shutdown/ZERO_RETURN 区分、无会话恢复、零 key_id helper 约定、token 不退还、满 1024 表拒绝新 IP、进程级 auth 域、PSK memset 可被优化掉、clock_gettime 失败非 fail-closed）；
+- Phase D 已知限制按文档记录在案（transport_security.md §8：无 TLS shutdown/ZERO_RETURN 区分、无会话恢复、零 key_id helper 约定（2026-11-28 起可设定）、token 不退还、满 1024 表拒绝新 IP、进程级 auth 域；PSK 擦除经 volatile 写入，不会被优化掉（2026-11-28 核对）；clock_gettime 失败已改为 fail-closed，到期检查读不到时钟或会话没有认证时间时关闭会话（2026-11-28））；
 - 本文所有"设计目标"条目均无实现证据；交付状态唯一事实来源是 `docs/Implementation_Status.md` 与各阶段台账（focused/test-only 不等于正式集成，`docs/Implementation_Status.md:215,223` 口径）。
 
 ## 12. 证据索引

@@ -15121,3 +15121,11 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **交付**：`break_session_manager_set_client_key_id(manager, key_id)` 设定内置 CHALLENGE 助手在 AUTH v2 中发送、并交给 auth 回调解析的 `key_id`；默认仍为全零，只能在没有会话时设置，拒绝 NULL。逐设备分到密钥的客户端因此可以直接使用助手，服务端的按身份限速随之能区分设备。密钥本身的下发、轮换与吊销仍由应用负责，尚无设计。
 - **TDD 与变异**：`test_break_session` 新增 1 例（47 例），实现前编译失败；5 项变异全部判红（载荷仍写全零、tag 仍用全零、不复制、不冻结、接受 NULL）。
 - **验证**：`test_break_session` 普通、ASan+UBSan、TSan 均 47/47；`build-aoi-net` 全量 ctest 498/498；`build-myui-tests` 全量 483/483；`build-current-vk` 构建通过。本提交自身的远端工作流结果不在此预写。
+
+## 网络：会话最长存活在时钟读取失败时改为 fail-closed（2026-11-28）
+
+- **缺陷**（2026-10-24 记录的次要问题）：`clock_gettime` 失败时单调时钟按 0 计。认证时读失败会让会话从 0 开始计时；到期检查时读失败则当作时间 0，跳过所有会话，`max_age` 不生效。
+- **修复**：时钟函数返回是否成功；认证时读不到时间的会话标记为没有开始时间；到期检查读不到时钟，或遇到没有开始时间的会话，都把会话关闭而不是保留。
+- **测试**：`test_break_session` 新增 3 例（50 例），用仅测试构建可用的注入时钟（`break_session_set_clock_for_test`）：到期检查时时钟失败则关闭、认证时时钟失败则下一次检查关闭、恰好 `max_age` 时保持而多 1 微秒时关闭。5 项变异全部判红。首版用例断言失败后提前返回、遗留进程级测试时钟，导致后续用例连带失败；改为恢复时钟后再断言。
+- **核对**：同批记录的「PSK memset 可被优化掉」已解决，`break_session_wipe` 经 `volatile` 指针写入。
+- **验证**：`test_break_session` 普通、ASan+UBSan、TSan 均 50/50；`build-aoi-net` 全量 ctest 498/498；`build-myui-tests` 全量 483/483。Windows 分支（`GetTickCount64`）不会失败、行为不变，本机未构建。本提交自身的远端工作流结果不在此预写。

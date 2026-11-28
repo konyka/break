@@ -138,12 +138,12 @@ What this library gives you is TLS transport with `verify_peer` support — **no
 
 - **No TLS shutdown API / ZERO_RETURN divergence**: the Snowflake wrapper swallows `SSL_ERROR_ZERO_RETURN` (`snow_openssl.c:589-598`) and exposes no close_notify API, so close_notify and TCP FIN are indistinguishable. The adapter treats the TCP-layer close event as authoritative (`on_closed` semantics unchanged); the TLS close signal is not separately reported.
 - **No session resumption**: `SSL_SESS_CACHE_OFF`; per-connection TLS state is not resumable, and session-level state (session id, sequence) is bound to the connection lifetime and never survives reconnect.
-- **Zero key_id helper convention**: the built-in client helper always requests key_id zero (§3); apps needing non-zero client key_ids must hand-form AUTH v2.
+- **Zero key_id helper convention**: the built-in client helper requests key_id zero by default (§3); since 2026-11-28 `break_session_manager_set_client_key_id` selects another one.
 - **Tokens not refunded**: admission tokens consumed by an admit that later fails connection creation are not returned (conservative direction, §5).
 - **Full 1024 per-IP table**: denies new IPs; no eviction or LRU (§5).
 - **Process-wide auth domain**: `break_session_set_auth` is process-global (no per-manager isolation) — apps needing parallel independent key domains must discriminate inside the callback user data.
-- **PSK memset may be optimized out**: the stack PSK buffer is not explicitly zeroed with a barrier after verification (deferred minor from task 3 review).
-- **clock_gettime failure not fail-closed**: a failing monotonic clock reads as time 0 for max_age purposes (deferred minor).
+- **PSK memset may be optimized out**: the stack PSK buffer is not explicitly zeroed with a barrier after verification (deferred minor from task 3 review). Resolved: `break_session_auth_tag` wipes the PSK and the HMAC context through `break_session_wipe`, which writes via a `volatile` pointer so the stores cannot be removed (2026-11-28 check).
+- **clock_gettime failure not fail-closed**: a failing monotonic clock reads as time 0 for max_age purposes (deferred minor). Fixed 2026-11-28: the clock helper reports failure; a session whose authentication time could not be read has no start time, and an expiry pass that cannot read the clock, or meets a session without a start time, closes the session instead of keeping it. Tests in `test_break_session` use a test-only injected clock (`break_session_set_clock_for_test`, `BREAK_NET_TESTING` only): failure at expiry closes, failure at authentication closes on the next pass, and expiry is exact at `max_age` (open at the limit, closed one microsecond later). Five mutations (ignore a failed read now, ignore a missing start time, always mark the start time valid, `>=` instead of `>`, the previous behaviour) each turn a case red. The Windows branch (`GetTickCount64`) cannot fail and is unchanged in behaviour; it was not built here.
 
 ## 9. NOT delivered
 
