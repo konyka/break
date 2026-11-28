@@ -405,7 +405,7 @@ TEST(keyring_reload_applies_the_difference)
     break_keyring_destroy(ring);
 }
 
-TEST(keyring_revoked_sees_the_id_before_the_wipe)
+TEST(keyring_revoked_gets_a_copy_after_removal)
 {
     TestKey a = test_key(1u);
     TestKey b = test_key(2u);
@@ -499,7 +499,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(keyring_load_rejects_each_malformed_shape_and_leaves_the_ring);
     RUN_TEST(keyring_load_rejects_an_oversized_file);
     RUN_TEST(keyring_reload_applies_the_difference);
-    RUN_TEST(keyring_revoked_sees_the_id_before_the_wipe);
+    RUN_TEST(keyring_revoked_gets_a_copy_after_removal);
     RUN_TEST(keyring_load_text_matches_load_file);
     RUN_TEST(keyring_key_at_walks_insertion_order);
 TEST_MAIN_END()

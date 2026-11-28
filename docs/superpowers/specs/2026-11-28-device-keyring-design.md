@@ -110,14 +110,15 @@ bool break_keyring_key_at(const BreakKeyring *ring, u32 index, u8 key_id[8], u8 
 ### 4.2 `break_session` 按 `key_id` 关闭会话
 
 ```c
-/* Closes (CLOSING) every authenticated session whose AUTH v2 key_id equals
- * key_id; returns how many. Logic thread. Without BREAK_ENABLE_CRYPTO
- * returns 0. */
+/* Moves every authenticated session whose AUTH v2 key_id equals key_id to
+ * CLOSING and returns how many. Logic thread. It does not close the
+ * transport: the host must close the reactor connection of every CLOSING
+ * session (as core_app's net_sync_sessions does). */
 size_t break_session_manager_close_key_id(BreakSessionManager *manager,
                                           const u8 key_id[8]);
 ```
 
-会话条目已有 `key_id`/`key_id_valid`。关闭后清除 `key_id_valid`，使同一会话不会被重复计数。传输层关闭沿用现有 CLOSING → reactor 关闭的路径（与 `break_session_manager_close` 相同）。
+会话条目已有 `key_id`/`key_id_valid`。关闭后清除 `key_id_valid`，使同一会话不会被重复计数。函数只在 `BREAK_ENABLE_CRYPTO` 下声明。它只把会话置为 CLOSING，`break_session` 自身不调用 `break_net_reactor_close`；传输层关闭由宿主负责：宿主须为每个 CLOSING 会话关闭 reactor 连接（core_app 在 `core_app_net_transport.c` 的 `net_sync_sessions` → `net_close_slot` 中这样做；编辑器经自己的连接行关闭）。（2026-11-28 终审更正：原文写“沿用现有 CLOSING → reactor 关闭的路径”以及“未启用 BREAK_ENABLE_CRYPTO 时返回 0”，均不成立。）
 
 ### 4.3 组合用法（服务端）
 
@@ -130,7 +131,7 @@ break_keyring_load_file(ring, path, on_revoked, manager);
 /* on_revoked(manager, id) -> break_session_manager_close_key_id(manager, id) */
 ```
 
-定时重读的节奏由应用决定（编辑器沿用 `watch_keyring` 的 interval）。库不自带计时器与文件监视，避免引入平台依赖。
+`close_key_id` 只把会话置为 CLOSING；宿主随后须为 CLOSING 会话关闭传输（如 core_app 的 `net_sync_sessions`），否则被吊销设备的连接仍然打开。环在 `break_session_set_auth(NULL, NULL)` 返回 true 之后才能销毁。定时重读的节奏由应用决定（编辑器沿用 `watch_keyring` 的 interval）。库不自带计时器与文件监视，避免引入平台依赖。
 
 ### 4.4 编辑器迁移
 
@@ -159,7 +160,7 @@ break_keyring_load_file(ring, path, on_revoked, manager);
 - add/remove/count、重复与满的拒绝、容量边界（1、4096、0 与 4097 拒绝）。
 - `resolve`：命中返回正确 PSK、未命中返回 false 且不写出参。
 - `load_file`：合法文件（含注释、空行、CRLF）；每种格式错误各一例（长度、分隔符、非十六进制、重复 id）；超容量；空文件；不可读路径。失败时环不变且回调未被调用。
-- 差异重载：删除的 key 与换了 PSK 的 key 各触发一次回调、新 key 加入、未变 key 保持；回调在 key 字节擦除前收到 id。
+- 差异重载：删除的 key 与换了 PSK 的 key 各触发一次回调、新 key 加入、未变 key 保持；回调在 key 从环中移除之后运行，收到 id 的副本。
 - ASan 下确认无越界与泄漏。
 
 `test_break_session`（扩展，真实 loopback AUTH v2）：

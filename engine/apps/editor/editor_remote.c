@@ -1360,8 +1360,11 @@ bool break_editor_remote_reload_keyring(BreakEditorRemote *r, const char *path) 
         return false;
     }
     for (i = 0u; i < EDITOR_REMOTE_MAX_KEYS; i++) {
-        if (r->keys[i].used) {
-            (void)break_keyring_add(ring, r->keys[i].key_id, r->keys[i].psk);
+        if (r->keys[i].used &&
+            !break_keyring_add(ring, r->keys[i].key_id, r->keys[i].psk)) {
+            break_keyring_destroy(ring);
+            remote_wipe(text, sizeof(text));
+            return false;
         }
     }
     /* revokes keys that are gone or whose secret changed (callback); on a

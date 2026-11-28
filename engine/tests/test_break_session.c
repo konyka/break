@@ -1923,6 +1923,7 @@ TEST(break_session_keyring_reload_revokes_live_sessions)
     bool written = false;
     bool rewritten = false;
     bool auth_set = false;
+    bool auth_cleared = false;
     bool first_ok = false;
     bool second_ok = false;
 
@@ -1958,14 +1959,20 @@ TEST(break_session_keyring_reload_revokes_live_sessions)
         }
         break_session_auth_fixture_close(&second);
         break_session_auth_fixture_close(&first);
-        (void)break_session_set_auth(NULL, NULL);
+        auth_cleared = break_session_set_auth(NULL, NULL);
     }
     remove(path);
-    break_keyring_destroy(ring);
+    if (!auth_set || auth_cleared) {
+        break_keyring_destroy(ring);
+    }
+    /* else the ring is still installed as the process-wide auth user, so it
+     * is leaked on purpose: freeing it would leave later tests resolving
+     * through freed memory. */
     ASSERT_NOT_NULL(ring);
     ASSERT_TRUE(written);
     ASSERT_EQ(initial, BREAK_KEYRING_LOAD_OK);
     ASSERT_TRUE(auth_set);
+    ASSERT_TRUE(auth_cleared);
     ASSERT_TRUE(first_ok);
     ASSERT_EQ(first_auth, BREAK_SESSION_AUTHENTICATED);
     ASSERT_TRUE(rewritten);

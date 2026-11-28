@@ -12,9 +12,9 @@
  * Loading is all-or-nothing: the whole text is parsed and validated into a
  * scratch table first, and only then is the ring made equal to it. Keys no
  * longer listed, or listed with a different psk, are removed (the revoked
- * callback runs for each after the key is removed from lookups; the callback
- * gets a copy of the id); new keys are added; unchanged keys stay. On any failure the ring is unchanged and revoked is
- * never called.
+ * callback runs for each after the key is removed from lookups; the
+ * callback gets a copy of the id); new keys are added; unchanged keys stay.
+ * On any failure the ring is unchanged and revoked is never called.
  *
  * break_keyring_resolve compares the key id against every slot in constant
  * time (no early exit on a match) and is BreakNetAuthKeyFn-compatible, with
@@ -22,7 +22,15 @@
  * wiped before it is released.
  *
  * One owner, no locks: use a ring from one thread only (for a server, the
- * Logic thread that runs break_session). */
+ * Logic thread that runs break_session). The break_session auth callback is
+ * process-wide, so every break_session manager polled under that auth and
+ * every load, add and remove on the ring must run on that same thread.
+ *
+ * A ring installed with break_session_set_auth(break_keyring_resolve, ring)
+ * may be destroyed only after break_session_set_auth(NULL, NULL) returns
+ * true. set_auth refuses while any session in the process is not NEW or an
+ * auth operation is active; destroying the ring before that leaves the
+ * process-wide callback reading freed memory. */
 
 #include <core/types.h>
 

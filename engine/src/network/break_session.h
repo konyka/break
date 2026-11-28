@@ -169,8 +169,10 @@ bool break_session_manager_set_identity_rate(
  * no session is bound; NULL is refused. */
 bool break_session_manager_set_client_key_id(BreakSessionManager *manager,
                                              const u8 key_id[8]);
-/* Closes (CLOSING) every authenticated session whose AUTH v2 key_id equals
- * key_id and returns how many. Logic thread. */
+/* Moves every authenticated session whose AUTH v2 key_id equals key_id to
+ * CLOSING and returns how many. Logic thread. It does not close the
+ * transport: the host must close the reactor connection of every CLOSING
+ * session (as core_app's net_sync_sessions does). */
 size_t break_session_manager_close_key_id(BreakSessionManager *manager,
                                           const u8 key_id[8]);
 #endif
