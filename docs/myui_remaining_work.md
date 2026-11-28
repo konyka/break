@@ -3262,3 +3262,20 @@ LTR JUSTIFY 行逐词绘制，`ta_draw_syntax_span` 又在 token 边界把词截
 **变异**（21 项，全部判红）：不检查起始大于结束、不检查起始上限、不截断结束值、允许 7 位、通配后允许数字、通配下界与上界各错一、只认大写 `U`、不要求 `U+`、上限差一、接受尾随逗号、无效范围仍保留规则、`covers` 的两端各开区间、不限制 U+10FFFF、缺省不覆盖、只看第一段、不解析 `X-Y`。首轮「不截断」「7 位」两项存活，据此补了 `U+0000041` 与结束值断言；首版「数字串后不得紧跟 `?`」的检查被变异证明多余（通配后出现数字已由 `!wildcards` 拒绝），已删除。
 
 **验证**：`test_myui_css` 236/236，ASan+UBSan 236/236；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。
+
+## 本轮补充：由 `font-family` 列表建字体链（2026-11-28）
+
+`my_css_font_face_create_chain(allocator, sheet, base_dir, families, count, weight, italic, cache_capacity, &loaded)` 把 `@font-face` 接到真实字体：按 family 列表顺序，对每个 family 用 `my_css_font_face_match` 选一条规则，从 `base_dir/src` 加载，交给 `my_font_create_chain_ex` 组成回退链。
+
+- `src` 已是安全相对路径，`base_dir` 末尾有无 `/` 都可以。
+- 没有规则的 family、磁盘上不存在的文件、拼接后超过 1023 字节的路径都跳过（不截断）；同一条规则被多个 family 名命中（大小写不同）时只加载一次。
+- `loaded` 成功时为交给字体链的文件数，失败时为 0；存在但解析失败的文件也计入。参数为 NULL、列表为空、没有找到文件或没有 face 能加载时返回 NULL。
+- 路径缓冲在堆上分配，`my_font_create_chain_ex` 返回前已加载全部 face，返回后即释放。
+
+边界：每个 family 只取匹配到的那一条规则；某条规则的 `src` 文件不存在时不会退到同 family 的其他规则。`unicode-range` 不参与排序。
+
+**TDD**：`test_myui_css` 新增 2 例（238 例）：本机 Cantarell 与 Vazirmatn 组链（顺序、未知 family、缺失文件、大小写重复、两种 `base_dir` 写法、Latin 与 Arabic 字形都可用）；参数校验、路径恰为 1023 字节可加载、多一个字节则跳过。字体缺失时 SKIP。实现前编译失败（RED）。
+
+**变异**（10 项，全部判红）：不检查文件存在、不去重、总加 `/`、从不加 `/`、不检查截断、截断判定差一、失败时不清零 `loaded`、`loaded` 多计、只看第一个 family。截断用例首版写入的探针文件不是字体，截断后的路径加载失败同样返回 NULL，变异因此存活；改为复制真实字体并修正一字节的长度计算后判红，探针文件在断言前删除。`family_count == 0` 的检查被变异证明与下游重复（无文件即返回 NULL），已删除。
+
+**验证**：`test_myui_css` 238/238，ASan+UBSan（含泄漏检测）238/238；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。

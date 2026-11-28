@@ -1,4 +1,5 @@
 #include "test_framework.h"
+#include "myr/my_font.h"
 
 #include <locale.h>
 #include <math.h>
@@ -11866,6 +11867,190 @@ TEST(css_font_face_invalid_unicode_range_drops_the_rule)
   my_css_sheet_destroy(sheet);
 }
 
+TEST(css_font_face_chain_loads_the_family_list_in_order)
+{
+  const char* css =
+      "@font-face{font-family:Ui;"
+      "src:url(abattis-cantarell-fonts/Cantarell-Regular.otf);}"
+      "@font-face{font-family:Arabic;src:url(missing/none.ttf), "
+      "url(\"vazirmatn-vf-fonts/Vazirmatn[wght].ttf\");}"
+      "@font-face{font-family:Gone;src:url(missing/none.ttf);}";
+  const char* families[] = {"Gone", "ui", "Unknown", "Arabic"};
+  my_css_sheet_t* sheet = my_css_parse(NULL, css, strlen(css), NULL);
+  FILE* a = fopen("/usr/share/fonts/abattis-cantarell-fonts/Cantarell-Regular.otf", "rb");
+  FILE* b = fopen("/usr/share/fonts/vazirmatn-vf-fonts/Vazirmatn[wght].ttf", "rb");
+  my_font_t* chain;
+  size_t loaded = 0u;
+
+  ASSERT_NOT_NULL(sheet);
+  if (a == NULL || b == NULL) {
+    if (a != NULL) fclose(a);
+    if (b != NULL) fclose(b);
+    my_css_sheet_destroy(sheet);
+    printf("  SKIP: no Cantarell/Vazirmatn test fonts\n");
+    return;
+  }
+  fclose(a);
+  fclose(b);
+  /* The Arabic rule's first source is missing on disk: the CSS keeps the
+   * first safe source, so that family loads nothing. */
+  chain = my_css_font_face_create_chain(NULL, sheet, "/usr/share/fonts",
+                                        families, 4u, 400u, false, 16u,
+                                        &loaded);
+  ASSERT_NOT_NULL(chain);
+  ASSERT_EQ(loaded, 1u);
+  ASSERT_TRUE(my_font_has_glyph(chain, 'A'));
+  my_font_destroy(chain);
+  my_css_sheet_destroy(sheet);
+
+  {
+    const char* css2 =
+        "@font-face{font-family:Ui;"
+        "src:url(abattis-cantarell-fonts/Cantarell-Regular.otf);}"
+        "@font-face{font-family:Arabic;"
+        "src:url(\"vazirmatn-vf-fonts/Vazirmatn[wght].ttf\");}";
+    const char* list[] = {"Ui", "Arabic", "UI"};
+    sheet = my_css_parse(NULL, css2, strlen(css2), NULL);
+    ASSERT_NOT_NULL(sheet);
+    /* "UI" names the same face as "Ui" and loads once; the base dir
+     * works with and without a trailing slash. */
+    chain = my_css_font_face_create_chain(NULL, sheet, "/usr/share/fonts/",
+                                          list, 3u, 400u, false, 16u,
+                                          &loaded);
+    ASSERT_NOT_NULL(chain);
+    ASSERT_EQ(loaded, 2u);
+    my_font_destroy(chain);
+    chain = my_css_font_face_create_chain(NULL, sheet, "/usr/share/fonts",
+                                          list, 2u, 400u, false, 16u,
+                                          &loaded);
+    ASSERT_NOT_NULL(chain);
+    ASSERT_EQ(loaded, 2u);
+    ASSERT_TRUE(my_font_has_glyph(chain, 'A'));
+    ASSERT_TRUE(my_font_has_glyph(chain, 0x0633u));
+    my_font_destroy(chain);
+    my_css_sheet_destroy(sheet);
+  }
+}
+
+TEST(css_font_face_chain_rejects_bad_arguments)
+{
+  const char* css = "@font-face{font-family:G;src:url(missing/none.ttf);}";
+  const char* families[] = {"G"};
+  my_css_sheet_t* sheet = my_css_parse(NULL, css, strlen(css), NULL);
+  size_t loaded = 7u;
+  static char long_dir[2048];
+
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_TRUE(my_css_font_face_create_chain(NULL, sheet, "/nonexistent",
+                                            families, 1u, 400u, false, 16u,
+                                            &loaded) == NULL);
+  ASSERT_EQ(loaded, 0u);
+  ASSERT_TRUE(my_css_font_face_create_chain(NULL, NULL, "/x", families, 1u,
+                                            400u, false, 16u, NULL) == NULL);
+  ASSERT_TRUE(my_css_font_face_create_chain(NULL, sheet, NULL, families, 1u,
+                                            400u, false, 16u, NULL) == NULL);
+  ASSERT_TRUE(my_css_font_face_create_chain(NULL, sheet, "/x", NULL, 1u,
+                                            400u, false, 16u, NULL) == NULL);
+  loaded = 7u;
+  ASSERT_TRUE(my_css_font_face_create_chain(NULL, sheet, "/x", families, 0u,
+                                            400u, false, 16u,
+                                            &loaded) == NULL);
+  ASSERT_EQ(loaded, 0u);
+  /* The joined path may be up to 1023 bytes: pad the base dir with '/'
+   * (the kernel folds repeated slashes) to hit 1023 exactly, then one
+   * more byte must be skipped, not truncated. */
+  {
+    const char* real =
+        "@font-face{font-family:R;"
+        "src:url(abattis-cantarell-fonts/Cantarell-Regular.otf);}";
+    const char* names[] = {"R"};
+    const char* src = "abattis-cantarell-fonts/Cantarell-Regular.otf";
+    my_css_sheet_t* rs = my_css_parse(NULL, real, strlen(real), NULL);
+    FILE* probe = fopen("/usr/share/fonts/abattis-cantarell-fonts/"
+                        "Cantarell-Regular.otf", "rb");
+    ASSERT_NOT_NULL(rs);
+    if (probe != NULL) {
+      size_t base = 1023u - strlen(src);
+      my_font_t* font;
+      fclose(probe);
+      memset(long_dir, '/', base);
+      memcpy(long_dir, "/usr/share/fonts", 16u);
+      long_dir[base] = '\0';
+      font = my_css_font_face_create_chain(NULL, rs, long_dir, names, 1u,
+                                           400u, false, 16u, &loaded);
+      ASSERT_NOT_NULL(font);
+      ASSERT_EQ(loaded, 1u);
+      my_font_destroy(font);
+      long_dir[base] = '/';
+      long_dir[base + 1u] = '\0';
+      ASSERT_TRUE(my_css_font_face_create_chain(NULL, rs, long_dir, names, 1u,
+                                                400u, false, 16u,
+                                                &loaded) == NULL);
+      ASSERT_EQ(loaded, 0u);
+    }
+    my_css_sheet_destroy(rs);
+  }
+  /* Truncating instead of skipping would name a real file: the source
+   * "myui_css_font_probe.bin" one byte too long would be cut to
+   * "myui_css_font_probe.bi", which exists in the working directory. */
+  {
+    const char* css_probe =
+        "@font-face{font-family:T;src:url(myui_css_font_probe.bin);}";
+    const char* names[] = {"T"};
+    const char* kept = "myui_css_font_probe.bi";
+    my_css_sheet_t* ts = my_css_parse(NULL, css_probe, strlen(css_probe),
+                                      NULL);
+    FILE* in = fopen("/usr/share/fonts/abattis-cantarell-fonts/"
+                     "Cantarell-Regular.otf", "rb");
+    FILE* f;
+    size_t base = 1024u - strlen("myui_css_font_probe.bin");
+    ASSERT_NOT_NULL(ts);
+    if (in == NULL) {
+      my_css_sheet_destroy(ts);
+      my_css_sheet_destroy(sheet);
+      printf("  SKIP: no Cantarell test font\n");
+      return;
+    }
+    /* A real font, so a truncated path would load and return a chain. */
+    f = fopen(kept, "wb");
+    ASSERT_NOT_NULL(f);
+    {
+      char chunk[4096];
+      size_t got;
+      while ((got = fread(chunk, 1u, sizeof(chunk), in)) > 0u) {
+        fwrite(chunk, 1u, got, f);
+      }
+    }
+    fclose(in);
+    fclose(f);
+    /* ".////...////" ends in '/', so no separator is added: base + src is
+     * 1024 bytes and truncation would keep 1023. */
+    memset(long_dir, '/', base);
+    long_dir[0] = '.';
+    long_dir[base] = '\0';
+    loaded = 7u;
+    {
+      my_font_t* probe = my_css_font_face_create_chain(
+          NULL, ts, long_dir, names, 1u, 400u, false, 16u, &loaded);
+      bool skipped = probe == NULL;
+      if (probe != NULL) my_font_destroy(probe);
+      remove(kept);
+      my_css_sheet_destroy(ts);
+      ASSERT_TRUE(skipped);
+      ASSERT_EQ(loaded, 0u);
+    }
+  }
+  memset(long_dir, 'd', sizeof(long_dir) - 1u);
+  long_dir[0] = '/';
+  long_dir[sizeof(long_dir) - 1u] = '\0';
+  loaded = 7u;
+  ASSERT_TRUE(my_css_font_face_create_chain(NULL, sheet, long_dir, families,
+                                            1u, 400u, false, 16u,
+                                            &loaded) == NULL);
+  ASSERT_EQ(loaded, 0u);
+  my_css_sheet_destroy(sheet);
+}
+
 TEST(css_keyframes_capability_is_registered)
 {
   ASSERT_TRUE((my_css_capabilities()->supported_features &
@@ -12454,6 +12639,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_keyframes_sample_interpolates_between_stops);
     RUN_TEST(css_keyframes_reject_malformed_and_oversized);
     RUN_TEST(css_keyframes_capability_is_registered);
+    RUN_TEST(css_font_face_chain_loads_the_family_list_in_order);
+    RUN_TEST(css_font_face_chain_rejects_bad_arguments);
     RUN_TEST(css_font_face_unicode_range_limits_coverage);
     RUN_TEST(css_font_face_invalid_unicode_range_drops_the_rule);
     RUN_TEST(css_font_face_match_follows_css_weight_rules);

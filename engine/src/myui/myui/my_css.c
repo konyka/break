@@ -7,12 +7,14 @@
 #include "myui/my_widget.h"
 
 #include <errno.h>
+#include <stdio.h>
 #include <limits.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "myc/my_str.h"
+#include "myr/my_font.h"
 
 /* ---------------- lexer-ish helpers ---------------- */
 
@@ -8961,4 +8963,55 @@ my_ret_t my_theme_load_css_with_options(
     my_theme_t* theme, const char* css,
     const my_css_parse_options_t* options) {
   return my_theme_load_css_internal(theme, css, options);
+}
+
+#define CSS_FONT_CHAIN_PATH_BYTES 1024u
+
+my_font_t* my_css_font_face_create_chain(
+    const my_allocator_t* allocator, const my_css_sheet_t* sheet,
+    const char* base_dir, const char* const* families, size_t family_count,
+    uint32_t weight, bool italic, size_t cache_capacity, size_t* loaded) {
+  const my_css_font_face_t* picked[MY_CSS_MAX_FONT_FACES];
+  char (*paths)[CSS_FONT_CHAIN_PATH_BYTES];
+  my_font_source_t sources[MY_CSS_MAX_FONT_FACES];
+  my_font_t* chain;
+  size_t count = 0u, i, j;
+  size_t dir_len;
+  bool slash;
+  if (loaded != NULL) *loaded = 0u;
+  if (sheet == NULL || base_dir == NULL || families == NULL) return NULL;
+  paths = (char (*)[CSS_FONT_CHAIN_PATH_BYTES])my_mem_calloc(
+      allocator, MY_CSS_MAX_FONT_FACES, CSS_FONT_CHAIN_PATH_BYTES);
+  if (paths == NULL) return NULL;
+  dir_len = strlen(base_dir);
+  slash = dir_len > 0u && base_dir[dir_len - 1u] == '/';
+  for (i = 0u; i < family_count && count < MY_CSS_MAX_FONT_FACES; i++) {
+    const my_css_font_face_t* face;
+    bool seen = false;
+    FILE* file;
+    int written;
+    if (families[i] == NULL) continue;
+    face = my_css_font_face_match(sheet, families[i], weight, italic);
+    if (face == NULL) continue;
+    for (j = 0u; j < count; j++) {
+      if (picked[j] == face) seen = true;
+    }
+    if (seen) continue;
+    written = snprintf(paths[count], sizeof(paths[count]), "%s%s%s",
+                       base_dir, slash ? "" : "/", face->src);
+    if (written < 0 || (size_t)written >= sizeof(paths[count])) continue;
+    file = fopen(paths[count], "rb");
+    if (file == NULL) continue;
+    fclose(file);
+    picked[count] = face;
+    sources[count].path = paths[count];
+    sources[count].face_index = 0;
+    count++;
+  }
+  chain = count > 0u ? my_font_create_chain_ex(allocator, sources, count,
+                                               cache_capacity)
+                     : NULL;
+  my_mem_free(allocator, paths);
+  if (chain != NULL && loaded != NULL) *loaded = count;
+  return chain;
 }

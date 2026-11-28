@@ -482,6 +482,22 @@ const my_css_font_face_t* my_css_font_face_at(const my_css_sheet_t* sheet,
 bool my_css_font_face_covers(const my_css_font_face_t* face,
                              uint32_t codepoint);
 
+/** @brief Builds a font fallback chain from a `font-family` list: for each
+ * family in order, the face chosen by my_css_font_face_match(weight,
+ * italic) is loaded from `base_dir` + "/" + its `src` (`src` is always a
+ * safe relative path). Families without a face, files that do not exist
+ * and paths longer than 1023 bytes are skipped; a family listed twice
+ * loads once. Faces are created with my_font_create_chain_ex, which loads
+ * every file before returning (the path buffers are not kept). `loaded`,
+ * when non-NULL, receives the number of files handed to the chain on
+ * success and 0 otherwise; a file that exists but fails to parse still
+ * counts. NULL when a pointer argument is NULL, no file is found (always
+ * the case for `family_count` 0) or no face loads. */
+struct my_font_t* my_css_font_face_create_chain(
+    const my_allocator_t* allocator, const my_css_sheet_t* sheet,
+    const char* base_dir, const char* const* families, size_t family_count,
+    uint32_t weight, bool italic, size_t cache_capacity, size_t* loaded);
+
 /** @brief Best `@font-face` for a family, weight and style, following the
  * CSS Fonts matching order: faces of the family (ASCII case-insensitive)
  * are narrowed to the requested style when any exists, then by weight.
