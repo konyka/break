@@ -15041,3 +15041,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **交付**：`my_css_font_face_create_chain` 按 family 顺序匹配 `@font-face`、从 `base_dir` 加载并组成 `my_font_create_chain_ex` 回退链；缺失文件与超长路径跳过，同一规则只加载一次。仍未接入控件或主题的 `font-family` 声明。
 - **TDD 与变异**：`test_myui_css` 新增 2 例（238 例），实现前编译失败；10 项变异全部判红。
 - **验证**：普通与 ASan+UBSan 下 238/238；全量 ctest 482/482；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
+
+## myui CSS：`font-family` 值解析（2026-11-28）
+
+- **交付**：`my_css_font_family_list_parse` 把 `font-family` 值拆成最多 16 个名字，`ptrs` 可直接驱动 `my_css_font_face_create_chain`。
+- **修正**：无引号 family 名的长度判断多保留一字节，恰好 64 字节被拒绝；现在 64 字节接受、65 字节拒绝。
+- **TDD 与变异**：`test_myui_css` 新增 4 例（242 例），修正前长度用例判红；12 项变异全部判红，1 项等价变异对应的冗余检查已删除。
+- **验证**：普通与 ASan+UBSan 下 242/242；全量 ctest 482/482；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。

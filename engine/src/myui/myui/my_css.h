@@ -64,6 +64,7 @@
 #define MY_CSS_MAX_FONT_FACES 64u
 #define MY_CSS_MAX_FONT_FAMILY_BYTES 64u
 #define MY_CSS_MAX_FONT_RANGES 16u
+#define MY_CSS_MAX_FONT_FAMILIES 16u
 
 typedef enum my_css_parse_flags_t {
   MY_CSS_PARSE_DEFAULT = 0u,
@@ -481,6 +482,25 @@ const my_css_font_face_t* my_css_font_face_at(const my_css_sheet_t* sheet,
  * MY_CSS_MAX_FONT_RANGES ranges drops the rule. */
 bool my_css_font_face_covers(const my_css_font_face_t* face,
                              uint32_t codepoint);
+
+/** @brief A parsed `font-family` value. `ptrs[i]` points at `names[i]`, so
+ * `ptrs` can be passed straight to my_css_font_face_create_chain. */
+typedef struct my_css_font_family_list_t {
+  char names[MY_CSS_MAX_FONT_FAMILIES][MY_CSS_MAX_FONT_FAMILY_BYTES + 1u];
+  const char* ptrs[MY_CSS_MAX_FONT_FAMILIES];
+  size_t count;
+} my_css_font_family_list_t;
+
+/** @brief Splits a `font-family` value into names: each comma-separated
+ * entry is one quoted string (no escapes) or unquoted identifiers joined
+ * by single spaces, the same rules as the `@font-face` descriptor. Generic
+ * names such as `sans-serif` are kept as plain names. False (count 0) for
+ * an empty value, an empty entry, a quoted string mixed with other text,
+ * any byte that is not an identifier character outside quotes, a name over
+ * MY_CSS_MAX_FONT_FAMILY_BYTES or more than MY_CSS_MAX_FONT_FAMILIES
+ * entries. */
+bool my_css_font_family_list_parse(const char* value,
+                                   my_css_font_family_list_t* out);
 
 /** @brief Builds a font fallback chain from a `font-family` list: for each
  * family in order, the face chosen by my_css_font_face_match(weight,

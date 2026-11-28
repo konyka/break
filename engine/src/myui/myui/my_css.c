@@ -6407,7 +6407,9 @@ static bool css_font_family(const char* text, size_t length, char* out,
         space = true;
         continue;
       }
-      if (!c_ident_char((unsigned char)c) || n + 2u >= cap) return false;
+      if (!c_ident_char((unsigned char)c)) return false;
+      /* the joined space and this byte must both fit before the NUL */
+      if (n + ((space && n > 0u) ? 2u : 1u) >= cap) return false;
       if (space && n > 0u) out[n++] = ' ';
       space = false;
       out[n++] = c;
@@ -7001,6 +7003,40 @@ const my_css_font_face_t* my_css_font_face_at(const my_css_sheet_t* sheet,
                                               size_t index) {
   if (index >= my_css_font_face_count(sheet)) return NULL;
   return (const my_css_font_face_t*)my_darray_get(sheet->font_faces, index);
+}
+
+bool my_css_font_family_list_parse(const char* value,
+                                   my_css_font_family_list_t* out) {
+  size_t length, at = 0u;
+  if (out == NULL) return false;
+  out->count = 0u;
+  if (value == NULL) return false;
+  length = strlen(value);
+  for (;;) {
+    size_t end = at;
+    char quote = '\0';
+    while (end < length) {
+      char c = value[end];
+      if (quote != '\0') {
+        if (c == quote) quote = '\0';
+      } else if (c == '"' || c == '\'') {
+        quote = c;
+      } else if (c == ',') {
+        break;
+      }
+      end++;
+    }
+    if (out->count >= MY_CSS_MAX_FONT_FAMILIES ||
+        !css_font_family(value + at, end - at, out->names[out->count],
+                         sizeof(out->names[out->count]))) {
+      out->count = 0u;
+      return false;
+    }
+    out->ptrs[out->count] = out->names[out->count];
+    out->count++;
+    if (end == length) return true;
+    at = end + 1u;
+  }
 }
 
 bool my_css_font_face_covers(const my_css_font_face_t* face,

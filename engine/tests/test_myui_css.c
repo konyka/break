@@ -12051,6 +12051,139 @@ TEST(css_font_face_chain_rejects_bad_arguments)
   my_css_sheet_destroy(sheet);
 }
 
+TEST(css_font_family_list_splits_quoted_and_unquoted_names)
+{
+  my_css_font_family_list_t list;
+
+  ASSERT_TRUE(my_css_font_family_list_parse(
+      "\"Inter UI\", Noto   Sans  CJK, 'A,B' ,sans-serif", &list));
+  ASSERT_EQ(list.count, 4u);
+  ASSERT_STR_EQ(list.names[0], "Inter UI");
+  ASSERT_STR_EQ(list.names[1], "Noto Sans CJK");
+  ASSERT_STR_EQ(list.names[2], "A,B");
+  ASSERT_STR_EQ(list.names[3], "sans-serif");
+  ASSERT_EQ((const char*)list.ptrs[3], (const char*)list.names[3]);
+  ASSERT_TRUE(my_css_font_family_list_parse("Mono", &list));
+  ASSERT_EQ(list.count, 1u);
+  ASSERT_STR_EQ(list.names[0], "Mono");
+}
+
+TEST(css_font_family_list_rejects_malformed_values)
+{
+  static char many[1024];
+  size_t at = 0u, i;
+  my_css_font_family_list_t list;
+  const char* bad[] = {"", "   ", "A,", ",A", "A,,B", "\"unterminated",
+                       "\"A\" B", "A \"B\"", "A;B", "\"\"", "A(B)"};
+
+  for (i = 0u; i < sizeof(bad) / sizeof(bad[0]); i++) {
+    list.count = 9u;
+    ASSERT_FALSE(my_css_font_family_list_parse(bad[i], &list));
+    ASSERT_EQ(list.count, 0u);
+  }
+  ASSERT_FALSE(my_css_font_family_list_parse(NULL, &list));
+  ASSERT_FALSE(my_css_font_family_list_parse("A", NULL));
+  for (i = 0u; i < MY_CSS_MAX_FONT_FAMILIES; i++) {
+    at += (size_t)snprintf(many + at, sizeof(many) - at, "%sF%zu",
+                           i == 0u ? "" : ",", i);
+  }
+  ASSERT_TRUE(my_css_font_family_list_parse(many, &list));
+  ASSERT_EQ(list.count, (size_t)MY_CSS_MAX_FONT_FAMILIES);
+  at += (size_t)snprintf(many + at, sizeof(many) - at, ",X");
+  ASSERT_FALSE(my_css_font_family_list_parse(many, &list));
+  memset(many, 'a', MY_CSS_MAX_FONT_FAMILY_BYTES);
+  many[MY_CSS_MAX_FONT_FAMILY_BYTES] = '\0';
+  ASSERT_TRUE(my_css_font_family_list_parse(many, &list));
+  many[MY_CSS_MAX_FONT_FAMILY_BYTES] = 'a';
+  many[MY_CSS_MAX_FONT_FAMILY_BYTES + 1u] = '\0';
+  ASSERT_FALSE(my_css_font_family_list_parse(many, &list));
+  /* exactly the limit with a joined space, then one byte over */
+  memset(many, 'a', MY_CSS_MAX_FONT_FAMILY_BYTES);
+  many[10] = ' ';
+  many[MY_CSS_MAX_FONT_FAMILY_BYTES] = '\0';
+  ASSERT_TRUE(my_css_font_family_list_parse(many, &list));
+  ASSERT_EQ(strlen(list.names[0]), (size_t)MY_CSS_MAX_FONT_FAMILY_BYTES);
+  many[MY_CSS_MAX_FONT_FAMILY_BYTES] = 'a';
+  many[MY_CSS_MAX_FONT_FAMILY_BYTES + 1u] = '\0';
+  ASSERT_FALSE(my_css_font_family_list_parse(many, &list));
+  /* the joined space itself would be the byte over the limit */
+  memset(many, 'a', MY_CSS_MAX_FONT_FAMILY_BYTES);
+  many[MY_CSS_MAX_FONT_FAMILY_BYTES] = ' ';
+  many[MY_CSS_MAX_FONT_FAMILY_BYTES + 1u] = 'z';
+  many[MY_CSS_MAX_FONT_FAMILY_BYTES + 2u] = '\0';
+  ASSERT_FALSE(my_css_font_family_list_parse(many, &list));
+  /* 63 bytes, a space, one more byte: 65 bytes, one over */
+  memset(many, 'a', MY_CSS_MAX_FONT_FAMILY_BYTES);
+  many[MY_CSS_MAX_FONT_FAMILY_BYTES - 1u] = ' ';
+  many[MY_CSS_MAX_FONT_FAMILY_BYTES] = 'z';
+  many[MY_CSS_MAX_FONT_FAMILY_BYTES + 1u] = '\0';
+  ASSERT_FALSE(my_css_font_family_list_parse(many, &list));
+  /* 62 bytes, a space, one more byte: exactly the limit */
+  many[MY_CSS_MAX_FONT_FAMILY_BYTES - 2u] = ' ';
+  many[MY_CSS_MAX_FONT_FAMILY_BYTES - 1u] = 'z';
+  many[MY_CSS_MAX_FONT_FAMILY_BYTES] = '\0';
+  ASSERT_TRUE(my_css_font_family_list_parse(many, &list));
+  ASSERT_EQ(strlen(list.names[0]), (size_t)MY_CSS_MAX_FONT_FAMILY_BYTES);
+  /* quoted: the limit, then one byte over */
+  many[0] = '"';
+  memset(many + 1, 'q', MY_CSS_MAX_FONT_FAMILY_BYTES);
+  many[MY_CSS_MAX_FONT_FAMILY_BYTES + 1u] = '"';
+  many[MY_CSS_MAX_FONT_FAMILY_BYTES + 2u] = '\0';
+  ASSERT_TRUE(my_css_font_family_list_parse(many, &list));
+  many[MY_CSS_MAX_FONT_FAMILY_BYTES + 1u] = 'q';
+  many[MY_CSS_MAX_FONT_FAMILY_BYTES + 2u] = '"';
+  many[MY_CSS_MAX_FONT_FAMILY_BYTES + 3u] = '\0';
+  ASSERT_FALSE(my_css_font_family_list_parse(many, &list));
+}
+
+TEST(css_font_face_family_may_fill_the_whole_field)
+{
+  static char css[256];
+  my_css_sheet_t* sheet;
+  int n = snprintf(css, sizeof(css),
+                   "@font-face{font-family:%.*s;src:url(a.ttf);}",
+                   (int)MY_CSS_MAX_FONT_FAMILY_BYTES,
+                   "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                   "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+  ASSERT_TRUE(n > 0 && (size_t)n < sizeof(css));
+  sheet = my_css_parse(NULL, css, (size_t)n, NULL);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_font_face_count(sheet), 1u);
+  ASSERT_EQ(strlen(my_css_font_face_at(sheet, 0u)->family),
+            (size_t)MY_CSS_MAX_FONT_FAMILY_BYTES);
+  my_css_sheet_destroy(sheet);
+}
+
+TEST(css_font_family_list_drives_the_chain)
+{
+  const char* css =
+      "@font-face{font-family:\"Ui Sans\";"
+      "src:url(abattis-cantarell-fonts/Cantarell-Regular.otf);}";
+  my_css_sheet_t* sheet = my_css_parse(NULL, css, strlen(css), NULL);
+  my_css_font_family_list_t list;
+  my_font_t* chain;
+  size_t loaded = 0u;
+  FILE* probe = fopen(
+      "/usr/share/fonts/abattis-cantarell-fonts/Cantarell-Regular.otf", "rb");
+
+  ASSERT_NOT_NULL(sheet);
+  if (probe == NULL) {
+    my_css_sheet_destroy(sheet);
+    printf("  SKIP: no Cantarell test font\n");
+    return;
+  }
+  fclose(probe);
+  ASSERT_TRUE(my_css_font_family_list_parse("Missing, 'ui sans', serif",
+                                            &list));
+  chain = my_css_font_face_create_chain(NULL, sheet, "/usr/share/fonts",
+                                        list.ptrs, list.count, 400u, false,
+                                        16u, &loaded);
+  ASSERT_NOT_NULL(chain);
+  ASSERT_EQ(loaded, 1u);
+  my_font_destroy(chain);
+  my_css_sheet_destroy(sheet);
+}
+
 TEST(css_keyframes_capability_is_registered)
 {
   ASSERT_TRUE((my_css_capabilities()->supported_features &
@@ -12639,6 +12772,10 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_keyframes_sample_interpolates_between_stops);
     RUN_TEST(css_keyframes_reject_malformed_and_oversized);
     RUN_TEST(css_keyframes_capability_is_registered);
+    RUN_TEST(css_font_family_list_splits_quoted_and_unquoted_names);
+    RUN_TEST(css_font_family_list_rejects_malformed_values);
+    RUN_TEST(css_font_face_family_may_fill_the_whole_field);
+    RUN_TEST(css_font_family_list_drives_the_chain);
     RUN_TEST(css_font_face_chain_loads_the_family_list_in_order);
     RUN_TEST(css_font_face_chain_rejects_bad_arguments);
     RUN_TEST(css_font_face_unicode_range_limits_coverage);
