@@ -2703,7 +2703,7 @@ graphics 与 present queue。`RE_VK_DEVICE_INDEX` 现在也必须通过同一门
 
 ## 本轮补充：OpenType language system 选择不再只看前三个（2026-11-27）
 
-「未完成能力」表中「OpenType shaping」一行的判据有「language-specific feature 选择」。排查时发现 FreeType provider 选择 LangSys 有缺陷：`ft_shape_support_unlocked` 与 `ft_collect_required_tags` 只读取字体 script 下的前 `HB_OT_MAX_TAGS_PER_LANGUAGE`（3）个 LangSys tag，再与请求的 tag 比对。Noto Sans CJK 的 Hani script 依次列出 JAN、KOR、ZHH、ZHS、ZHT，简体与繁体中文排在第四、��五位，所以 `zh-Hans`、`zh-CN`、`zh-Hant`、`zh-TW` 都被判为 unsupported。`my_font_shape_ex` 随后去掉 language 回退整形，`locl` 不生效，中文显示成日文字形（U+9AA8「骨」三种写法都得到 JAN 的 glyph 45132）。
+「未完成能力」表中「OpenType shaping」一行的判据有「language-specific feature 选择」。排查时发现 FreeType provider 选择 LangSys 有缺陷：`ft_shape_support_unlocked` 与 `ft_collect_required_tags` 只读取字体 script 下的前 `HB_OT_MAX_TAGS_PER_LANGUAGE`（3）个 LangSys tag，再与请求的 tag 比对。Noto Sans CJK 的 Hani script 依次列出 JAN、KOR、ZHH、ZHS、ZHT，简体与繁体中文排在第四、第五位，所以 `zh-Hans`、`zh-CN`、`zh-Hant`、`zh-TW` 都被判为 unsupported。`my_font_shape_ex` 随后去掉 language 回退整形，`locl` 不生效，中文显示成日文字形（U+9AA8「骨」三种写法都得到 JAN 的 glyph 45132）。
 
 - **修正**（`engine/src/myui/myr/my_font_ft.c`）：新增 `ft_select_language_system`，按 HarfBuzz 给出的偏好顺序逐个把请求的 OpenType language tag 交给 `hb_ot_layout_script_select_language`。该函数会查找 script 的整个 LangSys 列表，第一个存在的 tag 胜出。两处调用都改用它，截断的 `available_languages` 数组已删除。
 - **效果**：`zh-Hans`/`zh-CN` 得到 ZHS 字形 45133，`zh-Hant`/`zh-TW` 得到 ZHT 字形 45134。`zh-MO` 在 HarfBuzz 中映射为 ZHTM、ZHH，字体只有 ZHH，现在能落到第二个候选，得到 U+76F4「直」的香港字形 27875。
