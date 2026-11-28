@@ -12184,6 +12184,38 @@ TEST(css_font_family_list_drives_the_chain)
   my_css_sheet_destroy(sheet);
 }
 
+TEST(css_font_family_declaration_keeps_the_raw_list)
+{
+  const char* css =
+      "a{font-family:\"Inter UI\", Noto Sans, sans-serif;}"
+      "b{font-family:Mono;}"
+      "c{font-family:;}"
+      "d{font-family:\"A\" B;}";
+  my_css_sheet_t* sheet = my_css_parse(NULL, css, strlen(css), NULL);
+  const my_css_decl_t* d;
+  my_css_font_family_list_t list;
+
+  ASSERT_NOT_NULL(sheet);
+  /* a and b keep a declaration; c (empty) and d (mixed) drop theirs but
+   * the rules still parse. */
+  ASSERT_EQ(my_css_rule_count(sheet), 4u);
+  ASSERT_EQ(my_css_decl_count(my_css_rule(sheet, 0u)), 1u);
+  d = my_css_decl(my_css_rule(sheet, 0u), 0u);
+  ASSERT_STR_EQ(d->key, "font-family");
+  ASSERT_EQ((int)my_value_type(&d->value), (int)MY_VALUE_STR);
+  ASSERT_TRUE(my_css_font_family_list_parse(my_value_get_str(&d->value),
+                                            &list));
+  ASSERT_EQ(list.count, 3u);
+  ASSERT_STR_EQ(list.names[0], "Inter UI");
+  ASSERT_STR_EQ(list.names[2], "sans-serif");
+  ASSERT_EQ(my_css_decl_count(my_css_rule(sheet, 1u)), 1u);
+  ASSERT_STR_EQ(my_value_get_str(&my_css_decl(my_css_rule(sheet, 1u), 0u)->value),
+                "Mono");
+  ASSERT_EQ(my_css_decl_count(my_css_rule(sheet, 2u)), 0u);
+  ASSERT_EQ(my_css_decl_count(my_css_rule(sheet, 3u)), 0u);
+  my_css_sheet_destroy(sheet);
+}
+
 TEST(css_keyframes_capability_is_registered)
 {
   ASSERT_TRUE((my_css_capabilities()->supported_features &
@@ -12771,6 +12803,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_keyframes_parse_stops_in_offset_order);
     RUN_TEST(css_keyframes_sample_interpolates_between_stops);
     RUN_TEST(css_keyframes_reject_malformed_and_oversized);
+    RUN_TEST(css_font_family_declaration_keeps_the_raw_list);
     RUN_TEST(css_keyframes_capability_is_registered);
     RUN_TEST(css_font_family_list_splits_quoted_and_unquoted_names);
     RUN_TEST(css_font_family_list_rejects_malformed_values);

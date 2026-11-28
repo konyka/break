@@ -3055,6 +3055,18 @@ static bool css_parse_decl_block(css_p_t* p, my_css_rule_t* r,
           my_value_reset(&d->value);
           value_ok = false;
         }
+      } else if (my_str_eq(key, "font-family")) {
+        /* capture the raw comma list; my_css_font_family_list_parse
+         * validates its shape (the generic probe takes only the first
+         * token and rejects the comma). */
+        my_css_font_family_list_t probe;
+        value_ok = css_custom_value(p, &d->value, &d->important);
+        if (value_ok &&
+            !my_css_font_family_list_parse(my_value_get_str(&d->value),
+                                           &probe)) {
+          my_value_reset(&d->value);
+          value_ok = false;
+        }
       } else if (my_str_eq(key, "transition")) {
         /* R686: the transition captures raw and validates its bounded
          * `--name <duration> [linear]` shape (lifecycle is phase 3). */

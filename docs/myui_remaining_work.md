@@ -3294,3 +3294,17 @@ LTR JUSTIFY 行逐词绘制，`ta_draw_syntax_span` 又在 token 边界把词截
 **变异**（12 项，全部判红）：长度判断恢复旧的多一字节、不为连接空格预留、总按两字节预留、引号串长度多一字节、16 项上限差一、不跟踪引号（引号内逗号被拆开）、失败时不清零、接受尾随逗号、`ptrs` 不指向名字，以及修正前的版本。其中「去掉未闭合引号检查」一项为等价变异：未闭合引号会使该项不以引号结尾，`css_font_family` 已据此拒绝，所以去掉了该检查。
 
 **验证**：`test_myui_css` 242/242，ASan+UBSan 242/242；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。
+
+## 本轮补充：`font-family` 声明保留原始列表（2026-11-28）
+
+此前规则里写 `font-family: "Inter UI", Noto Sans, sans-serif;` 会让整条规则解析失败：通用值解析器只取第一个 token，遇到逗号即报错。单个名字（`font-family: Mono;`）能存但多字体回退写不了。
+
+修正（`engine/src/myui/myui/my_css.c` 的声明解析）：`font-family` 与 `animation`、`transition` 等一样走原始文本捕获（`css_custom_value`），再用 `my_css_font_family_list_parse` 校验其形状；非法（空、引号串与其他文本混写等）按既有的宽松策略丢弃该声明并告警，规则本身照常解析。保存的字符串可直接再交给 `my_css_font_family_list_parse` 得到名字列表，驱动 `my_css_font_face_create_chain`。
+
+**TDD**：`test_myui_css` 新增 1 例（243 例）：带引号的三字体列表保留并可解析为 3 个名字、单名保留、空值与混写被丢弃而其余规则不受影响。修正前整个 sheet 因第一条规则失败而为 NULL（RED）。
+
+**变异**（2 项，全部判红）：捕获后不校验（空值等会被当作合法声明留下）、不识别 `font-family`（走通用解析，逗号列表整条规则失败）。
+
+**验证**：`test_myui_css` 243/243，ASan+UBSan 243/243；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。
+
+边界：声明只是保存并校验文本，不解析成列表存入规则；取用时由宿主调用 `my_css_font_family_list_parse`。主题层如何把该声明按控件解析并接到字体选择仍未接入。

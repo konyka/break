@@ -15048,3 +15048,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **修正**：无引号 family 名的长度判断多保留一字节，恰好 64 字节被拒绝；现在 64 字节接受、65 字节拒绝。
 - **TDD 与变异**：`test_myui_css` 新增 4 例（242 例），修正前长度用例判红；12 项变异全部判红，1 项等价变异对应的冗余检查已删除。
 - **验证**：普通与 ASan+UBSan 下 242/242；全量 ctest 482/482；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
+
+## myui CSS：`font-family` 声明保留原始列表（2026-11-28）
+
+- **缺陷**：逗号分隔的 `font-family` 值使整条规则解析失败（通用值解析器遇逗号即止）。
+- **修复**：`font-family` 改为原始文本捕获 + `my_css_font_family_list_parse` 校验，非法则丢弃该声明、规则照常。
+- **TDD 与变异**：`test_myui_css` 新增 1 例（243 例），修正前 sheet 为 NULL；2 项变异全部判红。
+- **验证**：普通与 ASan+UBSan 下 243/243；全量 ctest 482/482；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
