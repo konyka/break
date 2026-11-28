@@ -9327,6 +9327,12 @@ endif()
     add_test(NAME test_break_msg_rate COMMAND test_break_msg_rate)
     set_tests_properties(test_break_msg_rate PROPERTIES LABELS "headless;network")
 
+    add_executable(test_break_identity_rate tests/test_break_identity_rate.c
+        src/network/break_identity_rate.c src/network/break_msg_rate.c)
+    target_include_directories(test_break_identity_rate PRIVATE ${TEST_INCLUDE_DIRS})
+    add_test(NAME test_break_identity_rate COMMAND test_break_identity_rate)
+    set_tests_properties(test_break_identity_rate PROPERTIES LABELS "headless;network")
+
     # test_break_prediction: client-side prediction with server reconciliation
     # (pure C, no transport; docs/design/client_prediction.md).
     add_executable(test_break_prediction tests/test_break_prediction.c
