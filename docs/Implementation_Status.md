@@ -15144,3 +15144,21 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **复现与验证**：去掉 `-DMYUI_FONT_HARFBUZZ=1 -DMYUI_FONT_FREETYPE=1` 单独编译该测试文件，修复前报 `unused function 'chain_syntax_diff_bytes'`，修复后在三种宏组合下均零警告。新建 `-DMYUI_FONT_FREETYPE=OFF -DMYUI_HARFBUZZ=OFF -DENGINE_RHI_BACKEND=metal` 的完整构建通过，myui 测试 50/50；`build-macos-current`（Metal）全量 ctest 465/465。
 - **`c091604c` 远端收据**：CI run `45995212379` 结论 failure，28 个 job 中 24 success、3 条件 skip、1 failure。失败的是 `Linux + GCC (rule engine with native Redis provider)` 的 `Install hiredis and Redis (Linux)` 依赖安装步骤；后续提交上该 job 恢复，判断为瞬时故障，与本次改动无关。`macOS Snowflake replication (Clang)` 显示 success，但仓库没有 Snowflake 读取凭据，构建与测试步骤全部 skipped，只执行了 `Record unavailable dependency boundary`，按 UNAVAILABLE 记录。windows-d3d12 run `45995212496` success；proton-d3d12 run `45996024336` success，仅作兼容参考。
 - 本收据提交自身的远端工作流结果不在此预写。
+## 网络：逐设备密钥环 break_keyring（2026-11-28）
+
+- **交付**（设计 `docs/superpowers/specs/2026-11-28-device-keyring-design.md`，提交 `a4210cc3..ba9966ee`）：
+  - `a4210cc3`、`96e61d9d`：`engine/src/network/break_keyring.{h,c}`（并入 `break_net`），提供 `create`/`destroy`/`add`/`remove`/`count`/`resolve`/`key_at`/`load_text`/`load_file`。容量 1..4096，文件上限 512 KiB。`break_keyring_resolve` 与 `BreakNetAuthKeyFn` 兼容，遍历全部槽位比较 key id、无早退，并以 `used` 掩码排除空槽；未命中不写出参。加载先完整解析校验再按差异应用，失败时环不变、不调用回调；删除或换了 PSK 的 key 在移出查找之后调用吊销回调，回调收到 id 的副本。所有 key 字节在释放前经 volatile 写擦除。
+  - `b98e9907`：`break_session_manager_close_key_id`（`break_session.h`）把该 key_id 的已认证会话置为 CLOSING 并返回个数；无 key_id（AUTH v1）与已在关闭中的会话不计入。
+  - `96a5cff5`：编辑器 `editor_remote.c` 的启动解析与重载改为经 `break_keyring` 解析与求差。文本仍由编辑器自己的 2047 字节读取函数读入后交给 `load_text`，编辑器上限（8 个 key、2047 字节）不变；吊销回调调用现有的 `break_editor_remote_revoke_key`，经编辑器连接行关闭会话与传输，不调用 `close_key_id`。Snowflake 关闭的构建把 `break_keyring.c` 直接编入 `editor` 与 `test_editor_shell`。
+  - `ba9966ee`：`break_keygen --max-keys N`（1..4096，默认 8）。N 为 8 时环上限 2047 字节，否则 524287 字节；非法 N 在打开任何文件前以退出码 2 退出。
+- **TDD 与变异**：
+  - `test_break_keyring` 9 例（新），实现前配置失败（源文件不存在）。12 项变异中 11 项判红；1 项（`load_file` 的超限判断 `n > MAX + 1`）单独存活，属等价变异，因为 `load_text` 自身的 `len > MAX` 判断对同一输入仍返回 `TOO_LARGE`，与之叠加的变异判红。修复轮补测「全零 id 不命中空槽」，去掉 `used` 掩码的变异判红。
+  - `test_break_session` 新增 3 例（53 例，真实 loopback AUTH v2）：只关闭匹配身份的会话；跳过无 key_id 的会话；重载密钥环文件移除 key 后已有会话关闭、同一 key 的新认证失败。实现前编译失败。7 项变异（含 1 项组合）中 6 项判红；「关闭后不清 `key_id_valid`」单独存活，属等价变异（状态检查已排除 CLOSING 会话，公共接口无法观察），与「忽略状态」组合后判红。
+  - `test_editor_shell` 用例不变，改动前后均 240/240；3 项变异（吊销回调空操作、重载不加入新 key、CLI 只复制第一个 key）全部判红。
+  - `test_break_keygen` 新增 `--max-keys` 越界与格式错误、第 9 个 key、30 个 key 超过 2047 字节、524287 字节边界等用例，实现前判红；5 项变异全部判红。
+- **终审修复**（`a69dc629`）：独立终审指出两处契约文档不足并已修正：`close_key_id` 只把会话置为 CLOSING，关闭传输由宿主负责（如 core_app 的 `net_sync_sessions`）；密钥环装入进程级 `break_session_set_auth` 后，只能在 `break_session_set_auth(NULL, NULL)` 返回 true 之后销毁，且该认证域下的所有 manager 与密钥环的加载/增删须在同一线程。相应测试改为断言 `set_auth(NULL)` 成功后才销毁密钥环。另：编辑器重载的镜像加入失败时中止重载（fail-closed）；`break_keygen --max-keys N` 须与服务端容量一致，否则重载返回 `TOO_LARGE`，按文件吊销失效。
+- **边界**：单进程内可从文件加载逐设备 PSK、按文件重载轮换与吊销、吊销时该身份的会话立即进入 CLOSING（传输由宿主关闭）。仍未交付：设备注册协议（设备文件仍手工拷贝）、密钥托管/HSM、跨进程或分布式吊销、Windows 上的文件权限保证（`break_keygen` 的权限、符号链接与 `flock` 检查仅 POSIX，`break_keyring_load_file` 在任何平台上都不检查文件权限）。仓库内尚无服务端产品接入 `break_keyring`。
+- **遗留次要项**：编辑器 2047/2048 字节重载上限与同 id 换 PSK 的重载没有专门测试；`break_keygen` 显式 `--max-keys 8` 未测，拒绝用例只断言非零退出码；4096 项时重复 id 检查为 O(n²)（每次加载约 800 万次比较）；build-aoi-tsan 的 `test_editor_shell` 在 Lua longjmp 处中止（既有问题），编辑器改动没有 TSan 覆盖。
+- 本提交自身的远端工作流结果不在此预写。
+- **验证**：见本节末尾。
+- **全量**（`a69dc629`）：`build-aoi-net`（Snowflake + crypto）全量 ctest 499/499；`build-myui-tests`（Snowflake 关闭）全量 484/484；`build-current-vk` 构建通过。各任务的 ASan+UBSan 结果见上文；`test_break_keyring` 与 `test_break_session` 另在 TSan 下通过。
