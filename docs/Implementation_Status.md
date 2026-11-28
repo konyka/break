@@ -15108,3 +15108,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **未接入**：`break_session` 不保存认证用的 `key_id`，内置 CHALLENGE 助手统一使用全零 `key_id`；在逐设备密钥下发前接入没有意义，见 `docs/design/transport_security.md` 同日条目。
 - **TDD 与变异**：`test_break_identity_rate` 7 例，实现前配置失败（源文件不存在）；13 项变异全部判红（首轮 3 项存活后补「活动刷新」「满表计数」「复用槽满桶」三例）。
 - **验证**：ASan+UBSan 7/7；`build-myui-tests` 全量 ctest 483/483（新增 1 项）；`build-current-vk` 构建通过且相关 2 项通过。`test_core_app_contract_compat` 与 `test_core_app_ctest_config_contract` 对 HEAD 做 `git archive` 后配置，新文件提交前这两项会失败，提交后通过。本提交自身的远端工作流结果不在此预写。
+
+## 网络：按身份限速接入 `break_session`（2026-11-28）
+
+- **交付**：会话保存 AUTH v2 成功时的 `key_id`；`break_session_manager_set_identity_rate` 启用后，已认证连接的每条消息在按连接限速之后、registry 查找之前按 `key_id` 经共享的 `break_identity_rate` 表准入，拒绝记为 `RATE_LIMITED`、连接保持；认证前流量不受此表限制。默认关闭，表由应用拥有，可跨 manager 与连接存活。
+- **限制**：内置 CHALLENGE 助手统一使用全零 `key_id`，逐设备密钥下发前所有客户端共享一个身份。
+- **TDD 与变异**：`test_break_session` 新增 3 例（46 例，真实 loopback AUTH v2），实现前编译失败；8 项变异全部判红。首版用例在断言失败后提前返回，遗留全局 auth 回调与未关闭的连接，使后续 6 个用例连带失败；改为先收集结果、释放资源后再断言。
+- **验证**：`test_break_session` 普通、ASan+UBSan、TSan 均 46/46；`build-aoi-net`（Snowflake）全量 ctest 498/498；`build-myui-tests` 全量 483/483；`build-current-vk` 构建通过。本提交自身的远端工作流结果不在此预写。
