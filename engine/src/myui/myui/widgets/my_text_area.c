@@ -1601,6 +1601,40 @@ static my_ret_t ta_draw_text(my_text_area_t* ta, my_vgcanvas_t* vg,
 
 static int32_t ta_line_height(const my_text_area_t* ta);
 
+static int32_t ta_syntax_prefix_width(my_vgcanvas_t* vg, const char* line,
+                                      size_t bytes) {
+  char saved = line[bytes];
+  int32_t width = 0;
+  ((char*)line)[bytes] = '\0';
+  my_vgcanvas_measure_text(vg, line, &width, NULL);
+  ((char*)line)[bytes] = saved;
+  return width;
+}
+
+/* Draws the whole LTR line in color, clipped to the x range of its bytes
+ * [byte0, byte1). The first run is open to the left, the last one to the
+ * right, so a single run puts exactly the pixels of a plain draw. */
+static void ta_draw_syntax_run(my_text_area_t* ta, my_vgcanvas_t* vg,
+                               const char* line, size_t byte0, size_t byte1,
+                               uint32_t color, float base_x, int32_t ty,
+                               int32_t line_h) {
+  size_t len = strlen(line);
+  int32_t x0 = byte0 == 0u ? -(TA_OPEN_CLIP_EXTENT)
+                           : ta_syntax_prefix_width(vg, line, byte0);
+  int32_t x1 = byte1 >= len ? TA_OPEN_CLIP_EXTENT
+                            : ta_syntax_prefix_width(vg, line, byte1);
+  if (byte1 <= byte0 || x1 <= x0 || my_vgcanvas_save(vg) != MY_RET_OK) return;
+  {
+    my_rectf_t clip = {base_x + (float)x0, (float)ty - (float)line_h,
+                       (float)(x1 - x0), (float)line_h * 3.0f};
+    if (my_vgcanvas_clip_rect(vg, &clip) == MY_RET_OK) {
+      my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(color));
+      ta_draw_text(ta, vg, line, base_x, (float)ty);
+    }
+  }
+  (void)my_vgcanvas_restore(vg);
+}
+
 static bool ta_draw_syntax_line(my_text_area_t* ta, my_vgcanvas_t* vg,
                                 const my_visual_line_t* vl, const char* line,
                                 float base_x, int32_t ty, uint32_t normal,
@@ -1658,36 +1692,58 @@ static bool ta_draw_syntax_line(my_text_area_t* ta, my_vgcanvas_t* vg,
     }
     return true;
   }
-  for (i = 0; i < count; i++) {
-    size_t start = tokens[i].start_cp > vl->start_cp
-                       ? tokens[i].start_cp : vl->start_cp;
-    size_t end = ta_sat_size_add(tokens[i].start_cp, tokens[i].len_cp);
+  {
+    /* LTR line: draw the whole line once per run of bytes that share a
+     * color, clipped to the run's x range. Every pass is shaped as a whole,
+     * so kerning, ligatures and font-chain runs across token boundaries
+     * stay intact, and a line without colored tokens is drawn once. */
+    int32_t line_h = ta_line_height(ta);
     size_t visual_end = ta_sat_size_add(vl->start_cp, vl->len_cp);
-    size_t byte_start, byte_end;
-    char saved;
-    int32_t token_width = 0;
-    if (end > visual_end) end = visual_end;
-    if (start >= end) continue;
-    byte_start = start == vl->start_cp
-                     ? 0
-                     : tokens[i].start_byte - vl->start_byte;
-    byte_end = end == visual_end
-                   ? vl->len_bytes
-                   : tokens[i].start_byte + tokens[i].len_bytes -
-                         vl->start_byte;
-    if (byte_start >= byte_end || byte_end > vl->len_bytes) continue;
-    saved = ((char*)line)[byte_end];
-    ((char*)line)[byte_end] = '\0';
-    my_vgcanvas_set_fill_color(
-        vg, my_color_from_rgba32(ta_syntax_color(normal, tokens[i].kind)));
-    ta_draw_text(ta, vg, line + byte_start, base_x, (float)ty);
-    if (ta->font != NULL) {
-      my_vgcanvas_measure_text(vg, line + byte_start, &token_width, NULL);
-    } else {
-      token_width = ta_sat_size_mul(end - start, TA_CELL_W);
+    size_t run_byte = 0u;
+    size_t covered = 0u;
+    uint32_t run_color = normal;
+    for (i = 0u; i <= count; i++) {
+      size_t byte_start = vl->len_bytes;
+      size_t byte_end = vl->len_bytes;
+      uint32_t color = normal;
+      if (i < count) {
+        size_t start = tokens[i].start_cp > vl->start_cp ? tokens[i].start_cp
+                                                         : vl->start_cp;
+        size_t end = ta_sat_size_add(tokens[i].start_cp, tokens[i].len_cp);
+        if (end > visual_end) end = visual_end;
+        if (start >= end) continue;
+        byte_start = start == vl->start_cp
+                         ? 0u
+                         : tokens[i].start_byte - vl->start_byte;
+        byte_end = end == visual_end ? vl->len_bytes
+                                     : tokens[i].start_byte +
+                                           tokens[i].len_bytes - vl->start_byte;
+        if (byte_start >= byte_end || byte_end > vl->len_bytes ||
+            byte_start < covered) {
+          continue;
+        }
+        color = ta_syntax_color(normal, tokens[i].kind);
+      }
+      /* Text between the previous token and this one keeps the default
+       * color; then this token starts its own color. The sentinel pass
+       * (i == count) switches back to the default color. */
+      if (byte_start > covered && run_color != normal) {
+        ta_draw_syntax_run(ta, vg, line, run_byte, covered, run_color, base_x,
+                           ty, line_h);
+        run_byte = covered;
+        run_color = normal;
+      }
+      if (color != run_color) {
+        ta_draw_syntax_run(ta, vg, line, run_byte, byte_start, run_color,
+                           base_x, ty, line_h);
+        run_byte = byte_start;
+        run_color = color;
+      }
+      covered = byte_end;
     }
-    base_x += (float)token_width;
-    ((char*)line)[byte_end] = saved;
+    ta_draw_syntax_run(ta, vg, line, run_byte, vl->len_bytes, run_color,
+                       base_x, ty, line_h);
+    my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(normal));
   }
   return true;
 }

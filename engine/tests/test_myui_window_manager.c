@@ -3619,6 +3619,102 @@ TEST(text_area_rtl_cache_rejects_prefix_of_longer_cached_line)
 #include "myr/my_font_ft.h"
 #endif
 
+static size_t chain_syntax_diff_bytes(my_font_t* font, const char* text)
+{
+  my_widget_t* plain = my_text_area_create(NULL);
+  my_widget_t* highlighted = my_text_area_create(NULL);
+  my_lcd_t* plain_lcd = my_lcd_mem_create(NULL, 320, 60, MY_PIXEL_FORMAT_BGRA8888);
+  my_lcd_t* highlighted_lcd =
+      my_lcd_mem_create(NULL, 320, 60, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* plain_canvas = my_vgcanvas_soft_create(NULL, plain_lcd);
+  my_vgcanvas_t* highlighted_canvas =
+      my_vgcanvas_soft_create(NULL, highlighted_lcd);
+  const uint8_t* a;
+  const uint8_t* b;
+  size_t bytes, k, diff = 0u, ink = 0u;
+
+  my_widget_set_rect(plain, &(my_rect_t){0, 0, 320, 50});
+  my_widget_set_rect(highlighted, &(my_rect_t){0, 0, 320, 50});
+  my_text_area_set_font(plain, font, 20);
+  my_text_area_set_font(highlighted, font, 20);
+  my_vgcanvas_set_font(plain_canvas, font, 20);
+  my_vgcanvas_set_font(highlighted_canvas, font, 20);
+  my_text_area_set_text(plain, text);
+  my_text_area_set_text(highlighted, text);
+  my_text_area_set_syntax_enabled(highlighted, true);
+  my_text_area_set_syntax_language(highlighted, MY_SYNTAX_YAML);
+  my_vgcanvas_begin_frame(plain_canvas, NULL);
+  plain->vtable->on_paint(plain, plain_canvas);
+  my_vgcanvas_end_frame(plain_canvas);
+  my_vgcanvas_begin_frame(highlighted_canvas, NULL);
+  highlighted->vtable->on_paint(highlighted, highlighted_canvas);
+  my_vgcanvas_end_frame(highlighted_canvas);
+  bytes = (size_t)my_lcd_mem_get_stride(plain_lcd) * 60u;
+  a = my_lcd_mem_get_buffer(plain_lcd);
+  b = my_lcd_mem_get_buffer(highlighted_lcd);
+  for (k = 0u; k < bytes; k++) {
+    if (a[k] != b[k]) diff++;
+    if (a[k] != a[k % 4u]) ink++;
+  }
+  if (ink == 0u) diff = (size_t)-1;
+  if (diff != 0u) printf("  diff bytes=%zu for \"%s\"\n", diff, text);
+  my_vgcanvas_destroy(highlighted_canvas);
+  my_vgcanvas_destroy(plain_canvas);
+  my_lcd_destroy(highlighted_lcd);
+  my_lcd_destroy(plain_lcd);
+  my_widget_unref(highlighted);
+  my_widget_unref(plain);
+  return diff;
+}
+
+TEST(text_area_syntax_keeps_cross_face_glyph_runs)
+{
+#if defined(MYUI_FONT_FREETYPE) && defined(MYUI_FONT_HARFBUZZ) && \
+    defined(MYUI_BIDI)
+  /* Lines with no colored token: the syntax-colored path must draw exactly
+   * the pixels of the plain path, so kerning across token boundaries, an
+   * LTR Latin + CJK line whose runs come from different faces of a font
+   * chain, and a mixed Arabic + Latin line all match. */
+  const char* latin_path =
+      "/usr/share/fonts/abattis-cantarell-fonts/Cantarell-Regular.otf";
+  const char* arabic_path =
+      "/usr/share/fonts/vazirmatn-vf-fonts/Vazirmatn[wght].ttf";
+  const char* cjk_path =
+      "/usr/share/fonts/google-noto-sans-cjk-vf-fonts/NotoSansCJK-VF.ttc";
+  const my_font_source_t sources[] = {
+      {latin_path, 0}, {arabic_path, 0}, {cjk_path, 0}};
+  FILE* files[3];
+  my_font_t* chain;
+  size_t i;
+  bool missing = false;
+
+  files[0] = fopen(latin_path, "rb");
+  files[1] = fopen(arabic_path, "rb");
+  files[2] = fopen(cjk_path, "rb");
+  for (i = 0u; i < 3u; i++) {
+    if (files[i] == NULL) missing = true;
+    else fclose(files[i]);
+  }
+  if (missing) {
+    printf("  SKIP: no Cantarell/Vazirmatn/Noto CJK test fonts\n");
+    return;
+  }
+  chain = my_font_create_chain_ex(NULL, sources, 3u, 16u);
+  ASSERT_NOT_NULL(chain);
+  ASSERT_EQ(chain_syntax_diff_bytes(chain, "Wave AVA To key: value"), 0u);
+  ASSERT_EQ(chain_syntax_diff_bytes(chain, "jaj fj"), 0u);
+  ASSERT_EQ(chain_syntax_diff_bytes(chain, "abc \xE4\xB8\xAD\xE6\x96\x87 def"),
+            0u);
+  ASSERT_EQ(chain_syntax_diff_bytes(
+                chain, "\xD8\xB3\xD9\x84\xD8\xA7\xD9\x85 abc "
+                       "\xD8\xB3\xD9\x84\xD8\xA7\xD9\x85"),
+            0u);
+  my_font_destroy(chain);
+#else
+  printf("  SKIP: FreeType/HarfBuzz/BiDi is unavailable\n");
+#endif
+}
+
 TEST(text_area_rtl_syntax_keeps_shaped_glyph_runs)
 {
 #if defined(MYUI_FONT_FREETYPE) && defined(MYUI_FONT_HARFBUZZ) && \
@@ -3786,6 +3882,97 @@ static void justify_syntax_case(const char* text, int32_t width,
   my_font_destroy(font);
   my_widget_unref(plain);
   my_widget_unref(highlighted);
+}
+
+/* A plain and a YAML-highlighted unwrapped LTR line in the bitmap font
+ * (8 px cells, content from x=4). Pixels inside [keyword_x0, keyword_x1)
+ * of the first row must include the keyword color and nothing else may
+ * differ from the plain area; when keyword_x1 <= keyword_x0 the two areas
+ * must be identical. */
+static void ltr_syntax_case(const char* text, int32_t keyword_x0,
+                            int32_t keyword_x1)
+{
+  my_widget_t* plain = my_text_area_create(NULL);
+  my_widget_t* highlighted = my_text_area_create(NULL);
+  my_font_t* font = my_font_bitmap_create(NULL);
+  my_lcd_t* plain_lcd = my_lcd_mem_create(NULL, 160, 40, MY_PIXEL_FORMAT_BGRA8888);
+  my_lcd_t* highlighted_lcd =
+      my_lcd_mem_create(NULL, 160, 40, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* plain_canvas = my_vgcanvas_soft_create(NULL, plain_lcd);
+  my_vgcanvas_t* highlighted_canvas =
+      my_vgcanvas_soft_create(NULL, highlighted_lcd);
+  const uint8_t* a;
+  const uint8_t* b;
+  uint32_t stride;
+  size_t x, y;
+  size_t keyword_pixels = 0u;
+  size_t diff_outside_keyword = 0u;
+
+  ASSERT_NOT_NULL(plain);
+  ASSERT_NOT_NULL(highlighted);
+  ASSERT_NOT_NULL(font);
+  ASSERT_NOT_NULL(plain_canvas);
+  ASSERT_NOT_NULL(highlighted_canvas);
+  ASSERT_EQ(my_widget_set_rect(plain, &(my_rect_t){0, 0, 160, 30}), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_rect(highlighted, &(my_rect_t){0, 0, 160, 30}),
+            MY_RET_OK);
+  my_text_area_set_font(plain, font, 8);
+  my_text_area_set_font(highlighted, font, 8);
+  ASSERT_EQ(my_vgcanvas_set_font(plain_canvas, font, 8), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_set_font(highlighted_canvas, font, 8), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_text(plain, text), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_text(highlighted, text), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_syntax_enabled(highlighted, true), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_syntax_language(highlighted, MY_SYNTAX_YAML),
+            MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_begin_frame(plain_canvas, NULL), MY_RET_OK);
+  plain->vtable->on_paint(plain, plain_canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(plain_canvas), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_begin_frame(highlighted_canvas, NULL), MY_RET_OK);
+  highlighted->vtable->on_paint(highlighted, highlighted_canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(highlighted_canvas), MY_RET_OK);
+  a = my_lcd_mem_get_buffer(plain_lcd);
+  b = my_lcd_mem_get_buffer(highlighted_lcd);
+  stride = my_lcd_mem_get_stride(plain_lcd);
+  ASSERT_EQ(stride, my_lcd_mem_get_stride(highlighted_lcd));
+  for (y = 0u; y < 40u; y++) {
+    for (x = 0u; x < 160u; x++) {
+      const uint8_t* pa = a + y * stride + x * 4u;
+      const uint8_t* pb = b + y * stride + x * 4u;
+      bool in_keyword = y < 14u && (int32_t)x >= keyword_x0 &&
+                        (int32_t)x < keyword_x1;
+      if (pb[0] == 0xB6u && pb[1] == 0x59u && pb[2] == 0x9Bu) {
+        keyword_pixels++;
+        if (!in_keyword) diff_outside_keyword++;
+      } else if (memcmp(pa, pb, 4u) != 0) {
+        diff_outside_keyword++;
+      }
+    }
+  }
+  if (keyword_x1 > keyword_x0) {
+    ASSERT_TRUE(keyword_pixels > 0u);
+  } else {
+    ASSERT_EQ(keyword_pixels, 0u);
+  }
+  ASSERT_EQ(diff_outside_keyword, 0u);
+  my_vgcanvas_destroy(plain_canvas);
+  my_vgcanvas_destroy(highlighted_canvas);
+  my_lcd_destroy(plain_lcd);
+  my_lcd_destroy(highlighted_lcd);
+  my_font_destroy(font);
+  my_widget_unref(plain);
+  my_widget_unref(highlighted);
+}
+
+TEST(text_area_ltr_syntax_colors_only_keyword_pixels)
+{
+  /* The keyword at the start, in the middle and at the end of the line:
+   * only its own cells change color, the text before and after it keeps
+   * the plain pixels. A line without keywords is unchanged. */
+  ltr_syntax_case("true aa bb", 4, 4 + 32);
+  ltr_syntax_case("aa true bb", 4 + 24, 4 + 56);
+  ltr_syntax_case("aa bb true", 4 + 48, 4 + 80);
+  ltr_syntax_case("aa bb cc", 0, 0);
 }
 
 TEST(text_area_justify_syntax_colors_tokens)
@@ -9968,9 +10155,11 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_area_rtl_cache_survives_edits_on_other_physical_lines);
     RUN_TEST(text_area_rtl_cache_rejects_prefix_of_longer_cached_line);
     RUN_TEST(text_area_rtl_syntax_colors_tokens);
+    RUN_TEST(text_area_ltr_syntax_colors_only_keyword_pixels);
     RUN_TEST(text_area_justify_syntax_colors_tokens);
     RUN_TEST(text_area_rtl_justify_syntax_colors_tokens);
     RUN_TEST(text_area_rtl_syntax_keeps_shaped_glyph_runs);
+    RUN_TEST(text_area_syntax_keeps_cross_face_glyph_runs);
     RUN_TEST(text_area_wrap_reuses_unchanged_prefix_after_edit);
     RUN_TEST(text_area_wrap_follows_width_changes);
     RUN_TEST(text_area_width_change_after_pending_edit_rewraps_reused_suffix);

@@ -15003,3 +15003,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - `docs/design/runtime_world_aoi_integration.md` 首行仍写「设计，未实现」，与已交付的 adapter 接入（`publish_keep`，`8aacfc87`、`c091604c`）不符，已改为当前状态；core_app 不接线的结论不变。
 - 指标推送一节记录的 `break_crash_upload_http` 256 字节应答缓冲：维持「过大的应答判失败」，不改。参考收集服务 `break_crash_server` 对规范化记录取 SHA-256 去重，重复上传答 `duplicate` 且不重复计数（`docs/design/crash_symbolization.md`「重复与回归」，e2e 场景「应答丢失后重试只计一次」），所以失败后重传不会造成重复计数；其应答体是 `ok count=N regression=0/1` 一行，远小于 256 字节。改为成功只会省一次重传，却要改动头文件契约与 `a_200_with_broken_framing_is_failure`，不值得。
 - 本提交只改文档，不预写远端结果。
+
+## myui：LTR syntax 高亮保留跨 token 的字距与字体链 run（2026-11-28）
+
+- **缺陷**：非 JUSTIFY 的 LTR 行开启 syntax 高亮后逐 token 截断绘制，每个 token 单独整形，丢失 token 间的 kerning、合字与字体链 run，无关键字的行也与普通绘制不同（字体链下 687–2139 字节差异）。这是「高级编辑器」一行列出的「跨 face token shaping」缺口。
+- **修复**：`ta_draw_syntax_line` 的 LTR 分支改为按颜色段整行绘制并水平 clip，与 RTL 分支一致。
+- **TDD 与变异**：`test_myui_window_manager` 新增 2 例（261 例），旧实现判红；11 项变异 7 项判红，4 项为等价变异。
+- **验证**：普通与 ASan+UBSan 下 261/261；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
