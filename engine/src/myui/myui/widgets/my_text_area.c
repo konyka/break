@@ -1748,29 +1748,11 @@ static bool ta_draw_syntax_line(my_text_area_t* ta, my_vgcanvas_t* vg,
   return true;
 }
 
-static float ta_draw_colored_piece(my_text_area_t* ta, my_vgcanvas_t* vg,
-                                   char* line, size_t byte0, size_t byte1,
-                                   size_t cps, uint32_t color, float x,
-                                   int32_t ty) {
-  char saved;
-  int32_t width = 0;
-  if (byte1 <= byte0) return x;
-  saved = line[byte1];
-  line[byte1] = '\0';
-  my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(color));
-  ta_draw_text(ta, vg, line + byte0, x, (float)ty);
-  if (ta->font != NULL) {
-    my_vgcanvas_measure_text(vg, line + byte0, &width, NULL);
-  } else {
-    width = ta_sat_size_mul(cps, TA_CELL_W);
-  }
-  line[byte1] = saved;
-  return x + (float)width;
-}
-
 /* Draws the bytes [byte0, byte1) of an LTR visual line, which hold the
  * codepoints [cp0, cp0 + cps) of the line, in their token colors. Text
- * that no token covers keeps the default color. Returns false when the
+ * that no token covers keeps the default color. The span is drawn whole
+ * once per color run and clipped to that run, so kerning and ligatures
+ * across token boundaries match the plain draw. Returns false when the
  * line has no tokens yet, leaving the caller to draw it plainly. */
 static bool ta_draw_syntax_span(my_text_area_t* ta, my_vgcanvas_t* vg,
                                 const my_visual_line_t* vl, char* line,
@@ -1780,8 +1762,12 @@ static bool ta_draw_syntax_span(my_text_area_t* ta, my_vgcanvas_t* vg,
   size_t count = 0u, i;
   size_t span_start = ta_sat_size_add(vl->start_cp, cp0);
   size_t span_end = ta_sat_size_add(span_start, cps);
-  size_t cursor_cp = span_start;
-  size_t cursor_byte = byte0;
+  size_t run_byte = byte0;
+  size_t covered = byte0;
+  uint32_t run_color = normal;
+  int32_t line_h;
+  char saved;
+  const char* span;
   const my_syntax_token_t* tokens;
   if (ta->font == NULL || ta->syntax_cache == NULL ||
       !my_syntax_cache_line_ready(ta->syntax_cache, vl->phys)) {
@@ -1789,34 +1775,44 @@ static bool ta_draw_syntax_span(my_text_area_t* ta, my_vgcanvas_t* vg,
   }
   tokens = my_syntax_cache_line_tokens(ta->syntax_cache, vl->phys, &count);
   if (tokens == NULL || count == 0u) return false;
-  for (i = 0u; i < count && cursor_cp < span_end; i++) {
+  line_h = ta_line_height(ta);
+  saved = line[byte1];
+  line[byte1] = '\0';
+  span = line + byte0;
+  for (i = 0u; i < count; i++) {
     size_t start = tokens[i].start_cp;
     size_t end = ta_sat_size_add(start, tokens[i].len_cp);
     size_t piece_byte0;
     size_t piece_byte1;
-    if (end <= cursor_cp) continue;
+    uint32_t color = ta_syntax_color(normal, tokens[i].kind);
+    if (end <= span_start) continue;
     if (start >= span_end) break;
-    if (start > cursor_cp) {
-      size_t gap_byte = tokens[i].start_byte - vl->start_byte;
-      x = ta_draw_colored_piece(ta, vg, line, cursor_byte, gap_byte,
-                                start - cursor_cp, normal, x, ty);
-      cursor_byte = gap_byte;
-      cursor_cp = start;
+    piece_byte0 = start <= span_start ? byte0
+                                      : tokens[i].start_byte - vl->start_byte;
+    piece_byte1 = end >= span_end ? byte1
+                                  : tokens[i].start_byte +
+                                        tokens[i].len_bytes - vl->start_byte;
+    if (piece_byte0 < covered || piece_byte1 > byte1 ||
+        piece_byte1 <= piece_byte0) {
+      continue;
     }
-    piece_byte0 = cursor_byte;
-    piece_byte1 = end >= span_end
-                      ? byte1
-                      : tokens[i].start_byte + tokens[i].len_bytes -
-                            vl->start_byte;
-    if (end > span_end) end = span_end;
-    x = ta_draw_colored_piece(ta, vg, line, piece_byte0, piece_byte1,
-                              end - cursor_cp,
-                              ta_syntax_color(normal, tokens[i].kind), x, ty);
-    cursor_byte = piece_byte1;
-    cursor_cp = end;
+    if (piece_byte0 > covered && run_color != normal) {
+      ta_draw_syntax_run(ta, vg, span, run_byte - byte0, covered - byte0,
+                         run_color, x, ty, line_h);
+      run_byte = covered;
+      run_color = normal;
+    }
+    if (color != run_color) {
+      ta_draw_syntax_run(ta, vg, span, run_byte - byte0, piece_byte0 - byte0,
+                         run_color, x, ty, line_h);
+      run_byte = piece_byte0;
+      run_color = color;
+    }
+    covered = piece_byte1;
   }
-  (void)ta_draw_colored_piece(ta, vg, line, cursor_byte, byte1,
-                              span_end - cursor_cp, normal, x, ty);
+  ta_draw_syntax_run(ta, vg, span, run_byte - byte0, byte1 - byte0, run_color,
+                     x, ty, line_h);
+  line[byte1] = saved;
   my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(normal));
   return true;
 }

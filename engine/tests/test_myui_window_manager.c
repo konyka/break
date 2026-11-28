@@ -3619,7 +3619,16 @@ TEST(text_area_rtl_cache_rejects_prefix_of_longer_cached_line)
 #include "myr/my_font_ft.h"
 #endif
 
+static size_t chain_syntax_diff_bytes_ex(my_font_t* font, const char* text,
+                                         bool justify, int32_t width);
+
 static size_t chain_syntax_diff_bytes(my_font_t* font, const char* text)
+{
+  return chain_syntax_diff_bytes_ex(font, text, false, 320);
+}
+
+static size_t chain_syntax_diff_bytes_ex(my_font_t* font, const char* text,
+                                         bool justify, int32_t width)
 {
   my_widget_t* plain = my_text_area_create(NULL);
   my_widget_t* highlighted = my_text_area_create(NULL);
@@ -3633,8 +3642,14 @@ static size_t chain_syntax_diff_bytes(my_font_t* font, const char* text)
   const uint8_t* b;
   size_t bytes, k, diff = 0u, ink = 0u;
 
-  my_widget_set_rect(plain, &(my_rect_t){0, 0, 320, 50});
-  my_widget_set_rect(highlighted, &(my_rect_t){0, 0, 320, 50});
+  my_widget_set_rect(plain, &(my_rect_t){0, 0, width, 50});
+  my_widget_set_rect(highlighted, &(my_rect_t){0, 0, width, 50});
+  if (justify) {
+    my_text_area_set_wrap(plain, true);
+    my_text_area_set_wrap(highlighted, true);
+    my_text_area_set_align(plain, MY_TEXT_ALIGN_JUSTIFY);
+    my_text_area_set_align(highlighted, MY_TEXT_ALIGN_JUSTIFY);
+  }
   my_text_area_set_font(plain, font, 20);
   my_text_area_set_font(highlighted, font, 20);
   my_vgcanvas_set_font(plain_canvas, font, 20);
@@ -3703,6 +3718,15 @@ TEST(text_area_syntax_keeps_cross_face_glyph_runs)
   ASSERT_NOT_NULL(chain);
   ASSERT_EQ(chain_syntax_diff_bytes(chain, "Wave AVA To key: value"), 0u);
   ASSERT_EQ(chain_syntax_diff_bytes(chain, "jaj fj"), 0u);
+  /* A justified line whose words hold several tokens ("To:" is an
+   * identifier and a punctuation token): kerning inside the word must
+   * survive the token split. */
+  /* A justified line whose words hold several tokens ("T." is an
+   * identifier and a punctuation token): kerning inside each word must
+   * survive the token split. */
+  ASSERT_EQ(chain_syntax_diff_bytes_ex(
+                chain, "T. Y, L- V: P. F, W; T- y. r, f: v. ok.", true, 160),
+            0u);
   ASSERT_EQ(chain_syntax_diff_bytes(chain, "abc \xE4\xB8\xAD\xE6\x96\x87 def"),
             0u);
   ASSERT_EQ(chain_syntax_diff_bytes(
