@@ -3321,6 +3321,19 @@ static bool ring_write_text(const char *path, const char *text) {
     return fclose(f) == 0 && written == length;
 }
 
+/* Writes `count` distinct key lines (ids 0..count-1, psk bytes = low id byte). */
+static bool ring_write_many(const char *path, u32 count) {
+    FILE *f = fopen(path, "wb");
+    bool ok = f != NULL;
+    for (u32 k = 0u; ok && k < count; ++k) {
+        ok = fprintf(f, "%016x ", (unsigned)k) == 17;
+        for (u32 j = 0u; ok && j < 32u; ++j) ok = fprintf(f, "%02x", (unsigned)(k & 0xffu)) == 2;
+        ok = ok && fputc('\n', f) != EOF;
+    }
+    if (f && fclose(f) != 0) ok = false;
+    return ok;
+}
+
 /* Writes "<id hex> <psk hex>" lines for A (psk base 0x10) and/or B (0x50). */
 static bool ring_write(const char *path, bool with_a, bool with_b) {
     char text[512];
@@ -3455,6 +3468,20 @@ static u32 ring_trace_count(FILE *trace, const char *needle) {
     ring_trace_text(trace, text, sizeof(text));
     for (const char *at = strstr(text, needle); at; at = strstr(at + 1, needle)) count++;
     return count;
+}
+
+/* Value of `field=` on the network_stats trace line; UINT64_MAX when absent. */
+static u64 ring_stats_field(FILE *trace, const char *field) {
+    static char text[65536];
+    char key[48];
+    const char *line, *at;
+    ring_trace_text(trace, text, sizeof(text));
+    line = strstr(text, "event=network_stats ");
+    if (!line) return UINT64_MAX;
+    snprintf(key, sizeof(key), " %s=", field);
+    at = strstr(line, key);
+    if (!at) return UINT64_MAX;
+    return (u64)strtoull(at + strlen(key), NULL, 10);
 }
 
 static u32 ring_authenticated_slots(RingFixture *f) {
@@ -3732,6 +3759,10 @@ TEST(keyring_reload_revokes_removed_device) {
     ring_client_close(&b2);
     stopped = ring_fixture_stop(&f);
     u32 authenticated = ring_trace_count(f.trace, " authenticated=3 ");
+    /* the revoked session and the refused retry close before stop; B and B2
+     * close at stop: every opened connection is counted as closed */
+    u64 opened = ring_stats_field(f.trace, "opened");
+    u64 closed = ring_stats_field(f.trace, "closed");
     ring_fixture_dispose(&f);
     ASSERT_TRUE(written);
     ASSERT_TRUE(started);
@@ -3747,6 +3778,8 @@ TEST(keyring_reload_revokes_removed_device) {
     ASSERT_EQ(b2_auth, 1);
     ASSERT_TRUE(stopped);
     ASSERT_EQ(authenticated, 1u);
+    ASSERT_EQ(opened, (u64)4u);
+    ASSERT_EQ(closed, opened);
 }
 
 /* A file that does not load keeps the ring and is traced once, however
@@ -3836,6 +3869,10 @@ TEST(keyring_start_fails_on_a_bad_file) {
     bool bad_port = true, missing_port = true;
     u32 bad_stage = 0u, missing_stage = 0u, listening = 1u;
     bool hook_before = true, hook_after_bad = true, hook_after_missing = true;
+    bool empty_written = false, over_written = false, empty_port = true, over_port = true;
+    bool hook_after_all = true;
+    BreakRuntimeError empty = BREAK_RUNTIME_OK, over = BREAK_RUNTIME_OK;
+    u32 all_stage = 0u;
     ring_fixture_paths(&f, "core_app_keyring_start_bad");
     hook_before = break_session_auth_configured_internal();
     written = ring_write_text(f.ring, "0102030405060708 not-hex\n");
@@ -3851,8 +3888,18 @@ TEST(keyring_start_fails_on_a_bad_file) {
         missing = f.hooks.start(f.hooks.user, f.trace);
         missing_port = file_exists(f.port_file);
         missing_stage = ring_trace_count(f.trace, "event=network result=rejected stage=keyring\n");
-        listening = ring_trace_count(f.trace, "result=listening");
         hook_after_missing = break_session_auth_configured_internal();
+        /* a file with only comments has no key */
+        empty_written = ring_write_text(f.ring, "# no keys yet\n\n");
+        empty = f.hooks.start(f.hooks.user, f.trace);
+        empty_port = file_exists(f.port_file);
+        /* one more key than CORE_APP_NET_KEYRING_CAPACITY */
+        over_written = ring_write_many(f.ring, CORE_APP_NET_KEYRING_CAPACITY + 1u);
+        over = f.hooks.start(f.hooks.user, f.trace);
+        over_port = file_exists(f.port_file);
+        all_stage = ring_trace_count(f.trace, "event=network result=rejected stage=keyring\n");
+        listening = ring_trace_count(f.trace, "result=listening");
+        hook_after_all = break_session_auth_configured_internal();
     }
     ring_fixture_dispose(&f);
     ASSERT_TRUE(written);
@@ -3866,6 +3913,14 @@ TEST(keyring_start_fails_on_a_bad_file) {
     ASSERT_FALSE(hook_before);
     ASSERT_FALSE(hook_after_bad);
     ASSERT_FALSE(hook_after_missing);
+    ASSERT_TRUE(empty_written);
+    ASSERT_EQ(empty, BREAK_RUNTIME_FAILED);
+    ASSERT_FALSE(empty_port);
+    ASSERT_TRUE(over_written);
+    ASSERT_EQ(over, BREAK_RUNTIME_FAILED);
+    ASSERT_FALSE(over_port);
+    ASSERT_EQ(all_stage, 4u);
+    ASSERT_FALSE(hook_after_all);
 }
 
 /* While the process-wide auth cannot be cleared (another manager holds a
