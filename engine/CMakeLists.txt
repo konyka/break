@@ -991,6 +991,7 @@ if(BREAK_ENABLE_SNOWFLAKE)
         src/ecs/world_session.c
         src/network/break_msg_rate.c
         src/network/break_identity_rate.c
+        src/network/break_keyring.c
         src/network/break_prediction.c
         src/network/break_prediction_wire.c
         src/network/break_prediction_session.c)
@@ -9333,6 +9334,12 @@ endif()
     target_include_directories(test_break_identity_rate PRIVATE ${TEST_INCLUDE_DIRS})
     add_test(NAME test_break_identity_rate COMMAND test_break_identity_rate)
     set_tests_properties(test_break_identity_rate PROPERTIES LABELS "headless;network")
+
+    add_executable(test_break_keyring tests/test_break_keyring.c
+        src/network/break_keyring.c)
+    target_include_directories(test_break_keyring PRIVATE ${TEST_INCLUDE_DIRS})
+    add_test(NAME test_break_keyring COMMAND test_break_keyring)
+    set_tests_properties(test_break_keyring PROPERTIES LABELS "headless;security")
 
     # test_break_prediction: client-side prediction with server reconciliation
     # (pure C, no transport; docs/design/client_prediction.md).
