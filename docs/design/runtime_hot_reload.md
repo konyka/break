@@ -308,10 +308,10 @@ request handle 是 stream/reload instance 内唯一的 opaque `u64` token，实�
 - 当前 `hotreload.c` 直接替换 RHI handle；多线程 renderer 或 deferred GPU destruction 未由现有 API 证明。没有 fence/owner contract 前不能推广为生产路径。
 - `WorldSnapshot` build 仍要求调用方建立 structural barrier；自动 publication service、epoch reclamation 和 schema negotiation 缺失，ECS 热重载不能绕过这些条件。
 - `break_net`/Session 的 fixed 256 queues 和 LogicThread-only API 很适合边界测试，但尚未是正式 engine runtime/session integration；把可选 library 直接当生产依赖（不经 integration 验收就链入 engine/demo）会制造错误的完成度声明。
-- Fragment checksum 是 FNV-1a 完整性检查，不是认证；timeout/eviction 未实现。热重载或网络 delta 不能把它当安全更新校验。
+- Fragment checksum 是 FNV-1a 完整性检查，不是认证；timeout/eviction 未实现。热重载或网络 delta 不能把它当安全更新校验。（2026-11-28 更正：timeout/eviction 已实现，见本文后文的 `break_replication_reassembler_push_at`/`_expire` 与 `BreakReplicationReassemblyPool` 的计划淘汰；checksum 不是认证这一点不变。）
 - TaskSystem 单实例与 worker 禁止 self-wait 会限制 runtime shutdown 编排；需要明确 coordinator 的 owner/thread 和 drain 责任，避免 shutdown deadlock。
 - VFS/async loader 的静态上限解决了无界分配的一部分风险，但 queue saturation、cancel 与 callback user-data 生命周期仍需统一合同。
-- Lua、editor、online update、安全策略尚未实现；任何把“文件变化”描述为可执行 logic/editor/remote update 的设计都越过当前边界。
+- Lua、editor、online update、安全策略尚未实现；任何把“文件变化”描述为可执行 logic/editor/remote update 的设计都越过当前边界。（2026-11-28 更正：四者此后均已交付——Lua 运行时与模块热重载（`engine/src/script/break_lua.h`）、场景编辑器及其热重载（`engine/apps/editor/editor_hot_reload.h`）、在线更新客户端与参考服务端（`engine/src/update/`）、传输认证（`transport_security.md`），见 `docs/Implementation_Status.md`。边界仍需注意：本地热重载（Lua 模块、编辑器资源）用 FNV-1a 哈希判断内容变化，不做签名校验，只适用于开发与本地文件；签名校验只在在线更新路径上（`update_client.md`）。热重载不替换原生代码、网络协议与安全策略。）
 - 跨平台 filewatch backend（inotify/kqueue/FSEvents/Win32）事件语义不同，当前 macOS/非 Linux 的 runtime evidence 不能由 Linux focused test 推断。
 
 
