@@ -11558,6 +11558,132 @@ TEST(css_keyframes_reject_malformed_and_oversized)
   ASSERT_NEQ(err.code, MY_CSS_ERROR_NONE);
 }
 
+TEST(css_font_face_records_family_source_weight_and_style)
+{
+  const char* css =
+      "@font-face { font-family: \"Inter UI\"; src: url(\"fonts/inter.ttf\")"
+      " format(\"truetype\"); font-weight: 700; font-style: italic; }\n"
+      "@font-face { font-family: Mono   Sans ; src: url(fonts/mono.otf); }\n"
+      "@font-face { font-family: 'Cjk'; src: 'fonts/cjk.ttc'; "
+      "font-weight: bold; font-style: oblique; unicode-range: U+4E00-9FFF; }\n"
+      "button { color: red; }";
+  my_css_error_t err = {0};
+  my_css_sheet_t* sheet = my_css_parse(NULL, css, strlen(css), &err);
+  const my_css_font_face_t* face;
+
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  ASSERT_EQ(my_css_font_face_count(sheet), 3u);
+  face = my_css_font_face_at(sheet, 0u);
+  ASSERT_NOT_NULL(face);
+  ASSERT_STR_EQ(face->family, "Inter UI");
+  ASSERT_STR_EQ(face->src, "fonts/inter.ttf");
+  ASSERT_EQ(face->weight, 700u);
+  ASSERT_TRUE(face->italic);
+  face = my_css_font_face_at(sheet, 1u);
+  ASSERT_STR_EQ(face->family, "Mono Sans");
+  ASSERT_STR_EQ(face->src, "fonts/mono.otf");
+  ASSERT_EQ(face->weight, 400u);
+  ASSERT_FALSE(face->italic);
+  face = my_css_font_face_at(sheet, 2u);
+  ASSERT_STR_EQ(face->family, "Cjk");
+  ASSERT_STR_EQ(face->src, "fonts/cjk.ttc");
+  ASSERT_EQ(face->weight, 700u);
+  ASSERT_TRUE(face->italic);
+  ASSERT_TRUE(my_css_font_face_at(sheet, 3u) == NULL);
+  ASSERT_TRUE(my_css_font_face_at(NULL, 0u) == NULL);
+  ASSERT_EQ(my_css_font_face_count(NULL), 0u);
+  my_css_sheet_destroy(sheet);
+}
+
+TEST(css_font_face_takes_the_first_safe_source)
+{
+  const char* css =
+      "@font-face { font-family: A; src: local(\"Arial\"), "
+      "url(\"../escape.ttf\"), url(\"/abs.ttf\"), url(\"ok/a.ttf\"); }";
+  my_css_sheet_t* sheet = my_css_parse(NULL, css, strlen(css), NULL);
+
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_font_face_count(sheet), 1u);
+  ASSERT_STR_EQ(my_css_font_face_at(sheet, 0u)->src, "ok/a.ttf");
+  my_css_sheet_destroy(sheet);
+}
+
+TEST(css_font_face_drops_invalid_rules)
+{
+  /* No family, no source, only unsafe sources, a weight out of range, an
+   * unknown style: each rule is dropped and the sheet still parses. */
+  const char* css =
+      "@font-face { src: url(a.ttf); }\n"
+      "@font-face { font-family: B; }\n"
+      "@font-face { font-family: C; src: url(\"../c.ttf\"); }\n"
+      "@font-face { font-family: D; src: url(d.ttf); font-weight: 1001; }\n"
+      "@font-face { font-family: E; src: url(e.ttf); font-style: wobbly; }\n"
+      "@font-face { font-family: F; src: url(f.ttf); font-weight: 0; }\n"
+      "@font-face { font-family: G; src: url(g.ttf); font-weight: 1; }\n"
+      "a { color: red; }";
+  my_css_sheet_t* sheet = my_css_parse(NULL, css, strlen(css), NULL);
+
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_font_face_count(sheet), 1u);
+  ASSERT_STR_EQ(my_css_font_face_at(sheet, 0u)->family, "G");
+  ASSERT_EQ(my_css_font_face_at(sheet, 0u)->weight, 1u);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  my_css_sheet_destroy(sheet);
+}
+
+TEST(css_font_face_is_accepted_in_strict_mode_and_bounded)
+{
+  const char* css = "@font-face { font-family: A; src: url(a.ttf); }";
+  my_css_error_t err = {0};
+  my_css_sheet_t* sheet = my_css_parse_ex(NULL, css, strlen(css),
+                                          MY_CSS_PARSE_STRICT_AT_RULES, &err);
+  static char big[8192];
+  size_t at = 0u, i;
+
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_font_face_count(sheet), 1u);
+  my_css_sheet_destroy(sheet);
+  ASSERT_TRUE((my_css_capabilities()->supported_features &
+               MY_CSS_FEATURE_FONT_FACE) != 0u);
+  for (i = 0u; i < MY_CSS_MAX_FONT_FACES; i++) {
+    at += (size_t)snprintf(big + at, sizeof(big) - at,
+                           "@font-face{font-family:F%zu;src:url(f.ttf);}", i);
+  }
+  ASSERT_TRUE(at < sizeof(big));
+  sheet = my_css_parse(NULL, big, at, NULL);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_font_face_count(sheet), (size_t)MY_CSS_MAX_FONT_FACES);
+  my_css_sheet_destroy(sheet);
+  at += (size_t)snprintf(big + at, sizeof(big) - at,
+                         "@font-face{font-family:X;src:url(x.ttf);}");
+  ASSERT_TRUE(at < sizeof(big));
+  memset(&err, 0, sizeof(err));
+  ASSERT_TRUE(my_css_parse(NULL, big, at, &err) == NULL);
+  ASSERT_NEQ(err.code, MY_CSS_ERROR_NONE);
+}
+
+TEST(css_font_face_in_a_media_block_follows_the_media)
+{
+  const char* css =
+      "@media print { @font-face { font-family: P; src: url(p.ttf); } }\n"
+      "@media screen { @font-face { font-family: S; src: url(s.ttf); } }";
+  my_css_sheet_t* sheet = my_css_parse(NULL, css, strlen(css), NULL);
+
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_font_face_count(sheet), 1u);
+  ASSERT_STR_EQ(my_css_font_face_at(sheet, 0u)->family, "S");
+  my_css_sheet_destroy(sheet);
+}
+
+TEST(css_font_face_unterminated_block_fails)
+{
+  const char* css = "@font-face { font-family: A; src: url(a.ttf);";
+  my_css_error_t err = {0};
+  ASSERT_TRUE(my_css_parse(NULL, css, strlen(css), &err) == NULL);
+  ASSERT_NEQ(err.code, MY_CSS_ERROR_NONE);
+}
+
 TEST(css_keyframes_capability_is_registered)
 {
   ASSERT_TRUE((my_css_capabilities()->supported_features &
@@ -12146,6 +12272,12 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_keyframes_sample_interpolates_between_stops);
     RUN_TEST(css_keyframes_reject_malformed_and_oversized);
     RUN_TEST(css_keyframes_capability_is_registered);
+    RUN_TEST(css_font_face_records_family_source_weight_and_style);
+    RUN_TEST(css_font_face_takes_the_first_safe_source);
+    RUN_TEST(css_font_face_drops_invalid_rules);
+    RUN_TEST(css_font_face_is_accepted_in_strict_mode_and_bounded);
+    RUN_TEST(css_font_face_in_a_media_block_follows_the_media);
+    RUN_TEST(css_font_face_unterminated_block_fails);
     RUN_TEST(css_strict_error_identifies_missing_capability);
     RUN_TEST(css_error_codes_distinguish_policy_and_budget);
     RUN_TEST(css_parse_rejects_unknown_policy_flags);

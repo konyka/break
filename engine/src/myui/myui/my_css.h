@@ -61,6 +61,8 @@
 #define MY_CSS_MAX_KEYFRAMES 64u
 #define MY_CSS_MAX_KEYFRAME_STOPS 32u
 #define MY_CSS_MAX_ANIMATIONS MY_THEME_ANIMATION_GROUPS
+#define MY_CSS_MAX_FONT_FACES 64u
+#define MY_CSS_MAX_FONT_FAMILY_BYTES 64u
 
 typedef enum my_css_parse_flags_t {
   MY_CSS_PARSE_DEFAULT = 0u,
@@ -81,7 +83,8 @@ typedef enum my_css_feature_t {
   MY_CSS_FEATURE_SCOPE = 1u << 9,
   MY_CSS_FEATURE_NESTING = 1u << 10,
   MY_CSS_FEATURE_CONTAINER = 1u << 11,
-  MY_CSS_FEATURE_KEYFRAMES = 1u << 12
+  MY_CSS_FEATURE_KEYFRAMES = 1u << 12,
+  MY_CSS_FEATURE_FONT_FACE = 1u << 13
 } my_css_feature_t;
 
 /** @brief Device capabilities available to conditional media evaluation. */
@@ -279,11 +282,24 @@ typedef struct my_css_rule_t {
 /** @brief Parsed sheet (opaque-ish; use the accessors). */
 typedef struct my_css_keyframes_t my_css_keyframes_t;
 
+/** @brief One `@font-face` rule. `src` is the first `url(...)` or quoted
+ * source that is a safe relative path (same rules as `@import`: no
+ * absolute path, no `.`/`..` segment, no backslash, colon or control
+ * byte); `local()` and unsafe sources are skipped. The sheet only records
+ * the rule; loading the file is up to the host. */
+typedef struct my_css_font_face_t {
+  char family[MY_CSS_MAX_FONT_FAMILY_BYTES + 1u];
+  char src[MY_CSS_MAX_IMPORT_PATH_BYTES + 1u];
+  uint32_t weight; /**< 1..1000; 400 when absent, `bold` is 700 */
+  bool italic;     /**< `italic` or `oblique`; false for `normal`/absent */
+} my_css_font_face_t;
+
 typedef struct my_css_sheet_t {
   const my_allocator_t* allocator;
   my_darray_t* rules; /**< my_css_rule_t* */
   my_darray_t* property_defs; /**< my_theme_property_def_t* (R671) */
   my_darray_t* keyframes; /**< my_css_keyframes_t*, one per name */
+  my_darray_t* font_faces; /**< my_css_font_face_t*, source order */
 } my_css_sheet_t;
 
 /** @brief Parse a CSS subset sheet within MY_CSS_MAX_BYTES. NULL on
@@ -295,7 +311,7 @@ my_css_sheet_t* my_css_parse(const my_allocator_t* allocator,
 
 /** @brief Parse with explicit policy flags. Strict at-rule mode accepts only
  * supported `@media`/`@supports`/`@layer`/`@import`/`@scope` containers,
- * `@keyframes`, and
+ * `@keyframes`, `@font-face`, and
  * rejects every other @-rule
  * instead of skipping it with a warning. At-rule nesting is bounded by
  * MY_CSS_MAX_AT_RULE_NESTING. `@supports` accepts bounded `and`/`or`/`not`
@@ -436,6 +452,20 @@ const my_css_decl_t* my_css_decl(const my_css_rule_t* rule, size_t index);
  * percentage in [0, 100]; a comma list adds one stop per offset. Stop
  * bodies hold declarations only and are not cascaded into the theme. */
 size_t my_css_keyframes_count(const my_css_sheet_t* sheet);
+
+/* ---------------- @font-face ---------------- */
+
+/** @brief Number of `@font-face` rules on the sheet, in source order. A rule
+ * without `font-family` or without a safe source, or with a `font-weight`
+ * outside 1..1000 or an unknown `font-style`, is dropped with a warning.
+ * Other descriptors (`unicode-range`, `font-display`, ...) are ignored. A
+ * rule inside a non-matching `@media` block is skipped with the block.
+ * More than MY_CSS_MAX_FONT_FACES rules fail the parse. */
+size_t my_css_font_face_count(const my_css_sheet_t* sheet);
+
+/** @brief Font face by index; NULL when out of range or sheet is NULL. */
+const my_css_font_face_t* my_css_font_face_at(const my_css_sheet_t* sheet,
+                                              size_t index);
 
 /** @brief Keyframes rule by index in first-definition order. */
 const my_css_keyframes_t* my_css_keyframes_at(const my_css_sheet_t* sheet,

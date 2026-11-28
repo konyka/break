@@ -6369,6 +6369,255 @@ static bool css_parse_charset_atrule(css_p_t* p, bool nested,
   return true;
 }
 
+/* ---------------- @font-face ---------------- */
+
+static void css_font_trim(const char** text, size_t* length) {
+  while (*length > 0u && css_qualifier_is_ws((*text)[0])) {
+    (*text)++;
+    (*length)--;
+  }
+  while (*length > 0u && css_qualifier_is_ws((*text)[*length - 1u])) {
+    (*length)--;
+  }
+}
+
+/* Copies a family name: one quoted string, or unquoted identifiers joined
+ * by single spaces. False when empty, oversized or malformed. */
+static bool css_font_family(const char* text, size_t length, char* out,
+                            size_t cap) {
+  size_t n = 0u, i;
+  css_font_trim(&text, &length);
+  if (length == 0u) return false;
+  if (text[0] == '"' || text[0] == '\'') {
+    if (length < 3u || text[length - 1u] != text[0]) return false;
+    for (i = 1u; i + 1u < length; i++) {
+      if (text[i] == text[0] || text[i] == '\\' ||
+          (unsigned char)text[i] < 0x20u || n + 1u >= cap) {
+        return false;
+      }
+      out[n++] = text[i];
+    }
+  } else {
+    bool space = false;
+    for (i = 0u; i < length; i++) {
+      char c = text[i];
+      if (css_qualifier_is_ws(c)) {
+        space = true;
+        continue;
+      }
+      if (!c_ident_char((unsigned char)c) || n + 2u >= cap) return false;
+      if (space && n > 0u) out[n++] = ' ';
+      space = false;
+      out[n++] = c;
+    }
+  }
+  out[n] = '\0';
+  return n > 0u;
+}
+
+/* Picks the first safe relative source from a comma list of
+ * `url(...)` / quoted strings, each optionally followed by format(). */
+static bool css_font_src(const char* text, size_t length, char* out,
+                         size_t cap) {
+  size_t i = 0u;
+  while (i < length) {
+    size_t item_end = i, depth = 0u;
+    char quote = '\0';
+    const char* item;
+    size_t item_len;
+    while (item_end < length) {
+      char c = text[item_end];
+      if (quote != '\0') {
+        if (c == quote) quote = '\0';
+      } else if (c == '"' || c == '\'') {
+        quote = c;
+      } else if (c == '(') {
+        depth++;
+      } else if (c == ')' && depth > 0u) {
+        depth--;
+      } else if (c == ',' && depth == 0u) {
+        break;
+      }
+      item_end++;
+    }
+    item = text + i;
+    item_len = item_end - i;
+    css_font_trim(&item, &item_len);
+    {
+      const char* path = NULL;
+      size_t path_len = 0u;
+      if (item_len > 5u && memcmp(item, "url(", 4u) == 0) {
+        const char* close = memchr(item, ')', item_len);
+        if (close != NULL) {
+          path = item + 4u;
+          path_len = (size_t)(close - path);
+          css_font_trim(&path, &path_len);
+          if (path_len >= 2u && (path[0] == '"' || path[0] == '\'') &&
+              path[path_len - 1u] == path[0]) {
+            path++;
+            path_len -= 2u;
+          }
+        }
+      } else if (item_len >= 2u && (item[0] == '"' || item[0] == '\'')) {
+        const char* close = memchr(item + 1u, item[0], item_len - 1u);
+        if (close != NULL) {
+          path = item + 1u;
+          path_len = (size_t)(close - path);
+        }
+      }
+      if (path != NULL && path_len > 0u && path_len < cap &&
+          memchr(path, '"', path_len) == NULL &&
+          memchr(path, '\'', path_len) == NULL &&
+          css_import_path_safe(path, path_len)) {
+        memcpy(out, path, path_len);
+        out[path_len] = '\0';
+        return true;
+      }
+    }
+    i = item_end + 1u;
+  }
+  return false;
+}
+
+static bool css_font_weight(const char* text, size_t length,
+                            uint32_t* weight) {
+  uint32_t value = 0u;
+  size_t i;
+  css_font_trim(&text, &length);
+  if (length == 6u && memcmp(text, "normal", 6u) == 0) {
+    *weight = 400u;
+    return true;
+  }
+  if (length == 4u && memcmp(text, "bold", 4u) == 0) {
+    *weight = 700u;
+    return true;
+  }
+  if (length == 0u || length > 4u) return false;
+  for (i = 0u; i < length; i++) {
+    if (text[i] < '0' || text[i] > '9') return false;
+    value = value * 10u + (uint32_t)(text[i] - '0');
+  }
+  if (value < 1u || value > 1000u) return false;
+  *weight = value;
+  return true;
+}
+
+static bool css_font_style(const char* text, size_t length, bool* italic) {
+  css_font_trim(&text, &length);
+  if (length == 6u && memcmp(text, "normal", 6u) == 0) {
+    *italic = false;
+    return true;
+  }
+  if ((length == 6u && memcmp(text, "italic", 6u) == 0) ||
+      (length == 7u && memcmp(text, "oblique", 7u) == 0)) {
+    *italic = true;
+    return true;
+  }
+  return false;
+}
+
+static bool css_parse_font_face_atrule(css_p_t* p, my_css_sheet_t* sheet) {
+  my_css_font_face_t face;
+  bool has_family = false;
+  bool has_src = false;
+  bool valid = true;
+
+  memset(&face, 0, sizeof(face));
+  face.weight = 400u;
+  c_ws(p);
+  if (c_peek(p) != '{') {
+    return css_skip_or_reject_atrule_with_capability(
+        p, (uint32_t)MY_CSS_FEATURE_FONT_FACE);
+  }
+  c_next(p);
+  for (;;) {
+    char key[MY_STYLE_KEY_LEN];
+    size_t start, length;
+    c_ws(p);
+    if (c_peek(p) == '}') {
+      c_next(p);
+      break;
+    }
+    if (c_peek(p) < 0) {
+      css_fail(p, "unterminated @font-face block");
+      return false;
+    }
+    if (!c_ident(p, key, sizeof(key))) {
+      while (c_peek(p) >= 0 && c_peek(p) != ';' && c_peek(p) != '}') {
+        c_next(p);
+      }
+      if (c_peek(p) == ';') c_next(p);
+      continue;
+    }
+    c_ws(p);
+    if (c_peek(p) != ':') {
+      while (c_peek(p) >= 0 && c_peek(p) != ';' && c_peek(p) != '}') {
+        c_next(p);
+      }
+      if (c_peek(p) == ';') c_next(p);
+      continue;
+    }
+    c_next(p);
+    c_ws(p);
+    start = p->pos;
+    {
+      my_value_t raw;
+      bool important = false;
+      bool ok;
+      my_value_init(&raw, p->allocator);
+      ok = css_custom_value(p, &raw, &important);
+      my_value_reset(&raw);
+      if (!ok) {
+        if (c_peek(p) < 0) {
+          css_fail(p, "unterminated @font-face block");
+          return false;
+        }
+        while (c_peek(p) >= 0 && c_peek(p) != ';' && c_peek(p) != '}') {
+          c_next(p);
+        }
+        if (c_peek(p) == ';') c_next(p);
+        continue;
+      }
+    }
+    length = p->pos - start;
+    if (my_str_eq(key, "font-family")) {
+      has_family = css_font_family(p->s + start, length, face.family,
+                                   sizeof(face.family));
+    } else if (my_str_eq(key, "src")) {
+      has_src = css_font_src(p->s + start, length, face.src,
+                             sizeof(face.src));
+    } else if (my_str_eq(key, "font-weight")) {
+      if (!css_font_weight(p->s + start, length, &face.weight)) valid = false;
+    } else if (my_str_eq(key, "font-style")) {
+      if (!css_font_style(p->s + start, length, &face.italic)) valid = false;
+    }
+    if (c_peek(p) == ';') c_next(p);
+  }
+  if (!has_family || !has_src || !valid) {
+    MY_LOGW("my_css: dropping @font-face (family/src missing or invalid)");
+    return true;
+  }
+  if (my_darray_size(sheet->font_faces) >= MY_CSS_MAX_FONT_FACES) {
+    css_fail(p, "@font-face count exceeded");
+    return false;
+  }
+  {
+    my_css_font_face_t* copy = (my_css_font_face_t*)my_mem_calloc(
+        p->allocator, 1, sizeof(*copy));
+    if (copy == NULL) {
+      css_fail(p, "oom");
+      return false;
+    }
+    *copy = face;
+    if (my_darray_push(sheet->font_faces, copy) != MY_RET_OK) {
+      my_mem_free(p->allocator, copy);
+      css_fail(p, "oom");
+      return false;
+    }
+  }
+  return true;
+}
+
 static bool css_parse_atrule(css_p_t* p, my_css_sheet_t* sheet,
                              size_t media_depth, uint32_t layer_id,
                              bool nested) {
@@ -6415,6 +6664,10 @@ static bool css_parse_atrule(css_p_t* p, my_css_sheet_t* sheet,
   if (my_str_eq(name, "keyframes")) {
     if (!nested) p->import_window_closed = true;
     return css_parse_keyframes_atrule(p, sheet);
+  }
+  if (my_str_eq(name, "font-face")) {
+    if (!nested) p->import_window_closed = true;
+    return css_parse_font_face_atrule(p, sheet);
   }
   return css_skip_or_reject_atrule(p);
 }
@@ -6539,8 +6792,9 @@ my_css_sheet_t* my_css_parse_with_options(
   sheet->rules = my_darray_create(allocator, 0);
   sheet->property_defs = my_darray_create(allocator, 0);
   sheet->keyframes = my_darray_create(allocator, 0);
+  sheet->font_faces = my_darray_create(allocator, 0);
   if (sheet->rules == NULL || sheet->property_defs == NULL ||
-      sheet->keyframes == NULL) {
+      sheet->keyframes == NULL || sheet->font_faces == NULL) {
     if (sheet->rules != NULL) {
       my_darray_destroy(sheet->rules);
     }
@@ -6549,6 +6803,9 @@ my_css_sheet_t* my_css_parse_with_options(
     }
     if (sheet->keyframes != NULL) {
       my_darray_destroy(sheet->keyframes);
+    }
+    if (sheet->font_faces != NULL) {
+      my_darray_destroy(sheet->font_faces);
     }
     my_mem_free(allocator, sheet);
     return NULL;
@@ -6615,7 +6872,7 @@ const my_css_capabilities_t* my_css_capabilities(void) {
                  MY_CSS_FEATURE_SUPPORTS | MY_CSS_FEATURE_LAYERS |
                  MY_CSS_FEATURE_IMPORTS | MY_CSS_FEATURE_SCOPE |
                  MY_CSS_FEATURE_NESTING | MY_CSS_FEATURE_CONTAINER |
-                 MY_CSS_FEATURE_KEYFRAMES),
+                 MY_CSS_FEATURE_KEYFRAMES | MY_CSS_FEATURE_FONT_FACE),
       (uint32_t)MY_CSS_PARSE_STRICT_AT_RULES, MY_CSS_MAX_BYTES,
       MY_CSS_MAX_ANCESTORS};
   return &capabilities;
@@ -6648,7 +6905,26 @@ void my_css_sheet_destroy(my_css_sheet_t* sheet) {
     }
     my_darray_destroy(sheet->keyframes);
   }
+  if (sheet->font_faces != NULL) {
+    n = my_darray_size(sheet->font_faces);
+    for (i = 0; i < n; i++) {
+      my_mem_free(sheet->allocator, my_darray_get(sheet->font_faces, i));
+    }
+    my_darray_destroy(sheet->font_faces);
+  }
   my_mem_free(sheet->allocator, sheet);
+}
+
+size_t my_css_font_face_count(const my_css_sheet_t* sheet) {
+  return sheet != NULL && sheet->font_faces != NULL
+             ? my_darray_size(sheet->font_faces)
+             : 0u;
+}
+
+const my_css_font_face_t* my_css_font_face_at(const my_css_sheet_t* sheet,
+                                              size_t index) {
+  if (index >= my_css_font_face_count(sheet)) return NULL;
+  return (const my_css_font_face_t*)my_darray_get(sheet->font_faces, index);
 }
 
 size_t my_css_rule_count(const my_css_sheet_t* sheet) {
@@ -7124,8 +7400,9 @@ static my_css_sheet_t* css_sheet_new_empty(const my_allocator_t* allocator) {
   sheet->rules = my_darray_create(allocator, 0);
   sheet->property_defs = my_darray_create(allocator, 0);
   sheet->keyframes = my_darray_create(allocator, 0);
+  sheet->font_faces = my_darray_create(allocator, 0);
   if (sheet->rules == NULL || sheet->property_defs == NULL ||
-      sheet->keyframes == NULL) {
+      sheet->keyframes == NULL || sheet->font_faces == NULL) {
     my_css_sheet_destroy(sheet);
     return NULL;
   }

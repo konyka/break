@@ -3210,3 +3210,24 @@ LTR JUSTIFY 行逐词绘制，`ta_draw_syntax_span` 又在 token 边界把词截
 **变异**（6 项）：3 项判红：不切换颜色、丢掉末段、不恢复被临时截断的字节。3 项存活，均为等价变异：不更新已覆盖位置、首个 piece 以当前段起点代替词起点、token 之间的空隙不切回默认色——lexer 的 token 连续覆盖整行且不重叠，这三处只在 token 有空隙或重叠时才有区别。
 
 **验证**：`test_myui_window_manager` 261/261，ASan+UBSan 261/261；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。
+
+## 本轮补充：`@font-face` 解析（2026-11-28）
+
+「完整 CSS/YAML UI」一行的主要风险列有「其他 at-rule 语义」。`@font-face` 此前按未知 at-rule 处理：宽松模式跳过，严格模式拒绝。
+
+实现（`engine/src/myui/myui/my_css.{h,c}`）：
+
+- sheet 新增 `font_faces`，`my_css_font_face_count` / `my_css_font_face_at` 按源顺序返回 `my_css_font_face_t { family, src, weight, italic }`。
+- `font-family`：一个带引号的字符串，或若干标识符（以单个空格连接）。
+- `src`：逗号列表中第一个安全的相对路径，取自 `url(...)`（可带引号）或直接的字符串，`format()` 忽略；`local()` 与不安全路径跳过。安全规则与 `@import` 相同（`css_import_path_safe`：非绝对路径，无 `.`/`..` 段，无反斜杠、冒号或控制字节）。
+- `font-weight`：`normal`=400、`bold`=700 或 1..1000 的整数，缺省 400；`font-style`：`normal`、`italic`、`oblique`（后两者记为 italic）。
+- 缺 family、缺安全 source、weight 越界或 style 未知时丢弃该条并告警；其他描述符（`unicode-range`、`font-display` 等）忽略。不匹配的 `@media` 块内的规则随块跳过。最多 `MY_CSS_MAX_FONT_FACES`（64）条，超出解析失败；块未闭合解析失败。
+- capability registry 新增 `MY_CSS_FEATURE_FONT_FACE`，严格模式接受 `@font-face`。
+
+边界：sheet 只记录规则，不加载字体文件，也不把 family 接到控件的字体选择上；由宿主按 `src` 加载（如 `my_font_ft_create` 或字体链）。
+
+**TDD**：`test_myui_css` 新增 6 例（231 例）：字段解析（含多词无引号 family、`oblique`、`bold`、忽略 `unicode-range`）、取第一个安全来源、7 种无效规则的丢弃、严格模式与 64 条上限、`@media` 门控、未闭合块。实现前编译失败（RED）。
+
+**变异**（16 项，全部判红）：去掉路径安全检查、只看第一个来源、weight 上界与下界各放宽一、`bold` 映射错、默认 weight 为 0、忽略未知 style、不要求 family、不要求 src、上限差一、未闭合块当作成功、capability 未登记、多词 family 不加空格、`url()` 不去引号、不分派 `@font-face`、`oblique` 不算 italic。首轮「多词 family」「oblique」两项存活，据此补了对应输入。
+
+**验证**：`test_myui_css` 231/231，ASan+UBSan（含泄漏检测）231/231；`build-myui-tests` 全量 ctest 482/482（4 项平台门禁跳过）；`build-current-vk` 构建通过。
