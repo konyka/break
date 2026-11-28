@@ -12649,6 +12649,136 @@ TEST(css_font_face_chain_honours_unicode_range)
   my_css_sheet_destroy(sheet);
 }
 
+TEST(css_font_face_chain_loads_every_range_of_a_family)
+{
+  /* One family split by script into two files, as CSS sites ship fonts:
+   * both rules share the family, weight and style and differ only in
+   * unicode-range. The chain must load both, so "Mix" alone covers Latin
+   * and Arabic, and Latin text measures with Cantarell. Rules of the same
+   * family with another weight, weight range or style are not part of the
+   * composite face, so exactly two files load. */
+  const char* css =
+      "@font-face{font-family:Mix;"
+      "src:url(abattis-cantarell-fonts/Cantarell-Regular.otf);"
+      "unicode-range:U+0000-024F;}"
+      "@font-face{font-family:Mix;"
+      "src:url(\"vazirmatn-vf-fonts/Vazirmatn[wght].ttf\");"
+      "unicode-range:U+0600-06FF;}"
+      "@font-face{font-family:Mix;font-weight:700;"
+      "src:url(abattis-cantarell-fonts/Cantarell-Regular.otf);"
+      "unicode-range:U+0000-024F;}"
+      "@font-face{font-family:Mix;font-style:italic;"
+      "src:url(abattis-cantarell-fonts/Cantarell-Regular.otf);"
+      "unicode-range:U+0000-024F;}"
+      "@font-face{font-family:Mix;font-weight:500 600;"
+      "src:url(abattis-cantarell-fonts/Cantarell-Regular.otf);"
+      "unicode-range:U+0000-024F;}"
+      "@font-face{font-family:Latin;"
+      "src:url(abattis-cantarell-fonts/Cantarell-Regular.otf);}";
+  const char* mix[] = {"Mix"};
+  const char* latin[] = {"Latin"};
+  my_css_sheet_t* sheet = my_css_parse(NULL, css, strlen(css), NULL);
+  my_font_t* chain;
+  my_font_t* latin_chain;
+  size_t loaded = 0u;
+  int32_t w_mix = 0, w_latin = 0, h = 0;
+  FILE* a = fopen("/usr/share/fonts/abattis-cantarell-fonts/Cantarell-Regular.otf", "rb");
+  FILE* b = fopen("/usr/share/fonts/vazirmatn-vf-fonts/Vazirmatn[wght].ttf", "rb");
+
+  ASSERT_NOT_NULL(sheet);
+  if (a == NULL || b == NULL) {
+    if (a != NULL) fclose(a);
+    if (b != NULL) fclose(b);
+    my_css_sheet_destroy(sheet);
+    printf("  SKIP: no Cantarell/Vazirmatn test fonts\n");
+    return;
+  }
+  fclose(a);
+  fclose(b);
+  chain = my_css_font_face_create_chain(NULL, sheet, "/usr/share/fonts", mix,
+                                        1u, 400u, false, 16u, &loaded);
+  ASSERT_NOT_NULL(chain);
+  ASSERT_EQ(loaded, 2u);
+  ASSERT_TRUE(my_font_has_glyph(chain, 'A'));
+  ASSERT_TRUE(my_font_has_glyph(chain, 0x0633u));
+  latin_chain = my_css_font_face_create_chain(
+      NULL, sheet, "/usr/share/fonts", latin, 1u, 400u, false, 16u, NULL);
+  ASSERT_NOT_NULL(latin_chain);
+  ASSERT_EQ(my_font_measure(chain, "WAVE", 20, &w_mix, &h), MY_RET_OK);
+  ASSERT_EQ(my_font_measure(latin_chain, "WAVE", 20, &w_latin, &h), MY_RET_OK);
+  ASSERT_EQ(w_mix, w_latin);
+  my_font_destroy(latin_chain);
+  my_font_destroy(chain);
+  my_css_sheet_destroy(sheet);
+
+  {
+    /* A range rule with the same low edge as a point rule is a different
+     * face: asking 450 matches the 400..450 range (contains 450), and the
+     * 400 point rule must not join it. */
+    const char* c2 =
+        "@font-face{font-family:W;font-weight:400;"
+        "src:url(abattis-cantarell-fonts/Cantarell-Regular.otf);}"
+        "@font-face{font-family:W;font-weight:400 450;"
+        "src:url(\"vazirmatn-vf-fonts/Vazirmatn[wght].ttf\");}";
+    const char* w[] = {"W"};
+    my_css_sheet_t* s2 = my_css_parse(NULL, c2, strlen(c2), NULL);
+    ASSERT_NOT_NULL(s2);
+    chain = my_css_font_face_create_chain(NULL, s2, "/usr/share/fonts", w, 1u,
+                                          450u, false, 16u, &loaded);
+    ASSERT_NOT_NULL(chain);
+    ASSERT_EQ(loaded, 1u);
+    my_font_destroy(chain);
+    my_css_sheet_destroy(s2);
+  }
+}
+
+TEST(css_font_face_chain_tries_the_newest_rule_of_a_family_first)
+{
+  /* Two rules with the same family, weight and style and overlapping
+   * ranges: the later one in source order comes first in the chain, so
+   * Latin measures with it. */
+  const char* css =
+      "@font-face{font-family:Both;"
+      "src:url(abattis-cantarell-fonts/Cantarell-Regular.otf);"
+      "unicode-range:U+0000-06FF;}"
+      "@font-face{font-family:Both;"
+      "src:url(\"vazirmatn-vf-fonts/Vazirmatn[wght].ttf\");"
+      "unicode-range:U+0000-06FF;}"
+      "@font-face{font-family:V;"
+      "src:url(\"vazirmatn-vf-fonts/Vazirmatn[wght].ttf\");}";
+  const char* both[] = {"Both"};
+  const char* v[] = {"V"};
+  my_css_sheet_t* sheet = my_css_parse(NULL, css, strlen(css), NULL);
+  my_font_t* chain;
+  my_font_t* v_chain;
+  int32_t w_both = 0, w_v = 0, h = 0;
+  FILE* a = fopen("/usr/share/fonts/abattis-cantarell-fonts/Cantarell-Regular.otf", "rb");
+  FILE* b = fopen("/usr/share/fonts/vazirmatn-vf-fonts/Vazirmatn[wght].ttf", "rb");
+
+  ASSERT_NOT_NULL(sheet);
+  if (a == NULL || b == NULL) {
+    if (a != NULL) fclose(a);
+    if (b != NULL) fclose(b);
+    my_css_sheet_destroy(sheet);
+    printf("  SKIP: no Cantarell/Vazirmatn test fonts\n");
+    return;
+  }
+  fclose(a);
+  fclose(b);
+  chain = my_css_font_face_create_chain(NULL, sheet, "/usr/share/fonts", both,
+                                        1u, 400u, false, 16u, NULL);
+  v_chain = my_css_font_face_create_chain(NULL, sheet, "/usr/share/fonts", v,
+                                          1u, 400u, false, 16u, NULL);
+  ASSERT_NOT_NULL(chain);
+  ASSERT_NOT_NULL(v_chain);
+  ASSERT_EQ(my_font_measure(chain, "WAVE", 20, &w_both, &h), MY_RET_OK);
+  ASSERT_EQ(my_font_measure(v_chain, "WAVE", 20, &w_v, &h), MY_RET_OK);
+  ASSERT_EQ(w_both, w_v);
+  my_font_destroy(v_chain);
+  my_font_destroy(chain);
+  my_css_sheet_destroy(sheet);
+}
+
 TEST(css_keyframes_capability_is_registered)
 {
   ASSERT_TRUE((my_css_capabilities()->supported_features &
@@ -13246,6 +13376,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_font_registry_resolves_a_widget_font_from_the_theme);
     RUN_TEST(css_font_registry_widget_defaults_and_keywords);
     RUN_TEST(css_font_face_chain_honours_unicode_range);
+    RUN_TEST(css_font_face_chain_loads_every_range_of_a_family);
+    RUN_TEST(css_font_face_chain_tries_the_newest_rule_of_a_family_first);
     RUN_TEST(css_keyframes_capability_is_registered);
     RUN_TEST(css_font_family_list_splits_quoted_and_unquoted_names);
     RUN_TEST(css_font_family_list_rejects_malformed_values);

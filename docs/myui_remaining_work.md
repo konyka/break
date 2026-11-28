@@ -3384,4 +3384,16 @@ LTR JUSTIFY 行逐词绘制，`ta_draw_syntax_span` 又在 token 边界把词截
 
 **验证**：`test_myui_font` 92/92、`test_myui_css` 252/252，ASan+UBSan（含泄漏检测）两者均通过；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。
 
-边界：`my_css_font_face_match` 仍按 family 选一条规则，不会为同一 family 下 `unicode-range` 不同的多条规则各自加载 face（CSS 中常见的按文字拆分字体文件的写法）；需要时宿主可以为这些规则使用不同的 family 名并都列入 `font-family`。
+边界：本节交付时，同一 family 下按 `unicode-range` 拆分的多条规则只会加载匹配到的一条；该限制已于同日由下一节解除。
+
+## 本轮补充：同一 family 按 `unicode-range` 拆分的规则组成一个 face（2026-11-28）
+
+CSS 常见写法是把一个字体按文字拆成多个文件，每条 `@font-face` 规则的 family、字重、字形相同，只是 `unicode-range` 不同。CSS Fonts 把这些规则视为一个复合 face。此前 `my_css_font_face_create_chain` 每个 family 只加载 `my_css_font_face_match` 选中的那一条，其余文件被忽略。
+
+修正：对列表里的每个 family，先用 `my_css_font_face_match` 选出最佳规则，再把与它 family（不区分大小写）、`italic`、`weight`、`weight_max` 都相同的规则一起加入链，按源顺序从后往前（后写的规则先试）。字重、字重范围或字形不同的同 family 规则不加入。去重与文件存在检查不变，所以同一规则只加载一次。
+
+**TDD**：`test_myui_css` 新增 2 例（254 例）：拉丁（Cantarell）与阿拉伯（Vazirmatn）两条 `Mix` 规则只列 `Mix` 即覆盖两种文字，拉丁宽度与只用 Cantarell 相同；同 family 的 700、italic、500..600 范围规则不加入（恰好加载 2 个文件）；与单点 400 下界相同的 400..450 范围规则是另一个 face；范围重叠时后写的规则先试。修正前「恰好 2 个文件」判红。
+
+**变异**（7 项，全部判红）：只加最佳规则、不比较字重、不比较字形、不比较 family、先旧后新、不去重、不比较字重上界。首轮其中 3 项存活（测试里的 700 规则文件不存在，加入与否看不出），改为真实文件并补了字形、范围两组输入；「不比较字重上界」需要下界相同、上界不同的两条规则才能区分，为此另加 400 与 400..450 一组。
+
+**验证**：`test_myui_css` 254/254，ASan+UBSan 254/254；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。

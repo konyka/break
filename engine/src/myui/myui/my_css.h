@@ -510,8 +510,10 @@ bool my_css_font_family_list_parse(const char* value,
 
 /** @brief Builds a font fallback chain from a `font-family` list: for each
  * family in order, the face chosen by my_css_font_face_match(weight,
- * italic) is loaded from `base_dir` + "/" + its `src` (`src` is always a
- * safe relative path). Families without a face, files that do not exist
+ * italic) and every other rule with the same family, style and weight
+ * range (rules that differ only in `unicode-range` form one composite
+ * face, newest rule first) are loaded from `base_dir` + "/" + their `src`
+ * (`src` is always a safe relative path). Families without a face, files that do not exist
  * and paths longer than 1023 bytes are skipped; a family listed twice
  * loads once. Each file is loaded with my_font_load_source; a face whose
  * rule has a `unicode-range` is wrapped with my_font_create_ranged, so the

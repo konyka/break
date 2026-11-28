@@ -15080,3 +15080,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **交付**：`my_font_create_ranged`（按范围限制 `has_glyph`、其余转发、接管 base）、`my_font_create_chain_from_fonts`、`my_font_load_source`；`my_css_font_face_create_chain` 为有范围的 face 包装后组链。两处上限由 `_Static_assert` 绑定。
 - **TDD 与变异**：`test_myui_font` 新增 6 例（92 例）、`test_myui_css` 新增 1 例（252 例），去掉包装时判红；18 项变异全部判红，期间发现并修正了超限清理漏销毁最后一项的缺陷。
 - **验证**：普通与 ASan+UBSan 下两者通过；全量 ctest 482/482；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
+
+## myui CSS：同一 family 按 `unicode-range` 拆分的规则组成一个 face（2026-11-28）
+
+- **缺陷**：同一 family 下只差 `unicode-range` 的多条规则只加载匹配到的一条，按文字拆分的字体文件其余部分被忽略。
+- **修复**：`my_css_font_face_create_chain` 把与最佳规则 family、字形、字重范围都相同的规则一起入链，后写先试。
+- **TDD 与变异**：`test_myui_css` 新增 2 例（254 例），修正前判红；7 项变异全部判红（首轮 3 项存活后补用例）。
+- **验证**：普通与 ASan+UBSan 下 254/254；全量 ctest 482/482；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。

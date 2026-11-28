@@ -9075,27 +9075,41 @@ my_font_t* my_css_font_face_create_chain(
   dir_len = strlen(base_dir);
   slash = dir_len > 0u && base_dir[dir_len - 1u] == '/';
   for (i = 0u; i < family_count && count < MY_CSS_MAX_FONT_FACES; i++) {
-    const my_css_font_face_t* face;
-    bool seen = false;
-    FILE* file;
-    int written;
+    const my_css_font_face_t* best;
+    size_t k;
     if (families[i] == NULL) continue;
-    face = my_css_font_face_match(sheet, families[i], weight, italic);
-    if (face == NULL) continue;
-    for (j = 0u; j < count; j++) {
-      if (picked[j] == face) seen = true;
+    best = my_css_font_face_match(sheet, families[i], weight, italic);
+    if (best == NULL) continue;
+    /* The matched rule and every other rule with the same family, style
+     * and weight range form one composite face (CSS Fonts: such rules
+     * differ only in unicode-range). Newest rule first. */
+    for (k = my_css_font_face_count(sheet); k > 0u &&
+                                            count < MY_CSS_MAX_FONT_FACES;
+         k--) {
+      const my_css_font_face_t* face = my_css_font_face_at(sheet, k - 1u);
+      bool seen = false;
+      FILE* file;
+      int written;
+      if (face->italic != best->italic || face->weight != best->weight ||
+          face->weight_max != best->weight_max ||
+          !css_font_family_eq(face->family, best->family)) {
+        continue;
+      }
+      for (j = 0u; j < count; j++) {
+        if (picked[j] == face) seen = true;
+      }
+      if (seen) continue;
+      written = snprintf(paths[count], sizeof(paths[count]), "%s%s%s",
+                         base_dir, slash ? "" : "/", face->src);
+      if (written < 0 || (size_t)written >= sizeof(paths[count])) continue;
+      file = fopen(paths[count], "rb");
+      if (file == NULL) continue;
+      fclose(file);
+      picked[count] = face;
+      sources[count].path = paths[count];
+      sources[count].face_index = 0;
+      count++;
     }
-    if (seen) continue;
-    written = snprintf(paths[count], sizeof(paths[count]), "%s%s%s",
-                       base_dir, slash ? "" : "/", face->src);
-    if (written < 0 || (size_t)written >= sizeof(paths[count])) continue;
-    file = fopen(paths[count], "rb");
-    if (file == NULL) continue;
-    fclose(file);
-    picked[count] = face;
-    sources[count].path = paths[count];
-    sources[count].face_index = 0;
-    count++;
   }
   chain = NULL;
   if (count > 0u) {
