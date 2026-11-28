@@ -15101,3 +15101,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **测试**：`test_myui_text_layout` 新增 1 例（146 例），经字体链与 bidi 布局，`ur` 与 `ar`/无语言的数字字形分别等于 `hb-shape` 的结果；表征测试，无 RED 阶段。
 - **变异**：3 项全部判红（provider 不设 language、分段丢 language、整形缓存不比较 language）。
 - **验证**：普通与 ASan+UBSan 下 146/146；全量 ctest 482/482；`build-current-vk` 构建通过。详见 `docs/myui_remaining_work.md` 同日补充。本提交自身的远端工作流结果不在此预写。
+
+## 网络：按身份的消息/字节限速库（2026-11-28）
+
+- **交付**：`break_identity_rate` 按 8 字节认证身份共享一对 `break_msg_rate` 令牌桶，重连不会补满额度；固定容量（1..4096），满表时拒绝新身份而不驱逐活跃身份，空闲 `idle_ms` 的槽位以满桶复用；拒绝计数可导出。
+- **未接入**：`break_session` 不保存认证用的 `key_id`，内置 CHALLENGE 助手统一使用全零 `key_id`；在逐设备密钥下发前接入没有意义，见 `docs/design/transport_security.md` 同日条目。
+- **TDD 与变异**：`test_break_identity_rate` 7 例，实现前配置失败（源文件不存在）；13 项变异全部判红（首轮 3 项存活后补「活动刷新」「满表计数」「复用槽满桶」三例）。
+- **验证**：ASan+UBSan 7/7；`build-myui-tests` 全量 ctest 483/483（新增 1 项）；`build-current-vk` 构建通过且相关 2 项通过。`test_core_app_contract_compat` 与 `test_core_app_ctest_config_contract` 对 HEAD 做 `git archive` 后配置，新文件提交前这两项会失败，提交后通过。本提交自身的远端工作流结果不在此预写。
