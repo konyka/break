@@ -3224,10 +3224,25 @@ LTR JUSTIFY 行逐词绘制，`ta_draw_syntax_span` 又在 token 边界把词截
 - 缺 family、缺安全 source、weight 越界或 style 未知时丢弃该条并告警；其他描述符（`unicode-range`、`font-display` 等）忽略。不匹配的 `@media` 块内的规则随块跳过。最多 `MY_CSS_MAX_FONT_FACES`（64）条，超出解析失败；块未闭合解析失败。
 - capability registry 新增 `MY_CSS_FEATURE_FONT_FACE`，严格模式接受 `@font-face`。
 
-边界：sheet 只记录规则，不加载字体文件，也不把 family 接到控件的字体选择上；由宿主按 `src` 加载（如 `my_font_ft_create` 或字体链）。
+边界：sheet 只记录规则，不加载字体文件，也不把 family 接到控件的字体选择上；由宿主按 `src` 加载（如 `my_font_ft_create` 或字体链）。选择哪一条规则见下一节的 `my_css_font_face_match`。
 
 **TDD**：`test_myui_css` 新增 6 例（231 例）：字段解析（含多词无引号 family、`oblique`、`bold`、忽略 `unicode-range`）、取第一个安全来源、7 种无效规则的丢弃、严格模式与 64 条上限、`@media` 门控、未闭合块。实现前编译失败（RED）。
 
 **变异**（16 项，全部判红）：去掉路径安全检查、只看第一个来源、weight 上界与下界各放宽一、`bold` 映射错、默认 weight 为 0、忽略未知 style、不要求 family、不要求 src、上限差一、未闭合块当作成功、capability 未登记、多词 family 不加空格、`url()` 不去引号、不分派 `@font-face`、`oblique` 不算 italic。首轮「多词 family」「oblique」两项存活，据此补了对应输入。
 
 **验证**：`test_myui_css` 231/231，ASan+UBSan（含泄漏检测）231/231；`build-myui-tests` 全量 ctest 482/482（4 项平台门禁跳过）；`build-current-vk` 构建通过。
+
+## 本轮补充：`@font-face` 按 family/weight/style 匹配（2026-11-28）
+
+`my_css_font_face_match(sheet, family, weight, italic)` 按 CSS Fonts 的匹配顺序返回最合适的一条 `@font-face`：
+
+- family 按 ASCII 不区分大小写完全相等（不做前缀匹配）。
+- 先按 style 收窄：该 family 有所请求的 style 时只看这些，否则退到另一种 style。
+- 再按 weight：完全相等优先；请求 400..500 时先看不超过 500 的更重者（升序），再看更轻者（降序），最后看 500 以上（升序）；请求低于 400 时先更轻（降序）后更重（升序）；高于 500 时先更重（升序）后更轻（降序）。
+- family、style、weight 都相同的多条规则取源顺序中最后一条。
+
+**TDD**：`test_myui_css` 新增 3 例（234 例），覆盖三段 weight 规则的每个分支与边界（400、500）、style 优先于 weight、style 回退、重复规则取后者、大小写、前缀不匹配与 NULL 参数。实现前编译失败（RED）。
+
+**变异**（12 项，全部判红）：大小写敏感、前缀即相等、去掉 400..500 的「500 以内更重优先」、400..500 段先重后轻、低于 400 段先重、高于 500 段先轻、400..500 区间上下界各差一、不按 style 收窄、style 永不命中、重复规则取前者、不按 family 过滤。首轮其中 4 项存活（大小写、前缀、500 窗口、style 收窄），据此补了 `M` 400→500、`Abc`/`Ab` 前缀与 `a` 小写输入。
+
+**验证**：`test_myui_css` 234/234，ASan+UBSan 234/234；`build-myui-tests` 全量 ctest 482/482；`build-current-vk` 构建通过。

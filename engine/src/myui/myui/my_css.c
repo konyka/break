@@ -6927,6 +6927,63 @@ const my_css_font_face_t* my_css_font_face_at(const my_css_sheet_t* sheet,
   return (const my_css_font_face_t*)my_darray_get(sheet->font_faces, index);
 }
 
+static bool css_font_family_eq(const char* a, const char* b) {
+  for (; *a != '\0' && *b != '\0'; a++, b++) {
+    char ca = *a, cb = *b;
+    if (ca >= 'A' && ca <= 'Z') ca = (char)(ca - 'A' + 'a');
+    if (cb >= 'A' && cb <= 'Z') cb = (char)(cb - 'A' + 'a');
+    if (ca != cb) return false;
+  }
+  return *a == *b;
+}
+
+/* Lower rank is a better weight match for `desired` (CSS Fonts 4,
+ * font-weight matching). Weights are 1..1000, so ranks stay below 4000. */
+static uint32_t css_font_weight_rank(uint32_t desired, uint32_t weight) {
+  if (weight == desired) return 0u;
+  if (desired >= 400u && desired <= 500u) {
+    if (weight > desired && weight <= 500u) return weight - desired;
+    if (weight < desired) return 1000u + (desired - weight);
+    return 2000u + (weight - desired);
+  }
+  if (desired < 400u) {
+    if (weight < desired) return desired - weight;
+    return 1000u + (weight - desired);
+  }
+  if (weight > desired) return weight - desired;
+  return 1000u + (desired - weight);
+}
+
+const my_css_font_face_t* my_css_font_face_match(const my_css_sheet_t* sheet,
+                                                 const char* family,
+                                                 uint32_t weight,
+                                                 bool italic) {
+  size_t i, n = my_css_font_face_count(sheet);
+  bool style_present = false;
+  const my_css_font_face_t* best = NULL;
+  uint32_t best_rank = 0u;
+  if (family == NULL) return NULL;
+  for (i = 0u; i < n; i++) {
+    const my_css_font_face_t* face = my_css_font_face_at(sheet, i);
+    if (face->italic == italic && css_font_family_eq(face->family, family)) {
+      style_present = true;
+      break;
+    }
+  }
+  for (i = 0u; i < n; i++) {
+    const my_css_font_face_t* face = my_css_font_face_at(sheet, i);
+    uint32_t rank;
+    if (!css_font_family_eq(face->family, family)) continue;
+    if (style_present && face->italic != italic) continue;
+    rank = css_font_weight_rank(weight, face->weight);
+    if (best == NULL || rank <= best_rank) {
+      best = face;
+      best_rank = rank;
+    }
+  }
+  return best;
+}
+
 size_t my_css_rule_count(const my_css_sheet_t* sheet) {
   return sheet != NULL ? my_darray_size(sheet->rules) : 0;
 }

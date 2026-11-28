@@ -11684,6 +11684,103 @@ TEST(css_font_face_unterminated_block_fails)
   ASSERT_NEQ(err.code, MY_CSS_ERROR_NONE);
 }
 
+static uint32_t font_match_weight(const my_css_sheet_t* sheet,
+                                  const char* family, uint32_t weight,
+                                  bool italic, bool* out_italic)
+{
+  const my_css_font_face_t* face =
+      my_css_font_face_match(sheet, family, weight, italic);
+  if (face == NULL) return 0u;
+  if (out_italic != NULL) *out_italic = face->italic;
+  return face->weight;
+}
+
+TEST(css_font_face_match_follows_css_weight_rules)
+{
+  const char* css =
+      "@font-face{font-family:A;src:url(a3.ttf);font-weight:300;}"
+      "@font-face{font-family:A;src:url(a4.ttf);font-weight:400;}"
+      "@font-face{font-family:A;src:url(a6.ttf);font-weight:600;}"
+      "@font-face{font-family:A;src:url(a9.ttf);font-weight:900;}"
+      "@font-face{font-family:B;src:url(b2.ttf);font-weight:200;}"
+      "@font-face{font-family:B;src:url(b8.ttf);font-weight:800;}"
+      "@font-face{font-family:M;src:url(m3.ttf);font-weight:300;}"
+      "@font-face{font-family:M;src:url(m5.ttf);font-weight:500;}"
+      "@font-face{font-family:Ab;src:url(ab.ttf);font-weight:600;}";
+  my_css_sheet_t* sheet = my_css_parse(NULL, css, strlen(css), NULL);
+
+  ASSERT_NOT_NULL(sheet);
+  /* 400 looks at 500 before the lighter 300 */
+  ASSERT_EQ(font_match_weight(sheet, "M", 400u, false, NULL), 500u);
+  /* a family name that is a prefix of another does not match it */
+  ASSERT_TRUE(my_css_font_face_match(sheet, "Abc", 400u, false) == NULL);
+  ASSERT_STR_EQ(my_css_font_face_match(sheet, "A", 600u, false)->src,
+                "a6.ttf");
+  /* exact */
+  ASSERT_EQ(font_match_weight(sheet, "A", 600u, false, NULL), 600u);
+  /* below 400: lighter first, descending */
+  ASSERT_EQ(font_match_weight(sheet, "A", 350u, false, NULL), 300u);
+  /* below 400 with nothing lighter: heavier, ascending */
+  ASSERT_EQ(font_match_weight(sheet, "A", 250u, false, NULL), 300u);
+  ASSERT_EQ(font_match_weight(sheet, "B", 300u, false, NULL), 200u);
+  ASSERT_EQ(font_match_weight(sheet, "B", 100u, false, NULL), 200u);
+  /* 400..500: up to 500 first, then lighter, then heavier */
+  ASSERT_EQ(font_match_weight(sheet, "A", 450u, false, NULL), 400u);
+  ASSERT_EQ(font_match_weight(sheet, "B", 400u, false, NULL), 200u);
+  ASSERT_EQ(font_match_weight(sheet, "B", 500u, false, NULL), 200u);
+  /* above 500: heavier first, ascending */
+  ASSERT_EQ(font_match_weight(sheet, "A", 700u, false, NULL), 900u);
+  ASSERT_EQ(font_match_weight(sheet, "A", 550u, false, NULL), 600u);
+  /* above 500 with nothing heavier: lighter, descending */
+  ASSERT_EQ(font_match_weight(sheet, "A", 950u, false, NULL), 900u);
+  ASSERT_EQ(font_match_weight(sheet, "B", 900u, false, NULL), 800u);
+  ASSERT_EQ(font_match_weight(sheet, "B", 700u, false, NULL), 800u);
+  /* family is ASCII case-insensitive; unknown family or NULL is NULL */
+  ASSERT_EQ(font_match_weight(sheet, "a", 400u, false, NULL), 400u);
+  ASSERT_TRUE(my_css_font_face_match(sheet, "C", 400u, false) == NULL);
+  ASSERT_TRUE(my_css_font_face_match(sheet, NULL, 400u, false) == NULL);
+  ASSERT_TRUE(my_css_font_face_match(NULL, "A", 400u, false) == NULL);
+  my_css_sheet_destroy(sheet);
+}
+
+TEST(css_font_face_match_prefers_the_requested_style)
+{
+  const char* css =
+      "@font-face{font-family:S;src:url(n4.ttf);font-weight:400;}"
+      "@font-face{font-family:S;src:url(i7.ttf);font-weight:700;"
+      "font-style:italic;}"
+      "@font-face{font-family:S;src:url(n7.ttf);font-weight:700;}"
+      "@font-face{font-family:T;src:url(t.ttf);font-style:italic;}";
+  my_css_sheet_t* sheet = my_css_parse(NULL, css, strlen(css), NULL);
+  bool italic = false;
+
+  ASSERT_NOT_NULL(sheet);
+  /* style narrows before weight: italic 400 takes the italic 700 face */
+  ASSERT_EQ(font_match_weight(sheet, "S", 400u, true, &italic), 700u);
+  ASSERT_TRUE(italic);
+  ASSERT_EQ(font_match_weight(sheet, "S", 700u, false, &italic), 700u);
+  ASSERT_FALSE(italic);
+  ASSERT_STR_EQ(my_css_font_face_match(sheet, "S", 700u, false)->src,
+                "n7.ttf");
+  /* no face of the requested style: fall back to the other style */
+  ASSERT_EQ(font_match_weight(sheet, "T", 400u, false, &italic), 400u);
+  ASSERT_TRUE(italic);
+  my_css_sheet_destroy(sheet);
+}
+
+TEST(css_font_face_match_takes_the_last_duplicate)
+{
+  const char* css =
+      "@font-face{font-family:D;src:url(old.ttf);}"
+      "@font-face{font-family:D;src:url(new.ttf);}";
+  my_css_sheet_t* sheet = my_css_parse(NULL, css, strlen(css), NULL);
+
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_STR_EQ(my_css_font_face_match(sheet, "D", 400u, false)->src,
+                "new.ttf");
+  my_css_sheet_destroy(sheet);
+}
+
 TEST(css_keyframes_capability_is_registered)
 {
   ASSERT_TRUE((my_css_capabilities()->supported_features &
@@ -12272,6 +12369,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_keyframes_sample_interpolates_between_stops);
     RUN_TEST(css_keyframes_reject_malformed_and_oversized);
     RUN_TEST(css_keyframes_capability_is_registered);
+    RUN_TEST(css_font_face_match_follows_css_weight_rules);
+    RUN_TEST(css_font_face_match_prefers_the_requested_style);
+    RUN_TEST(css_font_face_match_takes_the_last_duplicate);
     RUN_TEST(css_font_face_records_family_source_weight_and_style);
     RUN_TEST(css_font_face_takes_the_first_safe_source);
     RUN_TEST(css_font_face_drops_invalid_rules);

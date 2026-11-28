@@ -467,6 +467,21 @@ size_t my_css_font_face_count(const my_css_sheet_t* sheet);
 const my_css_font_face_t* my_css_font_face_at(const my_css_sheet_t* sheet,
                                               size_t index);
 
+/** @brief Best `@font-face` for a family, weight and style, following the
+ * CSS Fonts matching order: faces of the family (ASCII case-insensitive)
+ * are narrowed to the requested style when any exists, then by weight.
+ * An exact weight wins; for a desired weight in 400..500 the heavier
+ * faces up to 500 come first (ascending), then lighter ones (descending),
+ * then heavier ones above 500 (ascending); below 400 lighter faces come
+ * first (descending), then heavier (ascending); above 500 heavier faces
+ * come first (ascending), then lighter (descending). Among faces with the
+ * same family, style and weight the last one in source order wins. NULL
+ * when the sheet has no face of the family or an argument is NULL. */
+const my_css_font_face_t* my_css_font_face_match(const my_css_sheet_t* sheet,
+                                                 const char* family,
+                                                 uint32_t weight,
+                                                 bool italic);
+
 /** @brief Keyframes rule by index in first-definition order. */
 const my_css_keyframes_t* my_css_keyframes_at(const my_css_sheet_t* sheet,
                                               size_t index);
