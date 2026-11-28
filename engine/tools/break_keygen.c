@@ -10,7 +10,12 @@
 /* break_keygen — provisions one per-device AUTH-v2 key for the editor
  * remote session (docs/design/editor_remote.md, "Keyring").
  *
- *   break_keygen <keyring file> <16 hex key id> <device psk file>
+ *   break_keygen [--max-keys N] <keyring file> <16 hex key id> <device psk file>
+ *
+ * N (1..BREAK_KEYRING_MAX_KEYS = 4096, default 8) sizes the ring. The default
+ * keeps the editor's limits (8 keys, 2047 bytes) so editor rings stay
+ * loadable; any other N is for break_keyring servers and allows a ring of up
+ * to BREAK_KEYRING_MAX_FILE_BYTES - 1 bytes.
  *
  * Generates 32 random bytes (break_crypto_random, the OpenSSL CSPRNG) and
  *   - appends "<key id> <64 hex psk>\n" to the keyring file read by
@@ -23,8 +28,8 @@
  *   - writes the same 32 raw bytes to the device file (created exclusively
  *     with mode 0600; it must not exist), the format a client loads like
  *     `--remote-psk-file`.
- * Refuses an invalid or duplicate key id, a full ring (8 keys), a ring that
- * would grow past the editor's 2047-byte keyring limit, an existing device
+ * Refuses an invalid or duplicate key id, a full ring (N keys), a ring that
+ * would grow past the byte limit above, an existing device
  * file, or a keyring line that is not "<16 hex> <64 hex>". On any failure
  * neither file is changed (the device file is removed again if the keyring
  * append fails, the ring is truncated back, a ring this run created is
@@ -32,10 +37,12 @@
  * owner-only there and no lock or symlink guard exists; the 0600 claim is
  * POSIX only. */
 #include <crypto/break_crypto.h>
+#include <network/break_keyring.h> /* limits only; break_net is not linked */
 
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #if defined(_WIN32)
@@ -61,8 +68,8 @@
 #define KG_EXCL (O_CREAT | O_EXCL | O_WRONLY)
 #endif
 
-#define KG_MAX_KEYS 8u
-#define KG_MAX_RING 2047u
+#define KG_EDITOR_KEYS 8u
+#define KG_EDITOR_RING 2047u /* the editor's keyring limit */
 #define KG_LINE 82u /* "<16 hex> <64 hex>\n" */
 
 static void kg_wipe(void *p, size_t n) {
@@ -141,30 +148,39 @@ static int kg_open_ring(const char *path, int *created) {
 }
 
 /* Reads the whole ring through fd. Validates it and counts keys; fails on a
- * duplicate id, a full ring, or when the append would pass the editor limit. */
-static int kg_scan_ring(int fd, const char *id, unsigned *count, int *needs_lf,
-                        size_t *size) {
-    char text[KG_MAX_RING + 2u];
+ * duplicate id, a ring holding max_keys keys, or when the append would pass
+ * max_ring bytes. */
+static int kg_scan_ring(int fd, const char *id, unsigned max_keys, size_t max_ring,
+                        unsigned *count, int *needs_lf, size_t *size) {
+    char stack_text[KG_EDITOR_RING + 2u];
+    size_t cap = max_ring + 2u;
+    char *text = stack_text;
     size_t n = 0u, pos = 0u;
+    int ok = 0;
     *count = 0u;
     *needs_lf = 0;
     *size = 0u;
-    if (KG_LSEEK(fd, 0, SEEK_SET) < 0) return 0;
-    while (n < sizeof(text) - 1u) {
-        int r = (int)KG_READ(fd, text + n, (unsigned)(sizeof(text) - 1u - n));
+    if (cap > sizeof(stack_text)) {
+        text = (char *)malloc(cap);
+        if (text == NULL) {
+            fprintf(stderr, "break_keygen: out of memory\n");
+            return 0;
+        }
+    }
+    if (KG_LSEEK(fd, 0, SEEK_SET) < 0) goto done;
+    while (n < cap - 1u) {
+        int r = (int)KG_READ(fd, text + n, (unsigned)(cap - 1u - n));
         if (r < 0) {
             if (errno == EINTR) continue;
             fprintf(stderr, "break_keygen: reading the keyring failed\n");
-            kg_wipe(text, sizeof(text));
-            return 0;
+            goto done;
         }
         if (r == 0) break;
         n += (size_t)r;
     }
-    if (n > KG_MAX_RING) {
+    if (n > max_ring) {
         fprintf(stderr, "break_keygen: keyring file is too large\n");
-        kg_wipe(text, sizeof(text));
-        return 0;
+        goto done;
     }
     *size = n;
     *needs_lf = n > 0u && text[n - 1u] != '\n';
@@ -177,28 +193,44 @@ static int kg_scan_ring(int fd, const char *id, unsigned *count, int *needs_lf,
             if (len != 81u || text[pos + 16u] != ' ' ||
                 !kg_is_hex(text + pos, 16u) || !kg_is_hex(text + pos + 17u, 64u)) {
                 fprintf(stderr, "break_keygen: keyring has a malformed line\n");
-                kg_wipe(text, sizeof(text));
-                return 0;
+                goto done;
             }
             if (kg_lower_eq(text + pos, id, 16u)) {
                 fprintf(stderr, "break_keygen: key id already in the keyring\n");
-                kg_wipe(text, sizeof(text));
-                return 0;
+                goto done;
             }
             (*count)++;
         }
         pos = end + 1u;
     }
-    kg_wipe(text, sizeof(text));
-    if (*count >= KG_MAX_KEYS) {
-        fprintf(stderr, "break_keygen: keyring is full (%u keys)\n", KG_MAX_KEYS);
-        return 0;
+    if (*count >= max_keys) {
+        fprintf(stderr, "break_keygen: keyring is full (%u keys)\n", max_keys);
+        goto done;
     }
-    if (n + (*needs_lf ? 1u : 0u) + KG_LINE > KG_MAX_RING) {
-        fprintf(stderr, "break_keygen: the new key would grow the keyring past %u bytes, the "
-                        "limit the editor accepts\n", KG_MAX_RING);
-        return 0;
+    if (n + (*needs_lf ? 1u : 0u) + KG_LINE > max_ring) {
+        fprintf(stderr, "break_keygen: the new key would grow the keyring past %lu bytes%s\n",
+                (unsigned long)max_ring,
+                max_keys == KG_EDITOR_KEYS ? ", the limit the editor accepts" : "");
+        goto done;
     }
+    ok = 1;
+done:
+    kg_wipe(text, cap);
+    if (text != stack_text) free(text);
+    return ok;
+}
+
+/* Strict decimal 1..BREAK_KEYRING_MAX_KEYS: digits only, no sign or space. */
+static int kg_parse_max_keys(const char *s, unsigned *out) {
+    unsigned v = 0u;
+    if (*s == '\0') return 0;
+    for (; *s != '\0'; s++) {
+        if (*s < '0' || *s > '9') return 0;
+        v = v * 10u + (unsigned)(*s - '0');
+        if (v > BREAK_KEYRING_MAX_KEYS) return 0;
+    }
+    if (v == 0u) return 0;
+    *out = v;
     return 1;
 }
 
@@ -217,15 +249,28 @@ int main(int argc, char **argv) {
     static const char hex[] = "0123456789abcdef";
     unsigned char psk[32];
     char line[16u + 1u + 64u + 1u + 1u];
-    unsigned count = 0u;
+    unsigned count = 0u, max_keys = KG_EDITOR_KEYS;
     int needs_lf = 0, created = 0;
     int ring_fd, fd, ok;
-    size_t i, ring_size = 0u, add;
+    size_t i, ring_size = 0u, add, max_ring;
+    if (argc >= 2 && strcmp(argv[1], "--max-keys") == 0) {
+        if (argc != 6 || !kg_parse_max_keys(argv[2], &max_keys)) {
+            fprintf(stderr, "break_keygen: --max-keys takes a decimal number 1..%u\n",
+                    BREAK_KEYRING_MAX_KEYS);
+            return 2;
+        }
+        argv += 2;
+        argc -= 2;
+    }
     if (argc != 4) {
-        fprintf(stderr, "usage: break_keygen <keyring file> <16 hex key id> "
-                        "<device psk file>\n");
+        fprintf(stderr, "usage: break_keygen [--max-keys N] <keyring file> <16 hex key id> "
+                        "<device psk file>\n"
+                        "  N: 1..%u keys (default %u, the editor's limit)\n",
+                BREAK_KEYRING_MAX_KEYS, KG_EDITOR_KEYS);
         return 2;
     }
+    max_ring = max_keys == KG_EDITOR_KEYS ? (size_t)KG_EDITOR_RING
+                                          : (size_t)BREAK_KEYRING_MAX_FILE_BYTES - 1u;
     if (strlen(argv[2]) != 16u || !kg_is_hex(argv[2], 16u)) {
         fprintf(stderr, "break_keygen: key id must be 16 hex digits\n");
         return 2;
@@ -234,7 +279,7 @@ int main(int argc, char **argv) {
     if (ring_fd < 0) {
         return 1;
     }
-    if (!kg_scan_ring(ring_fd, argv[2], &count, &needs_lf, &ring_size)) {
+    if (!kg_scan_ring(ring_fd, argv[2], max_keys, max_ring, &count, &needs_lf, &ring_size)) {
         goto fail_ring;
     }
     if (!break_crypto_random(psk, sizeof(psk))) {

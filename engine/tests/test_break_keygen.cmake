@@ -1,6 +1,8 @@
 # End-to-end: tools/break_keygen provisions per-device keys for
 # `editor --remote-keyring-file`.
-#   break_keygen <keyring> <16-hex key id> <device psk out>
+#   break_keygen [--max-keys N] <keyring> <16-hex key id> <device psk out>
+# (N 1..4096, default 8 = the editor's limits; other N allow a ring up to
+# BREAK_KEYRING_MAX_FILE_BYTES - 1 bytes for break_keyring servers)
 # appends "<id> <64 hex psk>" to the keyring (created mode 0600 if missing),
 # writes the same 32 raw PSK bytes to the device file (mode 0600, must not
 # exist), refuses duplicate ids and invalid ids, and never touches either
@@ -90,6 +92,52 @@ foreach(i 3 4 5 6 7 8)
 endforeach()
 keygen(FALSE "${RING}" 6465766963653039 "${WORK}/d9.psk")
 
+# --max-keys N sizes the ring for break_keyring servers (N in 1..4096,
+# default 8); a bad N is a usage error (exit 2) that touches no file
+function(keygen_rc expected_rc)
+    execute_process(COMMAND ${TARGET_RUNNER} "${KEYGEN}" ${ARGN}
+                    RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err)
+    if(NOT rc EQUAL expected_rc)
+        message(FATAL_ERROR "break_keygen ${ARGN} exited ${rc}, expected ${expected_rc}: ${out}${err}")
+    endif()
+endfunction()
+file(READ "${RING}" full_before)
+foreach(bad 0 4097 x +9 9x)
+    keygen_rc(2 --max-keys ${bad} "${RING}" 6465766963653039 "${WORK}/bad${bad}.psk")
+    keygen_rc(2 --max-keys ${bad} "${WORK}/bad_ring_${bad}.txt" 6465766963653039 "${WORK}/bad${bad}.psk")
+    if(EXISTS "${WORK}/bad${bad}.psk" OR EXISTS "${WORK}/bad_ring_${bad}.txt")
+        message(FATAL_ERROR "--max-keys ${bad} created a file")
+    endif()
+endforeach()
+file(READ "${RING}" full_after)
+if(NOT full_before STREQUAL full_after)
+    message(FATAL_ERROR "a rejected --max-keys modified the keyring")
+endif()
+keygen(TRUE --max-keys 9 "${RING}" 6465766963653039 "${WORK}/d9.psk")
+file(STRINGS "${RING}" lines9)
+list(LENGTH lines9 n9)
+if(NOT n9 EQUAL 9 OR NOT EXISTS "${WORK}/d9.psk")
+    message(FATAL_ERROR "--max-keys 9 should take a 9th key, ring has ${n9}")
+endif()
+keygen(FALSE --max-keys 9 "${RING}" 6465766963653130 "${WORK}/d10.psk")
+keygen(FALSE "${RING}" 6465766963653130 "${WORK}/d10.psk")
+if(EXISTS "${WORK}/d10.psk")
+    message(FATAL_ERROR "a refused 10th key left a device file")
+endif()
+keygen_rc(2 --max-keys "${RING}" 6465766963653130 "${WORK}/d10.psk")
+# a server-sized ring grows past the editor's 2047 bytes: 30 keys = 2460
+set(RINGB "${WORK}/ringb.txt")
+foreach(i RANGE 10 39)
+    keygen(TRUE --max-keys 30 "${RINGB}" 64657669636530${i} "${WORK}/b${i}.psk")
+endforeach()
+file(SIZE "${RINGB}" rb_size)
+if(NOT rb_size EQUAL 2460)
+    message(FATAL_ERROR "30-key ring should be 2460 bytes, got ${rb_size}")
+endif()
+keygen(FALSE --max-keys 30 "${RINGB}" 6465766963653430 "${WORK}/b40.psk")
+keygen(FALSE "${RINGB}" 6465766963653430 "${WORK}/b40.psk")
+keygen(TRUE --max-keys 4096 "${RINGB}" 6465766963653430 "${WORK}/b40.psk")
+
 # a hand-edited keyring whose last line has no trailing LF must not merge
 # with the appended key
 set(RING2 "${WORK}/ring2.txt")
@@ -135,6 +183,24 @@ if(UNIX)
     file_size(r4_size "${RING4}")
     if(NOT r4_size EQUAL 2047)
         message(FATAL_ERROR "ring at the cap should be 2047 bytes, got ${r4_size}")
+    endif()
+
+    # with --max-keys other than 8 the byte cap is BREAK_KEYRING_MAX_FILE_BYTES - 1
+    # (524287): 524205 + 82 fits exactly, 524206 + 82 is refused unchanged
+    set(RINGC "${WORK}/ringc.txt")
+    write_ring("${RINGC}" 524205)
+    keygen(TRUE --max-keys 4096 "${RINGC}" 6465766963653031 "${WORK}/k1.psk")
+    file_size(rc_size "${RINGC}")
+    if(NOT rc_size EQUAL 524287)
+        message(FATAL_ERROR "server ring at the cap should be 524287 bytes, got ${rc_size}")
+    endif()
+    set(RINGD "${WORK}/ringd.txt")
+    write_ring("${RINGD}" 524206)
+    file(READ "${RINGD}" rd_before)
+    keygen(FALSE --max-keys 4096 "${RINGD}" 6465766963653031 "${WORK}/k2.psk")
+    file(READ "${RINGD}" rd_after)
+    if(NOT rd_before STREQUAL rd_after OR EXISTS "${WORK}/k2.psk")
+        message(FATAL_ERROR "an over-cap server-ring append changed the ring or left a device file")
     endif()
 
     # a symlinked keyring is not followed
