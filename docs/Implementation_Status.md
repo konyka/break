@@ -15129,3 +15129,10 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **测试**：`test_break_session` 新增 3 例（50 例），用仅测试构建可用的注入时钟（`break_session_set_clock_for_test`）：到期检查时时钟失败则关闭、认证时时钟失败则下一次检查关闭、恰好 `max_age` 时保持而多 1 微秒时关闭。5 项变异全部判红。首版用例断言失败后提前返回、遗留进程级测试时钟，导致后续用例连带失败；改为恢复时钟后再断言。
 - **核对**：同批记录的「PSK memset 可被优化掉」已解决，`break_session_wipe` 经 `volatile` 指针写入。
 - **验证**：`test_break_session` 普通、ASan+UBSan、TSan 均 50/50；`build-aoi-net` 全量 ctest 498/498；`build-myui-tests` 全量 483/483。Windows 分支（`GetTickCount64`）不会失败、行为不变，本机未构建。本提交自身的远端工作流结果不在此预写。
+
+## 网络：接入限速的每 IP 表复用空闲槽位（2026-11-28）
+
+- **缺陷**（2026-10-24 记录的已知限制「满 1024 表拒绝新 IP、无淘汰」）：每 IP 滑窗表最多 1024 项且从不释放。累计出现过 1024 个不同 IP 后，此后所有新 IP 在 reactor 生命周期内都被拒绝，即使早先的 IP 已经很久没有连接。
+- **修复**：某 IP 的一分钟窗口内已没有接入记录时，它不可能再被拒绝，槽位改给新 IP 使用（窗口本来就为空）。只有表满且每个 IP 窗口内都有接入时才对新 IP fail-closed；已知 IP 始终按其窗口计数。准入逻辑改为接收毫秒时间，生产路径传入 `SnowNowMonotonicNs`，与 `SnowFreqlimiterAllow` 使用同一时钟。
+- **TDD 与变异**：`test_break_net_adapter` 新增 2 例（51 例），经仅测试构建可用的 `break_net_reactor_admit_at_for_test` 注入时间，实现前编译失败；5 项变异全部判红。首版在复用时重置窗口，变异证明多余（空闲槽位的窗口本来为空），已删除。
+- **验证**：`test_break_net_adapter` 普通、ASan+UBSan、TSan 均 51/51；`build-aoi-net` 全量 ctest 498/498。本提交自身的远端工作流结果不在此预写。

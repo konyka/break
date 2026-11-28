@@ -97,7 +97,7 @@ content-addressed chunk store（文件名 = 内容 SHA-256 hex；写入经 tmp+f
 属子项目 5。**Phase D（2026-10-24）起两项获执行点（当前已有）**，其余仍是模型声明：
 
 - **重放保护（握手级已交付并有论证；一般消息级仍未交付）**：认证握手满足 nonce 新鲜性论证——每连接 128-bit CSPRNG `server_nonce` + 客户端 `client_nonce` 双双进入 HMAC tag，跨连接逐字节重放必败（测试钉住），同连接由 REJECT 重复策略 + 严格递增入站 sequence + 一次性 AUTH 迁移闭合；出站方向每连接单调 `outbound_sequence`（1 起、饱和不回绕）。**边界如实记录**：post-auth 应用消息无独立 replay window（仅有每连接顺序性），重连后入站序号随 identity 复用归零——反重放保证范围 = 认证握手 + 每连接排序，不延伸到跨重连的应用消息（transport_security.md §3）。`runtime_security.md:254` 要求的滑动 replay window（跨重连、应用消息级）仍**未实现**。
-- **限速（admission 级已交付执行点；消息/字节级仍未交付）**：Snowflake admission hook 上的全局 token bucket + 每 IP 滑窗（表 1024 项满表 fail-closed 拒新 IP），拒绝先于任何连接对象分配，`_Atomic uint64_t` 拒绝计数经 `break_net_reactor_admission_denied` 可导出（observable-overload 总则的执行点）；admit 后建链失败不退还 token（保守方向，已记录）。每连接的消息速率与字节速率已于 2026-10-30 在 `break_session` 接入（`break_session_manager_set_message_rate`，默认关闭，超限消息丢弃并计入 `stats.rate_limited`，连接保持；见 `transport_security.md`）。按身份（跨连接）的限速已于 2026-11-28 交付并接入 `break_session`（`break_identity_rate` 固定容量、满表拒新身份不驱逐活跃身份；会话保存 AUTH v2 的 `key_id`，`break_session_manager_set_identity_rate` 默认关闭）。注意内置 CHALLENGE 助手默认使用全零 `key_id`（可经 `break_session_manager_set_client_key_id` 设为逐设备的 key_id，2026-11-28），逐设备密钥下发前所有客户端共享一个身份。并发 assembly 已有上限：复制分片的 `BreakReplicationReassemblyPool` 每连接最多 `stream_capacity`（≤64）条并发 stream，payload 与元数据各有 1..16 MiB 预算，超限拒绝新数据而不影响已有 stream，空闲 stream 按计划淘汰，连接关闭时销毁（2026-11-23/24，`break_replication_session`）。
+- **限速（admission 级已交付执行点；消息/字节级仍未交付）**：Snowflake admission hook 上的全局 token bucket + 每 IP 滑窗（表 1024 项；窗口内已无接入记录的 IP 槽位会被新 IP 复用，只有满表且各 IP 窗口内仍有接入时才 fail-closed 拒新 IP，2026-11-28），拒绝先于任何连接对象分配，`_Atomic uint64_t` 拒绝计数经 `break_net_reactor_admission_denied` 可导出（observable-overload 总则的执行点）；admit 后建链失败不退还 token（保守方向，已记录）。每连接的消息速率与字节速率已于 2026-10-30 在 `break_session` 接入（`break_session_manager_set_message_rate`，默认关闭，超限消息丢弃并计入 `stats.rate_limited`，连接保持；见 `transport_security.md`）。按身份（跨连接）的限速已于 2026-11-28 交付并接入 `break_session`（`break_identity_rate` 固定容量、满表拒新身份不驱逐活跃身份；会话保存 AUTH v2 的 `key_id`，`break_session_manager_set_identity_rate` 默认关闭）。注意内置 CHALLENGE 助手默认使用全零 `key_id`（可经 `break_session_manager_set_client_key_id` 设为逐设备的 key_id，2026-11-28），逐设备密钥下发前所有客户端共享一个身份。并发 assembly 已有上限：复制分片的 `BreakReplicationReassemblyPool` 每连接最多 `stream_capacity`（≤64）条并发 stream，payload 与元数据各有 1..16 MiB 预算，超限拒绝新数据而不影响已有 stream，空闲 stream 按计划淘汰，连接关闭时销毁（2026-11-23/24，`break_replication_session`）。
 
 ## 8. 依赖与供应链风险记录
 
@@ -137,7 +137,7 @@ content-addressed chunk store（文件名 = 内容 SHA-256 hex；写入经 tmp+f
 - OpenSSL 系统库版本漂移：EVP 行为由宿主机库决定，尚未入 `locked_dependencies.json`；
 - OpenSSL OOM 路径不可注入测试：内存耗尽下的 EVP 失败路径无覆盖率声明（文档化，不假称覆盖）；
 - 密钥管理未定义：离线签名密钥与 AUTH PSK 的生成、保管、轮换、吊销流程未交付（Phase D 交付的是 key_id→PSK 解析接缝），在其落地前签名体系与 AUTH 认证均不可投入真实发布；
-- Phase D 已知限制按文档记录在案（transport_security.md §8：无 TLS shutdown/ZERO_RETURN 区分、无会话恢复、零 key_id helper 约定（2026-11-28 起可设定）、token 不退还、满 1024 表拒绝新 IP、进程级 auth 域；PSK 擦除经 volatile 写入，不会被优化掉（2026-11-28 核对）；clock_gettime 失败已改为 fail-closed，到期检查读不到时钟或会话没有认证时间时关闭会话（2026-11-28））；
+- Phase D 已知限制按文档记录在案（transport_security.md §8：无 TLS shutdown/ZERO_RETURN 区分、无会话恢复、零 key_id helper 约定（2026-11-28 起可设定）、token 不退还、满 1024 表拒绝新 IP（2026-11-28 起空闲槽位可复用）、进程级 auth 域；PSK 擦除经 volatile 写入，不会被优化掉（2026-11-28 核对）；clock_gettime 失败已改为 fail-closed，到期检查读不到时钟或会话没有认证时间时关闭会话（2026-11-28））；
 - 本文所有"设计目标"条目均无实现证据；交付状态唯一事实来源是 `docs/Implementation_Status.md` 与各阶段台账（focused/test-only 不等于正式集成，`docs/Implementation_Status.md:215,223` 口径）。
 
 ## 12. 证据索引
