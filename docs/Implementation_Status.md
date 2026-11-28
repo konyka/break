@@ -15115,3 +15115,9 @@ Still missing: certificate revocation (CRL/OCSP), proxy support, HTTP/2, and a s
 - **限制**：内置 CHALLENGE 助手统一使用全零 `key_id`，逐设备密钥下发前所有客户端共享一个身份。
 - **TDD 与变异**：`test_break_session` 新增 3 例（46 例，真实 loopback AUTH v2），实现前编译失败；8 项变异全部判红。首版用例在断言失败后提前返回，遗留全局 auth 回调与未关闭的连接，使后续 6 个用例连带失败；改为先收集结果、释放资源后再断言。
 - **验证**：`test_break_session` 普通、ASan+UBSan、TSan 均 46/46；`build-aoi-net`（Snowflake）全量 ctest 498/498；`build-myui-tests` 全量 483/483；`build-current-vk` 构建通过。本提交自身的远端工作流结果不在此预写。
+
+## 网络：CHALLENGE 客户端助手可发送指定的 `key_id`（2026-11-28）
+
+- **交付**：`break_session_manager_set_client_key_id(manager, key_id)` 设定内置 CHALLENGE 助手在 AUTH v2 中发送、并交给 auth 回调解析的 `key_id`；默认仍为全零，只能在没有会话时设置，拒绝 NULL。逐设备分到密钥的客户端因此可以直接使用助手，服务端的按身份限速随之能区分设备。密钥本身的下发、轮换与吊销仍由应用负责，尚无设计。
+- **TDD 与变异**：`test_break_session` 新增 1 例（47 例），实现前编译失败；5 项变异全部判红（载荷仍写全零、tag 仍用全零、不复制、不冻结、接受 NULL）。
+- **验证**：`test_break_session` 普通、ASan+UBSan、TSan 均 47/47；`build-aoi-net` 全量 ctest 498/498；`build-myui-tests` 全量 483/483；`build-current-vk` 构建通过。本提交自身的远端工作流结果不在此预写。
