@@ -77,6 +77,7 @@ struct BreakSessionManager {
 #ifdef BREAK_ENABLE_CRYPTO
     u32 max_age_seconds;
     bool auth_operation_active;
+    u8 client_key_id[8];
 #endif
 };
 
@@ -495,7 +496,6 @@ static bool break_session_challenge_received(
     const BreakNetEvent *event, size_t definition_index,
     BreakNetAuthKeyFn fn, void *user)
 {
-    static const u8 zero_key_id[8] = {0u};
     u8 client_nonce[16];
     u8 payload[56];
     if (event->message.protocol_version != 1u || event->message.size != 16u ||
@@ -507,12 +507,13 @@ static bool break_session_challenge_received(
     }
     memset(payload, 0, sizeof(payload));
     if (!break_crypto_random(client_nonce, sizeof(client_nonce)) ||
-        !break_session_auth_tag(fn, user, zero_key_id,
+        !break_session_auth_tag(fn, user, manager->client_key_id,
                                 (const u8 *)event->message.data,
                                 client_nonce, payload + 24u)) {
         return break_session_auth_fail(manager, event->connection_key,
                                        BREAK_SESSION_APPLY_HANDLER_FAILED);
     }
+    memcpy(payload, manager->client_key_id, sizeof(manager->client_key_id));
     memcpy(payload + 8u, client_nonce, sizeof(client_nonce));
     if (break_net_reactor_send_correlated(
             manager->reactor, event->connection_key, BREAK_NET_MESSAGE_ID_AUTH,
@@ -735,6 +736,18 @@ bool break_session_manager_set_message_rate(BreakSessionManager *manager,
     manager->rate_enabled = true;
     return true;
 }
+
+#ifdef BREAK_ENABLE_CRYPTO
+bool break_session_manager_set_client_key_id(BreakSessionManager *manager,
+                                             const u8 key_id[8])
+{
+    if (manager == NULL || key_id == NULL || manager->count != 0u) {
+        return false;
+    }
+    memcpy(manager->client_key_id, key_id, sizeof(manager->client_key_id));
+    return true;
+}
+#endif
 
 bool break_session_manager_set_identity_rate(
     BreakSessionManager *manager, const BreakSessionIdentityRateConfig *config)

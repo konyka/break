@@ -29,7 +29,8 @@ typedef bool (*BreakNetAuthKeyFn)(void *user, const u8 key_id[8], u8 out_psk[32]
  * operation is active; NULL clears the configuration. An operation pins its
  * snapshot and callback through its first state transition and final dispatch.
  * The callback resolves key_id, so provisioning and rollover stay app-side.
- * The built-in CHALLENGE client helper requests the all-zero key_id. */
+ * The built-in CHALLENGE client helper sends the manager's client key_id
+ * (break_session_manager_set_client_key_id), all zeros by default. */
 bool break_session_set_auth(BreakNetAuthKeyFn fn, void *user);
 #ifdef BREAK_NET_TESTING
 /* Test-only hook at the pinned snapshot point, before the first transition
@@ -158,6 +159,13 @@ bool break_session_manager_set_message_rate(BreakSessionManager *manager,
  * session is bound; table and clock must be set. */
 bool break_session_manager_set_identity_rate(
     BreakSessionManager *manager, const BreakSessionIdentityRateConfig *config);
+#ifdef BREAK_ENABLE_CRYPTO
+/* key_id the built-in CHALLENGE client helper puts in its AUTH v2 reply, and
+ * asks the auth callback to resolve. Copied; all zeros until set. Only while
+ * no session is bound; NULL is refused. */
+bool break_session_manager_set_client_key_id(BreakSessionManager *manager,
+                                             const u8 key_id[8]);
+#endif
 /* Polls the borrowed reactor on the logic thread and applies up to max_events. */
 size_t break_session_manager_poll_adapter(BreakSessionManager *manager,
                                            uint32_t max_events);

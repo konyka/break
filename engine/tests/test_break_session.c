@@ -1869,6 +1869,94 @@ TEST(break_session_challenge_client_helper_answers_auth_v2)
     ASSERT_TRUE(break_session_set_auth(NULL, NULL));
 }
 
+TEST(break_session_challenge_client_helper_sends_the_configured_key_id)
+{
+    /* A client that was provisioned its own key: the helper's AUTH v2 reply
+     * carries that key_id and a tag made with the key the callback returns
+     * for it, so a server can tell devices apart. Results are collected and
+     * asserted after cleanup. */
+    BreakSessionAuthKeys keys = {false};
+    BreakNetReactorConfig reactor_config = {BREAK_NET_DRIVE_STEP, 0, 4u,
+                                             1000, 1000u, 1u, false};
+    BreakSessionConfig session_config = {0};
+    BreakNetReactor *reactor = NULL;
+    BreakSessionManager *manager = NULL;
+    SnowAcceptor *acceptor = NULL;
+    BreakNetOwnedMessage reply = {0};
+    uint64_t connection = 0x90au;
+    uint64_t outbound_connection = 0u;
+    uint8_t server_nonce[16];
+    uint8_t context[40];
+    uint8_t expected_tag[32];
+    uint8_t got_key_id[8] = {0u};
+    uint8_t got_tag[32] = {0u};
+    bool auth_set;
+    bool configured = false;
+    bool frozen_rejected = false;
+    bool null_rejected = false;
+    bool got_reply = false;
+    BreakSessionState state = BREAK_SESSION_CLOSED;
+    size_t i;
+
+    auth_set = break_session_set_auth(break_session_auth_key, &keys);
+    acceptor = break_session_auth_acceptor();
+    reactor = break_net_reactor_create(&reactor_config);
+    manager = break_session_manager_create(&session_config);
+    if (auth_set && acceptor != NULL && reactor != NULL && manager != NULL) {
+        null_rejected = !break_session_manager_set_client_key_id(manager, NULL) &&
+                        !break_session_manager_set_client_key_id(
+                            NULL, break_session_auth_key_id);
+        configured = break_session_manager_set_client_key_id(
+            manager, break_session_auth_key_id);
+        if (configured && break_session_manager_attach_reactor(manager, reactor) &&
+            break_net_reactor_set_acceptor(reactor, acceptor) &&
+            break_net_reactor_start(reactor) &&
+            break_net_reactor_enqueue_opened_for_test(reactor, connection)) {
+            for (i = 0u; i < sizeof(server_nonce); ++i) {
+                server_nonce[i] = (uint8_t)(0xb0u + i);
+            }
+            if (break_net_reactor_enqueue_message_for_test(
+                    reactor, connection, BREAK_NET_MESSAGE_ID_CHALLENGE, 1u,
+                    server_nonce, sizeof(server_nonce)) &&
+                break_session_manager_poll_adapter(manager, 8u) == 2u) {
+                state = break_session_manager_state(manager, connection);
+                /* settings are frozen once a session exists */
+                frozen_rejected = !break_session_manager_set_client_key_id(
+                    manager, break_session_auth_key_id);
+                if (break_net_reactor_poll_outbound_for_test(
+                        reactor, &outbound_connection, &reply) ==
+                        BREAK_NET_EVENT_OK &&
+                    reply.message_id == BREAK_NET_MESSAGE_ID_AUTH &&
+                    reply.size == 56u) {
+                    memcpy(got_key_id, reply.data, 8u);
+                    memcpy(got_tag, (const uint8_t *)reply.data + 24u, 32u);
+                    memcpy(context, "BRKAUTH2", 8u);
+                    memcpy(context + 8u, server_nonce, 16u);
+                    memcpy(context + 24u, (const uint8_t *)reply.data + 8u, 16u);
+                    got_reply = break_crypto_hmac_sha256(
+                        break_session_auth_psk, 32u, context, sizeof(context),
+                        expected_tag);
+                }
+                break_net_message_release(&reply);
+            }
+            (void)break_net_reactor_stop(reactor, 1000u);
+        }
+    }
+    break_session_manager_destroy(manager);
+    break_net_reactor_destroy(reactor);
+    if (acceptor != NULL) SnowAcceptorDestroy(acceptor);
+    (void)break_session_set_auth(NULL, NULL);
+    ASSERT_TRUE(auth_set);
+    ASSERT_TRUE(null_rejected);
+    ASSERT_TRUE(configured);
+    ASSERT_EQ(state, BREAK_SESSION_AUTHENTICATING);
+    ASSERT_TRUE(frozen_rejected);
+    ASSERT_TRUE(got_reply);
+    ASSERT_EQ(outbound_connection, connection);
+    ASSERT_TRUE(memcmp(got_key_id, break_session_auth_key_id, 8u) == 0);
+    ASSERT_TRUE(memcmp(got_tag, expected_tag, 32u) == 0);
+}
+
 TEST(break_session_challenge_auth_reply_echoes_correlation_id)
 {
     BreakSessionAuthKeys keys = {true};
@@ -2251,6 +2339,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(break_session_identity_rate_keys_by_the_authenticated_key_id);
     RUN_TEST(break_session_identity_rate_ignores_unauthenticated_traffic);
     RUN_TEST(break_session_challenge_client_helper_answers_auth_v2);
+    RUN_TEST(break_session_challenge_client_helper_sends_the_configured_key_id);
     RUN_TEST(break_session_challenge_auth_reply_echoes_correlation_id);
     RUN_TEST(break_session_auth_configuration_is_new_state_only);
     RUN_TEST(break_session_max_age_not_deferred_by_close_budget);
